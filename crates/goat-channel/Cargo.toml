@@ -1,0 +1,23 @@
+[package]
+name = "goat-channel"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# Exposes `MockChannelHandle` and friends for downstream test crates.
+test-support = []
+
+[dependencies]
+goat-types  = { workspace = true }
+tokio       = { workspace = true }
+async-trait = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+url         = { workspace = true }
+inventory   = { workspace = true }
