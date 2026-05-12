@@ -1,0 +1,15 @@
+[package]
+name = "goat-skills"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[dependencies]
+goat-types   = { workspace = true }
+serde        = { workspace = true }
+serde_yaml   = "0.9"
+anyhow       = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
