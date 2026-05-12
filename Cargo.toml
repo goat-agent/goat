@@ -1,0 +1,124 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+authors = ["jmo"]
+
+[workspace.dependencies]
+# internal
+goat-types              = { path = "crates/goat-types" }
+goat-bus                = { path = "crates/goat-bus" }
+goat-store              = { path = "crates/goat-store" }
+goat-config             = { path = "crates/goat-config" }
+goat-llm                = { path = "crates/goat-llm" }
+goat-llm-anthropic      = { path = "crates/goat-llm-anthropic" }
+goat-llm-openai         = { path = "crates/goat-llm-openai" }
+goat-llm-moonshot       = { path = "crates/goat-llm-moonshot" }
+goat-llm-zhipu          = { path = "crates/goat-llm-zhipu" }
+goat-llm-gemini         = { path = "crates/goat-llm-gemini" }
+goat-channel            = { path = "crates/goat-channel" }
+goat-channel-telegram   = { path = "crates/goat-channel-telegram" }
+goat-channel-discord    = { path = "crates/goat-channel-discord" }
+goat-render             = { path = "crates/goat-render" }
+goat-plugin             = { path = "crates/goat-plugin" }
+goat-tool               = { path = "crates/goat-tool" }
+goat-tool-echo          = { path = "crates/goat-tool-echo" }
+goat-tool-shell         = { path = "crates/goat-tool-shell" }
+goat-tool-skill         = { path = "crates/goat-tool-skill" }
+goat-brain              = { path = "crates/goat-brain" }
+goat-persona            = { path = "crates/goat-persona" }
+goat-runtime            = { path = "crates/goat-runtime" }
+goat-credentials        = { path = "crates/goat-credentials" }
+goat-memory             = { path = "crates/goat-memory" }
+goat-skills             = { path = "crates/goat-skills" }
+goat-loop               = { path = "crates/goat-loop" }
+goat-evaluator          = { path = "crates/goat-evaluator" }
+
+# async / runtime
+tokio                   = { version = "1.47", features = ["full"] }
+tokio-stream            = { version = "0.1" }
+tokio-util              = { version = "0.7", features = ["rt"] }
+async-trait             = "0.1"
+futures                 = "0.3"
+
+# registry
+inventory               = "0.3"
+
+# error
+anyhow                  = "1"
+thiserror               = "2"
+
+# serde
+serde                   = { version = "1", features = ["derive"] }
+serde_json              = "1"
+toml                    = "0.8"
+
+# storage
+sqlx                    = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls", "macros", "migrate", "chrono", "uuid", "json"] }
+
+# observability
+tracing                 = "0.1"
+tracing-subscriber      = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-appender        = "0.2"
+
+# misc
+bytes                   = "1"
+chrono                  = { version = "0.4", features = ["serde"] }
+uuid                    = { version = "1", features = ["v4", "v5", "serde"] }
+url                     = { version = "2", features = ["serde"] }
+
+# http
+reqwest                 = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+eventsource-stream      = "0.2"
+async-stream            = "0.3"
+
+# telegram
+teloxide                = { version = "0.17", features = ["macros"] }
+
+# discord
+twilight-gateway        = "0.16"
+twilight-http           = "0.16"
+twilight-model          = "0.16"
+
+[package]
+name = "goat"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "goat"
+path = "src/main.rs"
+
+[dependencies]
+goat-runtime    = { workspace = true }
+goat-config     = { workspace = true }
+goat-llm        = { workspace = true }
+goat-credentials = { workspace = true }
+goat-skills     = { workspace = true }
+goat-types      = { workspace = true }
+goat-channel    = { workspace = true }
+goat-llm-anthropic = { workspace = true }
+goat-llm-openai    = { workspace = true }
+goat-llm-moonshot  = { workspace = true }
+goat-llm-zhipu     = { workspace = true }
+goat-llm-gemini    = { workspace = true }
+goat-channel-telegram = { workspace = true }
+goat-channel-discord  = { workspace = true }
+goat-tool-echo     = { workspace = true }
+goat-tool-shell    = { workspace = true }
+goat-tool-skill    = { workspace = true }
+tokio           = { workspace = true }
+anyhow          = { workspace = true }
+clap            = { version = "4", features = ["derive"] }
+clap_complete   = "4"
+inventory       = { workspace = true }
+dialoguer       = "0.11"
+serde_json      = { workspace = true }
+owo-colors      = "4"
