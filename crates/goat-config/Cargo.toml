@@ -1,0 +1,22 @@
+[package]
+name = "goat-config"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[dependencies]
+goat-types       = { workspace = true }
+goat-llm         = { workspace = true }
+goat-channel     = { workspace = true }
+goat-persona     = { workspace = true }
+goat-credentials = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+serde_yaml       = "0.9"
+anyhow           = { workspace = true }
+thiserror        = { workspace = true }
+tracing          = { workspace = true }
+tokio            = { workspace = true }
+uuid             = { workspace = true }
