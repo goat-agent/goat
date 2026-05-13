@@ -6,6 +6,7 @@ use anyhow::{anyhow, Context, Result};
 use futures::{stream, StreamExt};
 use goat_bus::{EventBus, EventFilter};
 use goat_channel::ChannelHandle;
+use goat_command::{CommandOutput, CommandRegistry};
 use goat_llm::{
     BlockId, ContentPart, LlmChunk, LlmMessage, LlmProvider, LlmRequest, LlmStream, Model, Role,
     StopReason, ToolSpec, Usage,
@@ -14,7 +15,7 @@ use goat_persona::PersonalityCard;
 use goat_render::{RenderSummary, StreamRenderer};
 use goat_skills::SkillIndex;
 use goat_store::{Direction, Store, ToolInvocationRecord, ToolInvocationStatus};
-use goat_tool::{ToolCall, ToolContext, ToolOutput, ToolRegistry};
+use goat_tool::{ToolCall, ToolContext, ToolOutput, ToolReadState, ToolRegistry};
 use goat_types::{ConversationId, Event, MessageId, PersonaId};
 use tracing::{info, warn};
 
@@ -59,6 +60,7 @@ pub struct Brain {
     history_window: usize,
     providers: Arc<ProviderRegistry>,
     tools: Arc<ToolRegistry>,
+    commands: Arc<CommandRegistry>,
     store: Arc<dyn Store>,
     renderer: Arc<dyn StreamRenderer>,
     goat_root: PathBuf,
@@ -73,6 +75,7 @@ impl Brain {
         history_window: usize,
         providers: Arc<ProviderRegistry>,
         tools: Arc<ToolRegistry>,
+        commands: Arc<CommandRegistry>,
         store: Arc<dyn Store>,
         renderer: Arc<dyn StreamRenderer>,
         goat_root: PathBuf,
@@ -84,6 +87,7 @@ impl Brain {
             history_window,
             providers,
             tools,
+            commands,
             store,
             renderer,
             goat_root,
@@ -130,6 +134,49 @@ impl Brain {
             .context("append incoming")?;
 
         let mut messages = self.history_messages(&msg.conversation).await?;
+        if let Some(call) = msg.command.clone() {
+            match self.commands.call(call).await {
+                Ok(CommandOutput::Query { content }) => messages.push(LlmMessage {
+                    role: Role::User,
+                    content: vec![ContentPart::Text(content)],
+                }),
+                Ok(CommandOutput::Reply { text }) => {
+                    let summary = self
+                        .renderer
+                        .render(
+                            handle,
+                            msg.conversation.clone(),
+                            Some(msg.id.clone()),
+                            text_stream(self.default_model.clone(), text),
+                        )
+                        .await?;
+                    if !summary.final_text.is_empty() {
+                        self.store
+                            .append_outgoing_text(
+                                self.persona,
+                                &msg.conversation,
+                                &summary.final_text,
+                                Some(&msg.id),
+                            )
+                            .await
+                            .context("append outgoing")?;
+                    }
+                    return Ok(());
+                }
+                Ok(CommandOutput::Skip) => return Ok(()),
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    warn!(persona = %self.persona, error = ?e, "command failed");
+                    messages.push(LlmMessage {
+                        role: Role::User,
+                        content: vec![ContentPart::Text(format!(
+                            "The requested command failed before execution: {e}"
+                        ))],
+                    });
+                }
+            }
+        }
+
         let summary = self
             .complete_with_tools(
                 handle,
@@ -188,6 +235,7 @@ impl Brain {
         let skill_prompt =
             SkillIndex::discover_root(&self.goat_root).system_prompt_block(self.persona);
         let tool_specs = self.llm_tool_specs(skill_prompt.is_some());
+        let read_state = ToolReadState::default();
 
         for _round in 0..MAX_TOOL_ROUNDS {
             let mut req = LlmRequest::new(self.default_model.clone());
@@ -218,7 +266,7 @@ impl Brain {
             messages.push(assistant_tool_call_message(&folded.tool_calls));
 
             for call in folded.tool_calls {
-                let output = self.execute_tool(&conv, &call).await;
+                let output = self.execute_tool(&conv, &call, read_state.clone()).await;
                 messages.push(LlmMessage {
                     role: Role::Tool,
                     content: vec![ContentPart::ToolResult {
@@ -246,36 +294,57 @@ impl Brain {
         self.tools
             .default_specs()
             .into_iter()
-            .filter(|spec| has_skills || spec.name.as_str() != "skill.activate")
+            .filter(|spec| has_skills || spec.name.as_str() != "skill")
             .map(|spec| ToolSpec {
-                name: spec.model_name(),
+                name: spec.name.as_str().to_string(),
                 description: spec.description.unwrap_or_default(),
                 input_schema: spec.input_schema,
             })
             .collect()
     }
 
-    async fn execute_tool(&self, conv: &ConversationId, call: &ModelToolCall) -> ToolOutput {
+    async fn execute_tool(
+        &self,
+        conv: &ConversationId,
+        call: &ModelToolCall,
+        read_state: ToolReadState,
+    ) -> ToolOutput {
         let started_at = chrono::Utc::now();
-        let (resolved_name, output) = match self.tools.resolve_model_name(&call.name) {
-            Some(name) => {
-                let ctx = ToolContext {
-                    persona: self.persona,
-                    conversation: conv.clone(),
-                    goat_root: self.goat_root.clone(),
-                };
-                let tool_call = ToolCall {
-                    call_id: call.id.clone(),
-                    name: name.clone(),
-                    arguments: call.arguments.clone(),
-                };
-                (name.to_string(), self.tools.call(ctx, tool_call).await)
+        let name = match goat_tool::ToolName::new(call.name.clone()) {
+            Ok(name) => name,
+            Err(e) => {
+                let output = ToolOutput::error(format!("invalid tool requested by model: {e}"));
+                self.audit_tool_call(conv, call, call.name.clone(), &output, started_at)
+                    .await;
+                return output;
             }
-            None => (
-                call.name.clone(),
-                ToolOutput::error(format!("unknown tool requested by model: {}", call.name)),
-            ),
         };
+        let ctx = ToolContext {
+            persona: self.persona,
+            conversation: conv.clone(),
+            goat_root: self.goat_root.clone(),
+            read_state,
+        };
+        let tool_call = ToolCall {
+            call_id: call.id.clone(),
+            name: name.clone(),
+            arguments: call.arguments.clone(),
+        };
+        let resolved_name = name.to_string();
+        let output = self.tools.call(ctx, tool_call).await;
+        self.audit_tool_call(conv, call, resolved_name, &output, started_at)
+            .await;
+        output
+    }
+
+    async fn audit_tool_call(
+        &self,
+        conv: &ConversationId,
+        call: &ModelToolCall,
+        resolved_name: String,
+        output: &ToolOutput,
+        started_at: chrono::DateTime<chrono::Utc>,
+    ) {
         let finished_at = chrono::Utc::now();
         let status = if output.is_error {
             ToolInvocationStatus::Error
@@ -298,7 +367,6 @@ impl Brain {
         if let Err(e) = self.store.append_tool_invocation(record).await {
             warn!(error = ?e, tool = %call.name, "failed to audit tool invocation");
         }
-        output
     }
 }
 
@@ -498,7 +566,7 @@ mod tests {
     fn assistant_tool_call_message_contains_no_user_visible_text() {
         let calls = vec![ModelToolCall {
             id: "call_1".into(),
-            name: "shell_run".into(),
+            name: "shell".into(),
             arguments: serde_json::json!({"command": "ls -la"}),
         }];
 
@@ -509,7 +577,7 @@ mod tests {
         assert!(matches!(
             &message.content[0],
             ContentPart::ToolCall { id, name, .. }
-                if id == "call_1" && name == "shell_run"
+                if id == "call_1" && name == "shell"
         ));
         assert!(!message
             .content

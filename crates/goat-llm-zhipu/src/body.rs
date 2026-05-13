@@ -202,20 +202,20 @@ mod tests {
                 role: Role::Tool,
                 content: vec![ContentPart::ToolResult {
                     id: "call_1".into(),
-                    name: "echo_echo".into(),
+                    name: "echo".into(),
                     content: "ok".into(),
                 }],
             }],
             max_tokens: 8,
             temperature: None,
             tools: vec![ToolSpec {
-                name: "echo_echo".into(),
+                name: "echo".into(),
                 description: "Echo".into(),
                 input_schema: json!({"type":"object"}),
             }],
         };
         let v = serde_json::to_value(Body::from(&req)).unwrap();
-        assert_eq!(v["tools"][0]["function"]["name"], "echo_echo");
+        assert_eq!(v["tools"][0]["function"]["name"], "echo");
         assert_eq!(v["messages"][0]["tool_call_id"], "call_1");
         assert_eq!(v["messages"][0]["content"], "ok");
     }

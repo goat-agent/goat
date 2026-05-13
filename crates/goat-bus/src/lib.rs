@@ -84,6 +84,7 @@ mod tests {
             },
             text: "hi".into(),
             attachments: vec![],
+            command: None,
             ts: Utc::now(),
             raw: serde_json::Value::Null,
         })

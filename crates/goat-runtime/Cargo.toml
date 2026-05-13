@@ -7,6 +7,7 @@ publish.workspace = true
 authors.workspace = true
 
 [dependencies]
+goat-command = { workspace = true }
 goat-types            = { workspace = true }
 goat-bus              = { workspace = true }
 goat-store            = { workspace = true }
@@ -17,6 +18,7 @@ goat-channel          = { workspace = true }
 goat-render           = { workspace = true }
 goat-plugin           = { workspace = true }
 goat-tool             = { workspace = true }
+goat-skills           = { workspace = true }
 goat-brain            = { workspace = true }
 goat-persona          = { workspace = true }
 tokio                 = { workspace = true }

@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use goat_brain::{Brain, ProviderRegistry};
 use goat_bus::EventBus;
 use goat_channel::{Channel, ChannelBinding, ChannelFactory, ChannelHandle};
+use goat_command::{CommandFactory, CommandProviderContext, CommandRegistry};
 use goat_config::{GoatPaths, LoadedConfig};
 use goat_credentials::KeyPool;
 use goat_llm::{KeyProvider, LlmProviderFactory};
@@ -157,6 +158,8 @@ async fn spawn_persona(
 
     let mut handles: Vec<Arc<dyn ChannelHandle>> = Vec::new();
     let mut joins: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let commands = Arc::new(build_command_registry(shared.goat_root.clone(), raw.id));
+    let command_specs = commands.specs();
 
     for binding in &raw.bindings {
         let Some(channel) = shared.channels.get(binding.name.as_str()) else {
@@ -170,6 +173,7 @@ async fn spawn_persona(
         let chan_binding = ChannelBinding {
             instance: InstanceId::new(),
             config: binding.config.clone(),
+            commands: command_specs.clone(),
         };
         match channel.clone().bind(raw.id, chan_binding).await {
             Ok((handle, mut rx)) => {
@@ -201,6 +205,7 @@ async fn spawn_persona(
         raw.history_window,
         shared.providers.clone(),
         shared.tools.clone(),
+        commands,
         shared.store.clone(),
         shared.renderer.clone(),
         shared.goat_root.clone(),
@@ -213,4 +218,23 @@ async fn spawn_persona(
     }));
 
     Ok(joins)
+}
+
+fn build_command_registry(
+    goat_root: std::path::PathBuf,
+    persona: goat_types::PersonaId,
+) -> CommandRegistry {
+    let mut registry = CommandRegistry::new();
+    for factory in inventory::iter::<CommandFactory>() {
+        (factory.register)(
+            &mut registry,
+            CommandProviderContext::new(goat_root.clone(), persona.0),
+        );
+        info!(
+            provider = factory.id,
+            commands = registry.specs().len(),
+            "loaded command provider"
+        );
+    }
+    registry
 }

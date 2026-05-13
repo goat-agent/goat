@@ -7,12 +7,13 @@ mod cli;
 // Force-link inventory-based extension crates into the final binary.
 use goat_channel_discord as _;
 use goat_channel_telegram as _;
+use goat_command_skill as _;
 use goat_llm_anthropic as _;
 use goat_llm_gemini as _;
 use goat_llm_moonshot as _;
 use goat_llm_openai as _;
 use goat_llm_zhipu as _;
-use goat_tool_echo as _;
+use goat_tool_fs as _;
 use goat_tool_shell as _;
 use goat_tool_skill as _;
 

@@ -12,6 +12,7 @@ default = []
 test-support = []
 
 [dependencies]
+goat-command = { workspace = true }
 goat-types  = { workspace = true }
 tokio       = { workspace = true }
 async-trait = { workspace = true }

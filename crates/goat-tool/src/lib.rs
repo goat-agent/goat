@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use goat_types::{ConversationId, PersonaId};
@@ -24,10 +24,6 @@ impl ToolName {
 
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-
-    pub fn model_name(&self) -> String {
-        self.as_str().replace('.', "_")
     }
 }
 
@@ -62,11 +58,11 @@ fn validate_name(name: &str) -> ToolResultValue<()> {
     }
     let ok = name
         .chars()
-        .all(|c| matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '-' | '.'));
+        .all(|c| matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '-'));
     if !ok {
         return Err(ToolError::InvalidName {
             name: name.to_string(),
-            reason: "only ASCII letters, digits, underscore, hyphen, and dot are allowed",
+            reason: "only ASCII letters, digits, underscore, and hyphen are allowed",
         });
     }
     Ok(())
@@ -97,10 +93,6 @@ impl ToolSpec {
             output_schema: None,
             annotations: serde_json::Value::Null,
         }
-    }
-
-    pub fn model_name(&self) -> String {
-        self.name.model_name()
     }
 }
 
@@ -180,6 +172,17 @@ pub struct ToolContext {
     pub persona: PersonaId,
     pub conversation: ConversationId,
     pub goat_root: PathBuf,
+    pub read_state: ToolReadState,
+}
+
+pub type ToolReadState = Arc<Mutex<HashMap<PathBuf, ToolReadSnapshot>>>;
+
+#[derive(Clone, Debug)]
+pub struct ToolReadSnapshot {
+    pub size: u64,
+    pub modified_ms: Option<u128>,
+    pub hash: u64,
+    pub complete: bool,
 }
 
 #[async_trait]
@@ -199,7 +202,6 @@ inventory::collect!(ToolFactory);
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     by_name: HashMap<ToolName, RegisteredTool>,
-    by_model_name: HashMap<String, ToolName>,
 }
 
 #[derive(Clone)]
@@ -219,11 +221,9 @@ impl ToolRegistry {
     }
 
     pub fn insert(&mut self, factory: &ToolFactory) {
+        validate_name(factory.name.as_str()).expect("invalid registered tool name");
         let spec = (factory.spec)();
-        let model_name = spec.model_name();
-        self.by_model_name
-            .entry(model_name)
-            .or_insert_with(|| spec.name.clone());
+        validate_name(spec.name.as_str()).expect("invalid registered tool spec name");
         self.by_name.insert(
             factory.name.clone(),
             RegisteredTool {
@@ -245,10 +245,6 @@ impl ToolRegistry {
         specs
     }
 
-    pub fn resolve_model_name(&self, model_name: &str) -> Option<ToolName> {
-        self.by_model_name.get(model_name).cloned()
-    }
-
     pub async fn call(&self, ctx: ToolContext, call: ToolCall) -> ToolOutput {
         let Some(tool) = self.by_name.get(&call.name) else {
             return ToolOutput::error(format!("unknown tool: {}", call.name));
@@ -266,22 +262,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validates_mcp_style_names() {
-        assert!(ToolName::new("shell.run").is_ok());
+    fn validates_provider_safe_names() {
+        assert!(ToolName::new("shell").is_ok());
         assert!(ToolName::new("DATA_EXPORT_v2").is_ok());
+        assert!(ToolName::new("shell.run").is_err());
         assert!(ToolName::new("bad name").is_err());
-    }
-
-    #[test]
-    fn maps_model_name_portably() {
-        let name = ToolName::new("shell.run").unwrap();
-        assert_eq!(name.model_name(), "shell_run");
     }
 
     #[test]
     fn no_parameter_schema_is_object() {
         let spec = ToolSpec::new(
-            ToolName::new("time.now").unwrap(),
+            ToolName::new("time_now").unwrap(),
             "Return time",
             serde_json::json!({"type":"object","additionalProperties":false}),
         );

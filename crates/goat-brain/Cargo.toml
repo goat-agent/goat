@@ -7,6 +7,7 @@ publish.workspace = true
 authors.workspace = true
 
 [dependencies]
+goat-command = { workspace = true }
 goat-types   = { workspace = true }
 goat-llm     = { workspace = true }
 goat-channel = { workspace = true }
