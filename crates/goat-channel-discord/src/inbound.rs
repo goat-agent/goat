@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use goat_command::{CommandCall, CommandName, CommandSpec};
+use goat_command::CommandSpec;
 use goat_types::{
-    Attachment, AttachmentSource, ConversationId, IncomingMessage, InstanceId, MessageId,
-    PersonaId, UserHandle,
+    Attachment, AttachmentSource, CommandCall, CommandName, ConversationId, IncomingMessage,
+    InstanceId, MessageId, PersonaId, UserHandle,
 };
 use tokio::sync::mpsc;
 use tracing::warn;

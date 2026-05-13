@@ -1,36 +1,11 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use goat_types::{CommandCall, CommandName, PersonaId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-pub struct CommandName(Cow<'static, str>);
-
-impl CommandName {
-    pub const fn from_static(name: &'static str) -> Self {
-        Self(Cow::Borrowed(name))
-    }
-
-    pub fn new(name: impl Into<String>) -> Result<Self, CommandError> {
-        let name = name.into();
-        validate_name(&name)?;
-        Ok(Self(Cow::Owned(name)))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for CommandName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.as_str().fmt(f)
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -63,31 +38,6 @@ pub enum CommandArgs {
         description: String,
         required: bool,
     },
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct CommandCall {
-    pub call_id: String,
-    pub name: CommandName,
-    pub args: String,
-    pub raw: serde_json::Value,
-}
-
-impl CommandCall {
-    pub fn new(
-        call_id: impl Into<String>,
-        name: CommandName,
-        args: impl Into<String>,
-        raw: serde_json::Value,
-    ) -> Self {
-        Self {
-            call_id: call_id.into(),
-            name,
-            args: args.into(),
-            raw,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -156,11 +106,11 @@ impl CommandRegistry {
 #[non_exhaustive]
 pub struct CommandProviderContext {
     pub goat_root: PathBuf,
-    pub persona: uuid::Uuid,
+    pub persona: PersonaId,
 }
 
 impl CommandProviderContext {
-    pub fn new(goat_root: PathBuf, persona: uuid::Uuid) -> Self {
+    pub fn new(goat_root: PathBuf, persona: PersonaId) -> Self {
         Self { goat_root, persona }
     }
 }
@@ -175,26 +125,12 @@ inventory::collect!(CommandFactory);
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum CommandError {
-    #[error("invalid command name `{0}`")]
-    InvalidName(String),
     #[error("duplicate command `{0}`")]
     Duplicate(String),
     #[error("unknown command `{0}`")]
     NotFound(String),
     #[error("command failed: {0}")]
     Failed(String),
-}
-
-fn validate_name(name: &str) -> Result<(), CommandError> {
-    if name.is_empty()
-        || name.len() > 64
-        || !name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
-    {
-        return Err(CommandError::InvalidName(name.to_string()));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -208,14 +144,6 @@ mod tests {
         async fn call(&self, call: CommandCall) -> Result<CommandOutput, CommandError> {
             Ok(CommandOutput::Query { content: call.args })
         }
-    }
-
-    #[test]
-    fn rejects_platform_unsafe_names() {
-        assert!(CommandName::new("skill").is_ok());
-        assert!(CommandName::new("remind-me").is_ok());
-        assert!(CommandName::new("skill.activate").is_err());
-        assert!(CommandName::new("").is_err());
     }
 
     #[tokio::test]

@@ -3,17 +3,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use goat_command::{
-    CommandCall, CommandError, CommandFactory, CommandHandler, CommandName, CommandOutput,
-    CommandProviderContext, CommandRegistry, CommandSpec,
+    CommandError, CommandFactory, CommandHandler, CommandOutput, CommandProviderContext,
+    CommandRegistry, CommandSpec,
 };
 use goat_skills::{format_activated_skill, SkillIndex};
-use goat_types::PersonaId;
+use goat_types::{CommandCall, CommandName, PersonaId};
 use tracing::warn;
 
 pub const ID: &str = "skill";
 
 fn register_from_context(registry: &mut CommandRegistry, ctx: CommandProviderContext) {
-    register(registry, ctx.goat_root, PersonaId(ctx.persona));
+    register(registry, ctx.goat_root, ctx.persona);
 }
 
 inventory::submit! {

@@ -2,8 +2,8 @@ use std::borrow::Cow;
 use std::fmt;
 
 use chrono::{DateTime, Utc};
-use goat_command::CommandCall;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use uuid::Uuid;
 
 pub const GOAT_NAMESPACE: Uuid = Uuid::from_u128(0x6f61_745f_7065_7273_6f6e_615f_6e73_3031);
@@ -142,6 +142,67 @@ pub enum AttachmentSource {
         value: String,
         raw: serde_json::Value,
     },
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct CommandName(Cow<'static, str>);
+
+impl CommandName {
+    pub const fn from_static(name: &'static str) -> Self {
+        Self(Cow::Borrowed(name))
+    }
+
+    pub fn new(name: impl Into<String>) -> Result<Self, InvalidCommandName> {
+        let name = name.into();
+        if name.is_empty()
+            || name.len() > 64
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        {
+            return Err(InvalidCommandName(name));
+        }
+        Ok(Self(Cow::Owned(name)))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for CommandName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("invalid command name `{0}`")]
+pub struct InvalidCommandName(pub String);
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CommandCall {
+    pub call_id: String,
+    pub name: CommandName,
+    pub args: String,
+    pub raw: serde_json::Value,
+}
+
+impl CommandCall {
+    pub fn new(
+        call_id: impl Into<String>,
+        name: CommandName,
+        args: impl Into<String>,
+        raw: serde_json::Value,
+    ) -> Self {
+        Self {
+            call_id: call_id.into(),
+            name,
+            args: args.into(),
+            raw,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
