@@ -227,22 +227,15 @@ pub enum OutgoingBody {
 }
 
 #[derive(Clone, Debug)]
-#[allow(clippy::large_enum_variant)]
 #[non_exhaustive]
 pub enum Event {
     Incoming(IncomingMessage),
-    SelfTick {
-        persona: PersonaId,
-        kind: &'static str,
-        payload: serde_json::Value,
-    },
 }
 
 impl Event {
     pub fn persona(&self) -> PersonaId {
         match self {
             Event::Incoming(m) => m.persona,
-            Event::SelfTick { persona, .. } => *persona,
         }
     }
 }
