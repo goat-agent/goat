@@ -228,7 +228,7 @@ fn build_command_registry(
     for factory in inventory::iter::<CommandFactory>() {
         (factory.register)(
             &mut registry,
-            CommandProviderContext::new(goat_root.clone(), persona.0),
+            CommandProviderContext::new(goat_root.clone(), persona),
         );
         info!(
             provider = factory.id,

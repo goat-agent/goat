@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use goat_command::{CommandCall, CommandName, CommandSpec};
+use goat_command::CommandSpec;
 use goat_types::{
-    Attachment, AttachmentSource, ConversationId, IncomingMessage, InstanceId, MessageId,
-    PersonaId, UserHandle,
+    Attachment, AttachmentSource, CommandCall, CommandName, ConversationId, IncomingMessage,
+    InstanceId, MessageId, PersonaId, UserHandle,
 };
 use teloxide::prelude::*;
 use teloxide::types::UpdateKind;
