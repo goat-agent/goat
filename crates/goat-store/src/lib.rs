@@ -295,6 +295,7 @@ mod tests {
             },
             text: "hello".into(),
             attachments: vec![],
+            command: None,
             ts: Utc::now(),
             raw: serde_json::Value::Null,
         };

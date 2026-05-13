@@ -171,7 +171,7 @@ mod tests {
                     role: Role::Assistant,
                     content: vec![ContentPart::ToolCall {
                         id: "call_1".into(),
-                        name: "shell_run".into(),
+                        name: "shell".into(),
                         arguments: json!({"command":"pwd"}),
                     }],
                 },
@@ -179,7 +179,7 @@ mod tests {
                     role: Role::Tool,
                     content: vec![ContentPart::ToolResult {
                         id: "call_1".into(),
-                        name: "shell_run".into(),
+                        name: "shell".into(),
                         content: "ok".into(),
                     }],
                 },
@@ -187,15 +187,15 @@ mod tests {
             max_tokens: 8,
             temperature: None,
             tools: vec![ToolSpec {
-                name: "shell_run".into(),
+                name: "shell".into(),
                 description: "Run a command".into(),
                 input_schema: json!({"type":"object"}),
             }],
         };
         let v = serde_json::to_value(Body::from(&req)).unwrap();
-        assert_eq!(v["tools"][0]["name"], "shell_run");
+        assert_eq!(v["tools"][0]["name"], "shell");
         assert_eq!(v["messages"][0]["content"][0]["type"], "tool_use");
-        assert_eq!(v["messages"][0]["content"][0]["name"], "shell_run");
+        assert_eq!(v["messages"][0]["content"][0]["name"], "shell");
         assert_eq!(v["messages"][1]["content"][0]["type"], "tool_result");
         assert_eq!(v["messages"][1]["content"][0]["tool_use_id"], "call_1");
     }

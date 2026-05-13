@@ -140,7 +140,7 @@ impl SkillIndex {
         }
         let mut s = String::from(
             "The following skills provide specialized instructions for specific tasks.\n\
-When a task matches a skill's description, call the `skill_activate` tool with the skill name before proceeding.\n\
+When a task matches a skill's description, call the `skill` tool with the skill name before proceeding.\n\
 Do not load skill resources eagerly; use listed resource paths only when needed.\n\
 <available_skills>\n",
         );
@@ -217,7 +217,7 @@ Do not load skill resources eagerly; use listed resource paths only when needed.
         out
     }
 
-    fn effective_entries(&self, persona: PersonaId) -> Vec<&SkillEntry> {
+    pub fn effective_entries(&self, persona: PersonaId) -> Vec<&SkillEntry> {
         let mut merged: HashMap<&str, &SkillEntry> = HashMap::new();
         for e in &self.agents_user {
             merged.insert(&e.name, e);
@@ -234,6 +234,151 @@ Do not load skill resources eagerly; use listed resource paths only when needed.
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         entries
     }
+}
+
+pub fn format_activated_skill(skill: &ActivatedSkill, args: Option<&str>) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "<skill_content name=\"{}\">\n",
+        escape_attr(&skill.name)
+    ));
+    let body = substitute_arguments(skill.body.trim(), args);
+    out.push_str(&body);
+    out.push_str("\n\nSkill directory: ");
+    out.push_str(&skill.skill_dir.display().to_string());
+    out.push_str("\nRelative paths in this skill are relative to the skill directory.\n");
+    if !skill.resources.is_empty() {
+        out.push_str("<skill_resources>\n");
+        for resource in &skill.resources {
+            out.push_str(&format!(
+                "  <file kind=\"{}\">{}</file>\n",
+                escape_attr(&resource.kind),
+                escape_text(&resource.path.to_string_lossy())
+            ));
+        }
+        out.push_str("</skill_resources>\n");
+    }
+    out.push_str("</skill_content>");
+    out
+}
+
+pub fn substitute_arguments(content: &str, args: Option<&str>) -> String {
+    let Some(args) = args else {
+        return content.to_string();
+    };
+    let parsed = parse_arguments(args);
+    let content = replace_argument_indexes(content, &parsed);
+    let content = replace_shorthand_indexes(&content, &parsed);
+    content.replace("$ARGUMENTS", args)
+}
+
+fn parse_arguments(args: &str) -> Vec<String> {
+    let mut parsed = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+
+    for ch in args.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+            continue;
+        }
+        match quote {
+            Some(q) if ch == q => quote = None,
+            Some(_) => current.push(ch),
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if ch.is_whitespace() => {
+                if !current.is_empty() {
+                    parsed.push(std::mem::take(&mut current));
+                }
+            }
+            None => current.push(ch),
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if !current.is_empty() {
+        parsed.push(current);
+    }
+    parsed
+}
+
+fn replace_argument_indexes(content: &str, parsed: &[String]) -> String {
+    let mut out = String::new();
+    let mut rest = content;
+    while let Some(start) = rest.find("$ARGUMENTS[") {
+        out.push_str(&rest[..start]);
+        let after_prefix = &rest[start + "$ARGUMENTS[".len()..];
+        let Some(end) = after_prefix.find(']') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let index_text = &after_prefix[..end];
+        if !index_text.is_empty() && index_text.chars().all(|c| c.is_ascii_digit()) {
+            let value = index_text
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| parsed.get(i))
+                .map(String::as_str)
+                .unwrap_or("");
+            out.push_str(value);
+            rest = &after_prefix[end + 1..];
+        } else {
+            out.push_str("$ARGUMENTS[");
+            rest = after_prefix;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn replace_shorthand_indexes(content: &str, parsed: &[String]) -> String {
+    let chars: Vec<char> = content.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '$' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j == chars.len() || !is_word_char(chars[j]) {
+                let index_text: String = chars[i + 1..j].iter().collect();
+                let value = index_text
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|idx| parsed.get(idx))
+                    .map(String::as_str)
+                    .unwrap_or("");
+                out.push_str(value);
+                i = j;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+fn is_word_char(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphanumeric()
+}
+
+fn escape_attr(s: &str) -> String {
+    escape_text(s).replace('"', "&quot;")
+}
+
+fn escape_text(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn default_agents_skills_dir() -> Option<PathBuf> {
@@ -523,6 +668,16 @@ mod tests {
                 "references/guide.md",
                 "scripts/run.sh"
             ]
+        );
+    }
+
+    #[test]
+    fn substitutes_arguments() {
+        let content = "raw=$ARGUMENTS sub=$ARGUMENTS[0] task=$1 time=$2 missing=$9";
+        let out = substitute_arguments(content, Some("add \"보고서 작성\" '내일 9시'"));
+        assert_eq!(
+            out,
+            "raw=add \"보고서 작성\" '내일 9시' sub=add task=보고서 작성 time=내일 9시 missing="
         );
     }
 

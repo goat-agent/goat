@@ -1,5 +1,5 @@
 [package]
-name = "goat-channel-telegram"
+name = "goat-command-skill"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -8,16 +8,12 @@ authors.workspace = true
 
 [dependencies]
 goat-command = { workspace = true }
+goat-skills  = { workspace = true }
 goat-types   = { workspace = true }
-goat-channel = { workspace = true }
-teloxide     = { workspace = true }
-tokio        = { workspace = true }
 async-trait  = { workspace = true }
-serde        = { workspace = true }
 serde_json   = { workspace = true }
-anyhow       = { workspace = true }
 tracing      = { workspace = true }
 inventory    = { workspace = true }
-uuid         = { workspace = true }
-chrono       = { workspace = true }
-futures      = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

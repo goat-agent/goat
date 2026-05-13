@@ -256,6 +256,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bstr"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63044e1ae8e69f3b5a92c736ca6269b8d12fa7efe39bf34ddb06d102cf0e2cab"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -949,6 +959,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "globset"
+version = "0.4.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52dfc19153a48bde0cbd630453615c8151bce3a5adfac7a0aebfbf0a1e1f57e3"
+dependencies = [
+ "aho-corasick",
+ "bstr",
+ "log",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "goat"
 version = "0.1.0"
 dependencies = [
@@ -959,6 +982,7 @@ dependencies = [
  "goat-channel",
  "goat-channel-discord",
  "goat-channel-telegram",
+ "goat-command-skill",
  "goat-config",
  "goat-credentials",
  "goat-llm",
@@ -969,7 +993,7 @@ dependencies = [
  "goat-llm-zhipu",
  "goat-runtime",
  "goat-skills",
- "goat-tool-echo",
+ "goat-tool-fs",
  "goat-tool-shell",
  "goat-tool-skill",
  "goat-types",
@@ -989,6 +1013,7 @@ dependencies = [
  "futures",
  "goat-bus",
  "goat-channel",
+ "goat-command",
  "goat-llm",
  "goat-persona",
  "goat-render",
@@ -1018,6 +1043,7 @@ name = "goat-channel"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "goat-command",
  "goat-types",
  "inventory",
  "serde",
@@ -1037,6 +1063,7 @@ dependencies = [
  "chrono",
  "futures",
  "goat-channel",
+ "goat-command",
  "goat-types",
  "inventory",
  "serde",
@@ -1059,6 +1086,7 @@ dependencies = [
  "chrono",
  "futures",
  "goat-channel",
+ "goat-command",
  "goat-types",
  "inventory",
  "serde",
@@ -1067,6 +1095,34 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "goat-command"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "inventory",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "goat-command-skill"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "goat-command",
+ "goat-skills",
+ "goat-types",
+ "inventory",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1309,12 +1365,14 @@ dependencies = [
  "goat-brain",
  "goat-bus",
  "goat-channel",
+ "goat-command",
  "goat-config",
  "goat-credentials",
  "goat-llm",
  "goat-persona",
  "goat-plugin",
  "goat-render",
+ "goat-skills",
  "goat-store",
  "goat-tool",
  "goat-types",
@@ -1370,13 +1428,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "goat-tool-echo"
+name = "goat-tool-fs"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "globset",
  "goat-tool",
+ "goat-types",
  "inventory",
+ "regex",
+ "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
+ "walkdir",
 ]
 
 [[package]]
@@ -1413,6 +1478,7 @@ name = "goat-types"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "goat-command",
  "serde",
  "serde_json",
  "uuid",
@@ -2613,6 +2679,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "regex"
+version = "1.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
 ]
 
 [[package]]

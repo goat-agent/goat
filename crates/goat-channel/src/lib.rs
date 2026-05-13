@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use goat_command::CommandSpec;
 use goat_types::{
     ChannelId, ConversationId, IncomingMessage, InstanceId, MessageId, OutgoingBody, PersonaId,
 };
@@ -35,6 +36,7 @@ pub type ChannelResult<T> = Result<T, ChannelError>;
 pub struct ChannelBinding {
     pub instance: InstanceId,
     pub config: serde_json::Value,
+    pub commands: Vec<CommandSpec>,
 }
 
 #[derive(Clone, Debug)]

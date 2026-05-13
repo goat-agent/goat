@@ -208,14 +208,14 @@ mod tests {
                 role: Role::Assistant,
                 content: vec![ContentPart::ToolCall {
                     id: "call_1".into(),
-                    name: "echo_echo".into(),
+                    name: "echo".into(),
                     arguments: json!({"x": 1}),
                 }],
             }],
             max_tokens: 64,
             temperature: Some(0.5),
             tools: vec![ToolSpec {
-                name: "echo_echo".into(),
+                name: "echo".into(),
                 description: "Echo".into(),
                 input_schema: json!({"type":"object"}),
             }],
@@ -225,10 +225,10 @@ mod tests {
         assert!(v.get("max_tokens").is_none());
         assert_eq!(v["temperature"], 0.5);
         assert_eq!(v["stream_options"]["include_usage"], true);
-        assert_eq!(v["tools"][0]["function"]["name"], "echo_echo");
+        assert_eq!(v["tools"][0]["function"]["name"], "echo");
         assert_eq!(
             v["messages"][1]["tool_calls"][0]["function"]["name"],
-            "echo_echo"
+            "echo"
         );
     }
 }

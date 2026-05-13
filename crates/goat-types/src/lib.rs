@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::fmt;
 
 use chrono::{DateTime, Utc};
+use goat_command::CommandCall;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -151,6 +152,7 @@ pub struct IncomingMessage {
     pub from: UserHandle,
     pub text: String,
     pub attachments: Vec<Attachment>,
+    pub command: Option<CommandCall>,
     pub ts: DateTime<Utc>,
     pub raw: serde_json::Value,
 }
@@ -164,6 +166,7 @@ pub enum OutgoingBody {
 }
 
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 #[non_exhaustive]
 pub enum Event {
     Incoming(IncomingMessage),
@@ -210,6 +213,7 @@ mod tests {
             },
             text: "hi".into(),
             attachments: vec![],
+            command: None,
             ts: Utc::now(),
             raw: serde_json::Value::Null,
         };

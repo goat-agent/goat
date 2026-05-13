@@ -1,5 +1,5 @@
 [package]
-name = "goat-tool-echo"
+name = "goat-tool-fs"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -9,5 +9,14 @@ authors.workspace = true
 [dependencies]
 goat-tool   = { workspace = true }
 async-trait = { workspace = true }
+serde       = { workspace = true }
 serde_json  = { workspace = true }
 inventory   = { workspace = true }
+walkdir     = { workspace = true }
+globset     = { workspace = true }
+regex       = { workspace = true }
+
+[dev-dependencies]
+goat-types = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true }

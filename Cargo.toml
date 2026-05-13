@@ -14,6 +14,8 @@ goat-types              = { path = "crates/goat-types" }
 goat-bus                = { path = "crates/goat-bus" }
 goat-store              = { path = "crates/goat-store" }
 goat-config             = { path = "crates/goat-config" }
+goat-command            = { path = "crates/goat-command" }
+goat-command-skill      = { path = "crates/goat-command-skill" }
 goat-llm                = { path = "crates/goat-llm" }
 goat-llm-anthropic      = { path = "crates/goat-llm-anthropic" }
 goat-llm-openai         = { path = "crates/goat-llm-openai" }
@@ -26,7 +28,7 @@ goat-channel-discord    = { path = "crates/goat-channel-discord" }
 goat-render             = { path = "crates/goat-render" }
 goat-plugin             = { path = "crates/goat-plugin" }
 goat-tool               = { path = "crates/goat-tool" }
-goat-tool-echo          = { path = "crates/goat-tool-echo" }
+goat-tool-fs            = { path = "crates/goat-tool-fs" }
 goat-tool-shell         = { path = "crates/goat-tool-shell" }
 goat-tool-skill         = { path = "crates/goat-tool-skill" }
 goat-brain              = { path = "crates/goat-brain" }
@@ -70,6 +72,9 @@ bytes                   = "1"
 chrono                  = { version = "0.4", features = ["serde"] }
 uuid                    = { version = "1", features = ["v4", "v5", "serde"] }
 url                     = { version = "2", features = ["serde"] }
+walkdir                 = "2"
+globset                 = "0.4"
+regex                   = "1"
 
 # http
 reqwest                 = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
@@ -111,9 +116,10 @@ goat-llm-zhipu     = { workspace = true }
 goat-llm-gemini    = { workspace = true }
 goat-channel-telegram = { workspace = true }
 goat-channel-discord  = { workspace = true }
-goat-tool-echo     = { workspace = true }
+goat-tool-fs       = { workspace = true }
 goat-tool-shell    = { workspace = true }
 goat-tool-skill    = { workspace = true }
+goat-command-skill  = { workspace = true }
 tokio           = { workspace = true }
 anyhow          = { workspace = true }
 clap            = { version = "4", features = ["derive"] }
