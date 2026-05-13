@@ -91,6 +91,11 @@ pub struct SentRef {
     pub raw: serde_json::Value,
 }
 
+pub struct ChannelTurn {
+    pub reply_to: Option<MessageId>,
+    pub typing: TypingGuard,
+}
+
 pub type BindOutput = (Arc<dyn ChannelHandle>, mpsc::Receiver<IncomingMessage>);
 
 #[async_trait]
@@ -122,6 +127,13 @@ pub trait ChannelHandle: Send + Sync + 'static {
     async fn edit(&self, sent: &SentRef, body: OutgoingBody) -> ChannelResult<()>;
 
     async fn typing(&self, conv: &ConversationId) -> ChannelResult<TypingGuard>;
+
+    async fn prepare_turn(&self, msg: &IncomingMessage) -> ChannelResult<ChannelTurn> {
+        Ok(ChannelTurn {
+            reply_to: Some(msg.id.clone()),
+            typing: self.typing(&msg.conversation).await?,
+        })
+    }
 }
 
 pub struct ChannelFactory {

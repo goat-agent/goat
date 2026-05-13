@@ -16,6 +16,7 @@ use twilight_model::application::interaction::{
 use twilight_model::gateway::event::Event;
 use twilight_model::http::interaction::{InteractionResponse, InteractionResponseType};
 
+use crate::interaction::{InteractionState, PendingInteraction};
 use crate::ID;
 
 pub(crate) async fn gateway_loop(
@@ -25,6 +26,7 @@ pub(crate) async fn gateway_loop(
     instance: InstanceId,
     tx: mpsc::Sender<IncomingMessage>,
     commands: Vec<CommandSpec>,
+    interactions: Arc<InteractionState>,
 ) {
     let events = EventTypeFlags::MESSAGE_CREATE | EventTypeFlags::INTERACTION_CREATE;
     loop {
@@ -83,10 +85,15 @@ pub(crate) async fn gateway_loop(
                 }
             }
             Ok(Event::InteractionCreate(ic)) => {
-                let Some(msg) = interaction_to_incoming(&ic, persona, instance, &commands) else {
+                let Some((msg, pending)) =
+                    interaction_to_incoming(&ic, persona, instance, &commands)
+                else {
                     continue;
                 };
-                acknowledge_interaction(http.clone(), &ic).await;
+                if !acknowledge_interaction(http.clone(), &ic).await {
+                    continue;
+                }
+                interactions.insert_pending(msg.id.clone(), pending).await;
                 if tx.send(msg).await.is_err() {
                     warn!("discord receiver dropped");
                     return;
@@ -101,17 +108,21 @@ pub(crate) async fn gateway_loop(
 async fn acknowledge_interaction(
     http: Arc<HttpClient>,
     interaction: &twilight_model::gateway::payload::incoming::InteractionCreate,
-) {
+) -> bool {
     let response = InteractionResponse {
         kind: InteractionResponseType::DeferredChannelMessageWithSource,
         data: None,
     };
-    if let Err(e) = http
+    match http
         .interaction(interaction.application_id)
         .create_response(interaction.id, &interaction.token, &response)
         .await
     {
-        warn!(error = ?e, "discord interaction acknowledgement failed");
+        Ok(_) => true,
+        Err(e) => {
+            warn!(error = ?e, "discord interaction acknowledgement failed");
+            false
+        }
     }
 }
 
@@ -120,7 +131,7 @@ fn interaction_to_incoming(
     persona: PersonaId,
     instance: InstanceId,
     commands: &[CommandSpec],
-) -> Option<IncomingMessage> {
+) -> Option<(IncomingMessage, PendingInteraction)> {
     let data = match interaction.data.as_ref()? {
         InteractionData::ApplicationCommand(data) => data,
         _ => return None,
@@ -144,34 +155,42 @@ fn interaction_to_incoming(
         None => format!("dm:{}", channel_id),
     };
     let author = interaction.author()?;
-    Some(IncomingMessage {
-        id: MessageId(interaction.id.to_string()),
-        persona,
-        conversation: ConversationId::new(ID.clone(), instance, external),
-        from: UserHandle {
-            external: author.id.to_string(),
-            display: Some(author.name.clone()),
+    let pending = PendingInteraction {
+        application_id: interaction.application_id,
+        token: interaction.token.clone(),
+        channel_id,
+    };
+    Some((
+        IncomingMessage {
+            id: MessageId(interaction.id.to_string()),
+            persona,
+            conversation: ConversationId::new(ID.clone(), instance, external),
+            from: UserHandle {
+                external: author.id.to_string(),
+                display: Some(author.name.clone()),
+            },
+            text: command_text(&CommandCall::new(
+                interaction.id.to_string(),
+                CommandName::new(spec.name.as_str().to_string()).ok()?,
+                args.to_string(),
+                serde_json::json!({ "platform": "discord", "command": data.name }),
+            )),
+            attachments: Vec::new(),
+            command: Some(CommandCall::new(
+                interaction.id.to_string(),
+                CommandName::new(spec.name.as_str().to_string()).ok()?,
+                args.to_string(),
+                serde_json::json!({ "platform": "discord", "command": data.name }),
+            )),
+            ts: Utc::now(),
+            raw: serde_json::json!({
+                "interaction_id": interaction.id.to_string(),
+                "channel_id": channel_id.to_string(),
+                "guild_id": interaction.guild_id.map(|g| g.to_string()),
+            }),
         },
-        text: command_text(&CommandCall::new(
-            interaction.id.to_string(),
-            CommandName::new(spec.name.as_str().to_string()).ok()?,
-            args.to_string(),
-            serde_json::json!({ "platform": "discord", "command": data.name }),
-        )),
-        attachments: Vec::new(),
-        command: Some(CommandCall::new(
-            interaction.id.to_string(),
-            CommandName::new(spec.name.as_str().to_string()).ok()?,
-            args.to_string(),
-            serde_json::json!({ "platform": "discord", "command": data.name }),
-        )),
-        ts: Utc::now(),
-        raw: serde_json::json!({
-            "interaction_id": interaction.id.to_string(),
-            "channel_id": channel_id.to_string(),
-            "guild_id": interaction.guild_id.map(|g| g.to_string()),
-        }),
-    })
+        pending,
+    ))
 }
 
 pub(crate) fn discord_command_name(skill_name: &str) -> Option<String> {
