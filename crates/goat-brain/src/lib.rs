@@ -126,7 +126,9 @@ impl Brain {
             })
             .cloned()
             .ok_or_else(|| anyhow!("no channel handle for {:?}", msg.conversation))?;
-        let _typing = handle.typing(&msg.conversation).await?;
+        let turn = handle.prepare_turn(&msg).await?;
+        let reply_to = turn.reply_to.clone();
+        let _typing = turn.typing;
 
         self.store
             .append_incoming(&msg)
@@ -146,7 +148,7 @@ impl Brain {
                         .render(
                             handle,
                             msg.conversation.clone(),
-                            Some(msg.id.clone()),
+                            reply_to.clone(),
                             text_stream(self.default_model.clone(), text),
                         )
                         .await?;
@@ -178,12 +180,7 @@ impl Brain {
         }
 
         let summary = self
-            .complete_with_tools(
-                handle,
-                msg.conversation.clone(),
-                Some(msg.id.clone()),
-                &mut messages,
-            )
+            .complete_with_tools(handle, msg.conversation.clone(), reply_to, &mut messages)
             .await?;
 
         if !summary.final_text.is_empty() {

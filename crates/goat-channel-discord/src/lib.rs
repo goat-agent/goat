@@ -2,6 +2,7 @@ mod channel;
 mod config;
 mod handle;
 mod inbound;
+mod interaction;
 
 use std::sync::Arc;
 use std::time::Duration;

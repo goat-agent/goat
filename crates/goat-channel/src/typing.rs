@@ -16,6 +16,10 @@ impl TypingGuard {
     pub fn noop() -> Self {
         Self { stop: None }
     }
+
+    pub fn is_noop(&self) -> bool {
+        self.stop.is_none()
+    }
 }
 
 impl Drop for TypingGuard {
