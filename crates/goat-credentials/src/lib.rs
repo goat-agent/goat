@@ -1,219 +1,302 @@
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
-use goat_llm::{KeyProvider, PooledKey, ProviderId};
-use serde::Deserialize;
-use thiserror::Error;
-use tracing::warn;
+use goat_llm::{CredentialEntry, CredentialError, CredentialStore, ProviderId};
+use serde_json::Value;
 
-#[derive(Debug, Error)]
-pub enum CredentialsError {
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("json: {0}")]
-    Json(#[from] serde_json::Error),
+pub struct JsonFileStore {
+    path: PathBuf,
+    write_lock: Mutex<()>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct CredentialEntry {
-    #[serde(default)]
-    pub label: Option<String>,
-    #[serde(default)]
-    pub api_key: Option<String>,
-}
-
-#[derive(Debug, Default)]
-pub struct Credentials {
-    pub llm: HashMap<ProviderId, Vec<CredentialEntry>>,
-}
-
-impl Credentials {
-    pub fn load(path: &Path) -> Result<Self, CredentialsError> {
-        if !path.exists() {
-            return Ok(Self::default());
+impl JsonFileStore {
+    pub fn open(path: PathBuf) -> Result<Self, CredentialError> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
         }
-        let raw = std::fs::read_to_string(path)?;
-        let map: HashMap<String, Vec<serde_json::Value>> = serde_json::from_str(&raw)?;
-        let mut llm = HashMap::new();
-        for (name, entries) in map {
-            let provider = ProviderId::new(name);
-            let parsed: Vec<CredentialEntry> = entries
-                .into_iter()
-                .filter_map(|v| serde_json::from_value(v).ok())
-                .collect();
-            llm.insert(provider, parsed);
+        Ok(Self {
+            path,
+            write_lock: Mutex::new(()),
+        })
+    }
+
+    pub fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
+    fn read_all(&self) -> Result<BTreeMap<String, Vec<Value>>, CredentialError> {
+        if !self.path.exists() {
+            return Ok(BTreeMap::new());
         }
-        Ok(Self { llm })
+        let raw = fs::read_to_string(&self.path)?;
+        if raw.trim().is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        Ok(serde_json::from_str(&raw)?)
+    }
+
+    fn write_all(&self, map: &BTreeMap<String, Vec<Value>>) -> Result<(), CredentialError> {
+        let raw = serde_json::to_string_pretty(map)?;
+        let parent = self.path.parent().ok_or_else(|| {
+            CredentialError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "credentials path has no parent",
+            ))
+        })?;
+        fs::create_dir_all(parent)?;
+        let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+        tmp.write_all(raw.as_bytes())?;
+        tmp.flush()?;
+        tmp.persist(&self.path)
+            .map_err(|e| CredentialError::Io(e.error))?;
+        Ok(())
     }
 }
 
-pub struct KeyPool {
-    state: Mutex<HashMap<ProviderId, ProviderState>>,
+fn entry_label(v: &Value) -> Option<String> {
+    v.get("label").and_then(|l| match l {
+        Value::String(s) => Some(s.clone()),
+        _ => None,
+    })
 }
 
-struct ProviderState {
-    keys: Vec<KeyState>,
-    next: usize,
+fn matches(v: &Value, label: Option<&str>) -> bool {
+    let entry_l = entry_label(v);
+    match (label, entry_l) {
+        (Some(want), Some(got)) => want == got.as_str(),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
-#[derive(Debug, Clone)]
-struct KeyState {
-    api_key: String,
-    label: Option<String>,
-    cooldown_until: Option<Instant>,
-}
-
-impl KeyPool {
-    pub fn from_credentials(creds: &Credentials) -> Self {
-        let mut state: HashMap<ProviderId, ProviderState> = HashMap::new();
-        for (provider, entries) in &creds.llm {
-            let keys: Vec<KeyState> = entries
-                .iter()
-                .filter_map(|e| {
-                    e.api_key.clone().map(|api_key| KeyState {
-                        api_key,
-                        label: e.label.clone(),
-                        cooldown_until: None,
-                    })
-                })
-                .collect();
-            if !keys.is_empty() {
-                state.insert(provider.clone(), ProviderState { keys, next: 0 });
+fn inject_label(mut value: Value, label: Option<&str>) -> Value {
+    if let Value::Object(map) = &mut value {
+        match label {
+            Some(l) => {
+                map.insert("label".to_string(), Value::String(l.to_string()));
+            }
+            None => {
+                map.insert("label".to_string(), Value::Null);
             }
         }
-        Self {
-            state: Mutex::new(state),
-        }
     }
+    value
+}
 
-    pub fn empty() -> Self {
-        Self {
-            state: Mutex::new(HashMap::new()),
-        }
-    }
-
-    pub fn next(&self, provider: ProviderId) -> Option<PooledKey> {
-        let mut guard = self.state.lock().ok()?;
-        let prov = guard.get_mut(&provider)?;
-        if prov.keys.is_empty() {
-            return None;
-        }
-        let now = Instant::now();
-        let n = prov.keys.len();
-        for _ in 0..n {
-            let idx = prov.next % n;
-            prov.next = (prov.next + 1) % n;
-            let k = &prov.keys[idx];
-            if k.cooldown_until.map(|until| until <= now).unwrap_or(true) {
-                return Some(PooledKey {
-                    api_key: k.api_key.clone(),
-                    label: k.label.clone(),
-                });
-            }
-        }
-        None
-    }
-
-    pub fn report_429(&self, provider: ProviderId, api_key: &str, retry_after: Option<Duration>) {
-        let Ok(mut guard) = self.state.lock() else {
-            return;
+impl CredentialStore for JsonFileStore {
+    fn list(&self, provider: ProviderId) -> Vec<CredentialEntry> {
+        let Ok(map) = self.read_all() else {
+            return Vec::new();
         };
-        let Some(prov) = guard.get_mut(&provider) else {
-            return;
+        let Some(entries) = map.get(provider.as_str()) else {
+            return Vec::new();
         };
-        let cooldown = retry_after.unwrap_or(Duration::from_secs(30));
-        let until = Instant::now() + cooldown;
-        for k in prov.keys.iter_mut() {
-            if k.api_key == api_key {
-                k.cooldown_until = Some(until);
-                warn!(
-                    provider = %provider,
-                    label = ?k.label,
-                    secs = cooldown.as_secs(),
-                    "key cooled down after 429",
-                );
-                return;
-            }
+        entries
+            .iter()
+            .cloned()
+            .map(|raw| CredentialEntry {
+                label: entry_label(&raw),
+                raw,
+            })
+            .collect()
+    }
+
+    fn read(&self, provider: ProviderId, label: Option<&str>) -> Option<Value> {
+        let map = self.read_all().ok()?;
+        let entries = map.get(provider.as_str())?;
+        entries.iter().find(|v| matches(v, label)).cloned()
+    }
+
+    fn write(
+        &self,
+        provider: ProviderId,
+        label: Option<&str>,
+        value: Value,
+    ) -> Result<(), CredentialError> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.read_all()?;
+        let value = inject_label(value, label);
+        let entries = map.entry(provider.as_str().to_string()).or_default();
+        if let Some(slot) = entries.iter_mut().find(|v| matches(v, label)) {
+            *slot = value;
+        } else {
+            entries.push(value);
         }
-    }
-}
-
-impl KeyProvider for KeyPool {
-    fn next(&self, provider: ProviderId) -> Option<PooledKey> {
-        KeyPool::next(self, provider)
+        self.write_all(&map)
     }
 
-    fn report_429(&self, provider: ProviderId, api_key: &str, retry_after: Option<Duration>) {
-        KeyPool::report_429(self, provider, api_key, retry_after);
+    fn remove(&self, provider: ProviderId, label: Option<&str>) -> Result<(), CredentialError> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.read_all()?;
+        let Some(entries) = map.get_mut(provider.as_str()) else {
+            return Err(CredentialError::NotFound);
+        };
+        let before = entries.len();
+        entries.retain(|v| !matches(v, label));
+        if entries.len() == before {
+            return Err(CredentialError::NotFound);
+        }
+        if entries.is_empty() {
+            map.remove(provider.as_str());
+        }
+        self.write_all(&map)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn pool_of(provider: ProviderId, keys: &[&str]) -> KeyPool {
-        let creds = Credentials {
-            llm: HashMap::from([(
-                provider,
-                keys.iter()
-                    .map(|k| CredentialEntry {
-                        label: None,
-                        api_key: Some((*k).to_string()),
-                    })
-                    .collect(),
-            )]),
-        };
-        KeyPool::from_credentials(&creds)
-    }
+    use serde_json::json;
+    use std::sync::Arc;
 
     const OPENAI: ProviderId = ProviderId::from_static("openai");
+    const CODEX: ProviderId = ProviderId::from_static("codex");
 
-    #[test]
-    fn round_robin_visits_each_key() {
-        let pool = pool_of(OPENAI, &["k1", "k2", "k3"]);
-        let a = pool.next(OPENAI).unwrap().api_key;
-        let b = pool.next(OPENAI).unwrap().api_key;
-        let c = pool.next(OPENAI).unwrap().api_key;
-        let d = pool.next(OPENAI).unwrap().api_key;
-        assert_eq!(a, "k1");
-        assert_eq!(b, "k2");
-        assert_eq!(c, "k3");
-        assert_eq!(d, "k1");
+    fn setup() -> (tempfile::TempDir, JsonFileStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        let store = JsonFileStore::open(path).unwrap();
+        (dir, store)
     }
 
     #[test]
-    fn cooldown_skips_key() {
-        let pool = pool_of(OPENAI, &["k1", "k2"]);
-        pool.report_429(OPENAI, "k1", Some(Duration::from_secs(60)));
-        let a = pool.next(OPENAI).unwrap().api_key;
-        let b = pool.next(OPENAI).unwrap().api_key;
-        assert_eq!(a, "k2");
-        assert_eq!(b, "k2");
+    fn write_read_roundtrip() {
+        let (_d, store) = setup();
+        store
+            .write(OPENAI, None, json!({ "api_key": "sk-1" }))
+            .unwrap();
+        let got = store.read(OPENAI, None).unwrap();
+        assert_eq!(got["api_key"], "sk-1");
+        assert!(got["label"].is_null());
     }
 
     #[test]
-    fn empty_pool_returns_none() {
-        let pool = KeyPool::empty();
-        assert!(pool.next(OPENAI).is_none());
+    fn label_match_four_cases() {
+        let (_d, store) = setup();
+        store
+            .write(OPENAI, None, json!({ "api_key": "k0" }))
+            .unwrap();
+        store
+            .write(OPENAI, Some("work"), json!({ "api_key": "k1" }))
+            .unwrap();
+
+        // Some matches
+        assert_eq!(store.read(OPENAI, Some("work")).unwrap()["api_key"], "k1");
+        // Some no match
+        assert!(store.read(OPENAI, Some("missing")).is_none());
+        // None matches null-label
+        assert_eq!(store.read(OPENAI, None).unwrap()["api_key"], "k0");
+        // None no match (provider absent)
+        assert!(store
+            .read(ProviderId::from_static("gemini"), None)
+            .is_none());
     }
 
     #[test]
-    fn parses_credentials_json() {
-        let json = r#"{
-            "openai": [
-                { "api_key": "sk-1" },
-                { "api_key": "sk-2", "label": "work" }
-            ],
-            "google": [
-                { "refresh_token": "rt", "client_id": "ci", "client_secret": "cs" }
-            ]
-        }"#;
-        let map: HashMap<String, Vec<CredentialEntry>> = serde_json::from_str(json).unwrap();
-        assert_eq!(map["openai"].len(), 2);
-        assert_eq!(map["openai"][1].api_key.as_deref(), Some("sk-2"));
-        assert_eq!(map["openai"][1].label.as_deref(), Some("work"));
+    fn list_returns_all_provider_entries() {
+        let (_d, store) = setup();
+        store
+            .write(OPENAI, None, json!({ "api_key": "k0" }))
+            .unwrap();
+        store
+            .write(OPENAI, Some("work"), json!({ "api_key": "k1" }))
+            .unwrap();
+        let entries = store.list(OPENAI);
+        assert_eq!(entries.len(), 2);
+        let labels: Vec<_> = entries.iter().map(|e| e.label.clone()).collect();
+        assert!(labels.contains(&None));
+        assert!(labels.contains(&Some("work".to_string())));
+    }
+
+    #[test]
+    fn write_replaces_same_label() {
+        let (_d, store) = setup();
+        store
+            .write(OPENAI, Some("work"), json!({ "api_key": "old" }))
+            .unwrap();
+        store
+            .write(OPENAI, Some("work"), json!({ "api_key": "new" }))
+            .unwrap();
+        let entries = store.list(OPENAI);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].raw["api_key"], "new");
+    }
+
+    #[test]
+    fn remove_then_not_found() {
+        let (_d, store) = setup();
+        store
+            .write(OPENAI, None, json!({ "api_key": "k0" }))
+            .unwrap();
+        store.remove(OPENAI, None).unwrap();
+        assert!(store.read(OPENAI, None).is_none());
+        assert!(matches!(
+            store.remove(OPENAI, None),
+            Err(CredentialError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn remove_drops_empty_provider() {
+        let (_d, store) = setup();
+        store
+            .write(OPENAI, None, json!({ "api_key": "k0" }))
+            .unwrap();
+        store.remove(OPENAI, None).unwrap();
+        assert!(store.list(OPENAI).is_empty());
+    }
+
+    #[test]
+    fn multi_provider_isolated() {
+        let (_d, store) = setup();
+        store
+            .write(OPENAI, None, json!({ "api_key": "sk-o" }))
+            .unwrap();
+        store
+            .write(CODEX, None, json!({ "access_token": "tk" }))
+            .unwrap();
+        assert_eq!(store.read(OPENAI, None).unwrap()["api_key"], "sk-o");
+        assert_eq!(store.read(CODEX, None).unwrap()["access_token"], "tk");
+    }
+
+    #[test]
+    fn legacy_schema_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        std::fs::write(
+            &path,
+            r#"{"openai":[{"api_key":"sk-legacy","label":"work"}]}"#,
+        )
+        .unwrap();
+        let store = JsonFileStore::open(path).unwrap();
+        let got = store.read(OPENAI, Some("work")).unwrap();
+        assert_eq!(got["api_key"], "sk-legacy");
+    }
+
+    #[test]
+    fn concurrent_writes_serialize() {
+        use std::thread;
+        let (_d, store) = setup();
+        let store = Arc::new(store);
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let s = store.clone();
+            handles.push(thread::spawn(move || {
+                s.write(
+                    OPENAI,
+                    Some(&format!("k{i}")),
+                    serde_json::json!({ "api_key": format!("sk-{i}") }),
+                )
+                .unwrap();
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let entries = store.list(OPENAI);
+        assert_eq!(entries.len(), 10);
     }
 }
