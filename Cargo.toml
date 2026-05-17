@@ -70,8 +70,14 @@ tracing-appender        = "0.2"
 # misc
 bytes                   = "1"
 tempfile                = "3"
+rand                    = "0.8"
+sha2                    = "0.10"
+base64                  = "0.22"
+tiny_http               = "0.12"
+urlencoding             = "2"
+open                    = "5"
 chrono                  = { version = "0.4", features = ["serde"] }
-uuid                    = { version = "1", features = ["v4", "v5", "serde"] }
+uuid                    = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 url                     = { version = "2", features = ["serde"] }
 walkdir                 = "2"
 globset                 = "0.4"
