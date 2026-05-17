@@ -40,6 +40,15 @@ impl InstanceId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
+
+    /// Deterministic instance id derived from a slug, so the same
+    /// `(persona, channel, binding)` triple resolves to the same id
+    /// across daemon restarts. This is the identifier that gets
+    /// persisted in conversation rows; using a stable id lets scheduled
+    /// tasks survive a restart.
+    pub fn from_slug(slug: &str) -> Self {
+        Self(Uuid::new_v5(&GOAT_NAMESPACE, slug.as_bytes()))
+    }
 }
 
 impl Default for InstanceId {
@@ -228,14 +237,25 @@ pub enum OutgoingBody {
 
 #[derive(Clone, Debug)]
 #[non_exhaustive]
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     Incoming(IncomingMessage),
+    /// Emitted by the runtime's tick loop when a scheduled task's run is
+    /// due and has been atomically claimed. The receiving brain is expected
+    /// to execute the run in a fresh, isolated LLM context and finalise the
+    /// matching `task_runs` row.
+    SelfTick {
+        persona: PersonaId,
+        run_id: i64,
+        task_id: i64,
+    },
 }
 
 impl Event {
     pub fn persona(&self) -> PersonaId {
         match self {
             Event::Incoming(m) => m.persona,
+            Event::SelfTick { persona, .. } => *persona,
         }
     }
 }
