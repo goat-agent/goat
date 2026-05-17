@@ -22,6 +22,7 @@ goat-llm-openai         = { path = "crates/goat-llm-openai" }
 goat-llm-moonshot       = { path = "crates/goat-llm-moonshot" }
 goat-llm-zhipu          = { path = "crates/goat-llm-zhipu" }
 goat-llm-gemini         = { path = "crates/goat-llm-gemini" }
+goat-llm-codex          = { path = "crates/goat-llm-codex" }
 goat-channel            = { path = "crates/goat-channel" }
 goat-channel-telegram   = { path = "crates/goat-channel-telegram" }
 goat-channel-discord    = { path = "crates/goat-channel-discord" }
@@ -121,6 +122,7 @@ goat-llm-openai    = { workspace = true }
 goat-llm-moonshot  = { workspace = true }
 goat-llm-zhipu     = { workspace = true }
 goat-llm-gemini    = { workspace = true }
+goat-llm-codex     = { workspace = true }
 goat-channel-telegram = { workspace = true }
 goat-channel-discord  = { workspace = true }
 goat-tool-fs       = { workspace = true }
