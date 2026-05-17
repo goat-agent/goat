@@ -69,6 +69,7 @@ tracing-appender        = "0.2"
 
 # misc
 bytes                   = "1"
+tempfile                = "3"
 chrono                  = { version = "0.4", features = ["serde"] }
 uuid                    = { version = "1", features = ["v4", "v5", "serde"] }
 url                     = { version = "2", features = ["serde"] }
