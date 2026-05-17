@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use clap::Subcommand;
 use goat_channel::ChannelFactory;
 use goat_config::GoatPaths;
-use goat_llm::{LlmProviderFactory, Model, ModelInfo, ProviderId};
+use goat_llm::{LlmProviderSpec, Model, ModelInfo, ProviderId};
 use serde_json::json;
 
 use super::ui::{self, Footer, Style, Table};
@@ -108,7 +108,7 @@ fn pick_model() -> Result<Model> {
 }
 
 fn pick_model_custom() -> Result<Model> {
-    let mut items: Vec<(ProviderId, String)> = inventory::iter::<LlmProviderFactory>()
+    let mut items: Vec<(ProviderId, String)> = inventory::iter::<LlmProviderSpec>()
         .map(|f| (f.id.clone(), f.id.as_str().to_string()))
         .collect();
     items.sort_by(|a, b| a.1.cmp(&b.1));

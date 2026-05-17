@@ -5,39 +5,16 @@ pub mod setup;
 pub mod skill;
 pub mod ui;
 
-use std::path::Path;
+use goat_llm::{SetupError, UserPrompt};
 
-use anyhow::Result;
+pub struct CliPrompt;
 
-pub fn edit_credentials<F: FnOnce(&mut serde_json::Map<String, serde_json::Value>)>(
-    path: &Path,
-    f: F,
-) -> Result<()> {
-    let mut map = if path.exists() {
-        let raw = std::fs::read_to_string(path)?;
-        if raw.trim().is_empty() {
-            serde_json::Map::new()
-        } else {
-            serde_json::from_str(&raw)?
-        }
-    } else {
-        serde_json::Map::new()
-    };
-    f(&mut map);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+impl UserPrompt for CliPrompt {
+    fn secret(&self, label: &str, _hint: &str) -> Result<String, SetupError> {
+        ui::secret(label).map_err(|e| SetupError::Other(e.to_string()))
     }
-    let pretty = serde_json::to_string_pretty(&serde_json::Value::Object(map))?;
-    std::fs::write(path, format!("{pretty}\n"))?;
-    Ok(())
-}
 
-pub fn mask_key(key: &str) -> String {
-    let n = key.chars().count();
-    if n <= 8 {
-        return "·".repeat(n);
+    fn info(&self, message: &str) {
+        ui::line(message);
     }
-    let head: String = key.chars().take(4).collect();
-    let tail: String = key.chars().skip(n - 4).collect();
-    format!("{head}…{tail}")
 }
