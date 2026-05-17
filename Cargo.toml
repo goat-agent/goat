@@ -32,6 +32,7 @@ goat-tool               = { path = "crates/goat-tool" }
 goat-tool-fs            = { path = "crates/goat-tool-fs" }
 goat-tool-shell         = { path = "crates/goat-tool-shell" }
 goat-tool-skill         = { path = "crates/goat-tool-skill" }
+goat-tool-schedule      = { path = "crates/goat-tool-schedule" }
 goat-brain              = { path = "crates/goat-brain" }
 goat-persona            = { path = "crates/goat-persona" }
 goat-runtime            = { path = "crates/goat-runtime" }
