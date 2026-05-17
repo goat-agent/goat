@@ -6,6 +6,7 @@ use goat_types::PersonaId;
 
 pub mod backoff;
 pub mod cron_expr;
+pub mod scheduler;
 
 pub use backoff::DecorrelatedJitter;
 
