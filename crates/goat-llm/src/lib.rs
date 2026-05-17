@@ -1,18 +1,22 @@
 mod chunk;
+mod credential;
+mod credentials;
 mod error;
-mod key;
 mod model;
 mod provider;
 mod request;
 mod response;
+mod setup;
 
 pub use chunk::*;
+pub use credential::*;
+pub use credentials::*;
 pub use error::*;
-pub use key::*;
 pub use model::*;
 pub use provider::*;
 pub use request::*;
 pub use response::*;
+pub use setup::*;
 
 #[cfg(test)]
 mod tests {
