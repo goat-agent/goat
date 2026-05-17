@@ -19,8 +19,28 @@ enum Event {
     FunctionArgsDelta { delta: String },
     #[serde(rename = "response.completed")]
     Completed { response: CompletedResponse },
+    #[serde(rename = "response.error")]
+    Error { error: ErrorDetail },
+    #[serde(rename = "response.failed")]
+    Failed { response: FailedResponse },
     #[serde(other)]
     Other,
+}
+
+#[derive(Deserialize)]
+struct ErrorDetail {
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    code: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FailedResponse {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    error: Option<ErrorDetail>,
 }
 
 #[derive(Deserialize)]
@@ -55,6 +75,14 @@ struct UsageWire {
     input_tokens: Option<u32>,
     #[serde(default)]
     output_tokens: Option<u32>,
+}
+
+fn format_error(prefix: &str, detail: &ErrorDetail) -> String {
+    let message = detail.message.as_deref().unwrap_or("unknown");
+    match detail.code.as_deref() {
+        Some(code) => format!("{prefix}: {message} ({code})"),
+        None => format!("{prefix}: {message}"),
+    }
 }
 
 pub(crate) fn translate<S>(stream: S) -> LlmStream
@@ -147,6 +175,23 @@ where
                         _ if tool_open => StopReason::ToolUse,
                         _ => StopReason::EndTurn,
                     });
+                }
+                Event::Error { error } => {
+                    let msg = format_error("codex stream error", &error);
+                    yield Err(LlmError::Provider(msg));
+                    return;
+                }
+                Event::Failed { response } => {
+                    let status = response.status.as_deref().unwrap_or("failed");
+                    let msg = match response.error {
+                        Some(detail) => format_error(
+                            &format!("codex response failed ({status})"),
+                            &detail,
+                        ),
+                        None => format!("codex response failed: status={status}"),
+                    };
+                    yield Err(LlmError::Provider(msg));
+                    return;
                 }
                 Event::Other => {}
             }

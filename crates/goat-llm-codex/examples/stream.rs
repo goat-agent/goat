@@ -17,7 +17,9 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow!("codex spec not registered (forgot extern?)"))?;
     let provider = (spec.build)(store);
 
-    let model_id = std::env::args().nth(1).unwrap_or_else(|| "gpt-5-codex".into());
+    let model_id = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "gpt-5-codex".into());
     eprintln!("model: {model_id}");
     let model = Model::new(goat_llm_codex::ID, model_id);
     let mut req = LlmRequest::new(model);
