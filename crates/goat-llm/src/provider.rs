@@ -5,12 +5,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::Stream;
+use serde_json::Value;
 
-use crate::{KeyProvider, LlmChunk, LlmError, LlmRequest};
+use crate::credentials::CredentialStore;
+use crate::setup::Setup;
+use crate::{LlmChunk, LlmError, LlmRequest};
 
 pub type LlmStream = Pin<Box<dyn Stream<Item = Result<LlmChunk, LlmError>> + Send>>;
 pub type ProbeFuture = Pin<Box<dyn Future<Output = std::result::Result<(), String>> + Send>>;
-pub type ProviderProbe = fn(String) -> ProbeFuture;
+pub type ProbeFn = fn(Value) -> ProbeFuture;
+pub type BuildFn = fn(Arc<dyn CredentialStore>) -> Arc<dyn LlmProvider>;
+pub type SummarizeFn = fn(&Value) -> String;
 
 #[async_trait]
 pub trait LlmProvider: Send + Sync + 'static {
@@ -41,10 +46,12 @@ impl std::fmt::Display for ProviderId {
     }
 }
 
-pub struct LlmProviderFactory {
+pub struct LlmProviderSpec {
     pub id: ProviderId,
-    pub ctor: fn(Arc<dyn KeyProvider>) -> Arc<dyn LlmProvider>,
-    pub probe: Option<ProviderProbe>,
+    pub build: BuildFn,
+    pub probe: Option<ProbeFn>,
+    pub setup: &'static dyn Setup,
+    pub summarize: SummarizeFn,
 }
 
-inventory::collect!(LlmProviderFactory);
+inventory::collect!(LlmProviderSpec);

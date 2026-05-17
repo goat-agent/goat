@@ -9,6 +9,7 @@ use goat_channel_discord as _;
 use goat_channel_telegram as _;
 use goat_command_skill as _;
 use goat_llm_anthropic as _;
+use goat_llm_codex as _;
 use goat_llm_gemini as _;
 use goat_llm_moonshot as _;
 use goat_llm_openai as _;

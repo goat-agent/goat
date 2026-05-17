@@ -1,5 +1,12 @@
-pub(crate) fn probe(key: String) -> goat_llm::ProbeFuture {
+use serde_json::Value;
+
+pub(crate) fn probe(v: Value) -> goat_llm::ProbeFuture {
     Box::pin(async move {
+        let key = v
+            .get("api_key")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| "no api_key field".to_string())?
+            .to_string();
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(8))
             .build()

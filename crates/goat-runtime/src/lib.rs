@@ -8,8 +8,8 @@ use goat_bus::EventBus;
 use goat_channel::{Channel, ChannelBinding, ChannelFactory, ChannelHandle};
 use goat_command::{CommandFactory, CommandProviderContext, CommandRegistry};
 use goat_config::{GoatPaths, LoadedConfig};
-use goat_credentials::KeyPool;
-use goat_llm::{KeyProvider, LlmProviderFactory};
+use goat_credentials::JsonFileStore;
+use goat_llm::{CredentialStore, LlmProviderSpec};
 use goat_persona::PersonaConfig;
 use goat_render::{DefaultStreamRenderer, StreamRenderer};
 use goat_store::{SqliteStore, Store};
@@ -64,8 +64,11 @@ impl Goat {
                 .context("open store")?,
         );
 
-        let keys: Arc<dyn KeyProvider> = Arc::new(KeyPool::from_credentials(&cfg.credentials));
-        let providers = build_provider_registry(keys);
+        let credentials: Arc<dyn CredentialStore> = Arc::new(
+            JsonFileStore::open(cfg.paths.credentials_json.clone())
+                .context("opening credentials store")?,
+        );
+        let providers = build_provider_registry(credentials);
         let channels = build_channel_registry();
         let tools = Arc::new(ToolRegistry::from_inventory());
         info!(
@@ -112,11 +115,11 @@ impl Goat {
     }
 }
 
-fn build_provider_registry(keys: Arc<dyn KeyProvider>) -> Arc<ProviderRegistry> {
+fn build_provider_registry(credentials: Arc<dyn CredentialStore>) -> Arc<ProviderRegistry> {
     let mut reg = ProviderRegistry::new();
-    for factory in inventory::iter::<LlmProviderFactory>() {
-        let provider = (factory.ctor)(keys.clone());
-        info!(provider = factory.id.as_str(), "loaded provider");
+    for spec in inventory::iter::<LlmProviderSpec>() {
+        let provider = (spec.build)(credentials.clone());
+        info!(provider = spec.id.as_str(), "loaded provider");
         reg.insert(provider);
     }
     Arc::new(reg)

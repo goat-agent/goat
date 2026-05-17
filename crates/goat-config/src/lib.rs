@@ -2,7 +2,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use goat_credentials::Credentials;
 use goat_llm::Model;
 use goat_persona::{PersonaBinding, PersonaConfig, PersonalityCard};
 use goat_types::PersonaId;
@@ -68,7 +67,6 @@ fn home_root() -> Result<PathBuf> {
 #[derive(Debug)]
 pub struct LoadedConfig {
     pub paths: GoatPaths,
-    pub credentials: Credentials,
     pub personas: Vec<PersonaConfig>,
 }
 
@@ -84,16 +82,9 @@ pub async fn load_from(paths: GoatPaths) -> Result<LoadedConfig> {
 
     migrate_legacy_db(&paths);
 
-    let credentials = Credentials::load(&paths.credentials_json)
-        .with_context(|| format!("loading {}", paths.credentials_json.display()))?;
-
     let personas = scan_personas(&paths.personas_dir).await?;
 
-    Ok(LoadedConfig {
-        paths,
-        credentials,
-        personas,
-    })
+    Ok(LoadedConfig { paths, personas })
 }
 
 fn migrate_legacy_db(paths: &GoatPaths) {

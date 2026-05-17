@@ -7,16 +7,31 @@ mod stream;
 
 use std::sync::Arc;
 
-use goat_llm::{KeyProvider, LlmProvider, LlmProviderFactory, ProviderId};
+use goat_llm::{
+    summarize_api_key, ApiKeyPool, CredentialStore, LlmProvider, LlmProviderSpec, ProviderId,
+    SecretPrompt,
+};
 
 pub use provider::GeminiProvider;
 
 pub const ID: ProviderId = ProviderId::from_static("gemini");
 
-fn from_keys(keys: Arc<dyn KeyProvider>) -> Arc<dyn LlmProvider> {
-    Arc::new(GeminiProvider::new(keys))
+fn build(store: Arc<dyn CredentialStore>) -> Arc<dyn LlmProvider> {
+    Arc::new(GeminiProvider::new(ApiKeyPool::new(store, ID)))
 }
 
+static SETUP: SecretPrompt = SecretPrompt {
+    description: "Gemini API key",
+    json_key: "api_key",
+    hint: "AIza...",
+};
+
 inventory::submit! {
-    LlmProviderFactory { id: ID, ctor: from_keys, probe: Some(diagnostics::probe) }
+    LlmProviderSpec {
+        id: ID,
+        build,
+        probe: Some(diagnostics::probe),
+        setup: &SETUP,
+        summarize: summarize_api_key,
+    }
 }

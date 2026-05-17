@@ -16,3 +16,4 @@ thiserror   = { workspace = true }
 anyhow      = { workspace = true }
 tracing     = { workspace = true }
 inventory   = { workspace = true }
+tokio       = { workspace = true }

@@ -1,8 +1,6 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use eventsource_stream::Eventsource;
-use goat_llm::{KeyProvider, LlmError, LlmProvider, LlmRequest, LlmStream, ProviderId};
+use goat_llm::{ApiKeyPool, LlmError, LlmProvider, LlmRequest, LlmStream, ProviderId};
 use reqwest::StatusCode;
 
 use crate::body::Body;
@@ -13,12 +11,12 @@ const VERSION: &str = "2023-06-01";
 const URL: &str = "https://api.anthropic.com/v1/messages";
 
 pub struct AnthropicProvider {
-    keys: Arc<dyn KeyProvider>,
+    keys: ApiKeyPool,
     http: reqwest::Client,
 }
 
 impl AnthropicProvider {
-    pub fn new(keys: Arc<dyn KeyProvider>) -> Self {
+    pub fn new(keys: ApiKeyPool) -> Self {
         Self {
             keys,
             http: reqwest::Client::new(),
@@ -35,7 +33,7 @@ impl LlmProvider for AnthropicProvider {
     async fn stream(&self, req: LlmRequest) -> Result<LlmStream, LlmError> {
         let key = self
             .keys
-            .next(crate::ID)
+            .next()
             .ok_or_else(|| LlmError::Auth("no anthropic keys available".into()))?;
         let body = Body::from(&req);
         let resp = self
@@ -54,7 +52,7 @@ impl LlmProvider for AnthropicProvider {
             let retry_after = parse_retry_after(resp.headers());
             let text = resp.text().await.unwrap_or_default();
             if status == StatusCode::TOO_MANY_REQUESTS {
-                self.keys.report_429(crate::ID, &key.api_key, retry_after);
+                self.keys.report_rate_limit(&key.api_key, retry_after);
             }
             return Err(map_error(status, retry_after, &text));
         }

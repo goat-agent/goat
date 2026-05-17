@@ -1,16 +1,18 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
 use goat_config::{GoatPaths, LoadedConfig};
-use goat_llm::{LlmProviderFactory, ModelInfo, ProviderId};
+use goat_credentials::JsonFileStore;
+use goat_llm::{CredentialStore, LlmProviderSpec, ModelInfo, ProviderId};
 use goat_skills::SkillIndex;
 
 use super::ui::{self, Footer, Style, Table};
 
 #[derive(ClapArgs, Debug, Default)]
 pub struct Args {
-    /// Probe each provider with one cheap request to confirm the key works.
+    /// Probe each provider with one cheap request to confirm the credential works.
     #[arg(long)]
     pub check: bool,
 }
@@ -20,10 +22,11 @@ pub async fn run(args: Args) -> Result<()> {
     let cfg = goat_config::load_from(paths.clone())
         .await
         .context("loading config")?;
+    let store: Arc<dyn CredentialStore> =
+        Arc::new(JsonFileStore::open(paths.credentials_json.clone())?);
 
-    let providers_with_keys = list_providers_with_keys(&cfg);
     let probes = if args.check {
-        Some(probe_all(&cfg, &providers_with_keys).await)
+        Some(probe_all(&store).await)
     } else {
         None
     };
@@ -39,7 +42,7 @@ pub async fn run(args: Args) -> Result<()> {
         ui::blank();
 
         ui::section("Providers");
-        render_providers(&cfg, &mut warnings, &mut hint);
+        render_providers(&store, &mut warnings, &mut hint);
         ui::blank();
 
         ui::section("Personas");
@@ -70,65 +73,39 @@ pub async fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-fn list_providers_with_keys(cfg: &LoadedConfig) -> Vec<ProviderId> {
-    let mut out = Vec::new();
-    for factory in inventory::iter::<LlmProviderFactory>() {
-        let pid = factory.id.clone();
-        if cfg
-            .credentials
-            .llm
-            .get(&pid)
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-        {
-            out.push(pid);
-        }
-    }
-    out
-}
-
 fn render_providers(
-    cfg: &LoadedConfig,
+    store: &Arc<dyn CredentialStore>,
     warnings: &mut usize,
     hint: &mut Option<(&'static str, String)>,
 ) {
-    let mut t = Table::new(["provider", "status", "keys", "labels"]);
-    let mut any_keys = false;
-    for factory in inventory::iter::<LlmProviderFactory>() {
-        let pid = factory.id.clone();
-        let entries: &[goat_credentials::CredentialEntry] = cfg
-            .credentials
-            .llm
-            .get(&pid)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[]);
-        let labels = entries
-            .iter()
-            .map(|e| e.label.clone().unwrap_or_else(|| "-".into()))
-            .collect::<Vec<_>>()
-            .join(", ");
+    let mut t = Table::new(["provider", "status", "entries", "summary"]);
+    let mut any = false;
+    for spec in inventory::iter::<LlmProviderSpec>() {
+        let entries = store.list(spec.id.clone());
+        let summary = if entries.is_empty() {
+            "—".into()
+        } else {
+            entries
+                .iter()
+                .map(|e| (spec.summarize)(&e.raw))
+                .collect::<Vec<_>>()
+                .join("  ·  ")
+        };
         let (badge, style) = if entries.is_empty() {
             ("missing", Style::Dim)
         } else {
-            any_keys = true;
+            any = true;
             ("ok", Style::Ok)
         };
         t.styled_row(vec![
-            (pid.as_str().to_string(), Style::Plain),
+            (spec.id.as_str().to_string(), Style::Plain),
             (badge.to_string(), style),
             (entries.len().to_string(), Style::Plain),
-            (
-                if labels.is_empty() {
-                    "—".into()
-                } else {
-                    labels
-                },
-                Style::Plain,
-            ),
+            (summary, Style::Plain),
         ]);
     }
     t.render();
-    if !any_keys {
+    if !any {
         *warnings += 1;
         hint.get_or_insert(("none", "goat provider add".into()));
     }
@@ -267,27 +244,19 @@ struct ProbeRow {
     result: std::result::Result<(), String>,
 }
 
-async fn probe_all(cfg: &LoadedConfig, providers: &[ProviderId]) -> Vec<ProbeRow> {
+async fn probe_all(store: &Arc<dyn CredentialStore>) -> Vec<ProbeRow> {
     let mut out = Vec::new();
-    for pid in providers {
-        let result = match cfg
-            .credentials
-            .llm
-            .get(pid)
-            .and_then(|entries| entries.first())
-            .and_then(|e| e.api_key.as_deref())
-        {
-            Some(key) => match inventory::iter::<LlmProviderFactory>()
-                .find(|factory| factory.id == *pid)
-                .and_then(|factory| factory.probe)
-            {
-                Some(probe) => probe(key.to_string()).await,
-                None => Err("probe unavailable".into()),
-            },
-            None => Err("no api_key field".into()),
+    for spec in inventory::iter::<LlmProviderSpec>() {
+        let entries = store.list(spec.id.clone());
+        let Some(first) = entries.into_iter().next() else {
+            continue;
+        };
+        let result = match spec.probe {
+            Some(probe) => probe(first.raw).await,
+            None => Err("probe unavailable".into()),
         };
         out.push(ProbeRow {
-            provider: pid.clone(),
+            provider: spec.id.clone(),
             result,
         });
     }

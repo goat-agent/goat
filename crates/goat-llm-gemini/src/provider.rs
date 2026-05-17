@@ -1,8 +1,6 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use eventsource_stream::Eventsource;
-use goat_llm::{KeyProvider, LlmError, LlmProvider, LlmRequest, LlmStream, ProviderId};
+use goat_llm::{ApiKeyPool, LlmError, LlmProvider, LlmRequest, LlmStream, ProviderId};
 use reqwest::StatusCode;
 
 use crate::body::Body;
@@ -12,13 +10,13 @@ use crate::stream::translate;
 const DEFAULT_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
 pub struct GeminiProvider {
-    keys: Arc<dyn KeyProvider>,
+    keys: ApiKeyPool,
     base: String,
     http: reqwest::Client,
 }
 
 impl GeminiProvider {
-    pub fn new(keys: Arc<dyn KeyProvider>) -> Self {
+    pub fn new(keys: ApiKeyPool) -> Self {
         Self {
             keys,
             base: DEFAULT_BASE.to_string(),
@@ -36,7 +34,7 @@ impl LlmProvider for GeminiProvider {
     async fn stream(&self, req: LlmRequest) -> Result<LlmStream, LlmError> {
         let key = self
             .keys
-            .next(crate::ID)
+            .next()
             .ok_or_else(|| LlmError::Auth("no gemini keys available".into()))?;
         let url = format!(
             "{}/{}:streamGenerateContent?alt=sse",
@@ -59,7 +57,7 @@ impl LlmProvider for GeminiProvider {
             let retry_after = parse_retry_after(resp.headers());
             let text = resp.text().await.unwrap_or_default();
             if status == StatusCode::TOO_MANY_REQUESTS {
-                self.keys.report_429(crate::ID, &key.api_key, retry_after);
+                self.keys.report_rate_limit(&key.api_key, retry_after);
             }
             return Err(map_error(status, retry_after, &text));
         }

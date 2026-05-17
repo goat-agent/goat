@@ -1,22 +1,23 @@
+use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
 use clap::Subcommand;
 use goat_config::GoatPaths;
-use goat_credentials::Credentials;
-use goat_llm::{LlmProviderFactory, ProviderId};
-use serde_json::{json, Value};
+use goat_credentials::JsonFileStore;
+use goat_llm::{CredentialStore, LlmProviderSpec, SetupCtx, UserPrompt};
 
 use super::ui::{self, Footer, Style, Table};
-use super::{edit_credentials, mask_key};
+use super::CliPrompt;
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    /// List configured provider keys.
+    /// List configured provider credentials.
     #[command(visible_alias = "ls")]
     List,
-    /// Add a provider key.
+    /// Add a provider credential.
     #[command(visible_alias = "new")]
     Add { name: Option<String> },
-    /// Remove a provider key.
+    /// Remove a provider credential.
     #[command(visible_alias = "rm", aliases = ["del", "delete"])]
     Remove {
         name: Option<String>,
@@ -26,49 +27,38 @@ pub enum Cmd {
 
 pub async fn run(cmd: Cmd) -> Result<()> {
     let paths = GoatPaths::default_layout()?;
+    let store: Arc<dyn CredentialStore> =
+        Arc::new(JsonFileStore::open(paths.credentials_json.clone())?);
     match cmd {
-        Cmd::List => list(&paths),
-        Cmd::Add { name } => add(&paths, name),
-        Cmd::Remove { name, label } => remove(&paths, name, label),
+        Cmd::List => list(&store),
+        Cmd::Add { name } => add(&store, name).await,
+        Cmd::Remove { name, label } => remove(&store, name, label),
     }
 }
 
-fn list(paths: &GoatPaths) -> Result<()> {
+fn list(store: &Arc<dyn CredentialStore>) -> Result<()> {
     ui::cell("Providers", || {
-        let creds = Credentials::load(&paths.credentials_json)?;
         let mut configured = 0usize;
-        let mut table = Table::new(["provider", "keys", "labels"]);
+        let mut table = Table::new(["provider", "entries", "summary"]);
 
-        for factory in inventory::iter::<LlmProviderFactory>() {
-            let pid = factory.id.clone();
-            let entries: &[goat_credentials::CredentialEntry] =
-                creds.llm.get(&pid).map(|v| v.as_slice()).unwrap_or(&[]);
+        for spec in inventory::iter::<LlmProviderSpec>() {
+            let entries = store.list(spec.id.clone());
             if !entries.is_empty() {
                 configured += 1;
             }
-            let labels: Vec<String> = entries
-                .iter()
-                .map(|e| {
-                    let lbl = e.label.as_deref().unwrap_or("-");
-                    let masked = e
-                        .api_key
-                        .as_deref()
-                        .map(mask_key)
-                        .unwrap_or_else(|| "?".into());
-                    format!("{lbl}  {masked}")
-                })
-                .collect();
+            let summary = if entries.is_empty() {
+                "—".to_string()
+            } else {
+                entries
+                    .iter()
+                    .map(|e| (spec.summarize)(&e.raw))
+                    .collect::<Vec<_>>()
+                    .join("  ·  ")
+            };
             table.styled_row(vec![
-                (pid.as_str().to_string(), Style::Plain),
+                (spec.id.as_str().to_string(), Style::Plain),
                 (entries.len().to_string(), Style::Plain),
-                (
-                    if labels.is_empty() {
-                        "—".into()
-                    } else {
-                        labels.join("  ·  ")
-                    },
-                    Style::Plain,
-                ),
+                (summary, Style::Plain),
             ]);
         }
 
@@ -81,70 +71,64 @@ fn list(paths: &GoatPaths) -> Result<()> {
     })
 }
 
-fn add(paths: &GoatPaths, name: Option<String>) -> Result<()> {
-    ui::cell("Provider Add", || {
-        let provider = match name {
-            Some(n) => lookup_provider(&n).ok_or_else(|| anyhow!("unknown provider `{n}`"))?,
-            None => {
-                let mut items: Vec<(ProviderId, String)> = inventory::iter::<LlmProviderFactory>()
-                    .map(|f| (f.id.clone(), f.id.as_str().to_string()))
-                    .collect();
-                items.sort_by(|a, b| a.1.cmp(&b.1));
-                ui::pick("provider", &items)?
-            }
-        };
-        let api_key = ui::secret(&format!("{} key", provider.as_str()))?;
-        let raw_label = ui::ask("label", Some(""))?;
-        let label = if raw_label.trim().is_empty() {
-            None
-        } else {
-            Some(raw_label.trim().to_string())
-        };
-        edit_credentials(&paths.credentials_json, |map| {
-            let entry = json!({ "api_key": api_key, "label": label });
-            let list = map
-                .entry(provider.as_str().to_string())
-                .or_insert_with(|| Value::Array(Vec::new()));
-            if let Value::Array(arr) = list {
-                arr.push(entry);
-            }
-        })?;
-        ui::pair(provider.as_str(), "saved");
-        Ok(Footer::Ok("Saved"))
-    })
+async fn add(store: &Arc<dyn CredentialStore>, name: Option<String>) -> Result<()> {
+    let spec = match name {
+        Some(n) => find_spec(&n).ok_or_else(|| anyhow!("unknown provider `{n}`"))?,
+        None => pick_spec()?,
+    };
+
+    let prompt: Arc<dyn UserPrompt> = Arc::new(CliPrompt);
+    let raw_label = ui::ask("label", Some(""))?;
+    let label = if raw_label.trim().is_empty() {
+        None
+    } else {
+        Some(raw_label.trim().to_string())
+    };
+
+    let ctx = SetupCtx {
+        provider: spec.id.clone(),
+        label: label.clone(),
+        prompt,
+    };
+
+    let value = spec.setup.run(ctx).await.map_err(anyhow::Error::from)?;
+    store.write(spec.id.clone(), label.as_deref(), value.clone())?;
+    ui::pair(spec.id.as_str(), &(spec.summarize)(&value));
+    Ok(())
 }
 
-fn remove(paths: &GoatPaths, name: Option<String>, label: Option<String>) -> Result<()> {
+fn remove(
+    store: &Arc<dyn CredentialStore>,
+    name: Option<String>,
+    label: Option<String>,
+) -> Result<()> {
     ui::cell("Provider Remove", || {
-        let creds = Credentials::load(&paths.credentials_json)?;
-        let with_keys: Vec<(ProviderId, usize)> = creds
-            .llm
-            .iter()
-            .filter(|(_, v)| !v.is_empty())
-            .map(|(p, v)| (p.clone(), v.len()))
-            .collect();
+        let configured: Vec<(&'static LlmProviderSpec, usize)> =
+            inventory::iter::<LlmProviderSpec>()
+                .map(|s| (s, store.list(s.id.clone()).len()))
+                .filter(|(_, n)| *n > 0)
+                .collect();
 
-        if with_keys.is_empty() {
-            ui::line(&ui::dim("no provider keys configured"));
+        if configured.is_empty() {
+            ui::line(&ui::dim("no provider credentials configured"));
             return Ok(Footer::Cancel);
         }
 
-        let provider = match name {
-            Some(n) => lookup_provider(&n).ok_or_else(|| anyhow!("unknown provider `{n}`"))?,
+        let spec = match name {
+            Some(n) => find_spec(&n).ok_or_else(|| anyhow!("unknown provider `{n}`"))?,
             None => {
-                let items: Vec<(ProviderId, String)> = with_keys
+                let items: Vec<(&LlmProviderSpec, String)> = configured
                     .iter()
-                    .map(|(p, n)| (p.clone(), format!("{} ({n} key)", p.as_str())))
+                    .map(|(s, n)| (*s, format!("{} ({n})", s.id.as_str())))
                     .collect();
                 ui::pick("provider", &items)?
             }
         };
 
-        let entries = creds
-            .llm
-            .get(&provider)
-            .filter(|v| !v.is_empty())
-            .ok_or_else(|| anyhow!("no keys for `{}`", provider.as_str()))?;
+        let entries = store.list(spec.id.clone());
+        if entries.is_empty() {
+            return Err(anyhow!("no credentials for `{}`", spec.id.as_str()));
+        }
 
         let chosen_label = match label {
             Some(l) => Some(l),
@@ -152,57 +136,39 @@ fn remove(paths: &GoatPaths, name: Option<String>, label: Option<String>) -> Res
                 let items: Vec<(Option<String>, String)> = entries
                     .iter()
                     .map(|e| {
-                        let lbl = e.label.as_deref().unwrap_or("-");
-                        let masked = e
-                            .api_key
-                            .as_deref()
-                            .map(mask_key)
-                            .unwrap_or_else(|| "?".into());
-                        (e.label.clone(), format!("{lbl}  {masked}"))
+                        let l = e.label.as_deref().unwrap_or("-");
+                        (
+                            e.label.clone(),
+                            format!("{l}  {}", (spec.summarize)(&e.raw)),
+                        )
                     })
                     .collect();
-                ui::pick("key", &items)?
+                ui::pick("credential", &items)?
             }
         };
 
         let target = chosen_label.as_deref().unwrap_or("-");
         if !ui::confirm(
-            &format!("remove {} key `{target}`?", provider.as_str()),
+            &format!("remove {} credential `{target}`?", spec.id.as_str()),
             false,
         )? {
             return Ok(Footer::Cancel);
         }
 
-        let mut removed = 0usize;
-        edit_credentials(&paths.credentials_json, |map| {
-            if let Some(Value::Array(arr)) = map.get_mut(provider.as_str()) {
-                let before = arr.len();
-                arr.retain(|v| {
-                    let lbl = v.get("label").and_then(|l| l.as_str());
-                    match (&chosen_label, lbl) {
-                        (Some(want), Some(got)) => got != want.as_str(),
-                        (None, None) => false,
-                        _ => true,
-                    }
-                });
-                removed = before - arr.len();
-                if arr.is_empty() {
-                    map.remove(provider.as_str());
-                }
-            }
-        })?;
-
-        if removed == 0 {
-            Ok(Footer::Warn("No matching key".into()))
-        } else {
-            ui::pair(provider.as_str(), &format!("{removed} removed"));
-            Ok(Footer::Ok("Removed"))
-        }
+        store.remove(spec.id.clone(), chosen_label.as_deref())?;
+        ui::pair(spec.id.as_str(), "removed");
+        Ok(Footer::Ok("Removed"))
     })
 }
 
-fn lookup_provider(name: &str) -> Option<ProviderId> {
-    inventory::iter::<LlmProviderFactory>()
-        .find(|factory| factory.id.as_str() == name)
-        .map(|factory| factory.id.clone())
+fn find_spec(name: &str) -> Option<&'static LlmProviderSpec> {
+    inventory::iter::<LlmProviderSpec>().find(|s| s.id.as_str() == name)
+}
+
+fn pick_spec() -> Result<&'static LlmProviderSpec> {
+    let mut items: Vec<(&LlmProviderSpec, String)> = inventory::iter::<LlmProviderSpec>()
+        .map(|s| (s, s.id.as_str().to_string()))
+        .collect();
+    items.sort_by(|a, b| a.1.cmp(&b.1));
+    ui::pick("provider", &items)
 }
