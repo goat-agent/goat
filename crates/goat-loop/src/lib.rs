@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use goat_types::PersonaId;
 
 pub mod backoff;
+pub mod cron_expr;
 
 pub use backoff::DecorrelatedJitter;
 

@@ -78,6 +78,7 @@ tiny_http               = "0.12"
 urlencoding             = "2"
 open                    = "5"
 chrono                  = { version = "0.4", features = ["serde"] }
+cron                    = "0.15"
 uuid                    = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 url                     = { version = "2", features = ["serde"] }
 walkdir                 = "2"
