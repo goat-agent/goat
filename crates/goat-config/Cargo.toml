@@ -11,7 +11,6 @@ goat-types       = { workspace = true }
 goat-llm         = { workspace = true }
 goat-channel     = { workspace = true }
 goat-persona     = { workspace = true }
-goat-credentials = { workspace = true }
 serde            = { workspace = true }
 serde_json       = { workspace = true }
 serde_yaml       = "0.9"
