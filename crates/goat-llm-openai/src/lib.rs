@@ -7,16 +7,31 @@ mod stream;
 
 use std::sync::Arc;
 
-use goat_llm::{KeyProvider, LlmProvider, LlmProviderFactory, ProviderId};
+use goat_llm::{
+    summarize_api_key, ApiKeyPool, CredentialStore, LlmProvider, LlmProviderSpec, ProviderId,
+    SecretPrompt,
+};
 
 pub use provider::OpenAiProvider;
 
 pub const ID: ProviderId = ProviderId::from_static("openai");
 
-fn from_keys(keys: Arc<dyn KeyProvider>) -> Arc<dyn LlmProvider> {
-    Arc::new(OpenAiProvider::new(keys))
+fn build(store: Arc<dyn CredentialStore>) -> Arc<dyn LlmProvider> {
+    Arc::new(OpenAiProvider::new(ApiKeyPool::new(store, ID)))
 }
 
+static SETUP: SecretPrompt = SecretPrompt {
+    description: "OpenAI API key",
+    json_key: "api_key",
+    hint: "sk-...",
+};
+
 inventory::submit! {
-    LlmProviderFactory { id: ID, ctor: from_keys, probe: Some(diagnostics::probe) }
+    LlmProviderSpec {
+        id: ID,
+        build,
+        probe: Some(diagnostics::probe),
+        setup: &SETUP,
+        summarize: summarize_api_key,
+    }
 }
