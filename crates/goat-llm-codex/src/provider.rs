@@ -40,7 +40,7 @@ impl CodexProvider {
         req.json(body)
             .send()
             .await
-            .map_err(|e| LlmError::Transport(e.to_string()))
+            .map_err(|e| LlmError::Transport(describe_reqwest_error(&e)))
     }
 }
 
@@ -77,6 +77,36 @@ impl LlmProvider for CodexProvider {
 
         Ok(translate(resp.bytes_stream().eventsource()))
     }
+}
+
+fn describe_reqwest_error(err: &reqwest::Error) -> String {
+    use std::error::Error;
+    let mut parts: Vec<String> = vec![err.to_string()];
+    let mut src: Option<&dyn Error> = err.source();
+    while let Some(s) = src {
+        parts.push(s.to_string());
+        src = s.source();
+    }
+    let mut flags = Vec::new();
+    if err.is_timeout() {
+        flags.push("timeout");
+    }
+    if err.is_connect() {
+        flags.push("connect");
+    }
+    if err.is_request() {
+        flags.push("request");
+    }
+    if err.is_body() {
+        flags.push("body");
+    }
+    if err.is_decode() {
+        flags.push("decode");
+    }
+    if !flags.is_empty() {
+        parts.push(format!("flags=[{}]", flags.join(",")));
+    }
+    parts.join(" | ")
 }
 
 fn refresh_to_llm(e: RefreshError) -> LlmError {

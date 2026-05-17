@@ -70,13 +70,21 @@ impl Goat {
         );
         let providers = build_provider_registry(credentials);
         let channels = build_channel_registry();
-        let tools = Arc::new(ToolRegistry::from_inventory());
+
+        let bus = EventBus::new();
+        let (scheduler_handle, prepared_scheduler) =
+            goat_loop::scheduler::prepare_scheduler(store.clone(), bus.clone())
+                .await
+                .context("prepare scheduler")?;
+
+        let mut tools_reg = ToolRegistry::from_inventory();
+        goat_tool_schedule::register(&mut tools_reg, store.clone(), scheduler_handle);
+        let tools = Arc::new(tools_reg);
         info!(
             default_tools = tools.default_specs().len(),
             "loaded tool registry"
         );
 
-        let bus = EventBus::new();
         let renderer: Arc<dyn StreamRenderer> = Arc::new(DefaultStreamRenderer);
 
         let mut join_handles = Vec::new();
@@ -97,6 +105,12 @@ impl Goat {
                 Err(e) => warn!(persona = %raw_persona.slug, error = ?e, "skipping persona"),
             }
         }
+
+        // Yield once so every spawned brain task gets polled to its
+        // first `await` (i.e. has subscribed to the bus) before the
+        // scheduler is allowed to publish anything.
+        tokio::task::yield_now().await;
+        join_handles.push(prepared_scheduler.spawn());
 
         Ok(Self {
             join_handles,
@@ -173,8 +187,9 @@ async fn spawn_persona(
             );
             continue;
         };
+        let instance_slug = format!("{}/{}/{}", raw.id, channel.id(), binding.name);
         let chan_binding = ChannelBinding {
-            instance: InstanceId::new(),
+            instance: InstanceId::from_slug(&instance_slug),
             config: binding.config.clone(),
             commands: command_specs.clone(),
         };

@@ -14,7 +14,10 @@ use goat_llm::{
 use goat_persona::PersonalityCard;
 use goat_render::{RenderSummary, StreamRenderer};
 use goat_skills::SkillIndex;
-use goat_store::{Direction, Store, ToolInvocationRecord, ToolInvocationStatus};
+use goat_store::{
+    Direction, ScheduledTaskStatus, Store, TaskRunStatus, ToolInvocationRecord,
+    ToolInvocationStatus,
+};
 use goat_tool::{ToolCall, ToolContext, ToolOutput, ToolReadState, ToolRegistry};
 use goat_types::{ConversationId, Event, MessageId, PersonaId};
 use tracing::{info, warn};
@@ -99,16 +102,30 @@ impl Brain {
         bus: EventBus,
         channels: Vec<Arc<dyn ChannelHandle>>,
     ) -> Result<()> {
-        let mut sub = bus.subscribe(EventFilter::IncomingFor(self.persona));
+        let mut sub = bus.subscribe(EventFilter::Persona(self.persona));
         info!(persona = %self.persona, "brain running");
 
         while let Some(event) = sub.recv().await {
-            let Event::Incoming(msg) = event else {
-                continue;
-            };
-
-            if let Err(e) = self.handle(&channels, msg).await {
-                warn!(persona = %self.persona, error = ?e, "turn failed");
+            match event {
+                Event::Incoming(msg) => {
+                    if let Err(e) = self.handle(&channels, msg).await {
+                        warn!(persona = %self.persona, error = ?e, "turn failed");
+                    }
+                }
+                Event::SelfTick {
+                    run_id, task_id, ..
+                } => {
+                    if let Err(e) = self.handle_self_tick(&channels, run_id, task_id).await {
+                        warn!(
+                            persona = %self.persona,
+                            run_id,
+                            task_id,
+                            error = ?e,
+                            "self-tick failed",
+                        );
+                    }
+                }
+                _ => {}
             }
         }
         Ok(())
@@ -180,7 +197,13 @@ impl Brain {
         }
 
         let summary = self
-            .complete_with_tools(handle, msg.conversation.clone(), reply_to, &mut messages)
+            .complete_with_tools(
+                handle,
+                msg.conversation.clone(),
+                reply_to,
+                &mut messages,
+                TurnMode::Normal,
+            )
             .await?;
 
         if !summary.final_text.is_empty() {
@@ -225,21 +248,42 @@ impl Brain {
         conv: ConversationId,
         reply_to: Option<MessageId>,
         messages: &mut Vec<LlmMessage>,
+        mode: TurnMode,
     ) -> Result<RenderSummary> {
         const MAX_TOOL_ROUNDS: usize = 8;
 
         let provider = self.providers.route(&self.default_model)?;
         let skill_prompt =
             SkillIndex::discover_root(&self.goat_root).system_prompt_block(self.persona);
-        let tool_specs = self.llm_tool_specs(skill_prompt.is_some());
+        let tool_specs: Vec<ToolSpec> = self
+            .llm_tool_specs(skill_prompt.is_some())
+            .into_iter()
+            .filter(|spec| match mode {
+                TurnMode::Normal => true,
+                TurnMode::SelfTick => !is_schedule_tool(&spec.name),
+            })
+            .collect();
         let read_state = ToolReadState::default();
+        let now_iso = chrono::Utc::now().to_rfc3339();
+        let base_system = format!(
+            "{}\n\n<current_time iso8601=\"{now_iso}\">\nThe current time is {now_iso}. \
+             Resolve any user time reference against this clock.\n\
+             </current_time>",
+            compose_system_prompt(&self.personality.system_prompt, skill_prompt.as_deref()),
+        );
+        let system_prompt = match mode {
+            TurnMode::Normal => base_system,
+            TurnMode::SelfTick => format!(
+                "{base_system}\n\n<self_tick_context>\nYou are running at the \
+                 fire moment of a scheduled task. Read the task_text and act. \
+                 If the task is no longer worth doing, reply with exactly: skip\n\
+                 </self_tick_context>"
+            ),
+        };
 
         for _round in 0..MAX_TOOL_ROUNDS {
             let mut req = LlmRequest::new(self.default_model.clone());
-            req.system = Some(compose_system_prompt(
-                &self.personality.system_prompt,
-                skill_prompt.as_deref(),
-            ));
+            req.system = Some(system_prompt.clone());
             req.messages = messages.clone();
             req.tools = tool_specs.clone();
 
@@ -248,6 +292,15 @@ impl Brain {
 
             if folded.tool_calls.is_empty() {
                 let final_text = sanitize_final_text(folded.text);
+                if matches!(mode, TurnMode::SelfTick)
+                    && final_text.trim().eq_ignore_ascii_case("skip")
+                {
+                    return Ok(RenderSummary {
+                        messages_sent: 0,
+                        edits: 0,
+                        final_text: "skip".into(),
+                    });
+                }
                 return self
                     .renderer
                     .render(
@@ -285,6 +338,141 @@ impl Brain {
             )
             .await
             .map_err(Into::into)
+    }
+
+    async fn handle_self_tick(
+        &self,
+        channels: &[Arc<dyn ChannelHandle>],
+        run_id: i64,
+        task_id: i64,
+    ) -> Result<()> {
+        let task = match self.store.get_scheduled_task(task_id).await? {
+            Some(t) if matches!(t.status, ScheduledTaskStatus::Active) => t,
+            Some(_) => {
+                self.store
+                    .finish_run(
+                        run_id,
+                        TaskRunStatus::Skipped,
+                        Some("task no longer active".into()),
+                    )
+                    .await
+                    .ok();
+                return Ok(());
+            }
+            None => {
+                self.store
+                    .finish_run(
+                        run_id,
+                        TaskRunStatus::Failed,
+                        Some("task row missing".into()),
+                    )
+                    .await
+                    .ok();
+                return Ok(());
+            }
+        };
+
+        let conv = task.origin_conv.clone();
+        let handle = match channels
+            .iter()
+            .find(|h| h.id() == conv.channel && h.instance() == conv.instance)
+            .cloned()
+        {
+            Some(h) => h,
+            None => {
+                let available: Vec<String> = channels
+                    .iter()
+                    .map(|h| format!("{}:{}", h.id().as_str(), h.instance()))
+                    .collect();
+                warn!(
+                    run_id,
+                    persona = %self.persona,
+                    want = %format!("{}:{}", conv.channel.as_str(), conv.instance),
+                    have = ?available,
+                    "no channel handle for origin_conv; marking failed"
+                );
+                self.store
+                    .finish_run(
+                        run_id,
+                        TaskRunStatus::Failed,
+                        Some("no channel handle for origin_conv".into()),
+                    )
+                    .await
+                    .ok();
+                return Ok(());
+            }
+        };
+
+        let mut messages = vec![LlmMessage {
+            role: Role::User,
+            content: vec![ContentPart::Text(task.task_text.clone())],
+        }];
+
+        let summary = match self
+            .complete_with_tools(
+                handle,
+                conv.clone(),
+                None,
+                &mut messages,
+                TurnMode::SelfTick,
+            )
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                self.store
+                    .finish_run(
+                        run_id,
+                        TaskRunStatus::Failed,
+                        Some(format!("self-tick run errored: {e}")),
+                    )
+                    .await
+                    .ok();
+                return Err(e);
+            }
+        };
+
+        let trimmed = summary.final_text.trim();
+        if trimmed.eq_ignore_ascii_case("skip") {
+            self.store
+                .finish_run(
+                    run_id,
+                    TaskRunStatus::Skipped,
+                    Some("model declined".into()),
+                )
+                .await
+                .ok();
+            return Ok(());
+        }
+        if trimmed.is_empty() {
+            warn!(
+                run_id,
+                task_id,
+                persona = %self.persona,
+                "self-tick produced empty response; marking failed",
+            );
+            self.store
+                .finish_run(
+                    run_id,
+                    TaskRunStatus::Failed,
+                    Some("empty response from model".into()),
+                )
+                .await
+                .ok();
+            return Ok(());
+        }
+
+        self.store
+            .append_outgoing_text(self.persona, &conv, &summary.final_text, None)
+            .await
+            .context("append outgoing text for self-tick")?;
+
+        let truncated = truncate_for_summary(&summary.final_text);
+        self.store
+            .finish_run(run_id, TaskRunStatus::Done, Some(truncated))
+            .await
+            .ok();
+        Ok(())
     }
 
     fn llm_tool_specs(&self, has_skills: bool) -> Vec<ToolSpec> {
@@ -537,6 +725,29 @@ fn meta_marker_score(text: &str) -> usize {
         .iter()
         .filter(|marker| lower.contains(**marker))
         .count()
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TurnMode {
+    Normal,
+    SelfTick,
+}
+
+fn is_schedule_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "schedule_once" | "schedule_cron" | "cancel_task" | "list_tasks"
+    )
+}
+
+fn truncate_for_summary(text: &str) -> String {
+    const MAX: usize = 8000;
+    if text.chars().count() <= MAX {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(MAX).collect();
+    out.push('…');
+    out
 }
 
 const META_LEAK_MARKERS: &[&str] = &[

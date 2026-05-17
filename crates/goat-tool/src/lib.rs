@@ -234,6 +234,26 @@ impl ToolRegistry {
         );
     }
 
+    /// Insert a pre-built handler. Use this for tools whose constructor
+    /// requires runtime-injected state (for example a database handle)
+    /// and therefore cannot be expressed as a stateless `ToolFactory`.
+    pub fn insert_handler(
+        &mut self,
+        spec: ToolSpec,
+        handler: Arc<dyn ToolHandler>,
+        default_enabled: bool,
+    ) {
+        validate_name(spec.name.as_str()).expect("invalid tool spec name");
+        self.by_name.insert(
+            spec.name.clone(),
+            RegisteredTool {
+                spec,
+                handler,
+                default_enabled,
+            },
+        );
+    }
+
     pub fn default_specs(&self) -> Vec<ToolSpec> {
         let mut specs: Vec<ToolSpec> = self
             .by_name

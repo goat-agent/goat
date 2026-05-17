@@ -32,6 +32,7 @@ goat-tool               = { path = "crates/goat-tool" }
 goat-tool-fs            = { path = "crates/goat-tool-fs" }
 goat-tool-shell         = { path = "crates/goat-tool-shell" }
 goat-tool-skill         = { path = "crates/goat-tool-skill" }
+goat-tool-schedule      = { path = "crates/goat-tool-schedule" }
 goat-brain              = { path = "crates/goat-brain" }
 goat-persona            = { path = "crates/goat-persona" }
 goat-runtime            = { path = "crates/goat-runtime" }
@@ -78,6 +79,7 @@ tiny_http               = "0.12"
 urlencoding             = "2"
 open                    = "5"
 chrono                  = { version = "0.4", features = ["serde"] }
+cron                    = "0.15"
 uuid                    = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 url                     = { version = "2", features = ["serde"] }
 walkdir                 = "2"
