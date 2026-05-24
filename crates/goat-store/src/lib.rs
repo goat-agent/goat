@@ -145,8 +145,8 @@ impl TaskRunStatus {
 #[derive(Clone, Debug)]
 pub struct NewScheduledTask {
     pub persona: PersonaId,
-    pub task_text: String,
-    pub tools_to_use: Vec<String>,
+    pub task: String,
+    pub tools: Vec<String>,
     pub origin_conv: ConversationId,
     pub schedule: ScheduleKind,
     pub created_by_msg_id: Option<MessageId>,
@@ -156,8 +156,8 @@ pub struct NewScheduledTask {
 pub struct ScheduledTaskRecord {
     pub id: i64,
     pub persona: PersonaId,
-    pub task_text: String,
-    pub tools_to_use: Vec<String>,
+    pub task: String,
+    pub tools: Vec<String>,
     pub origin_conv: ConversationId,
     pub schedule: ScheduleKind,
     pub status: ScheduledTaskStatus,
@@ -169,7 +169,7 @@ pub struct ScheduledTaskRecord {
 pub struct TaskRunRecord {
     pub id: i64,
     pub task_id: i64,
-    pub task_text_snapshot: String,
+    pub task_snapshot: String,
     pub run_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
@@ -214,7 +214,7 @@ pub trait Store: Send + Sync + 'static {
         &self,
         task_id: i64,
         run_at: DateTime<Utc>,
-        task_text_snapshot: String,
+        task_snapshot: String,
     ) -> StoreResult<i64>;
 
     async fn claim_due_run(
@@ -246,7 +246,7 @@ pub trait Store: Send + Sync + 'static {
     /// `None` if the task doesn't exist.
     async fn get_scheduled_task(&self, id: i64) -> StoreResult<Option<ScheduledTaskRecord>>;
 
-    /// Active tasks for `persona` whose `task_text` contains the given
+    /// Active tasks for `persona` whose `task` contains the given
     /// substring (case-insensitive). Used by tools to surface a soft
     /// "looks similar" warning before allowing a duplicate registration.
     async fn similar_active_tasks(
@@ -477,25 +477,25 @@ impl Store for SqliteStore {
     async fn insert_scheduled_task(&self, new: NewScheduledTask) -> StoreResult<i64> {
         self.ensure_conversation(&new.origin_conv, new.persona)
             .await?;
-        let (kind_str, once_at, cron_expr) = match &new.schedule {
+        let (kind_str, once_at, cron) = match &new.schedule {
             ScheduleKind::Once(at) => ("once", Some(at.to_rfc3339()), None),
             ScheduleKind::Cron(expr) => ("cron", None, Some(expr.clone())),
         };
-        let tools_json = serde_json::to_string(&new.tools_to_use)?;
+        let tools_json = serde_json::to_string(&new.tools)?;
         let row: (i64,) = sqlx::query_as(
             r#"INSERT INTO scheduled_tasks
-               (persona_id, task_text, tools_to_use, origin_conv, schedule_kind, once_at,
-                cron_expr, status, created_at, created_by_msg_id)
+               (persona_id, task, tools, origin_conv, schedule_kind, once_at,
+                cron, status, created_at, created_by_msg_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
                RETURNING id"#,
         )
         .bind(new.persona.to_string())
-        .bind(&new.task_text)
+        .bind(&new.task)
         .bind(tools_json)
         .bind(new.origin_conv.to_key())
         .bind(kind_str)
         .bind(once_at)
-        .bind(cron_expr)
+        .bind(cron)
         .bind(Utc::now().to_rfc3339())
         .bind(new.created_by_msg_id.as_ref().map(|m| m.0.clone()))
         .fetch_one(&*self.pool)
@@ -507,16 +507,16 @@ impl Store for SqliteStore {
         &self,
         task_id: i64,
         run_at: DateTime<Utc>,
-        task_text_snapshot: String,
+        task_snapshot: String,
     ) -> StoreResult<i64> {
         let row: (i64,) = sqlx::query_as(
             r#"INSERT INTO task_runs
-               (task_id, task_text_snapshot, run_at, status, attempts)
+               (task_id, task_snapshot, run_at, status, attempts)
                VALUES (?, ?, ?, 'pending', 0)
                RETURNING id"#,
         )
         .bind(task_id)
-        .bind(&task_text_snapshot)
+        .bind(&task_snapshot)
         .bind(run_at.to_rfc3339())
         .fetch_one(&*self.pool)
         .await?;
@@ -552,7 +552,7 @@ impl Store for SqliteStore {
                    ORDER BY run_at
                    LIMIT 1
                ) AND status = 'pending'
-               RETURNING id, task_id, task_text_snapshot, run_at, started_at,
+               RETURNING id, task_id, task_snapshot, run_at, started_at,
                          finished_at, status, running_since, attempts, result_summary"#,
         )
         .bind(&now_str)
@@ -568,7 +568,7 @@ impl Store for SqliteStore {
         let run = TaskRunRecord {
             id: row.0,
             task_id: row.1,
-            task_text_snapshot: row.2,
+            task_snapshot: row.2,
             run_at: parse_ts(&row.3)?,
             started_at: row.4.as_deref().map(parse_ts).transpose()?,
             finished_at: row.5.as_deref().map(parse_ts).transpose()?,
@@ -637,7 +637,7 @@ impl Store for SqliteStore {
         let pattern = format!("%{}%", match_text);
         let ids: Vec<(i64,)> = sqlx::query_as(
             r#"SELECT id FROM scheduled_tasks
-               WHERE persona_id = ? AND status = 'active' AND task_text LIKE ?"#,
+               WHERE persona_id = ? AND status = 'active' AND task LIKE ?"#,
         )
         .bind(persona.to_string())
         .bind(pattern)
@@ -677,7 +677,7 @@ impl Store for SqliteStore {
         let ids: Vec<(i64,)> = sqlx::query_as(
             r#"SELECT id FROM scheduled_tasks
                WHERE persona_id = ? AND status = 'active'
-                 AND LOWER(task_text) LIKE ?
+                 AND LOWER(task) LIKE ?
                ORDER BY created_at"#,
         )
         .bind(persona.to_string())
@@ -799,8 +799,8 @@ async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<Schedule
         String,
         String,
     ) = sqlx::query_as(
-        r#"SELECT s.id, s.persona_id, s.task_text, s.tools_to_use, s.origin_conv,
-                  s.schedule_kind, s.once_at, s.cron_expr, s.status, s.created_at,
+        r#"SELECT s.id, s.persona_id, s.task, s.tools, s.origin_conv,
+                  s.schedule_kind, s.once_at, s.cron, s.status, s.created_at,
                   s.created_by_msg_id, c.channel, c.instance, c.external
            FROM scheduled_tasks s
            JOIN conversations c ON c.id = s.origin_conv
@@ -810,7 +810,7 @@ async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<Schedule
     .fetch_one(pool)
     .await?;
 
-    let tools_to_use: Vec<String> = serde_json::from_str(&row.3)?;
+    let tools: Vec<String> = serde_json::from_str(&row.3)?;
     let persona = PersonaId(Uuid::parse_str(&row.1)?);
     let instance = InstanceId(Uuid::parse_str(&row.12)?);
     let origin_conv = ConversationId::new(ChannelId::new(row.11.clone()), instance, row.13.clone());
@@ -824,7 +824,7 @@ async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<Schedule
         }
         "cron" => {
             let expr = row.7.clone().ok_or(StoreError::InvalidEnum {
-                field: "scheduled_tasks.cron_expr",
+                field: "scheduled_tasks.cron",
                 value: "null".into(),
             })?;
             ScheduleKind::Cron(expr)
@@ -840,8 +840,8 @@ async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<Schedule
     Ok(ScheduledTaskRecord {
         id: row.0,
         persona,
-        task_text: row.2,
-        tools_to_use,
+        task: row.2,
+        tools,
         origin_conv,
         schedule,
         status: ScheduledTaskStatus::parse(&row.8)?,
@@ -918,8 +918,8 @@ mod tests {
         let task_id = s
             .insert_scheduled_task(NewScheduledTask {
                 persona: p,
-                task_text: "ping example.com".into(),
-                tools_to_use: vec!["bash".into()],
+                task: "ping example.com".into(),
+                tools: vec!["shell".into()],
                 origin_conv: conv.clone(),
                 schedule: ScheduleKind::Once(due),
                 created_by_msg_id: None,
@@ -934,7 +934,7 @@ mod tests {
         assert_eq!(listed.len(), 1);
         let (task, next_at) = &listed[0];
         assert_eq!(task.id, task_id);
-        assert_eq!(task.task_text, "ping example.com");
+        assert_eq!(task.task, "ping example.com");
         assert!(matches!(task.schedule, ScheduleKind::Once(_)));
         assert!(next_at.is_some());
     }
@@ -949,8 +949,8 @@ mod tests {
         let task_id = s
             .insert_scheduled_task(NewScheduledTask {
                 persona: p,
-                task_text: "old task".into(),
-                tools_to_use: vec![],
+                task: "old task".into(),
+                tools: vec![],
                 origin_conv: conv,
                 schedule: ScheduleKind::Once(past),
                 created_by_msg_id: None,
@@ -972,7 +972,7 @@ mod tests {
         let (run, task) = first.unwrap();
         assert_eq!(run.task_id, task_id);
         assert_eq!(run.status, TaskRunStatus::Running);
-        assert_eq!(task.task_text, "old task");
+        assert_eq!(task.task, "old task");
 
         s.finish_run(run.id, TaskRunStatus::Done, Some("ok".into()))
             .await
@@ -989,8 +989,8 @@ mod tests {
         let task_id = s
             .insert_scheduled_task(NewScheduledTask {
                 persona: p,
-                task_text: "run loadtest in staging".into(),
-                tools_to_use: vec![],
+                task: "run loadtest in staging".into(),
+                tools: vec![],
                 origin_conv: conv,
                 schedule: ScheduleKind::Once(due),
                 created_by_msg_id: None,
@@ -1024,8 +1024,8 @@ mod tests {
         let task_id = s
             .insert_scheduled_task(NewScheduledTask {
                 persona: p,
-                task_text: "x".into(),
-                tools_to_use: vec![],
+                task: "x".into(),
+                tools: vec![],
                 origin_conv: conv,
                 schedule: ScheduleKind::Once(past),
                 created_by_msg_id: None,
@@ -1058,8 +1058,8 @@ mod tests {
         let task_id = s
             .insert_scheduled_task(NewScheduledTask {
                 persona: p,
-                task_text: "weekly".into(),
-                tools_to_use: vec![],
+                task: "weekly".into(),
+                tools: vec![],
                 origin_conv: conv,
                 schedule: ScheduleKind::Cron("0 7 * * 1".into()),
                 created_by_msg_id: None,
@@ -1087,8 +1087,8 @@ mod tests {
         let task_id = s
             .insert_scheduled_task(NewScheduledTask {
                 persona: p,
-                task_text: "weekly summary".into(),
-                tools_to_use: vec!["claude-code".into()],
+                task: "weekly summary".into(),
+                tools: vec!["read".into(), "grep".into()],
                 origin_conv: conv,
                 schedule: ScheduleKind::Cron("0 7 * * 1".into()),
                 created_by_msg_id: None,
@@ -1102,6 +1102,6 @@ mod tests {
             ScheduleKind::Cron(expr) => assert_eq!(expr, "0 7 * * 1"),
             _ => panic!("expected cron schedule"),
         }
-        assert_eq!(task.tools_to_use, vec!["claude-code".to_string()]);
+        assert_eq!(task.tools, vec!["read".to_string(), "grep".to_string()]);
     }
 }

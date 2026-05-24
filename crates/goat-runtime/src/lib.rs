@@ -167,6 +167,10 @@ async fn spawn_persona(
         .providers
         .route(&raw.default_model)
         .with_context(|| format!("no provider for model {}", raw.default_model))?;
+    shared
+        .tools
+        .validate_default_selectors(&raw.tool_selectors)
+        .with_context(|| format!("invalid tools for persona {}", raw.slug))?;
 
     shared
         .store
@@ -221,6 +225,7 @@ async fn spawn_persona(
         Arc::new(raw.personality.clone()),
         raw.default_model.clone(),
         raw.history_window,
+        raw.tool_selectors.clone(),
         shared.providers.clone(),
         shared.tools.clone(),
         commands,
