@@ -1,11 +1,9 @@
-use std::process::Command as Proc;
-
 use anyhow::{anyhow, Result};
 use clap::Subcommand;
 use goat_channel::ChannelFactory;
 use goat_config::GoatPaths;
 use goat_llm::{LlmProviderSpec, Model, ModelInfo, ProviderId};
-use serde_json::json;
+use serde_json::{json, Map, Value};
 
 use super::ui::{self, Footer, Style, Table};
 
@@ -22,8 +20,6 @@ pub enum Cmd {
     },
     /// Print a persona's `persona.md` and channel bindings.
     Show { slug: String },
-    /// Open the persona's `persona.md` in `$EDITOR`.
-    Edit { slug: String },
     /// Delete a persona folder.
     #[command(visible_alias = "rm", aliases = ["del", "delete"])]
     Remove { slug: String },
@@ -51,7 +47,6 @@ pub async fn run(cmd: Cmd) -> Result<()> {
         Cmd::List => list(&paths),
         Cmd::Add { slug } => add(&paths, slug),
         Cmd::Show { slug } => show(&paths, &slug),
-        Cmd::Edit { slug } => edit(&paths, &slug),
         Cmd::Remove { slug } => remove(&paths, &slug),
         Cmd::Channel(c) => channel_run(&paths, c),
     }
@@ -82,10 +77,18 @@ fn write_persona(paths: &GoatPaths, slug: &str) -> Result<String> {
     }
     let model = pick_model()?;
     std::fs::create_dir_all(&dir)?;
-    let body = format!("---\ndisplay: {slug}\nmodel: {model}\n---\n\nYou are {slug}.\n");
-    let path = dir.join("persona.md");
-    std::fs::write(&path, body)?;
-    ui::pair("file", &path.display().to_string());
+    let persona_md = dir.join("persona.md");
+    std::fs::write(&persona_md, format!("You are {slug}.\n"))?;
+    let config_json = dir.join("config.json");
+    let body = serde_json::to_string_pretty(&json!({
+        "display": slug,
+        "model": model.to_string(),
+        "tools": ["*"],
+        "channels": {}
+    }))?;
+    std::fs::write(&config_json, format!("{body}\n"))?;
+    ui::pair("file", &persona_md.display().to_string());
+    ui::pair("config", &config_json.display().to_string());
     Ok(slug)
 }
 
@@ -146,10 +149,35 @@ fn list(paths: &GoatPaths) -> Result<()> {
             if !persona_md.exists() {
                 continue;
             }
-            let raw = std::fs::read_to_string(&persona_md).unwrap_or_default();
-            let display = goat_config::front_field(&raw, "display").unwrap_or_else(|| slug.into());
-            let model = goat_config::front_field(&raw, "model").unwrap_or_else(|| "?".into());
-            let bindings = bindings_for(&dir);
+            let cfg = match read_persona_config(&dir) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    table.row(vec![
+                        slug.to_string(),
+                        "config error".into(),
+                        e.to_string(),
+                        "—".into(),
+                    ]);
+                    rows += 1;
+                    continue;
+                }
+            };
+            let display = cfg
+                .get("display")
+                .and_then(Value::as_str)
+                .map(String::from)
+                .unwrap_or_else(|| slug.into());
+            let model = cfg
+                .get("model")
+                .and_then(Value::as_str)
+                .map(String::from)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "missing or invalid model in {}",
+                        dir.join("config.json").display()
+                    )
+                })?;
+            let bindings = bindings_for(&dir)?;
             table.row(vec![
                 slug.to_string(),
                 display,
@@ -171,20 +199,10 @@ fn list(paths: &GoatPaths) -> Result<()> {
     })
 }
 
-fn bindings_for(dir: &std::path::Path) -> Vec<String> {
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    read.flatten()
-        .filter_map(|e| {
-            let p = e.path();
-            if p.extension().and_then(|s| s.to_str()) == Some("json") {
-                p.file_stem().and_then(|s| s.to_str()).map(String::from)
-            } else {
-                None
-            }
-        })
-        .collect()
+fn bindings_for(dir: &std::path::Path) -> Result<Vec<String>> {
+    let mut out = channels_from_config(dir)?;
+    out.sort();
+    Ok(out)
 }
 
 fn add(paths: &GoatPaths, slug: Option<String>) -> Result<()> {
@@ -210,37 +228,17 @@ fn show(paths: &GoatPaths, slug: &str) -> Result<()> {
         for raw_line in std::fs::read_to_string(&persona_md)?.lines() {
             ui::line(raw_line);
         }
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let p = entry.path();
-            if p.extension().and_then(|s| s.to_str()) == Some("json") {
-                ui::blank();
-                ui::line(&ui::dim(&p.display().to_string()));
-                ui::blank();
-                for raw_line in std::fs::read_to_string(&p)?.lines() {
-                    ui::line(raw_line);
-                }
-            }
+        let config_json = dir.join("config.json");
+        if !config_json.exists() {
+            return Err(anyhow!("missing {}", config_json.display()));
+        }
+        ui::blank();
+        ui::line(&ui::dim(&config_json.display().to_string()));
+        ui::blank();
+        for raw_line in std::fs::read_to_string(&config_json)?.lines() {
+            ui::line(raw_line);
         }
         Ok(Footer::None)
-    })
-}
-
-fn edit(paths: &GoatPaths, slug: &str) -> Result<()> {
-    ui::cell(&format!("Persona Edit {slug}"), || {
-        let persona_md = paths.personas_dir.join(slug).join("persona.md");
-        if !persona_md.exists() {
-            return Err(anyhow!("no persona at {}", persona_md.display()));
-        }
-        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
-        ui::pair("file", &persona_md.display().to_string());
-        ui::pair("editor", &editor);
-        let status = Proc::new(&editor).arg(&persona_md).status()?;
-        if status.success() {
-            Ok(Footer::Ok("Saved"))
-        } else {
-            Ok(Footer::Cancel)
-        }
     })
 }
 
@@ -266,23 +264,16 @@ fn channel_list(paths: &GoatPaths, persona: &str) -> Result<()> {
         }
         let mut table = Table::new(["kind", "status", "path"]);
         let mut rows = 0;
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let p = entry.path();
-            if p.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            let kind = p.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
-            let parse_ok = std::fs::read_to_string(&p)
-                .ok()
-                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-                .is_some();
-            let style = if parse_ok { Style::Ok } else { Style::Warn };
-            let badge = if parse_ok { "ok" } else { "warn" };
+        for (kind, config) in channels_from_config_with_values(&dir)? {
+            let path = dir.join("config.json");
+            let (badge, style) = match validate_channel_config(&kind, &config) {
+                Ok(()) => ("ok".to_string(), Style::Ok),
+                Err(e) => (format!("warn: {e}"), Style::Warn),
+            };
             table.styled_row(vec![
-                (kind.to_string(), Style::Plain),
-                (badge.to_string(), style),
-                (p.display().to_string(), Style::Plain),
+                (kind, Style::Plain),
+                (badge, style),
+                (path.display().to_string(), Style::Plain),
             ]);
             rows += 1;
         }
@@ -320,13 +311,14 @@ fn channel_add(paths: &GoatPaths, persona: &str, kind: Option<String>) -> Result
                 ui::pick("channel", &items)?
             }
         };
-        let path = dir.join(format!("{kind}.json"));
-        if path.exists() && !ui::confirm(&format!("overwrite {}?", path.display()), false)? {
+        if channel_in_config(&dir, &kind)?
+            && !ui::confirm(&format!("overwrite config.json.channels.{kind}?"), false)?
+        {
             return Ok(Footer::Cancel);
         }
         let token = ui::secret(&format!("{kind} token"))?;
-        let body = serde_json::to_string_pretty(&json!({ "token": token }))?;
-        std::fs::write(&path, format!("{body}\n"))?;
+        upsert_channel_config(&dir, &kind, json!({ "token": token }))?;
+        let path = dir.join("config.json");
         ui::pair("file", &path.display().to_string());
         Ok(Footer::Ok("Saved"))
     })
@@ -335,21 +327,205 @@ fn channel_add(paths: &GoatPaths, persona: &str, kind: Option<String>) -> Result
 fn channel_remove(paths: &GoatPaths, persona: &str, kind: &str) -> Result<()> {
     ui::cell(&format!("Channel Remove {persona}/{kind}"), || {
         let kind = kind.trim();
-        let path = paths
-            .personas_dir
-            .join(persona)
-            .join(format!("{kind}.json"));
-        if !path.exists() {
-            return Err(anyhow!("no binding at {}", path.display()));
+        let dir = paths.personas_dir.join(persona);
+        if !channel_in_config(&dir, kind)? {
+            return Err(anyhow!("no binding for {persona}/{kind}"));
         }
-        if !ui::confirm(&format!("delete {}?", path.display()), false)? {
+        if !ui::confirm(&format!("delete config.json.channels.{kind}?"), false)? {
             return Ok(Footer::Cancel);
         }
-        std::fs::remove_file(&path)?;
+        remove_channel_config(&dir, kind)?;
         Ok(Footer::Ok("Removed"))
     })
 }
 
 fn known_channel(slug: &str) -> bool {
-    inventory::iter::<ChannelFactory>().any(|f| f.id.as_str() == slug)
+    channel_factory(slug).is_some()
+}
+
+fn channel_factory(slug: &str) -> Option<&'static ChannelFactory> {
+    inventory::iter::<ChannelFactory>().find(|f| f.id.as_str() == slug)
+}
+
+fn validate_channel_config(kind: &str, config: &Value) -> Result<()> {
+    let factory = channel_factory(kind).ok_or_else(|| anyhow!("unknown channel"))?;
+    (factory.validate_config)(config).map_err(Into::into)
+}
+
+fn read_persona_config(dir: &std::path::Path) -> Result<Value> {
+    let path = dir.join("config.json");
+    if !path.exists() {
+        return Err(anyhow!("missing {}", path.display()));
+    }
+    let cfg: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    if !cfg.is_object() {
+        return Err(anyhow!("{} must be a JSON object", path.display()));
+    }
+    Ok(cfg)
+}
+
+fn write_persona_config(dir: &std::path::Path, value: &Value) -> Result<()> {
+    let body = serde_json::to_string_pretty(value)?;
+    std::fs::write(dir.join("config.json"), format!("{body}\n"))?;
+    Ok(())
+}
+
+fn config_object(value: &mut Value) -> Result<&mut Map<String, Value>> {
+    if !value.is_object() {
+        return Err(anyhow!("config.json must be a JSON object"));
+    }
+    Ok(value.as_object_mut().expect("object checked"))
+}
+
+fn channels_object(value: &mut Value) -> Result<&mut Map<String, Value>> {
+    let obj = config_object(value)?;
+    let entry = obj.entry("channels").or_insert_with(|| json!({}));
+    if !entry.is_object() {
+        return Err(anyhow!("config.json channels must be a JSON object"));
+    }
+    Ok(entry.as_object_mut().expect("object checked"))
+}
+
+fn channels_from_config(dir: &std::path::Path) -> Result<Vec<String>> {
+    let cfg = read_persona_config(dir)?;
+    let Some(channels) = cfg.get("channels") else {
+        return Ok(Vec::new());
+    };
+    let channels = channels
+        .as_object()
+        .ok_or_else(|| anyhow!("config.json channels must be a JSON object"))?;
+    Ok(channels.keys().cloned().collect())
+}
+
+fn channels_from_config_with_values(dir: &std::path::Path) -> Result<Vec<(String, Value)>> {
+    let cfg = read_persona_config(dir)?;
+    let Some(channels) = cfg.get("channels") else {
+        return Ok(Vec::new());
+    };
+    let channels = channels
+        .as_object()
+        .ok_or_else(|| anyhow!("config.json channels must be a JSON object"))?;
+    let mut out = channels
+        .iter()
+        .map(|(kind, config)| (kind.clone(), config.clone()))
+        .collect::<Vec<_>>();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+fn channel_in_config(dir: &std::path::Path, kind: &str) -> Result<bool> {
+    let cfg = read_persona_config(dir)?;
+    let Some(channels) = cfg.get("channels") else {
+        return Ok(false);
+    };
+    let channels = channels
+        .as_object()
+        .ok_or_else(|| anyhow!("config.json channels must be a JSON object"))?;
+    Ok(channels.contains_key(kind))
+}
+
+fn upsert_channel_config(dir: &std::path::Path, kind: &str, channel: Value) -> Result<()> {
+    let mut cfg = read_persona_config(dir)?;
+    let channels = channels_object(&mut cfg)?;
+    match (channels.get_mut(kind), channel) {
+        (Some(Value::Object(existing)), Value::Object(new)) => {
+            existing.extend(new);
+        }
+        (_, channel) => {
+            channels.insert(kind.to_string(), channel);
+        }
+    }
+    write_persona_config(dir, &cfg)
+}
+
+fn remove_channel_config(dir: &std::path::Path, kind: &str) -> Result<()> {
+    let mut cfg = read_persona_config(dir)?;
+    channels_object(&mut cfg)?.remove(kind);
+    write_persona_config(dir, &cfg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_upsert_preserves_existing_channel_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{
+              "channels": {
+                "telegram": {
+                  "token": "old",
+                  "allowed_user_ids": [123]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        upsert_channel_config(dir.path(), "telegram", json!({ "token": "new" })).unwrap();
+
+        let cfg = read_persona_config(dir.path()).unwrap();
+        let telegram = &cfg["channels"]["telegram"];
+        assert_eq!(telegram["token"], "new");
+        assert_eq!(telegram["allowed_user_ids"], json!([123]));
+    }
+
+    #[test]
+    fn channel_remove_deletes_only_config_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{
+              "channels": {
+                "telegram": {
+                  "token": "new"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        remove_channel_config(dir.path(), "telegram").unwrap();
+
+        let cfg = read_persona_config(dir.path()).unwrap();
+        assert!(!cfg["channels"]
+            .as_object()
+            .unwrap()
+            .contains_key("telegram"));
+    }
+
+    #[test]
+    fn channel_helpers_error_when_config_missing() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(bindings_for(dir.path()).is_err());
+        assert!(channel_in_config(dir.path(), "telegram").is_err());
+    }
+
+    #[test]
+    fn channel_helpers_error_when_channels_is_not_object() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{
+              "model": "openai/gpt-4o-mini",
+              "channels": []
+            }"#,
+        )
+        .unwrap();
+
+        assert!(bindings_for(dir.path()).is_err());
+        assert!(channel_in_config(dir.path(), "telegram").is_err());
+        assert!(upsert_channel_config(dir.path(), "telegram", json!({ "token": "new" })).is_err());
+    }
+
+    #[test]
+    fn persona_config_root_must_be_object() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), "[]").unwrap();
+
+        assert!(read_persona_config(dir.path()).is_err());
+    }
 }

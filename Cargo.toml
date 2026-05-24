@@ -139,3 +139,6 @@ inventory       = { workspace = true }
 dialoguer       = "0.11"
 serde_json      = { workspace = true }
 owo-colors      = "4"
+
+[dev-dependencies]
+tempfile        = { workspace = true }
