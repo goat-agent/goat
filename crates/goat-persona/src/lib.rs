@@ -24,5 +24,6 @@ pub struct PersonaConfig {
     pub personality: PersonalityCard,
     pub default_model: Model,
     pub history_window: usize,
+    pub tool_selectors: Vec<String>,
     pub bindings: Vec<PersonaBinding>,
 }

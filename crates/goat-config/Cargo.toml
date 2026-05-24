@@ -13,9 +13,11 @@ goat-channel     = { workspace = true }
 goat-persona     = { workspace = true }
 serde            = { workspace = true }
 serde_json       = { workspace = true }
-serde_yaml       = "0.9"
 anyhow           = { workspace = true }
 thiserror        = { workspace = true }
 tracing          = { workspace = true }
 tokio            = { workspace = true }
 uuid             = { workspace = true }
+
+[dev-dependencies]
+tempfile         = { workspace = true }
