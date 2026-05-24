@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -265,6 +265,21 @@ impl ToolRegistry {
         specs
     }
 
+    pub fn default_tool_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .by_name
+            .values()
+            .filter(|t| t.default_enabled)
+            .map(|t| t.spec.name.as_str().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    pub fn validate_default_selectors(&self, selectors: &[String]) -> ToolResultValue<()> {
+        validate_tool_selectors(selectors, self.default_tool_names())
+    }
+
     pub async fn call(&self, ctx: ToolContext, call: ToolCall) -> ToolOutput {
         let Some(tool) = self.by_name.get(&call.name) else {
             return ToolOutput::error(format!("unknown tool: {}", call.name));
@@ -275,6 +290,73 @@ impl ToolRegistry {
     pub fn is_empty(&self) -> bool {
         self.by_name.is_empty()
     }
+}
+
+pub fn selector_allows(tool_name: &str, selectors: &[String]) -> bool {
+    selector_allows_with_empty_default(tool_name, selectors, false)
+}
+
+pub fn selector_allows_empty_denies(tool_name: &str, selectors: &[String]) -> bool {
+    selector_allows_with_empty_default(tool_name, selectors, false)
+}
+
+fn selector_allows_with_empty_default(
+    tool_name: &str,
+    selectors: &[String],
+    empty_default: bool,
+) -> bool {
+    if selectors.is_empty() {
+        return empty_default;
+    }
+    let mut allowed = false;
+    let mut denied = false;
+    for selector in selectors {
+        let selector = selector.trim();
+        if selector.is_empty() {
+            continue;
+        }
+        if selector == "*" {
+            allowed = true;
+        } else if let Some(denied_name) = selector.strip_prefix('!') {
+            if denied_name == tool_name || denied_name == "*" {
+                denied = true;
+            }
+        } else if selector == tool_name {
+            allowed = true;
+        }
+    }
+    allowed && !denied
+}
+
+pub fn validate_tool_selectors(
+    selectors: &[String],
+    known_tools: impl IntoIterator<Item = String>,
+) -> ToolResultValue<()> {
+    let known_tools: HashSet<String> = known_tools.into_iter().collect();
+    for selector in selectors {
+        validate_tool_selector(selector, &known_tools)?;
+    }
+    Ok(())
+}
+
+fn validate_tool_selector(selector: &str, known_tools: &HashSet<String>) -> ToolResultValue<()> {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        return Err(ToolError::InvalidInput(
+            "tool selector must not be empty".to_string(),
+        ));
+    }
+    if selector == "*" || selector == "!*" {
+        return Ok(());
+    }
+    let name = selector.strip_prefix('!').unwrap_or(selector);
+    validate_name(name)?;
+    if !known_tools.contains(name) {
+        return Err(ToolError::InvalidInput(format!(
+            "unknown tool selector: {selector}"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -297,5 +379,33 @@ mod tests {
             serde_json::json!({"type":"object","additionalProperties":false}),
         );
         assert_eq!(spec.input_schema["type"], "object");
+    }
+
+    #[test]
+    fn selector_star_allows_tools() {
+        assert!(selector_allows("shell", &["*".to_string()]));
+        assert!(selector_allows("read", &["*".to_string()]));
+    }
+
+    #[test]
+    fn selector_negation_wins() {
+        let selectors = vec!["*".to_string(), "!shell".to_string()];
+        assert!(!selector_allows("shell", &selectors));
+        assert!(selector_allows("read", &selectors));
+    }
+
+    #[test]
+    fn selector_allowlist_excludes_others() {
+        let selectors = vec!["read".to_string(), "grep".to_string()];
+        assert!(selector_allows("read", &selectors));
+        assert!(selector_allows("grep", &selectors));
+        assert!(!selector_allows("shell", &selectors));
+    }
+
+    #[test]
+    fn validates_unknown_selector() {
+        let err =
+            validate_tool_selectors(&["bash".to_string()], vec!["shell".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("unknown tool selector"));
     }
 }
