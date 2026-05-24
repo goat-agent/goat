@@ -7,7 +7,7 @@ mod interaction;
 use std::sync::Arc;
 use std::time::Duration;
 
-use goat_channel::{ChannelCapabilities, ChannelFactory};
+use goat_channel::{ChannelCapabilities, ChannelError, ChannelFactory, ChannelResult};
 use goat_types::ChannelId;
 
 pub use channel::DiscordChannel;
@@ -20,5 +20,11 @@ pub(crate) const CAPABILITIES: ChannelCapabilities = ChannelCapabilities::new(
 );
 
 inventory::submit! {
-    ChannelFactory { id: ID, ctor: || Arc::new(DiscordChannel) }
+    ChannelFactory { id: ID, ctor: || Arc::new(DiscordChannel), validate_config }
+}
+
+fn validate_config(value: &serde_json::Value) -> ChannelResult<()> {
+    serde_json::from_value::<config::DiscordConfig>(value.clone())
+        .map(|_| ())
+        .map_err(|e| ChannelError::Config(format!("discord: {e}")))
 }

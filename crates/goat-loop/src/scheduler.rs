@@ -176,7 +176,7 @@ async fn drain_due(
                 if let ScheduleKind::Cron(expr) = &task.schedule {
                     if let Some(next) = cron_next(expr, now) {
                         match store
-                            .insert_task_run(task.id, next, task.task_text.clone())
+                            .insert_task_run(task.id, next, task.task.clone())
                             .await
                         {
                             Ok(_) => heap.push(Reverse(next)),

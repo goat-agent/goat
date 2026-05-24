@@ -37,7 +37,7 @@ impl Channel for TelegramChannel {
     ) -> ChannelResult<BindOutput> {
         let cfg: TelegramConfig = serde_json::from_value(binding.config)
             .map_err(|e| ChannelError::Config(format!("telegram: {e}")))?;
-        let _allowed_user_ids = cfg.allowed_user_ids;
+        let allowed_user_ids: HashSet<i64> = cfg.allowed_user_ids.into_iter().collect();
         let commands = binding.commands;
         let bot = Bot::new(cfg.token);
         let me = bot
@@ -70,7 +70,14 @@ impl Channel for TelegramChannel {
             }
         }
 
-        tokio::spawn(poll_loop(bot, persona, binding.instance, tx, commands));
+        tokio::spawn(poll_loop(
+            bot,
+            persona,
+            binding.instance,
+            tx,
+            commands,
+            allowed_user_ids,
+        ));
         info!(persona = %persona, "telegram bot bound: @{}", identity.handle);
         Ok((handle, rx))
     }

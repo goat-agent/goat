@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -18,7 +18,10 @@ use goat_store::{
     Direction, ScheduledTaskStatus, Store, TaskRunStatus, ToolInvocationRecord,
     ToolInvocationStatus,
 };
-use goat_tool::{ToolCall, ToolContext, ToolOutput, ToolReadState, ToolRegistry};
+use goat_tool::{
+    selector_allows, selector_allows_empty_denies, validate_tool_selectors, ToolCall, ToolContext,
+    ToolOutput, ToolReadState, ToolRegistry,
+};
 use goat_types::{ConversationId, Event, MessageId, PersonaId};
 use tracing::{info, warn};
 
@@ -61,6 +64,7 @@ pub struct Brain {
     personality: Arc<PersonalityCard>,
     default_model: Model,
     history_window: usize,
+    tool_selectors: Vec<String>,
     providers: Arc<ProviderRegistry>,
     tools: Arc<ToolRegistry>,
     commands: Arc<CommandRegistry>,
@@ -76,6 +80,7 @@ impl Brain {
         personality: Arc<PersonalityCard>,
         default_model: Model,
         history_window: usize,
+        tool_selectors: Vec<String>,
         providers: Arc<ProviderRegistry>,
         tools: Arc<ToolRegistry>,
         commands: Arc<CommandRegistry>,
@@ -88,6 +93,7 @@ impl Brain {
             personality,
             default_model,
             history_window,
+            tool_selectors,
             providers,
             tools,
             commands,
@@ -256,13 +262,11 @@ impl Brain {
         let skill_prompt =
             SkillIndex::discover_root(&self.goat_root).system_prompt_block(self.persona);
         let tool_specs: Vec<ToolSpec> = self
-            .llm_tool_specs(skill_prompt.is_some())
+            .llm_tool_specs(skill_prompt.is_some(), &mode)
             .into_iter()
-            .filter(|spec| match mode {
-                TurnMode::Normal => true,
-                TurnMode::SelfTick => !is_schedule_tool(&spec.name),
-            })
             .collect();
+        let allowed_tools: HashSet<String> =
+            tool_specs.iter().map(|spec| spec.name.clone()).collect();
         let read_state = ToolReadState::default();
         let now_iso = chrono::Utc::now().to_rfc3339();
         let base_system = format!(
@@ -273,9 +277,9 @@ impl Brain {
         );
         let system_prompt = match mode {
             TurnMode::Normal => base_system,
-            TurnMode::SelfTick => format!(
+            TurnMode::SelfTick { .. } => format!(
                 "{base_system}\n\n<self_tick_context>\nYou are running at the \
-                 fire moment of a scheduled task. Read the task_text and act. \
+                 fire moment of a scheduled task. Read the task and act. \
                  If the task is no longer worth doing, reply with exactly: skip\n\
                  </self_tick_context>"
             ),
@@ -292,7 +296,7 @@ impl Brain {
 
             if folded.tool_calls.is_empty() {
                 let final_text = sanitize_final_text(folded.text);
-                if matches!(mode, TurnMode::SelfTick)
+                if matches!(mode, TurnMode::SelfTick { .. })
                     && final_text.trim().eq_ignore_ascii_case("skip")
                 {
                     return Ok(RenderSummary {
@@ -316,7 +320,9 @@ impl Brain {
             messages.push(assistant_tool_call_message(&folded.tool_calls));
 
             for call in folded.tool_calls {
-                let output = self.execute_tool(&conv, &call, read_state.clone()).await;
+                let output = self
+                    .execute_tool(&conv, &call, read_state.clone(), &allowed_tools)
+                    .await;
                 messages.push(LlmMessage {
                     role: Role::Tool,
                     content: vec![ContentPart::ToolResult {
@@ -405,7 +411,7 @@ impl Brain {
 
         let mut messages = vec![LlmMessage {
             role: Role::User,
-            content: vec![ContentPart::Text(task.task_text.clone())],
+            content: vec![ContentPart::Text(task.task.clone())],
         }];
 
         let summary = match self
@@ -414,7 +420,9 @@ impl Brain {
                 conv.clone(),
                 None,
                 &mut messages,
-                TurnMode::SelfTick,
+                TurnMode::SelfTick {
+                    tools: task.tools.clone(),
+                },
             )
             .await
         {
@@ -475,11 +483,19 @@ impl Brain {
         Ok(())
     }
 
-    fn llm_tool_specs(&self, has_skills: bool) -> Vec<ToolSpec> {
+    fn llm_tool_specs(&self, has_skills: bool, mode: &TurnMode) -> Vec<ToolSpec> {
         self.tools
             .default_specs()
             .into_iter()
+            .filter(|spec| selector_allows(spec.name.as_str(), &self.tool_selectors))
             .filter(|spec| has_skills || spec.name.as_str() != "skill")
+            .filter(|spec| match mode {
+                TurnMode::Normal => true,
+                TurnMode::SelfTick { tools } => {
+                    !is_schedule_tool(spec.name.as_str())
+                        && selector_allows_empty_denies(spec.name.as_str(), tools)
+                }
+            })
             .map(|spec| ToolSpec {
                 name: spec.name.as_str().to_string(),
                 description: spec.description.unwrap_or_default(),
@@ -493,6 +509,7 @@ impl Brain {
         conv: &ConversationId,
         call: &ModelToolCall,
         read_state: ToolReadState,
+        allowed_tools: &HashSet<String>,
     ) -> ToolOutput {
         let started_at = chrono::Utc::now();
         let name = match goat_tool::ToolName::new(call.name.clone()) {
@@ -504,6 +521,20 @@ impl Brain {
                 return output;
             }
         };
+        if !allowed_tools.contains(name.as_str()) {
+            let output = ToolOutput::error(format!("tool not allowed for this turn: {name}"));
+            self.audit_tool_call(conv, call, name.to_string(), &output, started_at)
+                .await;
+            return output;
+        }
+        if is_schedule_create_tool(name.as_str()) {
+            if let Err(e) = validate_scheduled_tool_selectors(&call.arguments, allowed_tools) {
+                let output = ToolOutput::error(e);
+                self.audit_tool_call(conv, call, name.to_string(), &output, started_at)
+                    .await;
+                return output;
+            }
+        }
         let ctx = ToolContext {
             persona: self.persona,
             conversation: conv.clone(),
@@ -727,10 +758,10 @@ fn meta_marker_score(text: &str) -> usize {
         .count()
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum TurnMode {
     Normal,
-    SelfTick,
+    SelfTick { tools: Vec<String> },
 }
 
 fn is_schedule_tool(name: &str) -> bool {
@@ -738,6 +769,27 @@ fn is_schedule_tool(name: &str) -> bool {
         name,
         "schedule_once" | "schedule_cron" | "cancel_task" | "list_tasks"
     )
+}
+
+fn is_schedule_create_tool(name: &str) -> bool {
+    matches!(name, "schedule_once" | "schedule_cron")
+}
+
+fn validate_scheduled_tool_selectors(
+    arguments: &serde_json::Value,
+    allowed_tools: &HashSet<String>,
+) -> Result<(), String> {
+    let Some(tools) = arguments.get("tools") else {
+        return Ok(());
+    };
+    let selectors: Vec<String> = serde_json::from_value(tools.clone())
+        .map_err(|e| format!("invalid tools selector list: {e}"))?;
+    let known_tools = allowed_tools
+        .iter()
+        .filter(|name| !is_schedule_tool(name))
+        .cloned()
+        .collect::<Vec<_>>();
+    validate_tool_selectors(&selectors, known_tools).map_err(|e| e.to_string())
 }
 
 fn truncate_for_summary(text: &str) -> String {
@@ -769,6 +821,44 @@ const META_LEAK_MARKERS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn selectors(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn explicit_empty_persona_selector_denies_tools() {
+        assert!(!selector_allows("shell", &selectors(&[])));
+    }
+
+    #[test]
+    fn self_tick_empty_tool_selector_denies_tools() {
+        assert!(!selector_allows_empty_denies("read", &selectors(&[])));
+        assert!(selector_allows_empty_denies("read", &selectors(&["*"])));
+    }
+
+    #[test]
+    fn scheduled_tool_selectors_reject_unknown_tools() {
+        let allowed_tools = HashSet::from(["schedule_once".to_string(), "shell".to_string()]);
+        let args = serde_json::json!({"tools": ["bash"]});
+
+        let err = validate_scheduled_tool_selectors(&args, &allowed_tools).unwrap_err();
+
+        assert!(err.contains("unknown tool selector"));
+    }
+
+    #[test]
+    fn scheduled_tool_selectors_accept_allowed_non_schedule_tools() {
+        let allowed_tools = HashSet::from([
+            "schedule_once".to_string(),
+            "schedule_cron".to_string(),
+            "shell".to_string(),
+            "read".to_string(),
+        ]);
+        let args = serde_json::json!({"tools": ["shell", "read"]});
+
+        validate_scheduled_tool_selectors(&args, &allowed_tools).unwrap();
+    }
 
     #[test]
     fn assistant_tool_call_message_contains_no_user_visible_text() {

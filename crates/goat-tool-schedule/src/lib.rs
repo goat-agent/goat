@@ -61,8 +61,8 @@ pub fn register(registry: &mut ToolRegistry, store: Arc<dyn Store>, scheduler: S
 #[derive(Debug, Deserialize)]
 struct ScheduleOnceArgs {
     due_at: String,
-    task_text: String,
-    tools_to_use: Vec<String>,
+    task: String,
+    tools: Vec<String>,
 }
 
 pub struct ScheduleOnceTool {
@@ -77,8 +77,8 @@ impl ToolHandler for ScheduleOnceTool {
             Ok(a) => a,
             Err(e) => return ToolOutput::error(format!("invalid schedule_once input: {e}")),
         };
-        if args.task_text.trim().is_empty() {
-            return ToolOutput::error("task_text must not be empty");
+        if args.task.trim().is_empty() {
+            return ToolOutput::error("task must not be empty");
         }
         let due_at = match DateTime::parse_from_rfc3339(&args.due_at) {
             Ok(d) => d.with_timezone(&Utc),
@@ -92,11 +92,11 @@ impl ToolHandler for ScheduleOnceTool {
                 now.to_rfc3339()
             ));
         }
-        let similar = similar_summaries(&*self.store, ctx.persona, &args.task_text).await;
+        let similar = similar_summaries(&*self.store, ctx.persona, &args.task).await;
         let new = NewScheduledTask {
             persona: ctx.persona,
-            task_text: args.task_text.clone(),
-            tools_to_use: args.tools_to_use,
+            task: args.task.clone(),
+            tools: args.tools,
             origin_conv: ctx.conversation,
             schedule: ScheduleKind::Once(due_at),
             created_by_msg_id: None,
@@ -107,7 +107,7 @@ impl ToolHandler for ScheduleOnceTool {
         };
         if let Err(e) = self
             .store
-            .insert_task_run(task_id, due_at, args.task_text.clone())
+            .insert_task_run(task_id, due_at, args.task.clone())
             .await
         {
             return ToolOutput::error(format!("insert_task_run failed: {e}"));
@@ -128,9 +128,9 @@ impl ToolHandler for ScheduleOnceTool {
 
 #[derive(Debug, Deserialize)]
 struct ScheduleCronArgs {
-    cron_expr: String,
-    task_text: String,
-    tools_to_use: Vec<String>,
+    cron: String,
+    task: String,
+    tools: Vec<String>,
     #[serde(default)]
     first_at: Option<String>,
 }
@@ -147,12 +147,12 @@ impl ToolHandler for ScheduleCronTool {
             Ok(a) => a,
             Err(e) => return ToolOutput::error(format!("invalid schedule_cron input: {e}")),
         };
-        if args.task_text.trim().is_empty() {
-            return ToolOutput::error("task_text must not be empty");
+        if args.task.trim().is_empty() {
+            return ToolOutput::error("task must not be empty");
         }
-        let schedule = match cron_expr::parse(&args.cron_expr) {
+        let schedule = match cron_expr::parse(&args.cron) {
             Ok(s) => s,
-            Err(e) => return ToolOutput::error(format!("invalid cron_expr: {e}")),
+            Err(e) => return ToolOutput::error(format!("invalid cron: {e}")),
         };
         let now = Utc::now();
         let first_at = if let Some(raw) = args.first_at.as_deref() {
@@ -173,13 +173,13 @@ impl ToolHandler for ScheduleCronTool {
             .into_iter()
             .map(|d| d.to_rfc3339())
             .collect();
-        let similar = similar_summaries(&*self.store, ctx.persona, &args.task_text).await;
+        let similar = similar_summaries(&*self.store, ctx.persona, &args.task).await;
         let new = NewScheduledTask {
             persona: ctx.persona,
-            task_text: args.task_text.clone(),
-            tools_to_use: args.tools_to_use,
+            task: args.task.clone(),
+            tools: args.tools,
             origin_conv: ctx.conversation,
-            schedule: ScheduleKind::Cron(args.cron_expr.clone()),
+            schedule: ScheduleKind::Cron(args.cron.clone()),
             created_by_msg_id: None,
         };
         let task_id = match self.store.insert_scheduled_task(new).await {
@@ -188,7 +188,7 @@ impl ToolHandler for ScheduleCronTool {
         };
         if let Err(e) = self
             .store
-            .insert_task_run(task_id, first_at, args.task_text.clone())
+            .insert_task_run(task_id, first_at, args.task.clone())
             .await
         {
             return ToolOutput::error(format!("insert_task_run failed: {e}"));
@@ -197,7 +197,7 @@ impl ToolHandler for ScheduleCronTool {
         ToolOutput::structured(json!({
             "task_id": task_id,
             "schedule_kind": "cron",
-            "cron_expr": args.cron_expr,
+            "cron": args.cron,
             "first_at": first_at.to_rfc3339(),
             "preview": preview,
             "similar_existing": similar,
@@ -256,10 +256,10 @@ impl ToolHandler for ListTasksTool {
                         json!({
                             "id": task.id,
                             "kind": kind,
-                            "task_text": task.task_text,
+                            "task": task.task,
                             "schedule": schedule_summary,
                             "next_at": next_at.map(|d| d.to_rfc3339()),
-                            "tools_to_use": task.tools_to_use,
+                            "tools": task.tools,
                         })
                     })
                     .collect();
@@ -281,20 +281,20 @@ fn spec_schedule_once() -> ToolSpec {
         json!({
             "type": "object",
             "additionalProperties": false,
-            "required": ["due_at", "task_text", "tools_to_use"],
+            "required": ["due_at", "task", "tools"],
             "properties": {
                 "due_at": {
                     "type": "string",
                     "description": "When the task fires (RFC 3339)."
                 },
-                "task_text": {
+                "task": {
                     "type": "string",
                     "description": "What you will do at that fire moment."
                 },
-                "tools_to_use": {
+                "tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Tool names you may call at fire time."
+                    "description": "Tool selectors you may call at fire time. Use [\"*\"] for all persona-allowed non-schedule tools, [] for no tools, or names/negations such as [\"read\", \"grep\"] or [\"*\", \"!shell\"]."
                 }
             }
         }),
@@ -308,20 +308,20 @@ fn spec_schedule_cron() -> ToolSpec {
         json!({
             "type": "object",
             "additionalProperties": false,
-            "required": ["cron_expr", "task_text", "tools_to_use"],
+            "required": ["cron", "task", "tools"],
             "properties": {
-                "cron_expr": {
+                "cron": {
                     "type": "string",
                     "description": "5-field cron: minute hour day month day-of-week (day-of-week 0=Sun..6=Sat)."
                 },
-                "task_text": {
+                "task": {
                     "type": "string",
                     "description": "What you will do at each fire moment."
                 },
-                "tools_to_use": {
+                "tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Tool names you may call at fire time."
+                    "description": "Tool selectors you may call at fire time. Use [\"*\"] for all persona-allowed non-schedule tools, [] for no tools, or names/negations such as [\"read\", \"grep\"] or [\"*\", \"!shell\"]."
                 },
                 "first_at": {
                     "type": "string",
@@ -368,7 +368,7 @@ fn spec_list_tasks() -> ToolSpec {
 // --------------------------------------------------------------------------
 
 /// Returns up to a handful of compact summaries of already-active tasks
-/// whose `task_text` contains the leading words of `incoming`. Used to
+/// whose `task` contains the leading words of `incoming`. Used to
 /// surface a soft warning in the tool's structured output. Returns an
 /// empty list on any error (the registration still proceeds).
 async fn similar_summaries(
@@ -389,7 +389,7 @@ async fn similar_summaries(
             .map(|t| {
                 json!({
                     "id": t.id,
-                    "task_text": t.task_text,
+                    "task": t.task,
                 })
             })
             .collect(),
@@ -435,8 +435,8 @@ mod tests {
             name: SCHEDULE_ONCE,
             arguments: json!({
                 "due_at": due_at,
-                "task_text": text,
-                "tools_to_use": ["bash"],
+                "task": text,
+                "tools": ["shell"],
             }),
         }
     }
@@ -470,7 +470,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn schedule_once_rejects_empty_task_text() {
+    async fn schedule_once_rejects_empty_task() {
         let (store, ctx, _) = setup().await;
         let tool = ScheduleOnceTool {
             store,
@@ -495,9 +495,9 @@ mod tests {
                     call_id: "c".into(),
                     name: SCHEDULE_CRON,
                     arguments: json!({
-                        "cron_expr": "99 * * * *",
-                        "task_text": "weekly task",
-                        "tools_to_use": [],
+                        "cron": "99 * * * *",
+                        "task": "weekly task",
+                        "tools": [],
                     }),
                 },
             )
@@ -519,9 +519,9 @@ mod tests {
                     call_id: "c".into(),
                     name: SCHEDULE_CRON,
                     arguments: json!({
-                        "cron_expr": "0 7 * * 1",
-                        "task_text": "weekly summary",
-                        "tools_to_use": ["claude-code"],
+                        "cron": "0 7 * * 1",
+                        "task": "weekly summary",
+                        "tools": ["read", "grep"],
                     }),
                 },
             )

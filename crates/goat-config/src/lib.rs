@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,8 +17,6 @@ const LEGACY_STATE_DB: &str = "state.db";
 pub enum ConfigError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    #[error("yaml: {0}")]
-    Yaml(#[from] serde_yaml::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
     #[error("invalid model in persona '{slug}': {source}")]
@@ -127,12 +126,17 @@ async fn scan_personas(dir: &Path) -> Result<Vec<PersonaConfig>> {
     Ok(personas)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PersonaFrontMatter {
+struct PersonaRuntimeConfig {
     #[serde(default)]
     display: Option<String>,
-    model: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    tools: Option<Vec<String>>,
+    #[serde(default)]
+    channels: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     history_window: Option<usize>,
 }
@@ -146,80 +150,52 @@ fn load_persona(dir: &Path, slug: &str) -> Result<PersonaConfig> {
         .into());
     }
     let raw = fs::read_to_string(&persona_md)?;
-    let (front_str, body) =
-        split_front_matter(&raw).ok_or_else(|| anyhow!("persona.md missing YAML front-matter"))?;
-    let front: PersonaFrontMatter = serde_yaml::from_str(front_str)?;
+    let runtime = load_runtime_config(dir)?;
 
-    let model = Model::parse(&front.model).map_err(|source| ConfigError::Model {
+    let model_raw = runtime
+        .model
+        .as_deref()
+        .ok_or_else(|| anyhow!("persona '{slug}' missing model in config.json"))?;
+    let model = Model::parse(model_raw).map_err(|source| ConfigError::Model {
         slug: slug.to_string(),
         source,
     })?;
 
     let personality = PersonalityCard {
-        system_prompt: body.trim().to_string(),
+        system_prompt: raw.trim().to_string(),
         traits: Vec::new(),
         source_path: persona_md,
     };
 
-    let bindings = scan_bindings(dir)?;
+    let bindings = bindings_from_config(&runtime.channels);
 
     Ok(PersonaConfig {
         id: PersonaId::from_slug(slug),
         slug: slug.to_string(),
-        display: front.display.unwrap_or_else(|| slug.to_string()),
+        display: runtime.display.unwrap_or_else(|| slug.to_string()),
         personality,
         default_model: model,
-        history_window: front.history_window.unwrap_or(DEFAULT_HISTORY_WINDOW),
+        history_window: runtime.history_window.unwrap_or(DEFAULT_HISTORY_WINDOW),
+        tool_selectors: runtime.tools.unwrap_or_else(|| vec!["*".to_string()]),
         bindings,
     })
 }
 
-fn scan_bindings(dir: &Path) -> Result<Vec<PersonaBinding>> {
-    let mut bindings = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let name = match path.file_stem().and_then(|s| s.to_str()) {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
-        let raw = fs::read_to_string(&path)?;
-        let config: serde_json::Value =
-            serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
-        bindings.push(PersonaBinding { name, config });
+fn load_runtime_config(dir: &Path) -> Result<PersonaRuntimeConfig> {
+    let path = dir.join("config.json");
+    if !path.exists() {
+        return Err(anyhow!("missing {}", path.display()));
     }
-    bindings.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(bindings)
+    let raw = fs::read_to_string(&path)?;
+    serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
 }
 
-pub fn split_front_matter(s: &str) -> Option<(&str, &str)> {
-    let s = s
-        .strip_prefix("---\n")
-        .or_else(|| s.strip_prefix("---\r\n"))?;
-    let end = s.find("\n---")?;
-    let (front, after) = s.split_at(end);
-    let body = after
-        .trim_start_matches("\n---")
-        .trim_start_matches(['\n', '\r']);
-    Some((front, body))
-}
-
-pub fn front_field(s: &str, key: &str) -> Option<String> {
-    let (front, _) = split_front_matter(s)?;
-    for line in front.lines() {
-        if let Some((k, v)) = line.split_once(':') {
-            if k.trim() == key {
-                return Some(v.trim().to_string());
-            }
-        }
-    }
-    None
+fn bindings_from_config(configured: &BTreeMap<String, serde_json::Value>) -> Vec<PersonaBinding> {
+    configured
+        .clone()
+        .into_iter()
+        .map(|(name, config)| PersonaBinding { name, config })
+        .collect()
 }
 
 #[cfg(test)]
@@ -227,26 +203,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn front_matter_split_basic() {
-        let raw = "---\nmodel: openai/gpt-4o-mini\n---\n\nbody text\n";
-        let (front, body) = split_front_matter(raw).unwrap();
-        assert!(front.contains("model: openai/gpt-4o-mini"));
-        assert_eq!(body.trim(), "body text");
-    }
+    fn runtime_config_uses_only_config_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let persona_dir = dir.path().join("dev");
+        fs::create_dir_all(&persona_dir).unwrap();
+        fs::write(
+            persona_dir.join("persona.md"),
+            "---\nmodel: ignored/model\n---\nYou are dev.\n",
+        )
+        .unwrap();
+        fs::write(
+            persona_dir.join("config.json"),
+            r#"{
+              "display": "Developer",
+              "model": "openai/gpt-4o-mini",
+              "tools": ["*", "!shell"],
+              "history_window": 7,
+              "channels": {
+                "telegram": { "token": "new" }
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(persona_dir.join("stray.json"), r#"{ "token": "ignored" }"#).unwrap();
 
-    #[test]
-    fn front_matter_absent_returns_none() {
-        assert!(split_front_matter("no front matter").is_none());
-    }
-
-    #[test]
-    fn front_matter_parses_full_fields() {
-        let raw =
-            "---\ndisplay: 개발가재\nmodel: openai/gpt-4o-mini\nhistory_window: 30\n---\nbody";
-        let (front, _) = split_front_matter(raw).unwrap();
-        let p: PersonaFrontMatter = serde_yaml::from_str(front).unwrap();
-        assert_eq!(p.display.as_deref(), Some("개발가재"));
-        assert_eq!(p.model, "openai/gpt-4o-mini");
-        assert_eq!(p.history_window, Some(30));
+        let p = load_persona(&persona_dir, "dev").unwrap();
+        assert!(p.personality.system_prompt.contains("ignored/model"));
+        assert_eq!(p.display, "Developer");
+        assert_eq!(p.history_window, 7);
+        assert_eq!(p.tool_selectors, vec!["*", "!shell"]);
+        assert_eq!(p.bindings.len(), 1);
+        assert_eq!(p.bindings[0].name, "telegram");
+        assert_eq!(p.bindings[0].config["token"], "new");
     }
 }
