@@ -6,7 +6,7 @@ mod inbound;
 use std::sync::Arc;
 use std::time::Duration;
 
-use goat_channel::{ChannelCapabilities, ChannelFactory};
+use goat_channel::{ChannelCapabilities, ChannelError, ChannelFactory, ChannelResult};
 use goat_types::ChannelId;
 
 pub use channel::TelegramChannel;
@@ -19,5 +19,11 @@ pub(crate) const CAPABILITIES: ChannelCapabilities = ChannelCapabilities::new(
 );
 
 inventory::submit! {
-    ChannelFactory { id: ID, ctor: || Arc::new(TelegramChannel) }
+    ChannelFactory { id: ID, ctor: || Arc::new(TelegramChannel), validate_config }
+}
+
+fn validate_config(value: &serde_json::Value) -> ChannelResult<()> {
+    serde_json::from_value::<config::TelegramConfig>(value.clone())
+        .map(|_| ())
+        .map_err(|e| ChannelError::Config(format!("telegram: {e}")))
 }

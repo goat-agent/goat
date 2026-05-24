@@ -139,6 +139,7 @@ pub trait ChannelHandle: Send + Sync + 'static {
 pub struct ChannelFactory {
     pub id: ChannelId,
     pub ctor: fn() -> Arc<dyn Channel>,
+    pub validate_config: fn(&serde_json::Value) -> ChannelResult<()>,
 }
 
 inventory::collect!(ChannelFactory);
