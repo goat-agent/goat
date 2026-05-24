@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -20,6 +21,7 @@ pub(crate) async fn poll_loop(
     instance: InstanceId,
     tx: mpsc::Sender<IncomingMessage>,
     commands: Vec<CommandSpec>,
+    allowed_user_ids: HashSet<i64>,
 ) {
     let mut offset: i32 = 0;
     loop {
@@ -30,7 +32,9 @@ pub(crate) async fn poll_loop(
                     if next > offset {
                         offset = next;
                     }
-                    if let Some(msg) = update_to_incoming(persona, instance, update, &commands) {
+                    if let Some(msg) =
+                        update_to_incoming(persona, instance, update, &commands, &allowed_user_ids)
+                    {
                         if tx.send(msg).await.is_err() {
                             warn!("telegram receiver dropped; stopping poll");
                             return;
@@ -51,11 +55,19 @@ fn update_to_incoming(
     instance: InstanceId,
     update: teloxide::types::Update,
     commands: &[CommandSpec],
+    allowed_user_ids: &HashSet<i64>,
 ) -> Option<IncomingMessage> {
     let UpdateKind::Message(message) = update.kind else {
         return None;
     };
     let from = message.from.as_ref()?;
+    if !is_allowed_user_id(from.id.0, allowed_user_ids) {
+        debug!(
+            user_id = from.id.0,
+            "telegram update rejected by allowed_user_ids"
+        );
+        return None;
+    }
     let attachments = extract_attachments(&message);
     let raw_text = message
         .text()
@@ -127,6 +139,13 @@ fn command_text(call: &CommandCall) -> String {
     } else {
         format!("/{} {}", call.name.as_str(), call.args)
     }
+}
+
+fn is_allowed_user_id(user_id: u64, allowed_user_ids: &HashSet<i64>) -> bool {
+    allowed_user_ids.is_empty()
+        || i64::try_from(user_id)
+            .ok()
+            .is_some_and(|id| allowed_user_ids.contains(&id))
 }
 
 fn split_command(rest: &str) -> (&str, &str) {
@@ -212,5 +231,29 @@ fn file_ref(value: String) -> AttachmentSource {
         kind: "file_id".to_string(),
         value,
         raw: serde_json::Value::Null,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn allowlist(values: &[i64]) -> HashSet<i64> {
+        values.iter().copied().collect()
+    }
+
+    #[test]
+    fn allowlist_empty_allows_any_user() {
+        assert!(is_allowed_user_id(42, &allowlist(&[])));
+    }
+
+    #[test]
+    fn allowlist_accepts_configured_user() {
+        assert!(is_allowed_user_id(42, &allowlist(&[42])));
+    }
+
+    #[test]
+    fn allowlist_rejects_unconfigured_user() {
+        assert!(!is_allowed_user_id(7, &allowlist(&[42])));
     }
 }
