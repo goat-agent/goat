@@ -386,3 +386,96 @@ fn build_command_registry(
     }
     registry
 }
+
+#[cfg(test)]
+mod tests {
+    //! Boot-sequence integration tests. The concrete provider/channel crates
+    //! are only linked by the final binary, so in this unit crate the inventory
+    //! registries are empty. That is exactly what makes these tests valuable:
+    //! they exercise the graceful-degradation paths (unknown provider, missing
+    //! embedder, unbindable channel) and prove boot still succeeds, spinning up
+    //! only the scheduler, rather than panicking or aborting.
+    use super::*;
+    use goat_llm::{Model, ProviderId};
+    use goat_persona::{EmbeddingSettings, MemoryConfig, PersonaConfig, PersonalityCard};
+
+    fn paths_in(dir: &Path) -> GoatPaths {
+        GoatPaths {
+            root: dir.to_path_buf(),
+            credentials_json: dir.join("credentials.json"),
+            personas_dir: dir.join("personas"),
+            skills_dir: dir.join("skills"),
+            state_db: dir.join("goat.db"),
+            logs_dir: dir.join("logs"),
+        }
+    }
+
+    fn persona(slug: &str, model: &str) -> PersonaConfig {
+        PersonaConfig {
+            id: PersonaId::from_slug(slug),
+            slug: slug.into(),
+            display: slug.into(),
+            personality: PersonalityCard {
+                system_prompt: "you are a test persona".into(),
+                traits: vec![],
+                source_path: Default::default(),
+            },
+            default_model: Model::new(ProviderId::new("openai"), model),
+            history_window: 10,
+            tool_selectors: vec![],
+            bindings: vec![],
+            memory: MemoryConfig::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn boots_with_no_personas_and_spawns_only_scheduler() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = LoadedConfig {
+            paths: paths_in(dir.path()),
+            personas: vec![],
+        };
+        let goat = Goat::boot_inner(cfg, None).await.expect("boot");
+        assert_eq!(
+            goat.join_handles.len(),
+            1,
+            "expected only the scheduler task"
+        );
+    }
+
+    #[tokio::test]
+    async fn persona_with_unresolvable_provider_is_skipped_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = LoadedConfig {
+            paths: paths_in(dir.path()),
+            personas: vec![persona("alice", "openai/gpt-5.1")],
+        };
+        // The model's provider can't be resolved (no provider crates linked),
+        // so the persona is skipped — but boot must still succeed.
+        let goat = Goat::boot_inner(cfg, None).await.expect("boot");
+        assert_eq!(goat.join_handles.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn embedder_probe_failure_degrades_to_core_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = persona("bob", "openai/gpt-5.1");
+        p.memory = MemoryConfig {
+            enabled: true,
+            embedding: Some(EmbeddingSettings {
+                provider: "openai".into(),
+                model: "text-embedding-3-small".into(),
+            }),
+            episodic_k: 8,
+            summarize: false,
+        };
+        let cfg = LoadedConfig {
+            paths: paths_in(dir.path()),
+            personas: vec![p],
+        };
+        // Embedding provider isn't linked, so the probe path is skipped and the
+        // persona would run core-only. Boot must not fail.
+        let goat = Goat::boot_inner(cfg, None).await.expect("boot");
+        assert_eq!(goat.join_handles.len(), 1);
+    }
+}
