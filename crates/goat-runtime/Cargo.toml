@@ -12,6 +12,7 @@ goat-types            = { workspace = true }
 goat-bus              = { workspace = true }
 goat-store            = { workspace = true }
 goat-memory           = { workspace = true }
+goat-evaluator        = { workspace = true }
 goat-config           = { workspace = true }
 goat-credentials      = { workspace = true }
 goat-llm              = { workspace = true }

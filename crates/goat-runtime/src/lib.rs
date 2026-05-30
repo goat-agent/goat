@@ -9,6 +9,7 @@ use goat_channel::{Channel, ChannelBinding, ChannelFactory, ChannelHandle};
 use goat_command::{CommandFactory, CommandProviderContext, CommandRegistry};
 use goat_config::{GoatPaths, LoadedConfig};
 use goat_credentials::JsonFileStore;
+use goat_evaluator::{Evaluator, ModelScoreStore, NoopEvaluator};
 use goat_llm::{CredentialStore, EmbeddingProvider, EmbeddingProviderSpec, LlmProviderSpec};
 use goat_memory::{Embedder, MemoryStore, SqliteMemory};
 use goat_persona::PersonaConfig;
@@ -64,8 +65,12 @@ impl Goat {
             .context("open store")?;
         // Memory tables carry FKs into personas/conversations and therefore
         // share goat.db; reuse the store's pool rather than opening a second
-        // database file.
-        let memory: Arc<dyn MemoryStore> = Arc::new(SqliteMemory::from_pool(sqlite_store.pool()));
+        // database file. The evaluator's model-score table lives in the same
+        // pool for the same reason.
+        let pool = sqlite_store.pool();
+        let memory: Arc<dyn MemoryStore> = Arc::new(SqliteMemory::from_pool(pool.clone()));
+        let evaluator: Arc<dyn Evaluator> = Arc::new(NoopEvaluator);
+        let model_scores = Arc::new(ModelScoreStore::new(pool));
         let store: Arc<dyn Store> = Arc::new(sqlite_store);
 
         let credentials: Arc<dyn CredentialStore> = Arc::new(
@@ -114,6 +119,8 @@ impl Goat {
             memory,
             embedders,
             renderer,
+            evaluator,
+            model_scores,
             bus,
         };
 
@@ -265,6 +272,8 @@ struct RuntimeShared<'a> {
     memory: Arc<dyn MemoryStore>,
     embedders: Arc<HashMap<PersonaId, Arc<dyn Embedder>>>,
     renderer: Arc<dyn StreamRenderer>,
+    evaluator: Arc<dyn Evaluator>,
+    model_scores: Arc<ModelScoreStore>,
     bus: EventBus,
 }
 
@@ -345,6 +354,8 @@ async fn spawn_persona(
         raw.memory.episodic_k,
         raw.memory.summarize,
         shared.renderer.clone(),
+        shared.evaluator.clone(),
+        shared.model_scores.clone(),
         shared.goat_root.clone(),
     ));
     let bus = shared.bus.clone();
