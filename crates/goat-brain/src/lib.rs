@@ -47,6 +47,13 @@ Write in compact third-person notes. Output only the summary text, no preamble."
 const MIN_RECALL_SCORE: f32 = 0.5;
 /// Max characters per recalled episodic excerpt injected into the prompt.
 const RECALL_SNIPPET_CHARS: usize = 240;
+/// Upper bound on messages folded into the rolling summary in a single
+/// summarization call, so a large backlog never sends one enormous transcript
+/// to the summarizer (which would risk a context-window overflow or timeout).
+const MAX_SUMMARY_FOLD_BATCH: usize = 40;
+/// Upper bound on summarization calls per turn. A long backlog catches up
+/// across turns rather than stalling a single turn behind many LLM calls.
+const MAX_SUMMARY_FOLDS_PER_TURN: usize = 4;
 
 #[derive(Clone, Default)]
 pub struct ProviderRegistry {
@@ -412,27 +419,41 @@ impl Brain {
         let mut summary_text = existing.as_ref().map(|s| s.summary.clone());
         let mut summarized = existing.map(|s| s.summarized_count).unwrap_or(0).min(total);
 
-        // Fold the oldest un-summarized messages once the tail exceeds two
-        // windows, bringing the raw tail back down to one window. Batching
-        // keeps the extra summarization call to ~once per window of messages.
-        if total.saturating_sub(summarized) > 2 * self.history_window {
-            let fold_count = total - summarized - self.history_window;
+        // Fold the oldest un-summarized messages while the tail exceeds two
+        // windows, bringing it back toward one window. Each fold is capped at
+        // MAX_SUMMARY_FOLD_BATCH messages so a large backlog (e.g. summarization
+        // newly enabled on a long conversation) never sends one enormous
+        // transcript to the summarizer; at most MAX_SUMMARY_FOLDS_PER_TURN folds
+        // run per turn, so catching up can't stall a single turn — the rest
+        // folds on later turns.
+        let mut folds_done = 0;
+        while folds_done < MAX_SUMMARY_FOLDS_PER_TURN
+            && total.saturating_sub(summarized) > 2 * self.history_window
+        {
+            let remaining = total - summarized - self.history_window;
+            let fold_count = remaining.min(MAX_SUMMARY_FOLD_BATCH);
             let batch = self
                 .store
                 .messages_from(self.persona, conv, summarized, fold_count)
                 .await?;
-            if let Some(updated) = self.summarize_batch(summary_text.as_deref(), &batch).await {
-                let new_count = summarized + fold_count;
-                if let Err(e) = self
-                    .store
-                    .upsert_conversation_summary(self.persona, conv, &updated, new_count)
-                    .await
-                {
-                    warn!(persona = %self.persona, error = ?e, "upsert_conversation_summary failed");
-                } else {
+            match self.summarize_batch(summary_text.as_deref(), &batch).await {
+                Some(updated) => {
+                    let new_count = summarized + fold_count;
+                    if let Err(e) = self
+                        .store
+                        .upsert_conversation_summary(self.persona, conv, &updated, new_count)
+                        .await
+                    {
+                        warn!(persona = %self.persona, error = ?e, "upsert_conversation_summary failed");
+                        break;
+                    }
                     summary_text = Some(updated);
                     summarized = new_count;
+                    folds_done += 1;
                 }
+                // Provider error: leave the watermark untouched and stop folding
+                // this turn so the turn still proceeds; it retries next turn.
+                None => break,
             }
         }
 
