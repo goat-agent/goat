@@ -13,6 +13,7 @@ goat-llm     = { workspace = true }
 goat-channel = { workspace = true }
 goat-render  = { workspace = true }
 goat-store   = { workspace = true }
+goat-memory  = { workspace = true }
 goat-bus     = { workspace = true }
 goat-persona = { workspace = true }
 goat-tool    = { workspace = true }

@@ -11,11 +11,12 @@ use goat_llm::{
     BlockId, ContentPart, LlmChunk, LlmMessage, LlmProvider, LlmRequest, LlmStream, Model, Role,
     StopReason, ToolSpec, Usage,
 };
+use goat_memory::{Embedder, EpisodicKind, MemoryStore};
 use goat_persona::PersonalityCard;
 use goat_render::{RenderSummary, StreamRenderer};
 use goat_skills::SkillIndex;
 use goat_store::{
-    Direction, ScheduledTaskStatus, Store, TaskRunStatus, ToolInvocationRecord,
+    Direction, HistoryRow, ScheduledTaskStatus, Store, TaskRunStatus, ToolInvocationRecord,
     ToolInvocationStatus,
 };
 use goat_tool::{
@@ -35,6 +36,17 @@ When you use tools, wait for tool results and then answer once; do not describe 
 When showing command output, preserve line breaks and prefer fenced code blocks.
 </goat_runtime_guard>
 "#;
+
+const SUMMARY_SYSTEM_PROMPT: &str = r#"You maintain a running summary of an ongoing chat conversation so older turns can be dropped from the live context without losing what matters.
+Given the previous summary (if any) and the next batch of messages, produce a single updated summary.
+Preserve durable facts, decisions, commitments, open questions, and user preferences. Drop small talk and redundant detail.
+Write in compact third-person notes. Output only the summary text, no preamble."#;
+
+/// Minimum cosine similarity for an episodic memory to be surfaced as
+/// recalled context. Filters noise (and zero-vector dummy embeddings).
+const MIN_RECALL_SCORE: f32 = 0.5;
+/// Max characters per recalled episodic excerpt injected into the prompt.
+const RECALL_SNIPPET_CHARS: usize = 240;
 
 #[derive(Clone, Default)]
 pub struct ProviderRegistry {
@@ -69,6 +81,11 @@ pub struct Brain {
     tools: Arc<ToolRegistry>,
     commands: Arc<CommandRegistry>,
     store: Arc<dyn Store>,
+    memory: Arc<dyn MemoryStore>,
+    embedder: Option<Arc<dyn Embedder>>,
+    memory_enabled: bool,
+    episodic_k: usize,
+    summarize_enabled: bool,
     renderer: Arc<dyn StreamRenderer>,
     goat_root: PathBuf,
 }
@@ -85,6 +102,11 @@ impl Brain {
         tools: Arc<ToolRegistry>,
         commands: Arc<CommandRegistry>,
         store: Arc<dyn Store>,
+        memory: Arc<dyn MemoryStore>,
+        embedder: Option<Arc<dyn Embedder>>,
+        memory_enabled: bool,
+        episodic_k: usize,
+        summarize_enabled: bool,
         renderer: Arc<dyn StreamRenderer>,
         goat_root: PathBuf,
     ) -> Self {
@@ -98,6 +120,11 @@ impl Brain {
             tools,
             commands,
             store,
+            memory,
+            embedder,
+            memory_enabled,
+            episodic_k,
+            summarize_enabled,
             renderer,
             goat_root,
         }
@@ -158,7 +185,16 @@ impl Brain {
             .await
             .context("append incoming")?;
 
-        let mut messages = self.history_messages(&msg.conversation).await?;
+        // Embed the incoming message once: reused both as the recall query
+        // (search runs before this turn's writes, so it never matches itself)
+        // and as the stored embedding for the episodic write after the turn.
+        let query_embedding = if self.memory_enabled {
+            self.embed_text(&msg.text).await
+        } else {
+            None
+        };
+
+        let (summary, mut messages) = self.load_context(&msg.conversation).await?;
         if let Some(call) = msg.command.clone() {
             match self.commands.call(call).await {
                 Ok(CommandOutput::Query { content }) => messages.push(LlmMessage {
@@ -209,6 +245,8 @@ impl Brain {
                 reply_to,
                 &mut messages,
                 TurnMode::Normal,
+                query_embedding.clone(),
+                summary,
             )
             .await?;
 
@@ -224,7 +262,124 @@ impl Brain {
                 .context("append outgoing")?;
         }
 
+        // Episodic writes happen after the turn so recall above never sees
+        // the current exchange.
+        self.record_episodic(
+            &msg.conversation,
+            EpisodicKind::User,
+            &msg.text,
+            query_embedding.as_deref(),
+        )
+        .await;
+        if !summary.final_text.is_empty() {
+            let assistant_embedding = self.embed_text(&summary.final_text).await;
+            self.record_episodic(
+                &msg.conversation,
+                EpisodicKind::Assistant,
+                &summary.final_text,
+                assistant_embedding.as_deref(),
+            )
+            .await;
+        }
+
         Ok(())
+    }
+
+    /// Embed `text` if this persona has an embedder. Returns `None` when no
+    /// embedder is configured or the embedding call fails — memory writes
+    /// then fall back to storing the text with a NULL embedding, and recall
+    /// is skipped, so the chat loop is never blocked by embedding trouble.
+    async fn embed_text(&self, text: &str) -> Option<Vec<f32>> {
+        let embedder = self.embedder.as_ref()?;
+        match embedder.embed(text).await {
+            Ok(v) => Some(v),
+            Err(e) => {
+                warn!(persona = %self.persona, error = ?e, "embedding failed");
+                None
+            }
+        }
+    }
+
+    /// Build the `<persona_memory>` / `<recalled_memory>` system-prompt
+    /// section: durable core facts plus episodic excerpts relevant to the
+    /// current turn. Returns `None` when memory is disabled or empty.
+    async fn build_memory_section(&self, query_embedding: Option<&[f32]>) -> Option<String> {
+        if !self.memory_enabled {
+            return None;
+        }
+        let mut out = String::new();
+
+        match self.memory.core_blocks(self.persona).await {
+            Ok(blocks) if !blocks.is_empty() => {
+                out.push_str("<persona_memory>\nDurable facts you have chosen to remember:\n");
+                for b in blocks {
+                    out.push_str(&format!("- [{}] {}\n", b.slug, b.text.trim()));
+                }
+                out.push_str("</persona_memory>");
+            }
+            Ok(_) => {}
+            Err(e) => warn!(persona = %self.persona, error = ?e, "core_blocks failed"),
+        }
+
+        if let Some(query) = query_embedding {
+            match self
+                .memory
+                .search_episodic(self.persona, query, self.episodic_k)
+                .await
+            {
+                Ok(entries) => {
+                    let relevant: Vec<_> = entries
+                        .into_iter()
+                        .filter(|e| e.score.unwrap_or(0.0) >= MIN_RECALL_SCORE)
+                        .collect();
+                    if !relevant.is_empty() {
+                        if !out.is_empty() {
+                            out.push_str("\n\n");
+                        }
+                        out.push_str(
+                            "<recalled_memory>\nPossibly relevant excerpts from earlier conversations:\n",
+                        );
+                        for e in relevant {
+                            let who = match e.kind {
+                                EpisodicKind::User => "user",
+                                EpisodicKind::Assistant => "you",
+                                EpisodicKind::Observation => "note",
+                            };
+                            out.push_str(&format!("- ({}) {}\n", who, recall_snippet(&e.text)));
+                        }
+                        out.push_str("</recalled_memory>");
+                    }
+                }
+                Err(e) => warn!(persona = %self.persona, error = ?e, "search_episodic failed"),
+            }
+        }
+
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
+    }
+
+    /// Persist a user/assistant/observation turn into episodic memory.
+    /// Best-effort: failures are logged, never propagated to the chat turn.
+    async fn record_episodic(
+        &self,
+        conv: &ConversationId,
+        kind: EpisodicKind,
+        text: &str,
+        embedding: Option<&[f32]>,
+    ) {
+        if !self.memory_enabled || text.trim().is_empty() {
+            return;
+        }
+        if let Err(e) = self
+            .memory
+            .append_episodic(self.persona, conv, kind, text, embedding)
+            .await
+        {
+            warn!(persona = %self.persona, error = ?e, "append_episodic failed");
+        }
     }
 
     async fn history_messages(&self, conv: &ConversationId) -> Result<Vec<LlmMessage>> {
@@ -233,19 +388,120 @@ impl Brain {
             .recent(self.persona, conv, self.history_window)
             .await
             .context("read history")?;
-        Ok(history
-            .into_iter()
-            .filter(|h| {
-                !matches!(h.direction, Direction::Out) || !looks_like_agent_meta_leak(&h.text)
+        Ok(rows_to_messages(history))
+    }
+
+    /// Load the LLM context for a turn. With summarization enabled, older
+    /// messages are folded into a rolling summary (returned as the first
+    /// element) once the un-summarized tail grows past `2 * history_window`,
+    /// keeping the raw message list bounded without dropping context.
+    /// Without it, falls back to the recent-window history and no summary.
+    async fn load_context(
+        &self,
+        conv: &ConversationId,
+    ) -> Result<(Option<String>, Vec<LlmMessage>)> {
+        if !self.summarize_enabled {
+            return Ok((None, self.history_messages(conv).await?));
+        }
+
+        let total = self.store.message_count(self.persona, conv).await?;
+        let existing = self
+            .store
+            .get_conversation_summary(self.persona, conv)
+            .await?;
+        let mut summary_text = existing.as_ref().map(|s| s.summary.clone());
+        let mut summarized = existing.map(|s| s.summarized_count).unwrap_or(0).min(total);
+
+        // Fold the oldest un-summarized messages once the tail exceeds two
+        // windows, bringing the raw tail back down to one window. Batching
+        // keeps the extra summarization call to ~once per window of messages.
+        if total.saturating_sub(summarized) > 2 * self.history_window {
+            let fold_count = total - summarized - self.history_window;
+            let batch = self
+                .store
+                .messages_from(self.persona, conv, summarized, fold_count)
+                .await?;
+            if let Some(updated) = self.summarize_batch(summary_text.as_deref(), &batch).await {
+                let new_count = summarized + fold_count;
+                if let Err(e) = self
+                    .store
+                    .upsert_conversation_summary(self.persona, conv, &updated, new_count)
+                    .await
+                {
+                    warn!(persona = %self.persona, error = ?e, "upsert_conversation_summary failed");
+                } else {
+                    summary_text = Some(updated);
+                    summarized = new_count;
+                }
+            }
+        }
+
+        let raw = self
+            .store
+            .messages_from(
+                self.persona,
+                conv,
+                summarized,
+                total.saturating_sub(summarized),
+            )
+            .await?;
+        Ok((summary_text, rows_to_messages(raw)))
+    }
+
+    /// Produce an updated rolling summary from the previous summary and a
+    /// batch of older messages. Best-effort: returns `None` (leaving the
+    /// watermark unchanged) on any provider error so the turn still proceeds.
+    async fn summarize_batch(
+        &self,
+        previous: Option<&str>,
+        batch: &[HistoryRow],
+    ) -> Option<String> {
+        if batch.is_empty() {
+            return None;
+        }
+        let provider = self.providers.route(&self.default_model).ok()?;
+        let transcript = batch
+            .iter()
+            .map(|h| {
+                let who = match h.direction {
+                    Direction::In => "user",
+                    Direction::Out => "assistant",
+                };
+                format!("{who}: {}", h.text)
             })
-            .map(|h| LlmMessage {
-                role: match h.direction {
-                    Direction::In => Role::User,
-                    Direction::Out => Role::Assistant,
-                },
-                content: vec![ContentPart::Text(h.text)],
-            })
-            .collect())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let user = match previous {
+            Some(prev) if !prev.trim().is_empty() => format!(
+                "PREVIOUS SUMMARY:\n{prev}\n\nNEW MESSAGES:\n{transcript}\n\nUpdated summary:"
+            ),
+            _ => format!("MESSAGES:\n{transcript}\n\nSummary:"),
+        };
+        let mut req = LlmRequest::new(self.default_model.clone());
+        req.system = Some(SUMMARY_SYSTEM_PROMPT.to_string());
+        req.max_tokens = 1024;
+        req.messages = vec![LlmMessage::user_text(user)];
+        let stream = match provider.stream(req).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(persona = %self.persona, error = ?e, "summarization request failed");
+                return None;
+            }
+        };
+        match fold_turn(stream).await {
+            Ok(folded) => {
+                let text = folded.text.trim().to_string();
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text)
+                }
+            }
+            Err(e) => {
+                warn!(persona = %self.persona, error = ?e, "summarization stream failed");
+                None
+            }
+        }
     }
 
     async fn complete_with_tools(
@@ -255,6 +511,8 @@ impl Brain {
         reply_to: Option<MessageId>,
         messages: &mut Vec<LlmMessage>,
         mode: TurnMode,
+        query_embedding: Option<Vec<f32>>,
+        summary: Option<String>,
     ) -> Result<RenderSummary> {
         const MAX_TOOL_ROUNDS: usize = 8;
 
@@ -268,12 +526,18 @@ impl Brain {
         let allowed_tools: HashSet<String> =
             tool_specs.iter().map(|spec| spec.name.clone()).collect();
         let read_state = ToolReadState::default();
+        let memory_section = self.build_memory_section(query_embedding.as_deref()).await;
         let now_iso = chrono::Utc::now().to_rfc3339();
         let base_system = format!(
             "{}\n\n<current_time iso8601=\"{now_iso}\">\nThe current time is {now_iso}. \
              Resolve any user time reference against this clock.\n\
              </current_time>",
-            compose_system_prompt(&self.personality.system_prompt, skill_prompt.as_deref()),
+            compose_system_prompt(
+                &self.personality.system_prompt,
+                skill_prompt.as_deref(),
+                summary.as_deref(),
+                memory_section.as_deref(),
+            ),
         );
         let system_prompt = match mode {
             TurnMode::Normal => base_system,
@@ -414,6 +678,12 @@ impl Brain {
             content: vec![ContentPart::Text(task.task.clone())],
         }];
 
+        let query_embedding = if self.memory_enabled {
+            self.embed_text(&task.task).await
+        } else {
+            None
+        };
+
         let summary = match self
             .complete_with_tools(
                 handle,
@@ -423,6 +693,8 @@ impl Brain {
                 TurnMode::SelfTick {
                     tools: task.tools.clone(),
                 },
+                query_embedding.clone(),
+                None,
             )
             .await
         {
@@ -474,6 +746,22 @@ impl Brain {
             .append_outgoing_text(self.persona, &conv, &summary.final_text, None)
             .await
             .context("append outgoing text for self-tick")?;
+
+        self.record_episodic(
+            &conv,
+            EpisodicKind::Observation,
+            &task.task,
+            query_embedding.as_deref(),
+        )
+        .await;
+        let assistant_embedding = self.embed_text(&summary.final_text).await;
+        self.record_episodic(
+            &conv,
+            EpisodicKind::Assistant,
+            &summary.final_text,
+            assistant_embedding.as_deref(),
+        )
+        .await;
 
         let truncated = truncate_for_summary(&summary.final_text);
         self.store
@@ -712,13 +1000,48 @@ fn preview(text: &str, max_chars: usize) -> String {
     out
 }
 
-fn compose_system_prompt(persona_prompt: &str, skill_prompt: Option<&str>) -> String {
+fn compose_system_prompt(
+    persona_prompt: &str,
+    skill_prompt: Option<&str>,
+    summary_prompt: Option<&str>,
+    memory_prompt: Option<&str>,
+) -> String {
     let mut parts = vec![persona_prompt.trim().to_string()];
     if let Some(skill_prompt) = skill_prompt.filter(|s| !s.trim().is_empty()) {
         parts.push(skill_prompt.trim().to_string());
     }
+    if let Some(summary_prompt) = summary_prompt.filter(|s| !s.trim().is_empty()) {
+        parts.push(format!(
+            "<conversation_summary>\nSummary of earlier conversation (older messages are no longer shown verbatim):\n{}\n</conversation_summary>",
+            summary_prompt.trim()
+        ));
+    }
+    if let Some(memory_prompt) = memory_prompt.filter(|s| !s.trim().is_empty()) {
+        parts.push(memory_prompt.trim().to_string());
+    }
     parts.push(RUNTIME_SYSTEM_GUARD.trim().to_string());
     parts.join("\n\n")
+}
+
+fn rows_to_messages(rows: Vec<HistoryRow>) -> Vec<LlmMessage> {
+    rows.into_iter()
+        .filter(|h| !matches!(h.direction, Direction::Out) || !looks_like_agent_meta_leak(&h.text))
+        .map(|h| LlmMessage {
+            role: match h.direction {
+                Direction::In => Role::User,
+                Direction::Out => Role::Assistant,
+            },
+            content: vec![ContentPart::Text(h.text)],
+        })
+        .collect()
+}
+
+fn recall_snippet(text: &str) -> String {
+    let mut out: String = text.chars().take(RECALL_SNIPPET_CHARS).collect();
+    if text.chars().count() > RECALL_SNIPPET_CHARS {
+        out.push('…');
+    }
+    out.replace('\n', " ")
 }
 
 fn sanitize_final_text(text: String) -> String {
@@ -885,7 +1208,7 @@ mod tests {
 
     #[test]
     fn compose_system_prompt_appends_runtime_guard() {
-        let prompt = compose_system_prompt("You are dev.", None);
+        let prompt = compose_system_prompt("You are dev.", None, None, None);
         assert!(prompt.contains("You are dev."));
         assert!(prompt.contains("<goat_runtime_guard>"));
         assert!(prompt.contains("Return only the final user-facing answer."));
@@ -893,12 +1216,43 @@ mod tests {
 
     #[test]
     fn compose_system_prompt_inserts_skill_catalog_before_runtime_guard() {
-        let prompt = compose_system_prompt("You are dev.", Some("<available_skills/>"));
+        let prompt = compose_system_prompt("You are dev.", Some("<available_skills/>"), None, None);
         let persona = prompt.find("You are dev.").unwrap();
         let skills = prompt.find("<available_skills/>").unwrap();
         let guard = prompt.find("<goat_runtime_guard>").unwrap();
         assert!(persona < skills);
         assert!(skills < guard);
+    }
+
+    #[test]
+    fn compose_system_prompt_inserts_memory_before_runtime_guard() {
+        let prompt = compose_system_prompt(
+            "You are dev.",
+            Some("<available_skills/>"),
+            None,
+            Some("<persona_memory>fact</persona_memory>"),
+        );
+        let skills = prompt.find("<available_skills/>").unwrap();
+        let memory = prompt.find("<persona_memory>").unwrap();
+        let guard = prompt.find("<goat_runtime_guard>").unwrap();
+        assert!(skills < memory);
+        assert!(memory < guard);
+    }
+
+    #[test]
+    fn compose_system_prompt_inserts_summary_before_memory() {
+        let prompt = compose_system_prompt(
+            "You are dev.",
+            None,
+            Some("they talked about cats"),
+            Some("<persona_memory>fact</persona_memory>"),
+        );
+        let summary = prompt.find("<conversation_summary>").unwrap();
+        let memory = prompt.find("<persona_memory>").unwrap();
+        let guard = prompt.find("<goat_runtime_guard>").unwrap();
+        assert!(prompt.contains("they talked about cats"));
+        assert!(summary < memory);
+        assert!(memory < guard);
     }
 
     #[test]
