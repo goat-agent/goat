@@ -9,6 +9,7 @@ use goat_channel::{Channel, ChannelBinding, ChannelFactory, ChannelHandle};
 use goat_command::{CommandFactory, CommandProviderContext, CommandRegistry};
 use goat_config::{GoatPaths, LoadedConfig};
 use goat_credentials::JsonFileStore;
+use goat_evaluator::{Evaluator, ModelScoreStore, NoopEvaluator};
 use goat_llm::{CredentialStore, EmbeddingProvider, EmbeddingProviderSpec, LlmProviderSpec};
 use goat_memory::{Embedder, MemoryStore, SqliteMemory};
 use goat_persona::PersonaConfig;
@@ -64,8 +65,12 @@ impl Goat {
             .context("open store")?;
         // Memory tables carry FKs into personas/conversations and therefore
         // share goat.db; reuse the store's pool rather than opening a second
-        // database file.
-        let memory: Arc<dyn MemoryStore> = Arc::new(SqliteMemory::from_pool(sqlite_store.pool()));
+        // database file. The evaluator's model-score table lives in the same
+        // pool for the same reason.
+        let pool = sqlite_store.pool();
+        let memory: Arc<dyn MemoryStore> = Arc::new(SqliteMemory::from_pool(pool.clone()));
+        let evaluator: Arc<dyn Evaluator> = Arc::new(NoopEvaluator);
+        let model_scores = Arc::new(ModelScoreStore::new(pool));
         let store: Arc<dyn Store> = Arc::new(sqlite_store);
 
         let credentials: Arc<dyn CredentialStore> = Arc::new(
@@ -85,7 +90,16 @@ impl Goat {
 
         let mut tools_reg = ToolRegistry::from_inventory();
         goat_tool_schedule::register(&mut tools_reg, store.clone(), scheduler_handle);
-        goat_tool_memory::register(&mut tools_reg, memory.clone(), embedders.clone());
+        // Per-persona recall depth so the `recall` tool honours each persona's
+        // configured `episodic_k`, matching the brain's own episodic recall.
+        let recall_k: Arc<HashMap<PersonaId, usize>> = Arc::new(
+            cfg.personas
+                .iter()
+                .filter(|p| p.memory.enabled)
+                .map(|p| (p.id, p.memory.episodic_k))
+                .collect(),
+        );
+        goat_tool_memory::register(&mut tools_reg, memory.clone(), embedders.clone(), recall_k);
         let tools = Arc::new(tools_reg);
         info!(
             default_tools = tools.default_specs().len(),
@@ -105,6 +119,8 @@ impl Goat {
             memory,
             embedders,
             renderer,
+            evaluator,
+            model_scores,
             bus,
         };
 
@@ -256,6 +272,8 @@ struct RuntimeShared<'a> {
     memory: Arc<dyn MemoryStore>,
     embedders: Arc<HashMap<PersonaId, Arc<dyn Embedder>>>,
     renderer: Arc<dyn StreamRenderer>,
+    evaluator: Arc<dyn Evaluator>,
+    model_scores: Arc<ModelScoreStore>,
     bus: EventBus,
 }
 
@@ -336,6 +354,8 @@ async fn spawn_persona(
         raw.memory.episodic_k,
         raw.memory.summarize,
         shared.renderer.clone(),
+        shared.evaluator.clone(),
+        shared.model_scores.clone(),
         shared.goat_root.clone(),
     ));
     let bus = shared.bus.clone();
@@ -365,4 +385,97 @@ fn build_command_registry(
         );
     }
     registry
+}
+
+#[cfg(test)]
+mod tests {
+    //! Boot-sequence integration tests. The concrete provider/channel crates
+    //! are only linked by the final binary, so in this unit crate the inventory
+    //! registries are empty. That is exactly what makes these tests valuable:
+    //! they exercise the graceful-degradation paths (unknown provider, missing
+    //! embedder, unbindable channel) and prove boot still succeeds, spinning up
+    //! only the scheduler, rather than panicking or aborting.
+    use super::*;
+    use goat_llm::{Model, ProviderId};
+    use goat_persona::{EmbeddingSettings, MemoryConfig, PersonaConfig, PersonalityCard};
+
+    fn paths_in(dir: &Path) -> GoatPaths {
+        GoatPaths {
+            root: dir.to_path_buf(),
+            credentials_json: dir.join("credentials.json"),
+            personas_dir: dir.join("personas"),
+            skills_dir: dir.join("skills"),
+            state_db: dir.join("goat.db"),
+            logs_dir: dir.join("logs"),
+        }
+    }
+
+    fn persona(slug: &str, model: &str) -> PersonaConfig {
+        PersonaConfig {
+            id: PersonaId::from_slug(slug),
+            slug: slug.into(),
+            display: slug.into(),
+            personality: PersonalityCard {
+                system_prompt: "you are a test persona".into(),
+                traits: vec![],
+                source_path: Default::default(),
+            },
+            default_model: Model::new(ProviderId::new("openai"), model),
+            history_window: 10,
+            tool_selectors: vec![],
+            bindings: vec![],
+            memory: MemoryConfig::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn boots_with_no_personas_and_spawns_only_scheduler() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = LoadedConfig {
+            paths: paths_in(dir.path()),
+            personas: vec![],
+        };
+        let goat = Goat::boot_inner(cfg, None).await.expect("boot");
+        assert_eq!(
+            goat.join_handles.len(),
+            1,
+            "expected only the scheduler task"
+        );
+    }
+
+    #[tokio::test]
+    async fn persona_with_unresolvable_provider_is_skipped_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = LoadedConfig {
+            paths: paths_in(dir.path()),
+            personas: vec![persona("alice", "openai/gpt-5.1")],
+        };
+        // The model's provider can't be resolved (no provider crates linked),
+        // so the persona is skipped — but boot must still succeed.
+        let goat = Goat::boot_inner(cfg, None).await.expect("boot");
+        assert_eq!(goat.join_handles.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn embedder_probe_failure_degrades_to_core_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = persona("bob", "openai/gpt-5.1");
+        p.memory = MemoryConfig {
+            enabled: true,
+            embedding: Some(EmbeddingSettings {
+                provider: "openai".into(),
+                model: "text-embedding-3-small".into(),
+            }),
+            episodic_k: 8,
+            summarize: false,
+        };
+        let cfg = LoadedConfig {
+            paths: paths_in(dir.path()),
+            personas: vec![p],
+        };
+        // Embedding provider isn't linked, so the probe path is skipped and the
+        // persona would run core-only. Boot must not fail.
+        let goat = Goat::boot_inner(cfg, None).await.expect("boot");
+        assert_eq!(goat.join_handles.len(), 1);
+    }
 }

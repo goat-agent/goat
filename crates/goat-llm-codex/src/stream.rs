@@ -97,6 +97,7 @@ where
         let mut usage_out: u32 = 0;
         let mut tool_block: u32 = 1;
         let mut tool_open = false;
+        let mut parse_failures: u32 = 0;
 
         while let Some(item) = stream.next().await {
             let raw = match item {
@@ -107,8 +108,16 @@ where
                 break;
             }
             let event: Event = match serde_json::from_str(&raw.data) {
-                Ok(e) => e,
-                Err(e) => { warn!(error = ?e, "bad codex SSE payload"); continue; }
+                Ok(e) => { parse_failures = 0; e }
+                Err(e) => {
+                    parse_failures += 1;
+                    warn!(error = ?e, consecutive = parse_failures, "bad codex SSE payload");
+                    if let Some(err) = goat_llm::sse_parse_failure_limit(parse_failures) {
+                        yield Err(err);
+                        return;
+                    }
+                    continue;
+                }
             };
 
             match event {

@@ -27,7 +27,7 @@ use goat_bus::EventBus;
 use goat_store::{ScheduleKind, Store, StoreError};
 use goat_types::Event;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::cron_expr;
 
@@ -180,9 +180,15 @@ async fn drain_due(
                             .await
                         {
                             Ok(_) => heap.push(Reverse(next)),
-                            Err(e) => {
-                                warn!(error = ?e, task_id = task.id, "lazy cron insert failed")
-                            }
+                            // A dropped next-occurrence means this cron task
+                            // silently never fires again — escalate past warn
+                            // so it is not lost in the noise.
+                            Err(e) => error!(
+                                error = ?e,
+                                task_id = task.id,
+                                next = %next,
+                                "cron re-schedule failed; task will NOT fire again until reboot",
+                            ),
                         }
                     }
                 }

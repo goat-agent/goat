@@ -17,6 +17,10 @@ impl JsonFileStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
+        // Harden any pre-existing credentials file: tempfile-backed writes already
+        // land at 0o600, but a file created by an older version or by hand may be
+        // group/world-readable and would otherwise never be tightened.
+        harden_permissions(&path)?;
         Ok(Self {
             path,
             write_lock: Mutex::new(()),
@@ -52,8 +56,26 @@ impl JsonFileStore {
         tmp.flush()?;
         tmp.persist(&self.path)
             .map_err(|e| CredentialError::Io(e.error))?;
+        // Defense in depth: enforce owner-only perms on the persisted file so
+        // secrets never sit at the umask default.
+        harden_permissions(&self.path)?;
         Ok(())
     }
+}
+
+/// Restrict `path` to owner-only read/write (`0o600`) on Unix; no-op elsewhere.
+#[cfg(unix)]
+fn harden_permissions(path: &std::path::Path) -> Result<(), CredentialError> {
+    use std::os::unix::fs::PermissionsExt;
+    if path.exists() {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn harden_permissions(_path: &std::path::Path) -> Result<(), CredentialError> {
+    Ok(())
 }
 
 fn entry_label(v: &Value) -> Option<String> {

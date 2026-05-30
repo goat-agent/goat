@@ -7,9 +7,10 @@ use futures::{stream, StreamExt};
 use goat_bus::{EventBus, EventFilter};
 use goat_channel::ChannelHandle;
 use goat_command::{CommandOutput, CommandRegistry};
+use goat_evaluator::{Evaluator, ModelScoreStore};
 use goat_llm::{
-    BlockId, ContentPart, LlmChunk, LlmMessage, LlmProvider, LlmRequest, LlmStream, Model, Role,
-    StopReason, ToolSpec, Usage,
+    BlockId, ContentPart, LlmChunk, LlmMessage, LlmProvider, LlmRequest, LlmResponse, LlmStream,
+    Model, Role, StopReason, ToolSpec, Usage,
 };
 use goat_memory::{Embedder, EpisodicKind, MemoryStore};
 use goat_persona::PersonalityCard;
@@ -47,6 +48,13 @@ Write in compact third-person notes. Output only the summary text, no preamble."
 const MIN_RECALL_SCORE: f32 = 0.5;
 /// Max characters per recalled episodic excerpt injected into the prompt.
 const RECALL_SNIPPET_CHARS: usize = 240;
+/// Upper bound on messages folded into the rolling summary in a single
+/// summarization call, so a large backlog never sends one enormous transcript
+/// to the summarizer (which would risk a context-window overflow or timeout).
+const MAX_SUMMARY_FOLD_BATCH: usize = 40;
+/// Upper bound on summarization calls per turn. A long backlog catches up
+/// across turns rather than stalling a single turn behind many LLM calls.
+const MAX_SUMMARY_FOLDS_PER_TURN: usize = 4;
 
 #[derive(Clone, Default)]
 pub struct ProviderRegistry {
@@ -87,6 +95,8 @@ pub struct Brain {
     episodic_k: usize,
     summarize_enabled: bool,
     renderer: Arc<dyn StreamRenderer>,
+    evaluator: Arc<dyn Evaluator>,
+    model_scores: Arc<ModelScoreStore>,
     goat_root: PathBuf,
 }
 
@@ -108,6 +118,8 @@ impl Brain {
         episodic_k: usize,
         summarize_enabled: bool,
         renderer: Arc<dyn StreamRenderer>,
+        evaluator: Arc<dyn Evaluator>,
+        model_scores: Arc<ModelScoreStore>,
         goat_root: PathBuf,
     ) -> Self {
         Self {
@@ -126,6 +138,8 @@ impl Brain {
             episodic_k,
             summarize_enabled,
             renderer,
+            evaluator,
+            model_scores,
             goat_root,
         }
     }
@@ -238,6 +252,7 @@ impl Brain {
             }
         }
 
+        let turn_started = std::time::Instant::now();
         let summary = self
             .complete_with_tools(
                 handle,
@@ -249,6 +264,7 @@ impl Brain {
                 summary,
             )
             .await?;
+        let latency_ms = turn_started.elapsed().as_millis() as i64;
 
         if !summary.final_text.is_empty() {
             self.store
@@ -261,6 +277,9 @@ impl Brain {
                 .await
                 .context("append outgoing")?;
         }
+
+        self.evaluate_turn(&messages, &summary.final_text, latency_ms)
+            .await;
 
         // Episodic writes happen after the turn so recall above never sees
         // the current exchange.
@@ -297,6 +316,34 @@ impl Brain {
                 warn!(persona = %self.persona, error = ?e, "embedding failed");
                 None
             }
+        }
+    }
+
+    /// Score a completed turn with the configured [`Evaluator`] and record the
+    /// result against the model that produced it. Best-effort: an evaluator or
+    /// store failure must never affect the user-facing turn, so errors are
+    /// logged and swallowed here. The default wiring uses a no-op evaluator, so
+    /// this captures per-model call counts and latency until a real scorer is
+    /// configured.
+    async fn evaluate_turn(&self, messages: &[LlmMessage], final_text: &str, latency_ms: i64) {
+        if final_text.trim().is_empty() {
+            return;
+        }
+        let mut req = LlmRequest::new(self.default_model.clone());
+        req.messages = messages.to_vec();
+        let resp = LlmResponse {
+            text: final_text.to_string(),
+            stop: StopReason::EndTurn,
+            usage: Usage::default(),
+            model: self.default_model.clone(),
+        };
+        let score = self.evaluator.score(&req, &resp).await;
+        if let Err(e) = self
+            .model_scores
+            .record(self.persona, &self.default_model, &score, latency_ms)
+            .await
+        {
+            warn!(persona = %self.persona, error = ?e, "model score record failed");
         }
     }
 
@@ -412,27 +459,41 @@ impl Brain {
         let mut summary_text = existing.as_ref().map(|s| s.summary.clone());
         let mut summarized = existing.map(|s| s.summarized_count).unwrap_or(0).min(total);
 
-        // Fold the oldest un-summarized messages once the tail exceeds two
-        // windows, bringing the raw tail back down to one window. Batching
-        // keeps the extra summarization call to ~once per window of messages.
-        if total.saturating_sub(summarized) > 2 * self.history_window {
-            let fold_count = total - summarized - self.history_window;
+        // Fold the oldest un-summarized messages while the tail exceeds two
+        // windows, bringing it back toward one window. Each fold is capped at
+        // MAX_SUMMARY_FOLD_BATCH messages so a large backlog (e.g. summarization
+        // newly enabled on a long conversation) never sends one enormous
+        // transcript to the summarizer; at most MAX_SUMMARY_FOLDS_PER_TURN folds
+        // run per turn, so catching up can't stall a single turn — the rest
+        // folds on later turns.
+        let mut folds_done = 0;
+        while folds_done < MAX_SUMMARY_FOLDS_PER_TURN
+            && total.saturating_sub(summarized) > 2 * self.history_window
+        {
+            let remaining = total - summarized - self.history_window;
+            let fold_count = remaining.min(MAX_SUMMARY_FOLD_BATCH);
             let batch = self
                 .store
                 .messages_from(self.persona, conv, summarized, fold_count)
                 .await?;
-            if let Some(updated) = self.summarize_batch(summary_text.as_deref(), &batch).await {
-                let new_count = summarized + fold_count;
-                if let Err(e) = self
-                    .store
-                    .upsert_conversation_summary(self.persona, conv, &updated, new_count)
-                    .await
-                {
-                    warn!(persona = %self.persona, error = ?e, "upsert_conversation_summary failed");
-                } else {
+            match self.summarize_batch(summary_text.as_deref(), &batch).await {
+                Some(updated) => {
+                    let new_count = summarized + fold_count;
+                    if let Err(e) = self
+                        .store
+                        .upsert_conversation_summary(self.persona, conv, &updated, new_count)
+                        .await
+                    {
+                        warn!(persona = %self.persona, error = ?e, "upsert_conversation_summary failed");
+                        break;
+                    }
                     summary_text = Some(updated);
                     summarized = new_count;
+                    folds_done += 1;
                 }
+                // Provider error: leave the watermark untouched and stop folding
+                // this turn so the turn still proceeds; it retries next turn.
+                None => break,
             }
         }
 
@@ -504,6 +565,7 @@ impl Brain {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn complete_with_tools(
         &self,
         handle: Arc<dyn ChannelHandle>,
@@ -610,6 +672,22 @@ impl Brain {
             .map_err(Into::into)
     }
 
+    /// Persist a task-run terminal state, logging — never swallowing — a store
+    /// failure. A dropped error here would let `task_runs` desync from reality
+    /// (a run stuck "running" forever, or silently re-fired on the next boot).
+    async fn finish_run_logged(&self, run_id: i64, status: TaskRunStatus, note: Option<String>) {
+        let label = format!("{status:?}");
+        if let Err(e) = self.store.finish_run(run_id, status, note).await {
+            tracing::error!(
+                run_id,
+                persona = %self.persona,
+                status = %label,
+                error = %e,
+                "failed to persist task run completion",
+            );
+        }
+    }
+
     async fn handle_self_tick(
         &self,
         channels: &[Arc<dyn ChannelHandle>],
@@ -619,25 +697,21 @@ impl Brain {
         let task = match self.store.get_scheduled_task(task_id).await? {
             Some(t) if matches!(t.status, ScheduledTaskStatus::Active) => t,
             Some(_) => {
-                self.store
-                    .finish_run(
-                        run_id,
-                        TaskRunStatus::Skipped,
-                        Some("task no longer active".into()),
-                    )
-                    .await
-                    .ok();
+                self.finish_run_logged(
+                    run_id,
+                    TaskRunStatus::Skipped,
+                    Some("task no longer active".into()),
+                )
+                .await;
                 return Ok(());
             }
             None => {
-                self.store
-                    .finish_run(
-                        run_id,
-                        TaskRunStatus::Failed,
-                        Some("task row missing".into()),
-                    )
-                    .await
-                    .ok();
+                self.finish_run_logged(
+                    run_id,
+                    TaskRunStatus::Failed,
+                    Some("task row missing".into()),
+                )
+                .await;
                 return Ok(());
             }
         };
@@ -661,14 +735,12 @@ impl Brain {
                     have = ?available,
                     "no channel handle for origin_conv; marking failed"
                 );
-                self.store
-                    .finish_run(
-                        run_id,
-                        TaskRunStatus::Failed,
-                        Some("no channel handle for origin_conv".into()),
-                    )
-                    .await
-                    .ok();
+                self.finish_run_logged(
+                    run_id,
+                    TaskRunStatus::Failed,
+                    Some("no channel handle for origin_conv".into()),
+                )
+                .await;
                 return Ok(());
             }
         };
@@ -684,6 +756,7 @@ impl Brain {
             None
         };
 
+        let turn_started = std::time::Instant::now();
         let summary = match self
             .complete_with_tools(
                 handle,
@@ -700,28 +773,24 @@ impl Brain {
         {
             Ok(s) => s,
             Err(e) => {
-                self.store
-                    .finish_run(
-                        run_id,
-                        TaskRunStatus::Failed,
-                        Some(format!("self-tick run errored: {e}")),
-                    )
-                    .await
-                    .ok();
+                self.finish_run_logged(
+                    run_id,
+                    TaskRunStatus::Failed,
+                    Some(format!("self-tick run errored: {e}")),
+                )
+                .await;
                 return Err(e);
             }
         };
 
         let trimmed = summary.final_text.trim();
         if trimmed.eq_ignore_ascii_case("skip") {
-            self.store
-                .finish_run(
-                    run_id,
-                    TaskRunStatus::Skipped,
-                    Some("model declined".into()),
-                )
-                .await
-                .ok();
+            self.finish_run_logged(
+                run_id,
+                TaskRunStatus::Skipped,
+                Some("model declined".into()),
+            )
+            .await;
             return Ok(());
         }
         if trimmed.is_empty() {
@@ -731,14 +800,12 @@ impl Brain {
                 persona = %self.persona,
                 "self-tick produced empty response; marking failed",
             );
-            self.store
-                .finish_run(
-                    run_id,
-                    TaskRunStatus::Failed,
-                    Some("empty response from model".into()),
-                )
-                .await
-                .ok();
+            self.finish_run_logged(
+                run_id,
+                TaskRunStatus::Failed,
+                Some("empty response from model".into()),
+            )
+            .await;
             return Ok(());
         }
 
@@ -763,11 +830,13 @@ impl Brain {
         )
         .await;
 
+        let latency_ms = turn_started.elapsed().as_millis() as i64;
+        self.evaluate_turn(&messages, &summary.final_text, latency_ms)
+            .await;
+
         let truncated = truncate_for_summary(&summary.final_text);
-        self.store
-            .finish_run(run_id, TaskRunStatus::Done, Some(truncated))
-            .await
-            .ok();
+        self.finish_run_logged(run_id, TaskRunStatus::Done, Some(truncated))
+            .await;
         Ok(())
     }
 

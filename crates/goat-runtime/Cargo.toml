@@ -12,6 +12,7 @@ goat-types            = { workspace = true }
 goat-bus              = { workspace = true }
 goat-store            = { workspace = true }
 goat-memory           = { workspace = true }
+goat-evaluator        = { workspace = true }
 goat-config           = { workspace = true }
 goat-credentials      = { workspace = true }
 goat-llm              = { workspace = true }
@@ -36,3 +37,6 @@ inventory             = { workspace = true }
 futures               = { workspace = true }
 uuid                  = { workspace = true }
 serde_json            = { workspace = true }
+
+[dev-dependencies]
+tempfile              = { workspace = true }

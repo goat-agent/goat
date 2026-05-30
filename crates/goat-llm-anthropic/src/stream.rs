@@ -104,6 +104,7 @@ where
         let mut pending_stop: Option<StopReason> = None;
         let mut pending_output: u32 = 0;
         let mut input_tokens: u32 = 0;
+        let mut parse_failures: u32 = 0;
 
         while let Some(item) = stream.next().await {
             let raw = match item {
@@ -111,8 +112,16 @@ where
                 Err(e) => { yield Err(LlmError::Transport(e.to_string())); return; }
             };
             let event = match serde_json::from_str::<Event>(&raw.data) {
-                Ok(e) => e,
-                Err(e) => { warn!(error = ?e, "bad anthropic SSE payload"); continue; }
+                Ok(e) => { parse_failures = 0; e }
+                Err(e) => {
+                    parse_failures += 1;
+                    warn!(error = ?e, consecutive = parse_failures, "bad anthropic SSE payload");
+                    if let Some(err) = goat_llm::sse_parse_failure_limit(parse_failures) {
+                        yield Err(err);
+                        return;
+                    }
+                    continue;
+                }
             };
             match event {
                 Event::Ping | Event::Unknown => {}
