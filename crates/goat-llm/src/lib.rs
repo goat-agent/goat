@@ -1,6 +1,7 @@
 mod chunk;
 mod credential;
 mod credentials;
+mod embedding;
 mod error;
 mod model;
 mod provider;
@@ -11,6 +12,7 @@ mod setup;
 pub use chunk::*;
 pub use credential::*;
 pub use credentials::*;
+pub use embedding::*;
 pub use error::*;
 pub use model::*;
 pub use provider::*;
