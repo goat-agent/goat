@@ -85,7 +85,16 @@ impl Goat {
 
         let mut tools_reg = ToolRegistry::from_inventory();
         goat_tool_schedule::register(&mut tools_reg, store.clone(), scheduler_handle);
-        goat_tool_memory::register(&mut tools_reg, memory.clone(), embedders.clone());
+        // Per-persona recall depth so the `recall` tool honours each persona's
+        // configured `episodic_k`, matching the brain's own episodic recall.
+        let recall_k: Arc<HashMap<PersonaId, usize>> = Arc::new(
+            cfg.personas
+                .iter()
+                .filter(|p| p.memory.enabled)
+                .map(|p| (p.id, p.memory.episodic_k))
+                .collect(),
+        );
+        goat_tool_memory::register(&mut tools_reg, memory.clone(), embedders.clone(), recall_k);
         let tools = Arc::new(tools_reg);
         info!(
             default_tools = tools.default_specs().len(),

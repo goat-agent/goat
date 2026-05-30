@@ -27,13 +27,26 @@ pub const RECALL: ToolName = ToolName::from_static("recall");
 /// this map by `ctx.persona` at call time.
 pub type EmbedderMap = Arc<HashMap<PersonaId, Arc<dyn Embedder>>>;
 
-const RECALL_K: usize = 5;
+/// Fallback recall depth when a persona has no configured `episodic_k`.
+const DEFAULT_RECALL_K: usize = 5;
 const MIN_RECALL_SCORE: f32 = 0.5;
 const SNIPPET_CHARS: usize = 240;
 
-/// Insert the `remember` and `recall` tools, sharing the memory store and the
-/// per-persona embedder map.
-pub fn register(registry: &mut ToolRegistry, memory: Arc<dyn MemoryStore>, embedders: EmbedderMap) {
+/// Per-persona recall depth (`episodic_k`), mirroring [`EmbedderMap`]. The tool
+/// registry is shared across personas, so — like the embedder — the depth is
+/// resolved from this map by `ctx.persona` at call time, keeping the `recall`
+/// tool consistent with the brain's own episodic recall instead of a hardcoded
+/// constant.
+pub type RecallKMap = Arc<HashMap<PersonaId, usize>>;
+
+/// Insert the `remember` and `recall` tools, sharing the memory store, the
+/// per-persona embedder map, and the per-persona recall depth.
+pub fn register(
+    registry: &mut ToolRegistry,
+    memory: Arc<dyn MemoryStore>,
+    embedders: EmbedderMap,
+    recall_k: RecallKMap,
+) {
     registry.insert_handler(
         spec_remember(),
         Arc::new(RememberTool {
@@ -43,7 +56,11 @@ pub fn register(registry: &mut ToolRegistry, memory: Arc<dyn MemoryStore>, embed
     );
     registry.insert_handler(
         spec_recall(),
-        Arc::new(RecallTool { memory, embedders }),
+        Arc::new(RecallTool {
+            memory,
+            embedders,
+            recall_k,
+        }),
         true,
     );
 }
@@ -99,6 +116,7 @@ struct RecallArgs {
 pub struct RecallTool {
     memory: Arc<dyn MemoryStore>,
     embedders: EmbedderMap,
+    recall_k: RecallKMap,
 }
 
 #[async_trait]
@@ -119,11 +137,16 @@ impl ToolHandler for RecallTool {
 
         let mut recalled: Vec<serde_json::Value> = Vec::new();
         if let Some(embedder) = self.embedders.get(&ctx.persona) {
+            let k = self
+                .recall_k
+                .get(&ctx.persona)
+                .copied()
+                .unwrap_or(DEFAULT_RECALL_K);
             match embedder.embed(&args.query).await {
                 Ok(query_vec) => {
                     match self
                         .memory
-                        .search_episodic(ctx.persona, &query_vec, RECALL_K)
+                        .search_episodic(ctx.persona, &query_vec, k)
                         .await
                     {
                         Ok(hits) => {
@@ -273,6 +296,7 @@ mod tests {
         let recall = RecallTool {
             memory,
             embedders: Arc::new(HashMap::new()),
+            recall_k: Arc::new(HashMap::new()),
         };
         let out = recall
             .call(
