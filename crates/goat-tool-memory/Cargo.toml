@@ -1,5 +1,5 @@
 [package]
-name = "goat-memory"
+name = "goat-tool-memory"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -7,18 +7,15 @@ publish.workspace = true
 authors.workspace = true
 
 [dependencies]
+goat-tool   = { workspace = true }
+goat-memory = { workspace = true }
 goat-types  = { workspace = true }
-goat-store  = { workspace = true }
 async-trait = { workspace = true }
-anyhow      = { workspace = true }
-thiserror   = { workspace = true }
-tokio       = { workspace = true }
-chrono      = { workspace = true }
-uuid        = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
-sqlx        = { workspace = true }
 tracing     = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+goat-store = { workspace = true }
+tempfile   = "3"
+tokio      = { workspace = true }

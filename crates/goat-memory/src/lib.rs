@@ -113,6 +113,15 @@ pub struct SqliteMemory {
 }
 
 impl SqliteMemory {
+    /// Build a memory store over an already-open pool. The memory tables
+    /// (`core_memory`, `episodic_memory`, `semantic_memory`) carry foreign
+    /// keys into `personas`/`conversations`, so they must live in the same
+    /// database as [`goat_store::SqliteStore`]. The runtime passes that
+    /// store's pool here rather than opening a second database file.
+    pub fn from_pool(pool: Arc<SqlitePool>) -> Self {
+        Self { pool }
+    }
+
     pub async fn open(path: &Path) -> MemoryResult<Self> {
         use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
         use sqlx::ConnectOptions;
@@ -366,5 +375,92 @@ mod tests {
         for (a, b) in v.iter().zip(back.iter()) {
             assert!((a - b).abs() < 1e-6);
         }
+    }
+
+    use goat_store::{SqliteStore, Store};
+    use goat_types::{ChannelId, ConversationId, InstanceId};
+
+    async fn fresh_memory() -> (SqliteMemory, SqliteStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("goat.db");
+        std::mem::forget(dir);
+        let store = SqliteStore::open(&path).await.unwrap();
+        let memory = SqliteMemory::from_pool(store.pool());
+        (memory, store)
+    }
+
+    fn conv() -> ConversationId {
+        ConversationId::new(ChannelId::new("telegram"), InstanceId::new(), "chat:1")
+    }
+
+    #[tokio::test]
+    async fn episodic_round_trip_ranks_by_similarity() {
+        let (mem, store) = fresh_memory().await;
+        let persona = PersonaId::new();
+        store.ensure_persona(persona, "dev", "dev").await.unwrap();
+        let c = conv();
+        store.ensure_conversation(&c, persona).await.unwrap();
+
+        mem.append_episodic(
+            persona,
+            &c,
+            EpisodicKind::User,
+            "likes cats",
+            Some(&[1.0, 0.0]),
+        )
+        .await
+        .unwrap();
+        mem.append_episodic(
+            persona,
+            &c,
+            EpisodicKind::User,
+            "likes dogs",
+            Some(&[0.0, 1.0]),
+        )
+        .await
+        .unwrap();
+
+        let hits = mem.search_episodic(persona, &[1.0, 0.0], 1).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].text, "likes cats");
+    }
+
+    #[tokio::test]
+    async fn episodic_search_is_persona_scoped() {
+        let (mem, store) = fresh_memory().await;
+        let alice = PersonaId::new();
+        let bob = PersonaId::new();
+        store.ensure_persona(alice, "alice", "alice").await.unwrap();
+        store.ensure_persona(bob, "bob", "bob").await.unwrap();
+        let c = conv();
+        store.ensure_conversation(&c, alice).await.unwrap();
+
+        mem.append_episodic(
+            alice,
+            &c,
+            EpisodicKind::User,
+            "alice secret",
+            Some(&[1.0, 0.0]),
+        )
+        .await
+        .unwrap();
+
+        let bob_hits = mem.search_episodic(bob, &[1.0, 0.0], 5).await.unwrap();
+        assert!(bob_hits.is_empty(), "bob must not see alice's memory");
+        let alice_hits = mem.search_episodic(alice, &[1.0, 0.0], 5).await.unwrap();
+        assert_eq!(alice_hits.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn core_upsert_overwrites_by_slug() {
+        let (mem, store) = fresh_memory().await;
+        let persona = PersonaId::new();
+        store.ensure_persona(persona, "dev", "dev").await.unwrap();
+
+        mem.upsert_core(persona, "tz", "UTC").await.unwrap();
+        mem.upsert_core(persona, "tz", "KST").await.unwrap();
+        let blocks = mem.core_blocks(persona).await.unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "KST");
     }
 }

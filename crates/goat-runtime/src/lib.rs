@@ -9,12 +9,13 @@ use goat_channel::{Channel, ChannelBinding, ChannelFactory, ChannelHandle};
 use goat_command::{CommandFactory, CommandProviderContext, CommandRegistry};
 use goat_config::{GoatPaths, LoadedConfig};
 use goat_credentials::JsonFileStore;
-use goat_llm::{CredentialStore, LlmProviderSpec};
+use goat_llm::{CredentialStore, EmbeddingProvider, EmbeddingProviderSpec, LlmProviderSpec};
+use goat_memory::{Embedder, MemoryStore, SqliteMemory};
 use goat_persona::PersonaConfig;
 use goat_render::{DefaultStreamRenderer, StreamRenderer};
 use goat_store::{SqliteStore, Store};
 use goat_tool::ToolRegistry;
-use goat_types::{Event, InstanceId};
+use goat_types::{Event, InstanceId, PersonaId};
 use tracing::{info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -58,17 +59,22 @@ impl Goat {
     async fn boot_inner(cfg: LoadedConfig, log_guard: Option<WorkerGuard>) -> Result<Self> {
         info!(root = %cfg.paths.root.display(), "booting goat");
 
-        let store: Arc<dyn Store> = Arc::new(
-            SqliteStore::open(&cfg.paths.state_db)
-                .await
-                .context("open store")?,
-        );
+        let sqlite_store = SqliteStore::open(&cfg.paths.state_db)
+            .await
+            .context("open store")?;
+        // Memory tables carry FKs into personas/conversations and therefore
+        // share goat.db; reuse the store's pool rather than opening a second
+        // database file.
+        let memory: Arc<dyn MemoryStore> = Arc::new(SqliteMemory::from_pool(sqlite_store.pool()));
+        let store: Arc<dyn Store> = Arc::new(sqlite_store);
 
         let credentials: Arc<dyn CredentialStore> = Arc::new(
             JsonFileStore::open(cfg.paths.credentials_json.clone())
                 .context("opening credentials store")?,
         );
-        let providers = build_provider_registry(credentials);
+        let providers = build_provider_registry(credentials.clone());
+        let embedding_providers = build_embedding_providers(credentials);
+        let embedders = build_embedders(&cfg.personas, &embedding_providers).await;
         let channels = build_channel_registry();
 
         let bus = EventBus::new();
@@ -79,6 +85,7 @@ impl Goat {
 
         let mut tools_reg = ToolRegistry::from_inventory();
         goat_tool_schedule::register(&mut tools_reg, store.clone(), scheduler_handle);
+        goat_tool_memory::register(&mut tools_reg, memory.clone(), embedders.clone());
         let tools = Arc::new(tools_reg);
         info!(
             default_tools = tools.default_specs().len(),
@@ -95,6 +102,8 @@ impl Goat {
             tools,
             goat_root: cfg.paths.root.clone(),
             store,
+            memory,
+            embedders,
             renderer,
             bus,
         };
@@ -139,6 +148,95 @@ fn build_provider_registry(credentials: Arc<dyn CredentialStore>) -> Arc<Provide
     Arc::new(reg)
 }
 
+fn build_embedding_providers(
+    credentials: Arc<dyn CredentialStore>,
+) -> HashMap<String, Arc<dyn EmbeddingProvider>> {
+    let mut map: HashMap<String, Arc<dyn EmbeddingProvider>> = HashMap::new();
+    for spec in inventory::iter::<EmbeddingProviderSpec>() {
+        map.entry(spec.id.as_str().to_string())
+            .or_insert_with(|| (spec.build)(credentials.clone()));
+    }
+    map
+}
+
+/// Resolve each memory-enabled persona's embedder. A probe call determines
+/// the embedding dimension and validates credentials up front; on failure
+/// the persona simply runs with core-only memory (no episodic capture or
+/// recall) rather than failing to boot.
+async fn build_embedders(
+    personas: &[PersonaConfig],
+    providers: &HashMap<String, Arc<dyn EmbeddingProvider>>,
+) -> Arc<HashMap<PersonaId, Arc<dyn Embedder>>> {
+    let mut map: HashMap<PersonaId, Arc<dyn Embedder>> = HashMap::new();
+    for persona in personas {
+        if !persona.memory.enabled {
+            continue;
+        }
+        let Some(settings) = persona.memory.embedding.as_ref() else {
+            continue;
+        };
+        let Some(provider) = providers.get(&settings.provider) else {
+            warn!(
+                persona = %persona.slug,
+                provider = %settings.provider,
+                "memory: unknown embedding provider; episodic memory disabled for this persona",
+            );
+            continue;
+        };
+        match provider.embed(&settings.model, "dimension probe").await {
+            Ok(probe) => {
+                info!(
+                    persona = %persona.slug,
+                    provider = %settings.provider,
+                    model = %settings.model,
+                    dim = probe.len(),
+                    "memory: embedder ready",
+                );
+                map.insert(
+                    persona.id,
+                    Arc::new(ProviderEmbedder {
+                        provider: provider.clone(),
+                        model: settings.model.clone(),
+                        dim: probe.len(),
+                    }),
+                );
+            }
+            Err(e) => warn!(
+                persona = %persona.slug,
+                provider = %settings.provider,
+                model = %settings.model,
+                error = ?e,
+                "memory: embedding probe failed; episodic memory disabled for this persona",
+            ),
+        }
+    }
+    Arc::new(map)
+}
+
+/// Adapter bridging a [`EmbeddingProvider`] (which is provider-aware) to the
+/// provider-agnostic [`Embedder`] trait that `goat-memory`/`goat-brain`
+/// consume. Lives in the wiring layer so the shared crates stay free of
+/// concrete provider knowledge.
+struct ProviderEmbedder {
+    provider: Arc<dyn EmbeddingProvider>,
+    model: String,
+    dim: usize,
+}
+
+#[async_trait::async_trait]
+impl Embedder for ProviderEmbedder {
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        self.provider
+            .embed(&self.model, text)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
+    }
+}
+
 fn build_channel_registry() -> HashMap<String, Arc<dyn Channel>> {
     let mut by_name: HashMap<String, Arc<dyn Channel>> = HashMap::new();
     for factory in inventory::iter::<ChannelFactory>() {
@@ -155,6 +253,8 @@ struct RuntimeShared<'a> {
     tools: Arc<ToolRegistry>,
     goat_root: std::path::PathBuf,
     store: Arc<dyn Store>,
+    memory: Arc<dyn MemoryStore>,
+    embedders: Arc<HashMap<PersonaId, Arc<dyn Embedder>>>,
     renderer: Arc<dyn StreamRenderer>,
     bus: EventBus,
 }
@@ -230,6 +330,11 @@ async fn spawn_persona(
         shared.tools.clone(),
         commands,
         shared.store.clone(),
+        shared.memory.clone(),
+        shared.embedders.get(&raw.id).cloned(),
+        raw.memory.enabled,
+        raw.memory.episodic_k,
+        raw.memory.summarize,
         shared.renderer.clone(),
         shared.goat_root.clone(),
     ));

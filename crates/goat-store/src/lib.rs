@@ -37,6 +37,13 @@ pub struct HistoryRow {
     pub ts: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ConversationSummary {
+    pub summary: String,
+    /// Number of text messages (ts-ascending) already folded into `summary`.
+    pub summarized_count: usize,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Direction {
     In,
@@ -207,6 +214,34 @@ pub trait Store: Send + Sync + 'static {
         conv: &ConversationId,
         limit: usize,
     ) -> StoreResult<Vec<HistoryRow>>;
+
+    /// Count of text messages in a conversation. Used as the stable upper
+    /// bound for summary-watermark math.
+    async fn message_count(&self, persona: PersonaId, conv: &ConversationId) -> StoreResult<usize>;
+
+    /// Text messages in ts-ascending order, `limit` rows starting at `offset`.
+    /// Offsets are stable because messages are append-only.
+    async fn messages_from(
+        &self,
+        persona: PersonaId,
+        conv: &ConversationId,
+        offset: usize,
+        limit: usize,
+    ) -> StoreResult<Vec<HistoryRow>>;
+
+    async fn get_conversation_summary(
+        &self,
+        persona: PersonaId,
+        conv: &ConversationId,
+    ) -> StoreResult<Option<ConversationSummary>>;
+
+    async fn upsert_conversation_summary(
+        &self,
+        persona: PersonaId,
+        conv: &ConversationId,
+        summary: &str,
+        summarized_count: usize,
+    ) -> StoreResult<()>;
 
     async fn insert_scheduled_task(&self, new: NewScheduledTask) -> StoreResult<i64>;
 
@@ -472,6 +507,102 @@ impl Store for SqliteStore {
             .collect();
         history.reverse();
         Ok(history)
+    }
+
+    async fn message_count(&self, persona: PersonaId, conv: &ConversationId) -> StoreResult<usize> {
+        let row: (i64,) = sqlx::query_as(
+            r#"SELECT COUNT(*) FROM messages
+               WHERE persona_id = ? AND conversation_id = ? AND text IS NOT NULL"#,
+        )
+        .bind(persona.to_string())
+        .bind(conv.to_key())
+        .fetch_one(&*self.pool)
+        .await?;
+        Ok(row.0.max(0) as usize)
+    }
+
+    async fn messages_from(
+        &self,
+        persona: PersonaId,
+        conv: &ConversationId,
+        offset: usize,
+        limit: usize,
+    ) -> StoreResult<Vec<HistoryRow>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query_as::<_, (String, String, String)>(
+            r#"SELECT direction, text, ts
+               FROM messages
+               WHERE persona_id = ? AND conversation_id = ? AND text IS NOT NULL
+               ORDER BY ts ASC, id ASC
+               LIMIT ? OFFSET ?"#,
+        )
+        .bind(persona.to_string())
+        .bind(conv.to_key())
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(&*self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(dir, text, ts)| HistoryRow {
+                direction: match dir.as_str() {
+                    "out" => Direction::Out,
+                    _ => Direction::In,
+                },
+                text,
+                ts: chrono::DateTime::parse_from_rfc3339(&ts)
+                    .map(|d| d.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+            })
+            .collect())
+    }
+
+    async fn get_conversation_summary(
+        &self,
+        persona: PersonaId,
+        conv: &ConversationId,
+    ) -> StoreResult<Option<ConversationSummary>> {
+        let row: Option<(String, i64)> = sqlx::query_as(
+            r#"SELECT summary, summarized_count FROM conversation_summary
+               WHERE persona_id = ? AND conversation_id = ?"#,
+        )
+        .bind(persona.to_string())
+        .bind(conv.to_key())
+        .fetch_optional(&*self.pool)
+        .await?;
+        Ok(row.map(|(summary, count)| ConversationSummary {
+            summary,
+            summarized_count: count.max(0) as usize,
+        }))
+    }
+
+    async fn upsert_conversation_summary(
+        &self,
+        persona: PersonaId,
+        conv: &ConversationId,
+        summary: &str,
+        summarized_count: usize,
+    ) -> StoreResult<()> {
+        self.ensure_conversation(conv, persona).await?;
+        sqlx::query(
+            r#"INSERT INTO conversation_summary
+               (conversation_id, persona_id, summary, summarized_count, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(conversation_id) DO UPDATE SET
+                 summary = excluded.summary,
+                 summarized_count = excluded.summarized_count,
+                 updated_at = excluded.updated_at"#,
+        )
+        .bind(conv.to_key())
+        .bind(persona.to_string())
+        .bind(summary)
+        .bind(summarized_count as i64)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&*self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn insert_scheduled_task(&self, new: NewScheduledTask) -> StoreResult<i64> {
@@ -906,6 +1037,56 @@ mod tests {
         assert_eq!(hist.len(), 2);
         assert_eq!(hist[0].text, "hello");
         assert_eq!(hist[1].text, "world");
+    }
+
+    #[tokio::test]
+    async fn message_count_range_and_summary_round_trip() {
+        let s = fresh().await;
+        let p = fixture_persona(&s).await;
+        let conv = fixture_conv();
+        for i in 0..5 {
+            let msg = IncomingMessage {
+                id: MessageId(format!("m{i}")),
+                persona: p,
+                conversation: conv.clone(),
+                from: UserHandle {
+                    external: "u".into(),
+                    display: None,
+                },
+                text: format!("msg {i}"),
+                attachments: vec![],
+                command: None,
+                ts: Utc::now() + Duration::seconds(i),
+                raw: serde_json::Value::Null,
+            };
+            s.append_incoming(&msg).await.unwrap();
+        }
+
+        assert_eq!(s.message_count(p, &conv).await.unwrap(), 5);
+
+        let middle = s.messages_from(p, &conv, 1, 2).await.unwrap();
+        assert_eq!(middle.len(), 2);
+        assert_eq!(middle[0].text, "msg 1");
+        assert_eq!(middle[1].text, "msg 2");
+
+        assert!(s
+            .get_conversation_summary(p, &conv)
+            .await
+            .unwrap()
+            .is_none());
+        s.upsert_conversation_summary(p, &conv, "they discussed msgs 0-2", 3)
+            .await
+            .unwrap();
+        let summary = s.get_conversation_summary(p, &conv).await.unwrap().unwrap();
+        assert_eq!(summary.summarized_count, 3);
+        assert_eq!(summary.summary, "they discussed msgs 0-2");
+
+        s.upsert_conversation_summary(p, &conv, "updated", 4)
+            .await
+            .unwrap();
+        let summary = s.get_conversation_summary(p, &conv).await.unwrap().unwrap();
+        assert_eq!(summary.summarized_count, 4);
+        assert_eq!(summary.summary, "updated");
     }
 
     #[tokio::test]

@@ -1040,6 +1040,7 @@ dependencies = [
  "goat-channel",
  "goat-command",
  "goat-llm",
+ "goat-memory",
  "goat-persona",
  "goat-render",
  "goat-skills",
@@ -1368,6 +1369,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1425,12 +1427,14 @@ dependencies = [
  "goat-credentials",
  "goat-llm",
  "goat-loop",
+ "goat-memory",
  "goat-persona",
  "goat-plugin",
  "goat-render",
  "goat-skills",
  "goat-store",
  "goat-tool",
+ "goat-tool-memory",
  "goat-tool-schedule",
  "goat-types",
  "inventory",
@@ -1499,6 +1503,22 @@ dependencies = [
  "tempfile",
  "tokio",
  "walkdir",
+]
+
+[[package]]
+name = "goat-tool-memory"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "goat-memory",
+ "goat-store",
+ "goat-tool",
+ "goat-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
