@@ -525,6 +525,7 @@ impl Brain {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn complete_with_tools(
         &self,
         handle: Arc<dyn ChannelHandle>,
