@@ -26,4 +26,27 @@ pub struct PersonaConfig {
     pub history_window: usize,
     pub tool_selectors: Vec<String>,
     pub bindings: Vec<PersonaBinding>,
+    pub memory: MemoryConfig,
+}
+
+/// Long-term memory settings for a persona. When `enabled` is false the
+/// brain skips all memory reads and writes. Core memory always works once
+/// enabled; episodic capture and recall additionally require `embedding`.
+#[derive(Clone, Debug, Default)]
+pub struct MemoryConfig {
+    pub enabled: bool,
+    pub embedding: Option<EmbeddingSettings>,
+    pub episodic_k: usize,
+    /// Roll older conversation history into an LLM-maintained summary instead
+    /// of dropping it past `history_window`. Independent of `enabled`.
+    pub summarize: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct EmbeddingSettings {
+    /// Embedding provider id, e.g. `openai`. Need not match the chat model's
+    /// provider (Anthropic personas can embed via OpenAI).
+    pub provider: String,
+    /// Embedding model id, e.g. `text-embedding-3-small`.
+    pub model: String,
 }

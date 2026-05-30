@@ -4,13 +4,16 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use goat_llm::Model;
-use goat_persona::{PersonaBinding, PersonaConfig, PersonalityCard};
+use goat_persona::{
+    EmbeddingSettings, MemoryConfig, PersonaBinding, PersonaConfig, PersonalityCard,
+};
 use goat_types::PersonaId;
 use serde::Deserialize;
 use thiserror::Error;
 use tracing::warn;
 
 const DEFAULT_HISTORY_WINDOW: usize = 20;
+const DEFAULT_EPISODIC_K: usize = 5;
 const LEGACY_STATE_DB: &str = "state.db";
 
 #[derive(Debug, Error)]
@@ -139,6 +142,60 @@ struct PersonaRuntimeConfig {
     channels: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     history_window: Option<usize>,
+    #[serde(default)]
+    memory: Option<MemoryRuntimeConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemoryRuntimeConfig {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    embedding: Option<EmbeddingRuntimeConfig>,
+    #[serde(default)]
+    recall: Option<RecallRuntimeConfig>,
+    #[serde(default)]
+    summarization: Option<SummarizationRuntimeConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SummarizationRuntimeConfig {
+    #[serde(default)]
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmbeddingRuntimeConfig {
+    provider: String,
+    model: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecallRuntimeConfig {
+    #[serde(default)]
+    episodic_k: Option<usize>,
+}
+
+impl MemoryRuntimeConfig {
+    fn into_config(self) -> MemoryConfig {
+        let episodic_k = self
+            .recall
+            .and_then(|r| r.episodic_k)
+            .unwrap_or(DEFAULT_EPISODIC_K);
+        MemoryConfig {
+            enabled: self.enabled,
+            embedding: self.embedding.map(|e| EmbeddingSettings {
+                provider: e.provider,
+                model: e.model,
+            }),
+            episodic_k,
+            summarize: self.summarization.map(|s| s.enabled).unwrap_or(false),
+        }
+    }
 }
 
 fn load_persona(dir: &Path, slug: &str) -> Result<PersonaConfig> {
@@ -168,6 +225,10 @@ fn load_persona(dir: &Path, slug: &str) -> Result<PersonaConfig> {
     };
 
     let bindings = bindings_from_config(&runtime.channels);
+    let memory = runtime
+        .memory
+        .map(MemoryRuntimeConfig::into_config)
+        .unwrap_or_default();
 
     Ok(PersonaConfig {
         id: PersonaId::from_slug(slug),
@@ -178,6 +239,7 @@ fn load_persona(dir: &Path, slug: &str) -> Result<PersonaConfig> {
         history_window: runtime.history_window.unwrap_or(DEFAULT_HISTORY_WINDOW),
         tool_selectors: runtime.tools.unwrap_or_else(|| vec!["*".to_string()]),
         bindings,
+        memory,
     })
 }
 
@@ -235,5 +297,77 @@ mod tests {
         assert_eq!(p.bindings.len(), 1);
         assert_eq!(p.bindings[0].name, "telegram");
         assert_eq!(p.bindings[0].config["token"], "new");
+        assert!(!p.memory.enabled, "memory defaults to disabled");
+    }
+
+    #[test]
+    fn memory_section_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let persona_dir = dir.path().join("dev");
+        fs::create_dir_all(&persona_dir).unwrap();
+        fs::write(persona_dir.join("persona.md"), "You are dev.\n").unwrap();
+        fs::write(
+            persona_dir.join("config.json"),
+            r#"{
+              "model": "anthropic/claude-x",
+              "channels": {},
+              "memory": {
+                "enabled": true,
+                "embedding": { "provider": "openai", "model": "text-embedding-3-small" },
+                "recall": { "episodic_k": 8 }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let p = load_persona(&persona_dir, "dev").unwrap();
+        assert!(p.memory.enabled);
+        assert_eq!(p.memory.episodic_k, 8);
+        assert!(
+            !p.memory.summarize,
+            "summarization defaults off when absent"
+        );
+        let emb = p.memory.embedding.expect("embedding configured");
+        assert_eq!(emb.provider, "openai");
+        assert_eq!(emb.model, "text-embedding-3-small");
+    }
+
+    #[test]
+    fn summarization_flag_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let persona_dir = dir.path().join("dev");
+        fs::create_dir_all(&persona_dir).unwrap();
+        fs::write(persona_dir.join("persona.md"), "You are dev.\n").unwrap();
+        fs::write(
+            persona_dir.join("config.json"),
+            r#"{
+              "model": "anthropic/claude-x",
+              "channels": {},
+              "memory": { "summarization": { "enabled": true } }
+            }"#,
+        )
+        .unwrap();
+
+        let p = load_persona(&persona_dir, "dev").unwrap();
+        assert!(p.memory.summarize);
+        assert!(!p.memory.enabled, "summarization is independent of enabled");
+    }
+
+    #[test]
+    fn memory_defaults_episodic_k_when_recall_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let persona_dir = dir.path().join("dev");
+        fs::create_dir_all(&persona_dir).unwrap();
+        fs::write(persona_dir.join("persona.md"), "You are dev.\n").unwrap();
+        fs::write(
+            persona_dir.join("config.json"),
+            r#"{ "model": "anthropic/claude-x", "channels": {}, "memory": { "enabled": true } }"#,
+        )
+        .unwrap();
+
+        let p = load_persona(&persona_dir, "dev").unwrap();
+        assert!(p.memory.enabled);
+        assert_eq!(p.memory.episodic_k, DEFAULT_EPISODIC_K);
+        assert!(p.memory.embedding.is_none());
     }
 }
