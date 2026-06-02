@@ -192,21 +192,30 @@ impl MemoryStore for SqliteMemory {
         text: &str,
         embedding: Option<&[f32]>,
     ) -> MemoryResult<()> {
+        // Capture id and ts so we can update the in-memory index after the
+        // INSERT succeeds. The index is only updated on success — if the DB
+        // write fails the entry is absent from both, keeping them consistent.
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
         let blob = embedding.map(encode_vec);
         sqlx::query(
             r#"INSERT INTO episodic_memory
                (id, persona_id, conversation_id, kind, text, embedding, ts)
                VALUES (?, ?, ?, ?, ?, ?, ?)"#,
         )
-        .bind(Uuid::new_v4().to_string())
+        .bind(&id)
         .bind(persona.to_string())
         .bind(conv.to_key())
         .bind(kind.as_str())
         .bind(text)
         .bind(blob)
-        .bind(Utc::now().to_rfc3339())
+        .bind(now.to_rfc3339())
         .execute(&*self.pool)
         .await?;
+        // Update the index only when an embedding is present.
+        if let Some(emb) = embedding {
+            self.index.insert(persona, &id, now, kind, emb).await;
+        }
         Ok(())
     }
 
