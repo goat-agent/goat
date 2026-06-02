@@ -156,7 +156,15 @@ impl Goat {
 
 fn build_provider_registry(credentials: Arc<dyn CredentialStore>) -> Arc<ProviderRegistry> {
     let mut reg = ProviderRegistry::new();
+    let mut seen = std::collections::HashSet::<String>::new();
     for spec in inventory::iter::<LlmProviderSpec>() {
+        if !seen.insert(spec.id.as_str().to_string()) {
+            warn!(
+                provider = spec.id.as_str(),
+                "duplicate LLM provider ID in inventory; first registration wins",
+            );
+            continue;
+        }
         let provider = (spec.build)(credentials.clone());
         info!(provider = spec.id.as_str(), "loaded provider");
         reg.insert(provider);
