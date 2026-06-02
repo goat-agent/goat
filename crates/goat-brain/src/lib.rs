@@ -25,6 +25,7 @@ use goat_tool::{
     ToolOutput, ToolReadState, ToolRegistry,
 };
 use goat_types::{ConversationId, Event, MessageId, PersonaId};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 const RUNTIME_SYSTEM_GUARD: &str = r#"
@@ -166,40 +167,48 @@ impl Brain {
         self: Arc<Self>,
         bus: EventBus,
         channels: Vec<Arc<dyn ChannelHandle>>,
+        cancel: CancellationToken,
     ) -> Result<()> {
         let mut sub = bus.subscribe(EventFilter::Persona(self.persona));
         info!(persona = %self.persona, "brain running");
 
-        while let Some(event) = sub.recv().await {
-            match event {
-                Event::Incoming(msg) => {
-                    if let Err(e) = self.handle(&channels, msg).await {
-                        warn!(persona = %self.persona, error = ?e, "turn failed");
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => break,
+                event = sub.recv() => {
+                    let Some(event) = event else { break };
+                    match event {
+                        Event::Incoming(msg) => {
+                            if let Err(e) = self.handle(&channels, msg).await {
+                                warn!(persona = %self.persona, error = ?e, "turn failed");
+                            }
+                        }
+                        Event::SelfTick {
+                            run_id, task_id, ..
+                        } => {
+                            if let Err(e) = self.handle_self_tick(&channels, run_id, task_id).await {
+                                warn!(
+                                    persona = %self.persona,
+                                    run_id,
+                                    task_id,
+                                    error = ?e,
+                                    "self-tick failed",
+                                );
+                            }
+                        }
+                        Event::Reflection { .. } => {
+                            if let Err(e) = self.handle_reflection(&channels).await {
+                                warn!(
+                                    persona = %self.persona,
+                                    error = ?e,
+                                    "reflection failed",
+                                );
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                Event::SelfTick {
-                    run_id, task_id, ..
-                } => {
-                    if let Err(e) = self.handle_self_tick(&channels, run_id, task_id).await {
-                        warn!(
-                            persona = %self.persona,
-                            run_id,
-                            task_id,
-                            error = ?e,
-                            "self-tick failed",
-                        );
-                    }
-                }
-                Event::Reflection { .. } => {
-                    if let Err(e) = self.handle_reflection(&channels).await {
-                        warn!(
-                            persona = %self.persona,
-                            error = ?e,
-                            "reflection failed",
-                        );
-                    }
-                }
-                _ => {}
             }
         }
         Ok(())
