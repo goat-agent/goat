@@ -271,9 +271,15 @@ impl Embedder for ProviderEmbedder {
 fn build_channel_registry() -> HashMap<String, Arc<dyn Channel>> {
     let mut by_name: HashMap<String, Arc<dyn Channel>> = HashMap::new();
     for factory in inventory::iter::<ChannelFactory>() {
-        by_name
-            .entry(factory.id.as_str().to_string())
-            .or_insert_with(|| (factory.ctor)());
+        let id = factory.id.as_str().to_string();
+        if by_name.contains_key(&id) {
+            warn!(
+                channel = %id,
+                "duplicate channel ID in inventory; first registration wins",
+            );
+            continue;
+        }
+        by_name.insert(id, (factory.ctor)());
     }
     by_name
 }
