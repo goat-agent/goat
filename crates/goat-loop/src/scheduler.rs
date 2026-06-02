@@ -123,8 +123,7 @@ async fn run_loop(
 ) {
     // Periodic reclaim: catch runs wedged within the same process lifetime.
     // Threshold is 30 minutes to avoid reclaiming legitimately long runs.
-    let mut reclaim_ticker =
-        tokio::time::interval(StdDuration::from_secs(5 * 60));
+    let mut reclaim_ticker = tokio::time::interval(StdDuration::from_secs(5 * 60));
     // Consume the immediate first tick so the interval fires after 5 min.
     reclaim_ticker.tick().await;
 

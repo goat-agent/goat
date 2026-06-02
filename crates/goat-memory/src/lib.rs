@@ -233,14 +233,8 @@ impl MemoryStore for SqliteMemory {
 
         // Step 2: Fetch only the text bodies for the winning ids.
         // Build a parameterised IN(...) clause.
-        let placeholders = hits
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT id, text FROM episodic_memory WHERE id IN ({placeholders})"
-        );
+        let placeholders = hits.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!("SELECT id, text FROM episodic_memory WHERE id IN ({placeholders})");
         let mut q = sqlx::query_as::<_, (String, String)>(&sql);
         for h in &hits {
             q = q.bind(&h.id);

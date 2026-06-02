@@ -1042,22 +1042,20 @@ impl Brain {
                         last_rate_limit_secs = *retry_after;
                     }
                 }
-                Ok(stream) => {
-                    match fold_turn(stream, self.stream_idle_timeout).await {
-                        Ok(folded) => return Ok(folded),
-                        Err(e) => {
-                            if attempt == self.llm_max_retries {
-                                return Err(e);
-                            }
-                            warn!(
-                                persona = %self.persona,
-                                error = ?e,
-                                attempt,
-                                "LLM stream error; will retry",
-                            );
+                Ok(stream) => match fold_turn(stream, self.stream_idle_timeout).await {
+                    Ok(folded) => return Ok(folded),
+                    Err(e) => {
+                        if attempt == self.llm_max_retries {
+                            return Err(e);
                         }
+                        warn!(
+                            persona = %self.persona,
+                            error = ?e,
+                            attempt,
+                            "LLM stream error; will retry",
+                        );
                     }
-                }
+                },
             }
         }
 
@@ -1087,37 +1085,35 @@ async fn fold_turn(mut stream: LlmStream, idle_timeout: std::time::Duration) -> 
                 ));
             }
             Ok(None) => break,
-            Ok(Some(item)) => {
-                match item? {
-                    LlmChunk::TextDelta { text: delta, .. } => text.push_str(&delta),
-                    LlmChunk::ToolCallStart {
+            Ok(Some(item)) => match item? {
+                LlmChunk::TextDelta { text: delta, .. } => text.push_str(&delta),
+                LlmChunk::ToolCallStart {
+                    block,
+                    tool_call_id,
+                    name,
+                } => {
+                    pending.insert(
                         block,
-                        tool_call_id,
-                        name,
-                    } => {
-                        pending.insert(
-                            block,
-                            PendingToolCall {
-                                id: tool_call_id,
-                                name,
-                                args_json: String::new(),
-                            },
-                        );
-                    }
-                    LlmChunk::ToolCallDelta {
-                        block,
-                        args_json_fragment,
-                    } => {
-                        pending
-                            .entry(block)
-                            .or_default()
-                            .args_json
-                            .push_str(&args_json_fragment);
-                    }
-                    LlmChunk::MessageEnd { .. } => done = true,
-                    _ => {}
+                        PendingToolCall {
+                            id: tool_call_id,
+                            name,
+                            args_json: String::new(),
+                        },
+                    );
                 }
-            }
+                LlmChunk::ToolCallDelta {
+                    block,
+                    args_json_fragment,
+                } => {
+                    pending
+                        .entry(block)
+                        .or_default()
+                        .args_json
+                        .push_str(&args_json_fragment);
+                }
+                LlmChunk::MessageEnd { .. } => done = true,
+                _ => {}
+            },
         }
     }
 
