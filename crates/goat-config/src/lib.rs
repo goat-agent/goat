@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use goat_llm::Model;
 use goat_persona::{
-    EmbeddingSettings, MemoryConfig, PersonaBinding, PersonaConfig, PersonalityCard,
+    AutonomyConfig, EmbeddingSettings, MemoryConfig, PersonaBinding, PersonaConfig, PersonalityCard,
 };
 use goat_types::PersonaId;
 use serde::Deserialize;
@@ -144,6 +144,8 @@ struct PersonaRuntimeConfig {
     history_window: Option<usize>,
     #[serde(default)]
     memory: Option<MemoryRuntimeConfig>,
+    #[serde(default)]
+    autonomy: Option<AutonomyRuntimeConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -162,6 +164,13 @@ struct MemoryRuntimeConfig {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SummarizationRuntimeConfig {
+    #[serde(default)]
+    enabled: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AutonomyRuntimeConfig {
     #[serde(default)]
     enabled: bool,
 }
@@ -229,6 +238,10 @@ fn load_persona(dir: &Path, slug: &str) -> Result<PersonaConfig> {
         .memory
         .map(MemoryRuntimeConfig::into_config)
         .unwrap_or_default();
+    let autonomy = runtime
+        .autonomy
+        .map(|a| AutonomyConfig { enabled: a.enabled })
+        .unwrap_or_default();
 
     Ok(PersonaConfig {
         id: PersonaId::from_slug(slug),
@@ -240,6 +253,7 @@ fn load_persona(dir: &Path, slug: &str) -> Result<PersonaConfig> {
         tool_selectors: runtime.tools.unwrap_or_else(|| vec!["*".to_string()]),
         bindings,
         memory,
+        autonomy,
     })
 }
 
@@ -369,5 +383,37 @@ mod tests {
         assert!(p.memory.enabled);
         assert_eq!(p.memory.episodic_k, DEFAULT_EPISODIC_K);
         assert!(p.memory.embedding.is_none());
+    }
+
+    #[test]
+    fn autonomy_flag_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let persona_dir = dir.path().join("dev");
+        fs::create_dir_all(&persona_dir).unwrap();
+        fs::write(persona_dir.join("persona.md"), "You are dev.\n").unwrap();
+        fs::write(
+            persona_dir.join("config.json"),
+            r#"{ "model": "anthropic/claude-x", "channels": {}, "autonomy": { "enabled": true } }"#,
+        )
+        .unwrap();
+
+        let p = load_persona(&persona_dir, "dev").unwrap();
+        assert!(p.autonomy.enabled);
+    }
+
+    #[test]
+    fn autonomy_defaults_off_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let persona_dir = dir.path().join("dev");
+        fs::create_dir_all(&persona_dir).unwrap();
+        fs::write(persona_dir.join("persona.md"), "You are dev.\n").unwrap();
+        fs::write(
+            persona_dir.join("config.json"),
+            r#"{ "model": "anthropic/claude-x", "channels": {} }"#,
+        )
+        .unwrap();
+
+        let p = load_persona(&persona_dir, "dev").unwrap();
+        assert!(!p.autonomy.enabled, "autonomy defaults to disabled");
     }
 }
