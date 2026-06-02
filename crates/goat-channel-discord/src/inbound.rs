@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -7,7 +8,7 @@ use goat_types::{
     InstanceId, MessageId, PersonaId, UserHandle,
 };
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{debug, warn};
 use twilight_gateway::{EventTypeFlags, Shard, StreamExt as _GatewayStreamExt};
 use twilight_http::Client as HttpClient;
 use twilight_model::application::interaction::{
@@ -19,15 +20,27 @@ use twilight_model::http::interaction::{InteractionResponse, InteractionResponse
 use crate::interaction::{InteractionState, PendingInteraction};
 use crate::ID;
 
+pub(crate) struct GatewayConfig {
+    pub(crate) persona: PersonaId,
+    pub(crate) instance: InstanceId,
+    pub(crate) commands: Vec<CommandSpec>,
+    pub(crate) interactions: Arc<InteractionState>,
+    pub(crate) allowed_user_ids: HashSet<u64>,
+}
+
 pub(crate) async fn gateway_loop(
     mut shard: Shard,
     http: Arc<HttpClient>,
-    persona: PersonaId,
-    instance: InstanceId,
     tx: mpsc::Sender<IncomingMessage>,
-    commands: Vec<CommandSpec>,
-    interactions: Arc<InteractionState>,
+    cfg: GatewayConfig,
 ) {
+    let GatewayConfig {
+        persona,
+        instance,
+        commands,
+        interactions,
+        allowed_user_ids,
+    } = cfg;
     let events = EventTypeFlags::MESSAGE_CREATE | EventTypeFlags::INTERACTION_CREATE;
     loop {
         let Some(item) = shard.next_event(events).await else {
@@ -36,6 +49,10 @@ pub(crate) async fn gateway_loop(
         match item {
             Ok(Event::MessageCreate(mc)) => {
                 if mc.author.bot {
+                    continue;
+                }
+                if !is_allowed_user_id(mc.author.id.get(), &allowed_user_ids) {
+                    debug!(user_id = mc.author.id.get(), "discord: user not in allowlist, ignoring");
                     continue;
                 }
                 let command = parse_text_command(&mc.content, &mc.id.to_string(), &commands);
@@ -85,6 +102,15 @@ pub(crate) async fn gateway_loop(
                 }
             }
             Ok(Event::InteractionCreate(ic)) => {
+                if let Some(author) = ic.author() {
+                    if !is_allowed_user_id(author.id.get(), &allowed_user_ids) {
+                        debug!(
+                            user_id = author.id.get(),
+                            "discord: interaction user not in allowlist, ignoring"
+                        );
+                        continue;
+                    }
+                }
                 let Some((msg, pending)) =
                     interaction_to_incoming(&ic, persona, instance, &commands)
                 else {
@@ -193,6 +219,10 @@ fn interaction_to_incoming(
     ))
 }
 
+fn is_allowed_user_id(user_id: u64, allowed_user_ids: &HashSet<u64>) -> bool {
+    allowed_user_ids.is_empty() || allowed_user_ids.contains(&user_id)
+}
+
 pub(crate) fn discord_command_name(skill_name: &str) -> Option<String> {
     let mut out = String::new();
     for ch in skill_name.chars() {
@@ -243,5 +273,29 @@ fn split_command(rest: &str) -> (&str, &str) {
     match index {
         Some(i) => (&rest[..i], rest[i..].trim()),
         None => (rest, ""),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn allowlist(values: &[u64]) -> HashSet<u64> {
+        values.iter().copied().collect()
+    }
+
+    #[test]
+    fn allowlist_empty_allows_any_user() {
+        assert!(is_allowed_user_id(42, &allowlist(&[])));
+    }
+
+    #[test]
+    fn allowlist_accepts_configured_user() {
+        assert!(is_allowed_user_id(42, &allowlist(&[42])));
+    }
+
+    #[test]
+    fn allowlist_rejects_unconfigured_user() {
+        assert!(!is_allowed_user_id(7, &allowlist(&[42])));
     }
 }

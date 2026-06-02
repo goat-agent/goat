@@ -20,7 +20,7 @@ use twilight_model::id::Id;
 
 use crate::config::DiscordConfig;
 use crate::handle::DiscordHandle;
-use crate::inbound::gateway_loop;
+use crate::inbound::{gateway_loop, GatewayConfig};
 use crate::interaction::InteractionState;
 use crate::ID;
 
@@ -66,6 +66,7 @@ impl Channel for DiscordChannel {
         } else {
             parse_intents(&cfg.intents)
         };
+        let allowed_user_ids: HashSet<u64> = cfg.allowed_user_ids.iter().copied().collect();
         let shard = Shard::new(ShardId::ONE, cfg.token, intents);
 
         let (tx, rx) = mpsc::channel(INCOMING_CAPACITY);
@@ -74,11 +75,14 @@ impl Channel for DiscordChannel {
         tokio::spawn(gateway_loop(
             shard,
             http.clone(),
-            persona,
-            binding.instance,
             tx,
-            commands,
-            interactions.clone(),
+            GatewayConfig {
+                persona,
+                instance: binding.instance,
+                commands,
+                interactions: interactions.clone(),
+                allowed_user_ids,
+            },
         ));
 
         info!(persona = %persona, "discord bot bound: {}", identity.handle);
