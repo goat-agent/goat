@@ -140,7 +140,10 @@ pub(crate) async fn gateway_loop(
                 Some(Ok(_)) => {
                     backoff_secs = 1;
                 }
-                Some(Err(e)) => warn!(error = ?e, "discord gateway error"),
+                Some(Err(e)) => {
+                    backoff_secs = 1;
+                    warn!(error = ?e, "discord gateway error");
+                }
             }
         }
         warn!(backoff_secs, "discord gateway closed; reconnecting");
