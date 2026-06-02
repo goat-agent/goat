@@ -1538,9 +1538,6 @@ mod tests {
 
     #[test]
     fn reflection_mode_does_not_filter_schedule_tools() {
-        // In SelfTick, is_schedule_tool gates tools. In Reflection it doesn't —
-        // verify the predicate returns true for known schedule tools, confirming
-        // the Reflection arm's decision to omit this check is meaningful.
         assert!(is_schedule_tool("schedule_once"));
         assert!(is_schedule_tool("schedule_cron"));
         assert!(is_schedule_tool("cancel_task"));
@@ -1551,8 +1548,6 @@ mod tests {
 
     #[test]
     fn reflection_and_self_tick_both_trigger_skip_guard() {
-        // The skip short-circuit in complete_with_tools uses this matches! pattern.
-        // Verify both modes are covered.
         let reflection = TurnMode::Reflection;
         let self_tick = TurnMode::SelfTick { tools: vec![] };
         let normal = TurnMode::Normal;
