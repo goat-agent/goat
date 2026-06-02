@@ -694,6 +694,13 @@ impl Brain {
             }
         }
 
+        if matches!(mode, TurnMode::SelfTick { .. } | TurnMode::Reflection) {
+            return Ok(RenderSummary {
+                messages_sent: 0,
+                edits: 0,
+                final_text: String::new(),
+            });
+        }
         let text = "I stopped because tool execution exceeded the safety round limit.".to_string();
         self.renderer
             .render(
@@ -896,7 +903,7 @@ impl Brain {
             }
         };
 
-        let mut messages = self.history_messages(&conv).await?;
+        let (summary, mut messages) = self.load_context(&conv).await?;
         messages.push(LlmMessage {
             role: Role::User,
             content: vec![ContentPart::Text("(자율 reflection 시점)".into())],
@@ -911,7 +918,7 @@ impl Brain {
                 &mut messages,
                 TurnMode::Reflection,
                 None,
-                None,
+                summary,
             )
             .await?;
 
