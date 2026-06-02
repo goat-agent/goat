@@ -9,8 +9,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub mod embed;
+pub mod index;
 
 pub use embed::{DummyEmbedder, Embedder};
+pub use index::{EpisodicHit, EpisodicIndex, InMemoryEpisodicIndex};
 
 #[derive(Debug, Error)]
 pub enum MemoryError {
@@ -110,6 +112,9 @@ pub trait MemoryStore: Send + Sync + 'static {
 
 pub struct SqliteMemory {
     pool: Arc<SqlitePool>,
+    /// In-memory episodic index. Eliminates per-turn full-table decodes.
+    /// Lazy per-persona hydration: loaded from DB on first search or insert.
+    index: Arc<dyn EpisodicIndex>,
 }
 
 impl SqliteMemory {
@@ -119,7 +124,8 @@ impl SqliteMemory {
     /// database as [`goat_store::SqliteStore`]. The runtime passes that
     /// store's pool here rather than opening a second database file.
     pub fn from_pool(pool: Arc<SqlitePool>) -> Self {
-        Self { pool }
+        let index = Arc::new(InMemoryEpisodicIndex::new(pool.clone()));
+        Self { pool, index }
     }
 
     pub async fn open(path: &Path) -> MemoryResult<Self> {
@@ -131,13 +137,14 @@ impl SqliteMemory {
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .disable_statement_logging();
-        let pool = SqlitePoolOptions::new()
-            .max_connections(8)
-            .connect_with(opts)
-            .await?;
-        Ok(Self {
-            pool: Arc::new(pool),
-        })
+        let pool = Arc::new(
+            SqlitePoolOptions::new()
+                .max_connections(8)
+                .connect_with(opts)
+                .await?,
+        );
+        let index = Arc::new(InMemoryEpisodicIndex::new(pool.clone()));
+        Ok(Self { pool, index })
     }
 }
 
