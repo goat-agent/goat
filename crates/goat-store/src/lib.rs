@@ -304,6 +304,11 @@ pub trait Store: Send + Sync + 'static {
     /// ordered by `run_at`. Used by the scheduler at boot to repopulate the
     /// in-process timer queue from durable state.
     async fn all_pending_runs(&self) -> StoreResult<Vec<(i64, i64, DateTime<Utc>)>>;
+
+    /// Returns the `ConversationId` of the most-recently-active conversation
+    /// for `persona`, determined by the latest message timestamp. Returns
+    /// `None` if the persona has no conversations with messages yet.
+    async fn latest_conversation(&self, persona: PersonaId) -> StoreResult<Option<ConversationId>>;
 }
 
 #[derive(Clone)]
@@ -402,6 +407,33 @@ impl Store for SqliteStore {
         .execute(&*self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn latest_conversation(&self, persona: PersonaId) -> StoreResult<Option<ConversationId>> {
+        let row: Option<(String, String, String)> = sqlx::query_as(
+            r#"SELECT c.channel, c.instance, c.external
+               FROM conversations c
+               JOIN messages m ON m.conversation_id = c.id
+               WHERE c.persona_id = ?1
+               GROUP BY c.id
+               ORDER BY MAX(m.ts) DESC
+               LIMIT 1"#,
+        )
+        .bind(persona.to_string())
+        .fetch_optional(&*self.pool)
+        .await?;
+
+        match row {
+            None => Ok(None),
+            Some((channel, instance, external)) => {
+                let instance = InstanceId(Uuid::parse_str(&instance).map_err(StoreError::Uuid)?);
+                Ok(Some(ConversationId::new(
+                    ChannelId::new(channel),
+                    instance,
+                    external,
+                )))
+            }
+        }
     }
 
     async fn append_incoming(&self, msg: &IncomingMessage) -> StoreResult<()> {
@@ -1285,5 +1317,61 @@ mod tests {
             _ => panic!("expected cron schedule"),
         }
         assert_eq!(task.tools, vec!["read".to_string(), "grep".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn latest_conversation_returns_most_recent() {
+        let s = fresh().await;
+        let p = fixture_persona(&s).await;
+
+        // Persona with no messages returns None.
+        assert!(s.latest_conversation(p).await.unwrap().is_none());
+
+        let conv_old =
+            ConversationId::new(ChannelId::new("telegram"), InstanceId::new(), "chat:old");
+        let conv_new =
+            ConversationId::new(ChannelId::new("telegram"), InstanceId::new(), "chat:new");
+
+        let earlier = Utc::now() - Duration::seconds(60);
+        let later = Utc::now();
+
+        // Insert an older message in conv_old.
+        s.append_incoming(&IncomingMessage {
+            id: MessageId("m-old".into()),
+            persona: p,
+            conversation: conv_old.clone(),
+            from: UserHandle {
+                external: "u".into(),
+                display: None,
+            },
+            text: "older".into(),
+            attachments: vec![],
+            command: None,
+            ts: earlier,
+            raw: serde_json::Value::Null,
+        })
+        .await
+        .unwrap();
+
+        // Insert a newer message in conv_new.
+        s.append_incoming(&IncomingMessage {
+            id: MessageId("m-new".into()),
+            persona: p,
+            conversation: conv_new.clone(),
+            from: UserHandle {
+                external: "u".into(),
+                display: None,
+            },
+            text: "newer".into(),
+            attachments: vec![],
+            command: None,
+            ts: later,
+            raw: serde_json::Value::Null,
+        })
+        .await
+        .unwrap();
+
+        let latest = s.latest_conversation(p).await.unwrap().unwrap();
+        assert_eq!(latest.external, conv_new.external);
     }
 }
