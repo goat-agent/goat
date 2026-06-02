@@ -74,6 +74,13 @@ pub async fn prepare_scheduler(
     let (tx, rx) = mpsc::unbounded_channel();
     let handle = SchedulerHandle { tx };
 
+    // Reclaim any runs left in status='running' from a previous daemon
+    // instance that died mid-flight. At boot, every running row is stale.
+    match store.reclaim_stale_runs(Utc::now()).await {
+        Ok(n) => info!(reclaimed = n, "boot-time stale run reclaim"),
+        Err(e) => warn!(error = ?e, "boot-time reclaim_stale_runs failed; continuing"),
+    }
+
     let pending = store.all_pending_runs().await?;
     let mut heap: BinaryHeap<Reverse<DateTime<Utc>>> = BinaryHeap::new();
     for (_run_id, _task_id, run_at) in pending {
