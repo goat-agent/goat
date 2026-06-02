@@ -420,7 +420,9 @@ mod tests {
     //! only the scheduler, rather than panicking or aborting.
     use super::*;
     use goat_llm::{Model, ProviderId};
-    use goat_persona::{EmbeddingSettings, MemoryConfig, PersonaConfig, PersonalityCard};
+    use goat_persona::{
+        AutonomyConfig, EmbeddingSettings, MemoryConfig, PersonaConfig, PersonalityCard,
+    };
 
     fn paths_in(dir: &Path) -> GoatPaths {
         GoatPaths {
@@ -448,6 +450,7 @@ mod tests {
             tool_selectors: vec![],
             bindings: vec![],
             memory: MemoryConfig::default(),
+            autonomy: AutonomyConfig::default(),
         }
     }
 
