@@ -67,6 +67,9 @@ impl Channel for DiscordChannel {
             parse_intents(&cfg.intents)
         };
         let allowed_user_ids: HashSet<u64> = cfg.allowed_user_ids.iter().copied().collect();
+        if allowed_user_ids.len() != cfg.allowed_user_ids.len() {
+            warn!("discord: allowed_user_ids contains duplicate entries; deduplicated");
+        }
         let shard = Shard::new(ShardId::ONE, cfg.token, intents);
 
         let (tx, rx) = mpsc::channel(INCOMING_CAPACITY);
