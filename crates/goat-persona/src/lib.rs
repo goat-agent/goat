@@ -27,6 +27,12 @@ pub struct PersonaConfig {
     pub tool_selectors: Vec<String>,
     pub bindings: Vec<PersonaBinding>,
     pub memory: MemoryConfig,
+    pub autonomy: AutonomyConfig,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AutonomyConfig {
+    pub enabled: bool,
 }
 
 /// Long-term memory settings for a persona. When `enabled` is false the

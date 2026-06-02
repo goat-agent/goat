@@ -188,10 +188,7 @@ mod tests {
             latency_ms_sum: 0,
         };
         let avg = ms.average();
-        assert!(
-            (avg - 0.75).abs() < 1e-9,
-            "expected 0.75, got {avg}"
-        );
+        assert!((avg - 0.75).abs() < 1e-9, "expected 0.75, got {avg}");
     }
 
     // ── ModelScoreStore record + for_persona ────────────────────────────────────

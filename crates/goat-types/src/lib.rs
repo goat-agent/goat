@@ -269,6 +269,12 @@ pub enum Event {
         run_id: i64,
         task_id: i64,
     },
+    /// Emitted by a per-persona heartbeat ticker to drive autonomous reflection.
+    /// Unlike [`Event::SelfTick`], this is not tied to a scheduled-task row —
+    /// the handler scans the persona's most-recent conversation from the store.
+    Reflection {
+        persona: PersonaId,
+    },
 }
 
 impl Event {
@@ -276,6 +282,7 @@ impl Event {
         match self {
             Event::Incoming(m) => m.persona,
             Event::SelfTick { persona, .. } => *persona,
+            Event::Reflection { persona } => *persona,
         }
     }
 }
@@ -312,5 +319,11 @@ mod tests {
             raw: serde_json::Value::Null,
         };
         assert_eq!(Event::Incoming(msg).persona(), p);
+    }
+
+    #[test]
+    fn event_persona_matches_reflection() {
+        let p = PersonaId::new();
+        assert_eq!(Event::Reflection { persona: p }.persona(), p);
     }
 }

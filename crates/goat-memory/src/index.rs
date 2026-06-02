@@ -81,12 +81,7 @@ pub trait EpisodicIndex: Send + Sync + 'static {
     /// descending. May return fewer than `k` items if the index has fewer
     /// entries. Returns an empty vec if the index has no entries for the given
     /// persona.
-    async fn search(
-        &self,
-        persona: PersonaId,
-        query: &[f32],
-        k: usize,
-    ) -> Vec<EpisodicHit>;
+    async fn search(&self, persona: PersonaId, query: &[f32], k: usize) -> Vec<EpisodicHit>;
 }
 
 // ── InMemoryEpisodicIndex ──────────────────────────────────────────────────
@@ -225,11 +220,7 @@ impl InMemoryEpisodicIndex {
     /// Uses `Partition::push` for each row so that the `ids` HashSet is
     /// updated correctly and the dedup guard prevents duplicates in the case
     /// where `insert` was called before hydration.
-    async fn hydrate_if_needed(
-        &self,
-        persona: PersonaId,
-        partition: &mut Partition,
-    ) {
+    async fn hydrate_if_needed(&self, persona: PersonaId, partition: &mut Partition) {
         if partition.loaded {
             return;
         }
@@ -316,12 +307,7 @@ impl EpisodicIndex for InMemoryEpisodicIndex {
         guard.push(id.to_string(), kind, ts, embedding);
     }
 
-    async fn search(
-        &self,
-        persona: PersonaId,
-        query: &[f32],
-        k: usize,
-    ) -> Vec<EpisodicHit> {
+    async fn search(&self, persona: PersonaId, query: &[f32], k: usize) -> Vec<EpisodicHit> {
         if query.is_empty() || k == 0 {
             return Vec::new();
         }
@@ -352,12 +338,7 @@ mod tests {
     fn mk_partition(dim: usize, vecs: &[(&str, Vec<f32>)]) -> Partition {
         let mut p = Partition::new();
         for (id, v) in vecs {
-            p.push(
-                id.to_string(),
-                EpisodicKind::User,
-                Utc::now(),
-                v,
-            );
+            p.push(id.to_string(), EpisodicKind::User, Utc::now(), v);
         }
         assert_eq!(p.dim, dim);
         p
@@ -365,11 +346,14 @@ mod tests {
 
     #[test]
     fn search_returns_top_k_by_cosine() {
-        let p = mk_partition(2, &[
-            ("cats", vec![1.0, 0.0]),
-            ("dogs", vec![0.0, 1.0]),
-            ("fish", vec![0.7, 0.7]),
-        ]);
+        let p = mk_partition(
+            2,
+            &[
+                ("cats", vec![1.0, 0.0]),
+                ("dogs", vec![0.0, 1.0]),
+                ("fish", vec![0.7, 0.7]),
+            ],
+        );
         let hits = p.search(&[1.0, 0.0], 1);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "cats");
@@ -379,12 +363,15 @@ mod tests {
     #[test]
     fn search_all_history_preserved() {
         // All 4 entries reachable even though only k=1 is requested per query
-        let p = mk_partition(2, &[
-            ("a", vec![1.0, 0.0]),
-            ("b", vec![0.0, 1.0]),
-            ("c", vec![-1.0, 0.0]),
-            ("d", vec![0.0, -1.0]),
-        ]);
+        let p = mk_partition(
+            2,
+            &[
+                ("a", vec![1.0, 0.0]),
+                ("b", vec![0.0, 1.0]),
+                ("c", vec![-1.0, 0.0]),
+                ("d", vec![0.0, -1.0]),
+            ],
+        );
         // Query for each axis: the correct entry must win
         let hit_a = p.search(&[1.0, 0.0], 1);
         let hit_b = p.search(&[0.0, 1.0], 1);
@@ -405,11 +392,14 @@ mod tests {
 
     #[test]
     fn search_respects_k_bound() {
-        let p = mk_partition(2, &[
-            ("a", vec![1.0, 0.0]),
-            ("b", vec![0.9, 0.1]),
-            ("c", vec![0.8, 0.2]),
-        ]);
+        let p = mk_partition(
+            2,
+            &[
+                ("a", vec![1.0, 0.0]),
+                ("b", vec![0.9, 0.1]),
+                ("c", vec![0.8, 0.2]),
+            ],
+        );
         let hits = p.search(&[1.0, 0.0], 2);
         assert_eq!(hits.len(), 2);
     }

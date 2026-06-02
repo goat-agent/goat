@@ -21,6 +21,10 @@ use tracing::{info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+// 1 h balances proactive self-review against token cost; shorter cadences
+// flood the context before new signal accumulates.
+const REFLECTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
 pub struct Goat {
     join_handles: Vec<tokio::task::JoinHandle<()>>,
     _log_guard: Option<WorkerGuard>,
@@ -388,6 +392,19 @@ async fn spawn_persona(
         }
     }));
 
+    if raw.autonomy.enabled {
+        let bus = shared.bus.clone();
+        let persona = raw.id;
+        joins.push(tokio::spawn(async move {
+            let mut tick = tokio::time::interval(REFLECTION_INTERVAL);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                bus.publish(Event::Reflection { persona });
+            }
+        }));
+    }
+
     Ok(joins)
 }
 
@@ -420,7 +437,9 @@ mod tests {
     //! only the scheduler, rather than panicking or aborting.
     use super::*;
     use goat_llm::{Model, ProviderId};
-    use goat_persona::{EmbeddingSettings, MemoryConfig, PersonaConfig, PersonalityCard};
+    use goat_persona::{
+        AutonomyConfig, EmbeddingSettings, MemoryConfig, PersonaConfig, PersonalityCard,
+    };
 
     fn paths_in(dir: &Path) -> GoatPaths {
         GoatPaths {
@@ -448,6 +467,7 @@ mod tests {
             tool_selectors: vec![],
             bindings: vec![],
             memory: MemoryConfig::default(),
+            autonomy: AutonomyConfig::default(),
         }
     }
 
@@ -477,6 +497,12 @@ mod tests {
         // so the persona is skipped — but boot must still succeed.
         let goat = Goat::boot_inner(cfg, None).await.expect("boot");
         assert_eq!(goat.join_handles.len(), 1);
+    }
+
+    #[test]
+    fn reflection_interval_is_within_sane_bounds() {
+        assert!(REFLECTION_INTERVAL >= std::time::Duration::from_secs(60));
+        assert!(REFLECTION_INTERVAL <= std::time::Duration::from_secs(24 * 60 * 60));
     }
 
     #[tokio::test]

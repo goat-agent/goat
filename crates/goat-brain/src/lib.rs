@@ -190,6 +190,15 @@ impl Brain {
                         );
                     }
                 }
+                Event::Reflection { .. } => {
+                    if let Err(e) = self.handle_reflection(&channels).await {
+                        warn!(
+                            persona = %self.persona,
+                            error = ?e,
+                            "reflection failed",
+                        );
+                    }
+                }
                 _ => {}
             }
         }
@@ -627,6 +636,14 @@ impl Brain {
                  If the task is no longer worth doing, reply with exactly: skip\n\
                  </self_tick_context>"
             ),
+            TurnMode::Reflection => format!(
+                "{base_system}\n\n<reflection_context>\n\
+                 이것은 사용자 메시지가 아니라 자율 reflection 시점이다. \
+                 최근 대화와 기억을 검토하라. 지금 정말로 할 가치가 있으면 \
+                 — 짧고 유용한 메시지를 먼저 보내거나 후속 작업을 예약하라. \
+                 할 일이 없으면 정확히 `skip` 이라고만 답하라.\
+                 \n</reflection_context>"
+            ),
         };
 
         for _round in 0..MAX_TOOL_ROUNDS {
@@ -639,7 +656,7 @@ impl Brain {
 
             if folded.tool_calls.is_empty() {
                 let final_text = sanitize_final_text(folded.text);
-                if matches!(mode, TurnMode::SelfTick { .. })
+                if matches!(mode, TurnMode::SelfTick { .. } | TurnMode::Reflection)
                     && final_text.trim().eq_ignore_ascii_case("skip")
                 {
                     return Ok(RenderSummary {
@@ -677,6 +694,13 @@ impl Brain {
             }
         }
 
+        if matches!(mode, TurnMode::SelfTick { .. } | TurnMode::Reflection) {
+            return Ok(RenderSummary {
+                messages_sent: 0,
+                edits: 0,
+                final_text: String::new(),
+            });
+        }
         let text = "I stopped because tool execution exceeded the safety round limit.".to_string();
         self.renderer
             .render(
@@ -857,6 +881,73 @@ impl Brain {
         Ok(())
     }
 
+    async fn handle_reflection(&self, channels: &[Arc<dyn ChannelHandle>]) -> Result<()> {
+        let conv = match self.store.latest_conversation(self.persona).await? {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+
+        let handle = match channels
+            .iter()
+            .find(|h| h.id() == conv.channel && h.instance() == conv.instance)
+            .cloned()
+        {
+            Some(h) => h,
+            None => {
+                warn!(
+                    persona = %self.persona,
+                    conv = %conv,
+                    "reflection: no channel handle for latest conversation",
+                );
+                return Ok(());
+            }
+        };
+
+        let (summary, mut messages) = self.load_context(&conv).await?;
+        messages.push(LlmMessage {
+            role: Role::User,
+            content: vec![ContentPart::Text("(자율 reflection 시점)".into())],
+        });
+
+        let turn_started = std::time::Instant::now();
+        let summary = self
+            .complete_with_tools(
+                handle,
+                conv.clone(),
+                None,
+                &mut messages,
+                TurnMode::Reflection,
+                None,
+                summary,
+            )
+            .await?;
+
+        let trimmed = summary.final_text.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("skip") {
+            return Ok(());
+        }
+
+        self.store
+            .append_outgoing_text(self.persona, &conv, &summary.final_text, None)
+            .await
+            .context("append outgoing text for reflection")?;
+
+        let assistant_embedding = self.embed_text(&summary.final_text).await;
+        self.record_episodic(
+            &conv,
+            EpisodicKind::Assistant,
+            &summary.final_text,
+            assistant_embedding.as_deref(),
+        )
+        .await;
+
+        let latency_ms = turn_started.elapsed().as_millis() as i64;
+        self.evaluate_turn(&messages, &summary.final_text, latency_ms)
+            .await;
+
+        Ok(())
+    }
+
     fn llm_tool_specs(&self, has_skills: bool, mode: &TurnMode) -> Vec<ToolSpec> {
         self.tools
             .default_specs()
@@ -869,6 +960,7 @@ impl Brain {
                     !is_schedule_tool(spec.name.as_str())
                         && selector_allows_empty_denies(spec.name.as_str(), tools)
                 }
+                TurnMode::Reflection => true,
             })
             .map(|spec| ToolSpec {
                 name: spec.name.as_str().to_string(),
@@ -1042,22 +1134,20 @@ impl Brain {
                         last_rate_limit_secs = *retry_after;
                     }
                 }
-                Ok(stream) => {
-                    match fold_turn(stream, self.stream_idle_timeout).await {
-                        Ok(folded) => return Ok(folded),
-                        Err(e) => {
-                            if attempt == self.llm_max_retries {
-                                return Err(e);
-                            }
-                            warn!(
-                                persona = %self.persona,
-                                error = ?e,
-                                attempt,
-                                "LLM stream error; will retry",
-                            );
+                Ok(stream) => match fold_turn(stream, self.stream_idle_timeout).await {
+                    Ok(folded) => return Ok(folded),
+                    Err(e) => {
+                        if attempt == self.llm_max_retries {
+                            return Err(e);
                         }
+                        warn!(
+                            persona = %self.persona,
+                            error = ?e,
+                            attempt,
+                            "LLM stream error; will retry",
+                        );
                     }
-                }
+                },
             }
         }
 
@@ -1087,37 +1177,35 @@ async fn fold_turn(mut stream: LlmStream, idle_timeout: std::time::Duration) -> 
                 ));
             }
             Ok(None) => break,
-            Ok(Some(item)) => {
-                match item? {
-                    LlmChunk::TextDelta { text: delta, .. } => text.push_str(&delta),
-                    LlmChunk::ToolCallStart {
+            Ok(Some(item)) => match item? {
+                LlmChunk::TextDelta { text: delta, .. } => text.push_str(&delta),
+                LlmChunk::ToolCallStart {
+                    block,
+                    tool_call_id,
+                    name,
+                } => {
+                    pending.insert(
                         block,
-                        tool_call_id,
-                        name,
-                    } => {
-                        pending.insert(
-                            block,
-                            PendingToolCall {
-                                id: tool_call_id,
-                                name,
-                                args_json: String::new(),
-                            },
-                        );
-                    }
-                    LlmChunk::ToolCallDelta {
-                        block,
-                        args_json_fragment,
-                    } => {
-                        pending
-                            .entry(block)
-                            .or_default()
-                            .args_json
-                            .push_str(&args_json_fragment);
-                    }
-                    LlmChunk::MessageEnd { .. } => done = true,
-                    _ => {}
+                        PendingToolCall {
+                            id: tool_call_id,
+                            name,
+                            args_json: String::new(),
+                        },
+                    );
                 }
-            }
+                LlmChunk::ToolCallDelta {
+                    block,
+                    args_json_fragment,
+                } => {
+                    pending
+                        .entry(block)
+                        .or_default()
+                        .args_json
+                        .push_str(&args_json_fragment);
+                }
+                LlmChunk::MessageEnd { .. } => done = true,
+                _ => {}
+            },
         }
     }
 
@@ -1263,6 +1351,7 @@ fn meta_marker_score(text: &str) -> usize {
 enum TurnMode {
     Normal,
     SelfTick { tools: Vec<String> },
+    Reflection,
 }
 
 fn is_schedule_tool(name: &str) -> bool {
@@ -1451,6 +1540,35 @@ mod tests {
         ));
         assert!(!looks_like_agent_meta_leak(
             "목록 확인했습니다.\nCargo.toml\nsrc"
+        ));
+    }
+
+    #[test]
+    fn reflection_mode_does_not_filter_schedule_tools() {
+        assert!(is_schedule_tool("schedule_once"));
+        assert!(is_schedule_tool("schedule_cron"));
+        assert!(is_schedule_tool("cancel_task"));
+        assert!(is_schedule_tool("list_tasks"));
+        assert!(!is_schedule_tool("recall"));
+        assert!(!is_schedule_tool("shell"));
+    }
+
+    #[test]
+    fn reflection_and_self_tick_both_trigger_skip_guard() {
+        let reflection = TurnMode::Reflection;
+        let self_tick = TurnMode::SelfTick { tools: vec![] };
+        let normal = TurnMode::Normal;
+        assert!(matches!(
+            reflection,
+            TurnMode::SelfTick { .. } | TurnMode::Reflection
+        ));
+        assert!(matches!(
+            self_tick,
+            TurnMode::SelfTick { .. } | TurnMode::Reflection
+        ));
+        assert!(!matches!(
+            normal,
+            TurnMode::SelfTick { .. } | TurnMode::Reflection
         ));
     }
 }
