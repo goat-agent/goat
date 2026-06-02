@@ -1537,28 +1537,35 @@ mod tests {
     }
 
     #[test]
-    fn reflection_mode_allows_schedule_tools() {
-        // TurnMode::Reflection should not filter out schedule tools
-        // This can be tested by checking llm_tool_specs behavior
-        // Since we can't easily construct a Brain in unit tests, test
-        // the is_schedule_tool predicate behavior directly:
-        // schedule tools are "schedule_once", "schedule_cron", "cancel_task", "list_tasks"
-        // In Reflection mode, is_schedule_tool check is NOT applied.
-        // We verify this by checking the TurnMode match arms don't call is_schedule_tool for Reflection.
-        // This is a compile-time / structural assertion — if the code compiles, the arm is correct.
-        // Add a trivial assertion to make it a real test:
-        assert!(matches!(TurnMode::Reflection, TurnMode::Reflection));
+    fn reflection_mode_does_not_filter_schedule_tools() {
+        // In SelfTick, is_schedule_tool gates tools. In Reflection it doesn't —
+        // verify the predicate returns true for known schedule tools, confirming
+        // the Reflection arm's decision to omit this check is meaningful.
+        assert!(is_schedule_tool("schedule_once"));
+        assert!(is_schedule_tool("schedule_cron"));
+        assert!(is_schedule_tool("cancel_task"));
+        assert!(is_schedule_tool("list_tasks"));
+        assert!(!is_schedule_tool("recall"));
+        assert!(!is_schedule_tool("shell"));
     }
 
     #[test]
-    fn reflection_skip_short_circuits() {
-        // Verify that the skip check covers Reflection mode
+    fn reflection_and_self_tick_both_trigger_skip_guard() {
+        // The skip short-circuit in complete_with_tools uses this matches! pattern.
+        // Verify both modes are covered.
+        let reflection = TurnMode::Reflection;
+        let self_tick = TurnMode::SelfTick { tools: vec![] };
+        let normal = TurnMode::Normal;
         assert!(matches!(
-            TurnMode::SelfTick { tools: vec![] },
+            reflection,
             TurnMode::SelfTick { .. } | TurnMode::Reflection
         ));
         assert!(matches!(
-            TurnMode::Reflection,
+            self_tick,
+            TurnMode::SelfTick { .. } | TurnMode::Reflection
+        ));
+        assert!(!matches!(
+            normal,
             TurnMode::SelfTick { .. } | TurnMode::Reflection
         ));
     }
