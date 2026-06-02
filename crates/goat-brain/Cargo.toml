@@ -20,6 +20,7 @@ goat-persona = { workspace = true }
 goat-tool    = { workspace = true }
 goat-skills  = { workspace = true }
 tokio        = { workspace = true }
+tokio-util   = { workspace = true }
 async-trait  = { workspace = true }
 anyhow       = { workspace = true }
 tracing      = { workspace = true }

@@ -7,7 +7,7 @@ use goat_channel::{
 };
 use goat_types::{ChannelId, ConversationId, InstanceId, MessageId, OutgoingBody, PersonaId};
 use teloxide::prelude::*;
-use teloxide::types::{ChatAction, ChatId, MessageId as TgMessageId};
+use teloxide::types::{ChatAction, ChatId, MessageId as TgMessageId, ReplyParameters};
 use teloxide::Bot;
 
 use crate::{CAPABILITIES, ID};
@@ -61,14 +61,18 @@ impl ChannelHandle for TelegramHandle {
         &self,
         conv: &ConversationId,
         body: OutgoingBody,
-        _reply_to: Option<MessageId>,
+        reply_to: Option<MessageId>,
     ) -> ChannelResult<SentRef> {
         let chat_id = parse_chat_id(&conv.external)?;
         match body {
             OutgoingBody::Text(text) => {
-                let sent = self
-                    .bot
-                    .send_message(ChatId(chat_id), text)
+                let mut req = self.bot.send_message(ChatId(chat_id), text);
+                if let Some(rp) = parse_reply_to_message_id(reply_to.as_ref()) {
+                    req = req.reply_parameters(
+                        ReplyParameters::new(TgMessageId(rp)).allow_sending_without_reply(),
+                    );
+                }
+                let sent = req
                     .send()
                     .await
                     .map_err(|e| ChannelError::Provider(e.to_string()))?;
@@ -139,5 +143,45 @@ fn sent_ref(chat_id: i64, message_id: i32) -> SentRef {
         channel: ID.clone(),
         message_id: MessageId(message_id.to_string()),
         raw: serde_json::json!({ "chat_id": chat_id, "message_id": message_id }),
+    }
+}
+
+/// Parses a `MessageId` into a Telegram message id (`i32`).
+/// Returns `None` if `reply_to` is `None` or the inner string is not a valid
+/// `i32`, and logs a debug message in the latter case.
+fn parse_reply_to_message_id(reply_to: Option<&MessageId>) -> Option<i32> {
+    let id = reply_to?;
+    match id.0.parse::<i32>() {
+        Ok(n) => Some(n),
+        Err(e) => {
+            tracing::debug!("telegram: ignoring unparseable reply_to {:?}: {e}", id.0);
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_reply_to_some_valid() {
+        assert_eq!(
+            parse_reply_to_message_id(Some(&MessageId("42".into()))),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn parse_reply_to_some_invalid() {
+        assert_eq!(
+            parse_reply_to_message_id(Some(&MessageId("bad".into()))),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_reply_to_none() {
+        assert_eq!(parse_reply_to_message_id(None), None);
     }
 }

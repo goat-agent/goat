@@ -10,7 +10,7 @@ use goat_command::{CommandArgs, CommandSpec};
 use goat_types::{ChannelId, PersonaId};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
-use twilight_gateway::{Intents, Shard, ShardId};
+use twilight_gateway::Intents;
 use twilight_http::Client as HttpClient;
 use twilight_model::application::command::{
     Command, CommandOption, CommandOptionType, CommandType,
@@ -20,7 +20,7 @@ use twilight_model::id::Id;
 
 use crate::config::DiscordConfig;
 use crate::handle::DiscordHandle;
-use crate::inbound::gateway_loop;
+use crate::inbound::{gateway_loop, GatewayConfig};
 use crate::interaction::InteractionState;
 use crate::ID;
 
@@ -66,19 +66,26 @@ impl Channel for DiscordChannel {
         } else {
             parse_intents(&cfg.intents)
         };
-        let shard = Shard::new(ShardId::ONE, cfg.token, intents);
+        let allowed_user_ids: HashSet<u64> = cfg.allowed_user_ids.iter().copied().collect();
+        if allowed_user_ids.len() != cfg.allowed_user_ids.len() {
+            warn!("discord: allowed_user_ids contains duplicate entries; deduplicated");
+        }
 
         let (tx, rx) = mpsc::channel(INCOMING_CAPACITY);
         let interactions = Arc::new(InteractionState::default());
         register_commands(http.clone(), application_id, &commands).await;
         tokio::spawn(gateway_loop(
-            shard,
             http.clone(),
-            persona,
-            binding.instance,
             tx,
-            commands,
-            interactions.clone(),
+            GatewayConfig {
+                persona,
+                instance: binding.instance,
+                commands,
+                interactions: interactions.clone(),
+                allowed_user_ids,
+                token: cfg.token,
+                intents,
+            },
         ));
 
         info!(persona = %persona, "discord bot bound: {}", identity.handle);
