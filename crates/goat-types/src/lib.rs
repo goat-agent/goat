@@ -72,14 +72,34 @@ impl fmt::Display for MessageId {
     }
 }
 
+/// Identifies a chat channel type (e.g. `"telegram"`, `"discord"`).
+/// Uses `Cow<'static, str>` so compiled-in extension crates pay zero
+/// allocation cost.
+///
+/// # Choosing the right constructor
+///
+/// | Situation | Use |
+/// |-----------|-----|
+/// | `pub const ID` in a channel crate | [`ChannelId::from_static`] |
+/// | Value deserialized from config/DB at runtime | [`ChannelId::new`] |
+///
+/// Channel crates **must** declare their identifier as a `pub const` using
+/// `from_static` so the runtime can look up channels without allocating:
+/// ```ignore
+/// pub const ID: ChannelId = ChannelId::from_static("my-channel");
+/// ```
 #[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
 pub struct ChannelId(Cow<'static, str>);
 
 impl ChannelId {
+    /// Creates a zero-allocation channel ID from a `'static` string literal.
+    /// Use this for `pub const` declarations in channel crates.
     pub const fn from_static(slug: &'static str) -> Self {
         Self(Cow::Borrowed(slug))
     }
 
+    /// Creates an owned channel ID from a runtime-allocated string.
+    /// Use this when deserializing from config or DB values.
     pub fn new(slug: impl Into<String>) -> Self {
         Self(Cow::Owned(slug.into()))
     }
