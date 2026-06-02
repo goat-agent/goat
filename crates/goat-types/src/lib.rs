@@ -270,7 +270,8 @@ pub enum Event {
         task_id: i64,
     },
     /// Emitted by a per-persona heartbeat ticker to drive autonomous reflection.
-    /// The brain checks recent context and acts if warranted, or skips silently.
+    /// Unlike [`Event::SelfTick`], this is not tied to a scheduled-task row —
+    /// the handler scans the persona's most-recent conversation from the store.
     Reflection {
         persona: PersonaId,
     },
