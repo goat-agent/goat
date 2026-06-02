@@ -27,6 +27,7 @@ use goat_bus::EventBus;
 use goat_store::{ScheduleKind, Store, StoreError};
 use goat_types::Event;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::cron_expr;
@@ -111,7 +112,11 @@ pub struct PreparedScheduler {
 
 impl PreparedScheduler {
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(run_loop(self.store, self.bus, self.rx, self.heap))
+        self.spawn_with_cancel(CancellationToken::new())
+    }
+
+    pub fn spawn_with_cancel(self, cancel: CancellationToken) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(run_loop(self.store, self.bus, self.rx, self.heap, cancel))
     }
 }
 
@@ -120,6 +125,7 @@ async fn run_loop(
     bus: EventBus,
     mut rx: mpsc::UnboundedReceiver<DateTime<Utc>>,
     mut heap: BinaryHeap<Reverse<DateTime<Utc>>>,
+    cancel: CancellationToken,
 ) {
     // Periodic reclaim: catch runs wedged within the same process lifetime.
     // Threshold is 30 minutes to avoid reclaiming legitimately long runs.
@@ -130,6 +136,8 @@ async fn run_loop(
     loop {
         let deadline = next_deadline(&heap);
         tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return,
             cmd = rx.recv() => {
                 match cmd {
                     Some(run_at) => heap.push(Reverse(run_at)),
