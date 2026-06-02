@@ -102,14 +102,19 @@ pub(crate) async fn gateway_loop(
                 }
             }
             Ok(Event::InteractionCreate(ic)) => {
-                if let Some(author) = ic.author() {
-                    if !is_allowed_user_id(author.id.get(), &allowed_user_ids) {
+                match ic.author() {
+                    Some(author) if !is_allowed_user_id(author.id.get(), &allowed_user_ids) => {
                         debug!(
                             user_id = author.id.get(),
                             "discord: interaction user not in allowlist, ignoring"
                         );
                         continue;
                     }
+                    None if !allowed_user_ids.is_empty() => {
+                        debug!("discord: interaction with no author and allowlist active, ignoring");
+                        continue;
+                    }
+                    _ => {}
                 }
                 let Some((msg, pending)) =
                     interaction_to_incoming(&ic, persona, instance, &commands)
