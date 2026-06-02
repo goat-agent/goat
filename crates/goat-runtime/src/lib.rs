@@ -143,7 +143,7 @@ impl Goat {
         // first `await` (i.e. has subscribed to the bus) before the
         // scheduler is allowed to publish anything.
         tokio::task::yield_now().await;
-        join_handles.push(prepared_scheduler.spawn());
+        join_handles.push(prepared_scheduler.spawn_with_cancel(cancel.clone()));
 
         Ok(Self {
             join_handles,
