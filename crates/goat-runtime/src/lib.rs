@@ -177,8 +177,15 @@ fn build_embedding_providers(
 ) -> HashMap<String, Arc<dyn EmbeddingProvider>> {
     let mut map: HashMap<String, Arc<dyn EmbeddingProvider>> = HashMap::new();
     for spec in inventory::iter::<EmbeddingProviderSpec>() {
-        map.entry(spec.id.as_str().to_string())
-            .or_insert_with(|| (spec.build)(credentials.clone()));
+        let id = spec.id.as_str().to_string();
+        if map.contains_key(&id) {
+            warn!(
+                provider = %id,
+                "duplicate embedding provider ID in inventory; first registration wins",
+            );
+            continue;
+        }
+        map.insert(id, (spec.build)(credentials.clone()));
     }
     map
 }
