@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use goat_command::CommandSpec;
@@ -9,7 +10,7 @@ use goat_types::{
 };
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
-use twilight_gateway::{EventTypeFlags, Shard, StreamExt as _GatewayStreamExt};
+use twilight_gateway::{EventTypeFlags, Intents, Shard, ShardId, StreamExt as _GatewayStreamExt};
 use twilight_http::Client as HttpClient;
 use twilight_model::application::interaction::{
     application_command::CommandOptionValue, InteractionData,
@@ -26,10 +27,11 @@ pub(crate) struct GatewayConfig {
     pub(crate) commands: Vec<CommandSpec>,
     pub(crate) interactions: Arc<InteractionState>,
     pub(crate) allowed_user_ids: HashSet<u64>,
+    pub(crate) token: String,
+    pub(crate) intents: Intents,
 }
 
 pub(crate) async fn gateway_loop(
-    mut shard: Shard,
     http: Arc<HttpClient>,
     tx: mpsc::Sender<IncomingMessage>,
     cfg: GatewayConfig,
@@ -40,99 +42,110 @@ pub(crate) async fn gateway_loop(
         commands,
         interactions,
         allowed_user_ids,
+        token,
+        intents,
     } = cfg;
     let events = EventTypeFlags::MESSAGE_CREATE | EventTypeFlags::INTERACTION_CREATE;
-    loop {
-        let Some(item) = shard.next_event(events).await else {
-            return;
-        };
-        match item {
-            Ok(Event::MessageCreate(mc)) => {
-                if mc.author.bot {
-                    continue;
-                }
-                if !is_allowed_user_id(mc.author.id.get(), &allowed_user_ids) {
-                    debug!(user_id = mc.author.id.get(), "discord: user not in allowlist, ignoring");
-                    continue;
-                }
-                let command = parse_text_command(&mc.content, &mc.id.to_string(), &commands);
-                let text = command
-                    .as_ref()
-                    .map(command_text)
-                    .unwrap_or_else(|| mc.content.clone());
-                let external = match mc.guild_id {
-                    Some(g) => format!("g:{}:c:{}", g, mc.channel_id),
-                    None => format!("dm:{}", mc.channel_id),
-                };
-                let conv = ConversationId::new(ID.clone(), instance, external);
-                let attachments: Vec<Attachment> = mc
-                    .attachments
-                    .iter()
-                    .map(|a| Attachment {
-                        mime: a
-                            .content_type
-                            .clone()
-                            .unwrap_or_else(|| "application/octet-stream".into()),
-                        name: Some(a.filename.clone()),
-                        size: a.size,
-                        source: AttachmentSource::Url(a.url.clone()),
-                    })
-                    .collect();
-                let msg = IncomingMessage {
-                    id: MessageId(mc.id.to_string()),
-                    persona,
-                    conversation: conv,
-                    from: UserHandle {
-                        external: mc.author.id.to_string(),
-                        display: Some(mc.author.name.clone()),
-                    },
-                    text,
-                    attachments,
-                    command,
-                    ts: Utc::now(),
-                    raw: serde_json::json!({
-                        "channel_id": mc.channel_id.to_string(),
-                        "message_id": mc.id.to_string(),
-                        "guild_id": mc.guild_id.map(|g| g.to_string()),
-                    }),
-                };
-                if tx.send(msg).await.is_err() {
-                    warn!("discord receiver dropped");
-                    return;
-                }
-            }
-            Ok(Event::InteractionCreate(ic)) => {
-                match ic.author() {
-                    Some(author) if !is_allowed_user_id(author.id.get(), &allowed_user_ids) => {
-                        debug!(
-                            user_id = author.id.get(),
-                            "discord: interaction user not in allowlist, ignoring"
-                        );
+    let mut backoff_secs: u64 = 1;
+    'reconnect: loop {
+        let mut shard = Shard::new(ShardId::ONE, token.clone(), intents);
+        loop {
+            match shard.next_event(events).await {
+                None => break, // fatal stream close → reconnect
+                Some(Ok(Event::MessageCreate(mc))) => {
+                    backoff_secs = 1;
+                    if mc.author.bot {
                         continue;
                     }
-                    None if !allowed_user_ids.is_empty() => {
-                        debug!("discord: interaction with no author and allowlist active, ignoring");
+                    if !is_allowed_user_id(mc.author.id.get(), &allowed_user_ids) {
+                        debug!(user_id = mc.author.id.get(), "discord: user not in allowlist, ignoring");
                         continue;
                     }
-                    _ => {}
+                    let command = parse_text_command(&mc.content, &mc.id.to_string(), &commands);
+                    let text = command
+                        .as_ref()
+                        .map(command_text)
+                        .unwrap_or_else(|| mc.content.clone());
+                    let external = match mc.guild_id {
+                        Some(g) => format!("g:{}:c:{}", g, mc.channel_id),
+                        None => format!("dm:{}", mc.channel_id),
+                    };
+                    let conv = ConversationId::new(ID.clone(), instance, external);
+                    let attachments: Vec<Attachment> = mc
+                        .attachments
+                        .iter()
+                        .map(|a| Attachment {
+                            mime: a
+                                .content_type
+                                .clone()
+                                .unwrap_or_else(|| "application/octet-stream".into()),
+                            name: Some(a.filename.clone()),
+                            size: a.size,
+                            source: AttachmentSource::Url(a.url.clone()),
+                        })
+                        .collect();
+                    let msg = IncomingMessage {
+                        id: MessageId(mc.id.to_string()),
+                        persona,
+                        conversation: conv,
+                        from: UserHandle {
+                            external: mc.author.id.to_string(),
+                            display: Some(mc.author.name.clone()),
+                        },
+                        text,
+                        attachments,
+                        command,
+                        ts: Utc::now(),
+                        raw: serde_json::json!({
+                            "channel_id": mc.channel_id.to_string(),
+                            "message_id": mc.id.to_string(),
+                            "guild_id": mc.guild_id.map(|g| g.to_string()),
+                        }),
+                    };
+                    if tx.send(msg).await.is_err() {
+                        warn!("discord receiver dropped");
+                        break 'reconnect;
+                    }
                 }
-                let Some((msg, pending)) =
-                    interaction_to_incoming(&ic, persona, instance, &commands)
-                else {
-                    continue;
-                };
-                if !acknowledge_interaction(http.clone(), &ic).await {
-                    continue;
+                Some(Ok(Event::InteractionCreate(ic))) => {
+                    backoff_secs = 1;
+                    match ic.author() {
+                        Some(author) if !is_allowed_user_id(author.id.get(), &allowed_user_ids) => {
+                            debug!(
+                                user_id = author.id.get(),
+                                "discord: interaction user not in allowlist, ignoring"
+                            );
+                            continue;
+                        }
+                        None if !allowed_user_ids.is_empty() => {
+                            debug!("discord: interaction with no author and allowlist active, ignoring");
+                            continue;
+                        }
+                        _ => {}
+                    }
+                    let Some((msg, pending)) =
+                        interaction_to_incoming(&ic, persona, instance, &commands)
+                    else {
+                        continue;
+                    };
+                    if !acknowledge_interaction(http.clone(), &ic).await {
+                        continue;
+                    }
+                    interactions.insert_pending(msg.id.clone(), pending).await;
+                    if tx.send(msg).await.is_err() {
+                        warn!("discord receiver dropped");
+                        break 'reconnect;
+                    }
                 }
-                interactions.insert_pending(msg.id.clone(), pending).await;
-                if tx.send(msg).await.is_err() {
-                    warn!("discord receiver dropped");
-                    return;
+                Some(Ok(_)) => {
+                    backoff_secs = 1;
                 }
+                Some(Err(e)) => warn!(error = ?e, "discord gateway error"),
             }
-            Ok(_) => {}
-            Err(e) => warn!(error = ?e, "discord gateway error"),
         }
+        warn!(backoff_secs, "discord gateway closed; reconnecting");
+        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+        backoff_secs = (backoff_secs * 2).min(60);
     }
 }
 
