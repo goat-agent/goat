@@ -308,10 +308,15 @@ impl MemoryStore for SqliteMemory {
     }
 }
 
-fn parse_ts(s: &str) -> DateTime<Utc> {
+pub(crate) fn parse_ts_pub(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s)
         .map(|d| d.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now())
+}
+
+// Keep the private alias so existing callers in this file are unchanged.
+fn parse_ts(s: &str) -> DateTime<Utc> {
+    parse_ts_pub(s)
 }
 
 fn encode_vec(v: &[f32]) -> Vec<u8> {
@@ -322,13 +327,13 @@ fn encode_vec(v: &[f32]) -> Vec<u8> {
     out
 }
 
-fn decode_vec(b: &[u8]) -> Vec<f32> {
+pub(crate) fn decode_vec(b: &[u8]) -> Vec<f32> {
     b.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
 
-fn cosine(a: &[f32], b: &[f32]) -> f32 {
+pub(crate) fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
