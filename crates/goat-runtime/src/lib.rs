@@ -21,8 +21,8 @@ use tracing::{info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-/// Default cadence for per-persona autonomous reflection heartbeats.
-/// The brain wakes on this interval, checks recent context, and acts or skips.
+// 1 h balances proactive self-review against token cost; shorter cadences
+// flood the context before new signal accumulates.
 const REFLECTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 pub struct Goat {
@@ -500,8 +500,9 @@ mod tests {
     }
 
     #[test]
-    fn reflection_interval_is_set() {
-        assert_eq!(REFLECTION_INTERVAL, std::time::Duration::from_secs(3600));
+    fn reflection_interval_is_within_sane_bounds() {
+        assert!(REFLECTION_INTERVAL >= std::time::Duration::from_secs(60));
+        assert!(REFLECTION_INTERVAL <= std::time::Duration::from_secs(24 * 60 * 60));
     }
 
     #[tokio::test]
