@@ -414,7 +414,7 @@ impl Store for SqliteStore {
             r#"SELECT c.channel, c.instance, c.external
                FROM conversations c
                JOIN messages m ON m.conversation_id = c.id
-               WHERE c.persona_id = ?1
+               WHERE c.persona_id = ?
                GROUP BY c.id
                ORDER BY MAX(m.ts) DESC
                LIMIT 1"#,
@@ -1324,7 +1324,6 @@ mod tests {
         let s = fresh().await;
         let p = fixture_persona(&s).await;
 
-        // Persona with no messages returns None.
         assert!(s.latest_conversation(p).await.unwrap().is_none());
 
         let conv_old =
@@ -1335,7 +1334,6 @@ mod tests {
         let earlier = Utc::now() - Duration::seconds(60);
         let later = Utc::now();
 
-        // Insert an older message in conv_old.
         s.append_incoming(&IncomingMessage {
             id: MessageId("m-old".into()),
             persona: p,
@@ -1353,7 +1351,6 @@ mod tests {
         .await
         .unwrap();
 
-        // Insert a newer message in conv_new.
         s.append_incoming(&IncomingMessage {
             id: MessageId("m-new".into()),
             persona: p,
