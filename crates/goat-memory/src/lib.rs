@@ -225,35 +225,53 @@ impl MemoryStore for SqliteMemory {
         query: &[f32],
         k: usize,
     ) -> MemoryResult<Vec<EpisodicEntry>> {
-        let rows = sqlx::query_as::<_, (String, String, String, String, Option<Vec<u8>>)>(
-            r#"SELECT id, kind, text, ts, embedding
-               FROM episodic_memory
-               WHERE persona_id = ? AND embedding IS NOT NULL"#,
-        )
-        .bind(persona.to_string())
-        .fetch_all(&*self.pool)
-        .await?;
-        let mut scored: Vec<EpisodicEntry> = rows
+        // Step 1: KNN from the in-memory index — no DB round-trip, no blob decode.
+        let hits = self.index.search(persona, query, k).await;
+        if hits.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Step 2: Fetch only the text bodies for the winning ids.
+        // Build a parameterised IN(...) clause.
+        let placeholders = hits
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT id, text FROM episodic_memory WHERE id IN ({placeholders})"
+        );
+        let mut q = sqlx::query_as::<_, (String, String)>(&sql);
+        for h in &hits {
+            q = q.bind(&h.id);
+        }
+        let text_rows: Vec<(String, String)> = q.fetch_all(&*self.pool).await?;
+
+        // Build id → text map (no allocation per hit when the result set is
+        // small, which it always is since k is bounded by the brain).
+        let text_map: std::collections::HashMap<&str, &str> = text_rows
+            .iter()
+            .map(|(id, text)| (id.as_str(), text.as_str()))
+            .collect();
+
+        // Step 3: Reassemble EpisodicEntry in the same order as `hits`.
+        // Hits whose id is not found in the DB are skipped (should never happen
+        // in practice — the index and DB are kept consistent on write).
+        let entries = hits
             .into_iter()
-            .filter_map(|(id, kind, text, ts, embedding)| {
-                let vec = decode_vec(&embedding?);
-                let score = cosine(query, &vec);
+            .filter_map(|h| {
+                let text = text_map.get(h.id.as_str())?.to_string();
                 Some(EpisodicEntry {
-                    id,
-                    kind: EpisodicKind::parse(&kind),
+                    id: h.id,
+                    kind: h.kind,
                     text,
-                    ts: parse_ts(&ts),
-                    score: Some(score),
+                    ts: h.ts,
+                    score: Some(h.score),
                 })
             })
             .collect();
-        scored.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        scored.truncate(k);
-        Ok(scored)
+
+        Ok(entries)
     }
 
     async fn search_semantic(
