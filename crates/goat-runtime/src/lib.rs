@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use goat_brain::{Brain, ProviderRegistry};
+use goat_brain::{Brain, BrainDeps, ProviderRegistry};
 use goat_bus::EventBus;
 use goat_channel::{Channel, ChannelBinding, ChannelFactory, ChannelHandle};
 use goat_command::{CommandFactory, CommandProviderContext, CommandRegistry};
@@ -359,26 +359,28 @@ async fn spawn_persona(
         anyhow::bail!("no successful channel bindings");
     }
 
-    let brain = Arc::new(Brain::new(
-        raw.id,
-        Arc::new(raw.personality.clone()),
-        raw.default_model.clone(),
-        raw.history_window,
-        raw.tool_selectors.clone(),
-        shared.providers.clone(),
-        shared.tools.clone(),
+    let brain = Arc::new(Brain::new(BrainDeps {
+        persona: raw.id,
+        personality: Arc::new(raw.personality.clone()),
+        default_model: raw.default_model.clone(),
+        history_window: raw.history_window,
+        tool_selectors: raw.tool_selectors.clone(),
+        providers: shared.providers.clone(),
+        tools: shared.tools.clone(),
         commands,
-        shared.store.clone(),
-        shared.memory.clone(),
-        shared.embedders.get(&raw.id).cloned(),
-        raw.memory.enabled,
-        raw.memory.episodic_k,
-        raw.memory.summarize,
-        shared.renderer.clone(),
-        shared.evaluator.clone(),
-        shared.model_scores.clone(),
-        shared.goat_root.clone(),
-    ));
+        store: shared.store.clone(),
+        memory: shared.memory.clone(),
+        embedder: shared.embedders.get(&raw.id).cloned(),
+        memory_enabled: raw.memory.enabled,
+        episodic_k: raw.memory.episodic_k,
+        summarize_enabled: raw.memory.summarize,
+        renderer: shared.renderer.clone(),
+        evaluator: shared.evaluator.clone(),
+        model_scores: shared.model_scores.clone(),
+        goat_root: shared.goat_root.clone(),
+        stream_idle_timeout: std::time::Duration::from_secs(60),
+        llm_max_retries: 3,
+    }));
     let bus = shared.bus.clone();
     joins.push(tokio::spawn(async move {
         if let Err(e) = brain.run(bus, handles).await {

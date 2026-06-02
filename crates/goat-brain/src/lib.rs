@@ -79,6 +79,40 @@ impl ProviderRegistry {
     }
 }
 
+/// All dependencies required to construct a [`Brain`].
+///
+/// Using a single struct instead of positional arguments makes the constructor
+/// self-documenting, prevents accidental argument transposition, and allows
+/// new capabilities (e.g. timeout/retry settings) to be added without
+/// changing every call site.
+pub struct BrainDeps {
+    pub persona: PersonaId,
+    pub personality: Arc<PersonalityCard>,
+    pub default_model: Model,
+    pub history_window: usize,
+    pub tool_selectors: Vec<String>,
+    pub providers: Arc<ProviderRegistry>,
+    pub tools: Arc<ToolRegistry>,
+    pub commands: Arc<CommandRegistry>,
+    pub store: Arc<dyn Store>,
+    pub memory: Arc<dyn MemoryStore>,
+    pub embedder: Option<Arc<dyn Embedder>>,
+    pub memory_enabled: bool,
+    pub episodic_k: usize,
+    pub summarize_enabled: bool,
+    pub renderer: Arc<dyn StreamRenderer>,
+    pub evaluator: Arc<dyn Evaluator>,
+    pub model_scores: Arc<ModelScoreStore>,
+    pub goat_root: PathBuf,
+    /// Maximum time to wait between consecutive LLM stream chunks before
+    /// treating the connection as stalled. Defaults to 60 s.
+    pub stream_idle_timeout: std::time::Duration,
+    /// Maximum number of retry attempts for transient LLM errors
+    /// (Transport, RateLimited, Provider 5xx) before failing a turn.
+    /// Defaults to 3.
+    pub llm_max_retries: usize,
+}
+
 pub struct Brain {
     persona: PersonaId,
     personality: Arc<PersonalityCard>,
@@ -98,49 +132,33 @@ pub struct Brain {
     evaluator: Arc<dyn Evaluator>,
     model_scores: Arc<ModelScoreStore>,
     goat_root: PathBuf,
+    stream_idle_timeout: std::time::Duration,
+    llm_max_retries: usize,
 }
 
 impl Brain {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        persona: PersonaId,
-        personality: Arc<PersonalityCard>,
-        default_model: Model,
-        history_window: usize,
-        tool_selectors: Vec<String>,
-        providers: Arc<ProviderRegistry>,
-        tools: Arc<ToolRegistry>,
-        commands: Arc<CommandRegistry>,
-        store: Arc<dyn Store>,
-        memory: Arc<dyn MemoryStore>,
-        embedder: Option<Arc<dyn Embedder>>,
-        memory_enabled: bool,
-        episodic_k: usize,
-        summarize_enabled: bool,
-        renderer: Arc<dyn StreamRenderer>,
-        evaluator: Arc<dyn Evaluator>,
-        model_scores: Arc<ModelScoreStore>,
-        goat_root: PathBuf,
-    ) -> Self {
+    pub fn new(deps: BrainDeps) -> Self {
         Self {
-            persona,
-            personality,
-            default_model,
-            history_window,
-            tool_selectors,
-            providers,
-            tools,
-            commands,
-            store,
-            memory,
-            embedder,
-            memory_enabled,
-            episodic_k,
-            summarize_enabled,
-            renderer,
-            evaluator,
-            model_scores,
-            goat_root,
+            persona: deps.persona,
+            personality: deps.personality,
+            default_model: deps.default_model,
+            history_window: deps.history_window,
+            tool_selectors: deps.tool_selectors,
+            providers: deps.providers,
+            tools: deps.tools,
+            commands: deps.commands,
+            store: deps.store,
+            memory: deps.memory,
+            embedder: deps.embedder,
+            memory_enabled: deps.memory_enabled,
+            episodic_k: deps.episodic_k,
+            summarize_enabled: deps.summarize_enabled,
+            renderer: deps.renderer,
+            evaluator: deps.evaluator,
+            model_scores: deps.model_scores,
+            goat_root: deps.goat_root,
+            stream_idle_timeout: deps.stream_idle_timeout,
+            llm_max_retries: deps.llm_max_retries,
         }
     }
 
