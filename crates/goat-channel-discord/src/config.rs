@@ -6,4 +6,6 @@ pub(crate) struct DiscordConfig {
     pub(crate) token: String,
     #[serde(default)]
     pub(crate) intents: Vec<String>,
+    #[serde(default)]
+    pub(crate) allowed_user_ids: Vec<u64>,
 }
