@@ -321,6 +321,7 @@ impl SqliteStore {
             .parse::<sqlx::sqlite::SqliteConnectOptions>()?
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .busy_timeout(std::time::Duration::from_secs(5))
             .disable_statement_logging();
         let pool = SqlitePoolOptions::new()
             .max_connections(8)

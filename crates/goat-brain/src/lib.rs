@@ -9,8 +9,8 @@ use goat_channel::ChannelHandle;
 use goat_command::{CommandOutput, CommandRegistry};
 use goat_evaluator::{Evaluator, ModelScoreStore};
 use goat_llm::{
-    BlockId, ContentPart, LlmChunk, LlmMessage, LlmProvider, LlmRequest, LlmResponse, LlmStream,
-    Model, Role, StopReason, ToolSpec, Usage,
+    BlockId, ContentPart, LlmChunk, LlmError, LlmMessage, LlmProvider, LlmRequest, LlmResponse,
+    LlmStream, Model, Role, StopReason, ToolSpec, Usage,
 };
 use goat_memory::{Embedder, EpisodicKind, MemoryStore};
 use goat_persona::PersonalityCard;
@@ -79,6 +79,40 @@ impl ProviderRegistry {
     }
 }
 
+/// All dependencies required to construct a [`Brain`].
+///
+/// Using a single struct instead of positional arguments makes the constructor
+/// self-documenting, prevents accidental argument transposition, and allows
+/// new capabilities (e.g. timeout/retry settings) to be added without
+/// changing every call site.
+pub struct BrainDeps {
+    pub persona: PersonaId,
+    pub personality: Arc<PersonalityCard>,
+    pub default_model: Model,
+    pub history_window: usize,
+    pub tool_selectors: Vec<String>,
+    pub providers: Arc<ProviderRegistry>,
+    pub tools: Arc<ToolRegistry>,
+    pub commands: Arc<CommandRegistry>,
+    pub store: Arc<dyn Store>,
+    pub memory: Arc<dyn MemoryStore>,
+    pub embedder: Option<Arc<dyn Embedder>>,
+    pub memory_enabled: bool,
+    pub episodic_k: usize,
+    pub summarize_enabled: bool,
+    pub renderer: Arc<dyn StreamRenderer>,
+    pub evaluator: Arc<dyn Evaluator>,
+    pub model_scores: Arc<ModelScoreStore>,
+    pub goat_root: PathBuf,
+    /// Maximum time to wait between consecutive LLM stream chunks before
+    /// treating the connection as stalled. Defaults to 60 s.
+    pub stream_idle_timeout: std::time::Duration,
+    /// Maximum number of retry attempts for transient LLM errors
+    /// (Transport, RateLimited, Provider 5xx) before failing a turn.
+    /// Defaults to 3.
+    pub llm_max_retries: usize,
+}
+
 pub struct Brain {
     persona: PersonaId,
     personality: Arc<PersonalityCard>,
@@ -98,49 +132,33 @@ pub struct Brain {
     evaluator: Arc<dyn Evaluator>,
     model_scores: Arc<ModelScoreStore>,
     goat_root: PathBuf,
+    stream_idle_timeout: std::time::Duration,
+    llm_max_retries: usize,
 }
 
 impl Brain {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        persona: PersonaId,
-        personality: Arc<PersonalityCard>,
-        default_model: Model,
-        history_window: usize,
-        tool_selectors: Vec<String>,
-        providers: Arc<ProviderRegistry>,
-        tools: Arc<ToolRegistry>,
-        commands: Arc<CommandRegistry>,
-        store: Arc<dyn Store>,
-        memory: Arc<dyn MemoryStore>,
-        embedder: Option<Arc<dyn Embedder>>,
-        memory_enabled: bool,
-        episodic_k: usize,
-        summarize_enabled: bool,
-        renderer: Arc<dyn StreamRenderer>,
-        evaluator: Arc<dyn Evaluator>,
-        model_scores: Arc<ModelScoreStore>,
-        goat_root: PathBuf,
-    ) -> Self {
+    pub fn new(deps: BrainDeps) -> Self {
         Self {
-            persona,
-            personality,
-            default_model,
-            history_window,
-            tool_selectors,
-            providers,
-            tools,
-            commands,
-            store,
-            memory,
-            embedder,
-            memory_enabled,
-            episodic_k,
-            summarize_enabled,
-            renderer,
-            evaluator,
-            model_scores,
-            goat_root,
+            persona: deps.persona,
+            personality: deps.personality,
+            default_model: deps.default_model,
+            history_window: deps.history_window,
+            tool_selectors: deps.tool_selectors,
+            providers: deps.providers,
+            tools: deps.tools,
+            commands: deps.commands,
+            store: deps.store,
+            memory: deps.memory,
+            embedder: deps.embedder,
+            memory_enabled: deps.memory_enabled,
+            episodic_k: deps.episodic_k,
+            summarize_enabled: deps.summarize_enabled,
+            renderer: deps.renderer,
+            evaluator: deps.evaluator,
+            model_scores: deps.model_scores,
+            goat_root: deps.goat_root,
+            stream_idle_timeout: deps.stream_idle_timeout,
+            llm_max_retries: deps.llm_max_retries,
         }
     }
 
@@ -549,7 +567,7 @@ impl Brain {
                 return None;
             }
         };
-        match fold_turn(stream).await {
+        match fold_turn(stream, self.stream_idle_timeout).await {
             Ok(folded) => {
                 let text = folded.text.trim().to_string();
                 if text.is_empty() {
@@ -617,8 +635,7 @@ impl Brain {
             req.messages = messages.clone();
             req.tools = tool_specs.clone();
 
-            let stream = provider.stream(req).await?;
-            let folded = fold_turn(stream).await?;
+            let folded = self.stream_with_retry(&provider, req).await?;
 
             if folded.tool_calls.is_empty() {
                 let final_text = sanitize_final_text(folded.text);
@@ -976,39 +993,131 @@ fn assistant_tool_call_message(calls: &[ModelToolCall]) -> LlmMessage {
     }
 }
 
-async fn fold_turn(mut stream: LlmStream) -> Result<FoldedTurn> {
+/// Returns `true` if the given [`LlmError`] is likely transient and worth
+/// retrying (e.g. network hiccup, rate-limit, provider 5xx). Auth errors and
+/// malformed-request errors are never transient.
+fn is_transient_llm_error(e: &LlmError) -> bool {
+    matches!(
+        e,
+        LlmError::Transport(_) | LlmError::RateLimited { .. } | LlmError::Provider(_)
+    )
+}
+
+impl Brain {
+    /// Sends `req` to `provider` and folds the resulting stream into a
+    /// [`FoldedTurn`]. Retries up to `self.llm_max_retries` times on
+    /// transient [`LlmError`]s (Transport, RateLimited, Provider), honouring
+    /// `retry_after` from rate-limit responses. Non-transient errors (Auth,
+    /// BadRequest) and stream-idle-timeout errors are retried with simple
+    /// exponential backoff.
+    async fn stream_with_retry(
+        &self,
+        provider: &Arc<dyn LlmProvider>,
+        req: LlmRequest,
+    ) -> Result<FoldedTurn> {
+        let mut last_rate_limit_secs: Option<u64> = None;
+
+        for attempt in 0usize..=self.llm_max_retries {
+            if attempt > 0 {
+                let delay = match last_rate_limit_secs.take() {
+                    Some(secs) => std::time::Duration::from_secs(secs),
+                    None => std::time::Duration::from_millis(500u64 << (attempt - 1).min(4)),
+                };
+                warn!(
+                    persona = %self.persona,
+                    attempt,
+                    delay_ms = delay.as_millis(),
+                    "retrying transient LLM error",
+                );
+                tokio::time::sleep(delay).await;
+            }
+
+            match provider.stream(req.clone()).await {
+                Err(e) => {
+                    let is_last = attempt == self.llm_max_retries;
+                    if !is_transient_llm_error(&e) || is_last {
+                        return Err(anyhow::anyhow!("{e}"));
+                    }
+                    if let LlmError::RateLimited { retry_after, .. } = &e {
+                        last_rate_limit_secs = *retry_after;
+                    }
+                }
+                Ok(stream) => {
+                    match fold_turn(stream, self.stream_idle_timeout).await {
+                        Ok(folded) => return Ok(folded),
+                        Err(e) => {
+                            if attempt == self.llm_max_retries {
+                                return Err(e);
+                            }
+                            warn!(
+                                persona = %self.persona,
+                                error = ?e,
+                                attempt,
+                                "LLM stream error; will retry",
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Exhausted retries — the last error was already returned above.
+        unreachable!()
+    }
+}
+
+/// Consumes a streaming LLM response into a [`FoldedTurn`].
+///
+/// `idle_timeout` bounds the wait between consecutive chunks. If no chunk
+/// arrives within the timeout, the turn fails with a transport error so the
+/// caller can apply retry/backoff rather than waiting indefinitely. Using a
+/// chunk-level timeout (not a whole-request deadline) means legitimate long
+/// responses are not truncated — only truly stalled connections are detected.
+async fn fold_turn(mut stream: LlmStream, idle_timeout: std::time::Duration) -> Result<FoldedTurn> {
     let mut text = String::new();
     let mut pending: HashMap<BlockId, PendingToolCall> = HashMap::new();
+    let mut done = false;
 
-    while let Some(item) = stream.next().await {
-        match item? {
-            LlmChunk::TextDelta { text: delta, .. } => text.push_str(&delta),
-            LlmChunk::ToolCallStart {
-                block,
-                tool_call_id,
-                name,
-            } => {
-                pending.insert(
-                    block,
-                    PendingToolCall {
-                        id: tool_call_id,
+    while !done {
+        match tokio::time::timeout(idle_timeout, stream.next()).await {
+            Err(_elapsed) => {
+                return Err(anyhow::anyhow!(
+                    "LLM stream stalled: no chunk received within {:?}",
+                    idle_timeout
+                ));
+            }
+            Ok(None) => break,
+            Ok(Some(item)) => {
+                match item? {
+                    LlmChunk::TextDelta { text: delta, .. } => text.push_str(&delta),
+                    LlmChunk::ToolCallStart {
+                        block,
+                        tool_call_id,
                         name,
-                        args_json: String::new(),
-                    },
-                );
+                    } => {
+                        pending.insert(
+                            block,
+                            PendingToolCall {
+                                id: tool_call_id,
+                                name,
+                                args_json: String::new(),
+                            },
+                        );
+                    }
+                    LlmChunk::ToolCallDelta {
+                        block,
+                        args_json_fragment,
+                    } => {
+                        pending
+                            .entry(block)
+                            .or_default()
+                            .args_json
+                            .push_str(&args_json_fragment);
+                    }
+                    LlmChunk::MessageEnd { .. } => done = true,
+                    _ => {}
+                }
             }
-            LlmChunk::ToolCallDelta {
-                block,
-                args_json_fragment,
-            } => {
-                pending
-                    .entry(block)
-                    .or_default()
-                    .args_json
-                    .push_str(&args_json_fragment);
-            }
-            LlmChunk::MessageEnd { .. } => break,
-            _ => {}
         }
     }
 

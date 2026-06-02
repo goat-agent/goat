@@ -1,5 +1,6 @@
 use goat_types::{Event, PersonaId};
 use tokio::sync::broadcast;
+use tracing::warn;
 
 const BUS_CAPACITY: usize = 1024;
 
@@ -49,7 +50,14 @@ impl EventSubscription {
             match self.rx.recv().await {
                 Ok(ev) if self.matches(&ev) => return Some(ev),
                 Ok(_) => continue,
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(
+                        dropped = n,
+                        filter = ?self.filter,
+                        "event bus subscriber lagged; events were dropped"
+                    );
+                    continue;
+                }
                 Err(broadcast::error::RecvError::Closed) => return None,
             }
         }

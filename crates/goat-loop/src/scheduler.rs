@@ -74,6 +74,13 @@ pub async fn prepare_scheduler(
     let (tx, rx) = mpsc::unbounded_channel();
     let handle = SchedulerHandle { tx };
 
+    // Reclaim any runs left in status='running' from a previous daemon
+    // instance that died mid-flight. At boot, every running row is stale.
+    match store.reclaim_stale_runs(Utc::now()).await {
+        Ok(n) => info!(reclaimed = n, "boot-time stale run reclaim"),
+        Err(e) => warn!(error = ?e, "boot-time reclaim_stale_runs failed; continuing"),
+    }
+
     let pending = store.all_pending_runs().await?;
     let mut heap: BinaryHeap<Reverse<DateTime<Utc>>> = BinaryHeap::new();
     for (_run_id, _task_id, run_at) in pending {
@@ -114,6 +121,13 @@ async fn run_loop(
     mut rx: mpsc::UnboundedReceiver<DateTime<Utc>>,
     mut heap: BinaryHeap<Reverse<DateTime<Utc>>>,
 ) {
+    // Periodic reclaim: catch runs wedged within the same process lifetime.
+    // Threshold is 30 minutes to avoid reclaiming legitimately long runs.
+    let mut reclaim_ticker =
+        tokio::time::interval(StdDuration::from_secs(5 * 60));
+    // Consume the immediate first tick so the interval fires after 5 min.
+    reclaim_ticker.tick().await;
+
     loop {
         let deadline = next_deadline(&heap);
         tokio::select! {
@@ -125,6 +139,14 @@ async fn run_loop(
             }
             _ = tokio::time::sleep_until(deadline) => {
                 drain_due(&store, &bus, &mut heap).await;
+            }
+            _ = reclaim_ticker.tick() => {
+                let stale_before = Utc::now() - chrono::Duration::minutes(30);
+                match store.reclaim_stale_runs(stale_before).await {
+                    Ok(n) if n > 0 => info!(reclaimed = n, "periodic stale run reclaim"),
+                    Ok(_) => {}
+                    Err(e) => warn!(error = ?e, "periodic reclaim_stale_runs failed"),
+                }
             }
         }
     }

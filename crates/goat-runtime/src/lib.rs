@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use goat_brain::{Brain, ProviderRegistry};
+use goat_brain::{Brain, BrainDeps, ProviderRegistry};
 use goat_bus::EventBus;
 use goat_channel::{Channel, ChannelBinding, ChannelFactory, ChannelHandle};
 use goat_command::{CommandFactory, CommandProviderContext, CommandRegistry};
@@ -156,7 +156,15 @@ impl Goat {
 
 fn build_provider_registry(credentials: Arc<dyn CredentialStore>) -> Arc<ProviderRegistry> {
     let mut reg = ProviderRegistry::new();
+    let mut seen = std::collections::HashSet::<String>::new();
     for spec in inventory::iter::<LlmProviderSpec>() {
+        if !seen.insert(spec.id.as_str().to_string()) {
+            warn!(
+                provider = spec.id.as_str(),
+                "duplicate LLM provider ID in inventory; first registration wins",
+            );
+            continue;
+        }
         let provider = (spec.build)(credentials.clone());
         info!(provider = spec.id.as_str(), "loaded provider");
         reg.insert(provider);
@@ -169,8 +177,15 @@ fn build_embedding_providers(
 ) -> HashMap<String, Arc<dyn EmbeddingProvider>> {
     let mut map: HashMap<String, Arc<dyn EmbeddingProvider>> = HashMap::new();
     for spec in inventory::iter::<EmbeddingProviderSpec>() {
-        map.entry(spec.id.as_str().to_string())
-            .or_insert_with(|| (spec.build)(credentials.clone()));
+        let id = spec.id.as_str().to_string();
+        if map.contains_key(&id) {
+            warn!(
+                provider = %id,
+                "duplicate embedding provider ID in inventory; first registration wins",
+            );
+            continue;
+        }
+        map.insert(id, (spec.build)(credentials.clone()));
     }
     map
 }
@@ -256,9 +271,15 @@ impl Embedder for ProviderEmbedder {
 fn build_channel_registry() -> HashMap<String, Arc<dyn Channel>> {
     let mut by_name: HashMap<String, Arc<dyn Channel>> = HashMap::new();
     for factory in inventory::iter::<ChannelFactory>() {
-        by_name
-            .entry(factory.id.as_str().to_string())
-            .or_insert_with(|| (factory.ctor)());
+        let id = factory.id.as_str().to_string();
+        if by_name.contains_key(&id) {
+            warn!(
+                channel = %id,
+                "duplicate channel ID in inventory; first registration wins",
+            );
+            continue;
+        }
+        by_name.insert(id, (factory.ctor)());
     }
     by_name
 }
@@ -338,26 +359,28 @@ async fn spawn_persona(
         anyhow::bail!("no successful channel bindings");
     }
 
-    let brain = Arc::new(Brain::new(
-        raw.id,
-        Arc::new(raw.personality.clone()),
-        raw.default_model.clone(),
-        raw.history_window,
-        raw.tool_selectors.clone(),
-        shared.providers.clone(),
-        shared.tools.clone(),
+    let brain = Arc::new(Brain::new(BrainDeps {
+        persona: raw.id,
+        personality: Arc::new(raw.personality.clone()),
+        default_model: raw.default_model.clone(),
+        history_window: raw.history_window,
+        tool_selectors: raw.tool_selectors.clone(),
+        providers: shared.providers.clone(),
+        tools: shared.tools.clone(),
         commands,
-        shared.store.clone(),
-        shared.memory.clone(),
-        shared.embedders.get(&raw.id).cloned(),
-        raw.memory.enabled,
-        raw.memory.episodic_k,
-        raw.memory.summarize,
-        shared.renderer.clone(),
-        shared.evaluator.clone(),
-        shared.model_scores.clone(),
-        shared.goat_root.clone(),
-    ));
+        store: shared.store.clone(),
+        memory: shared.memory.clone(),
+        embedder: shared.embedders.get(&raw.id).cloned(),
+        memory_enabled: raw.memory.enabled,
+        episodic_k: raw.memory.episodic_k,
+        summarize_enabled: raw.memory.summarize,
+        renderer: shared.renderer.clone(),
+        evaluator: shared.evaluator.clone(),
+        model_scores: shared.model_scores.clone(),
+        goat_root: shared.goat_root.clone(),
+        stream_idle_timeout: std::time::Duration::from_secs(60),
+        llm_max_retries: 3,
+    }));
     let bus = shared.bus.clone();
     joins.push(tokio::spawn(async move {
         if let Err(e) = brain.run(bus, handles).await {

@@ -1192,6 +1192,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "tokio",
  "tracing",
 ]
 
@@ -1365,6 +1366,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "futures",
  "goat-store",
  "goat-types",
  "serde",

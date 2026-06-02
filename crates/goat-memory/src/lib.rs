@@ -9,8 +9,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub mod embed;
+pub mod index;
 
 pub use embed::{DummyEmbedder, Embedder};
+pub use index::{EpisodicHit, EpisodicIndex, InMemoryEpisodicIndex};
 
 #[derive(Debug, Error)]
 pub enum MemoryError {
@@ -110,6 +112,9 @@ pub trait MemoryStore: Send + Sync + 'static {
 
 pub struct SqliteMemory {
     pool: Arc<SqlitePool>,
+    /// In-memory episodic index. Eliminates per-turn full-table decodes.
+    /// Lazy per-persona hydration: loaded from DB on first search or insert.
+    index: Arc<dyn EpisodicIndex>,
 }
 
 impl SqliteMemory {
@@ -119,7 +124,8 @@ impl SqliteMemory {
     /// database as [`goat_store::SqliteStore`]. The runtime passes that
     /// store's pool here rather than opening a second database file.
     pub fn from_pool(pool: Arc<SqlitePool>) -> Self {
-        Self { pool }
+        let index = Arc::new(InMemoryEpisodicIndex::new(pool.clone()));
+        Self { pool, index }
     }
 
     pub async fn open(path: &Path) -> MemoryResult<Self> {
@@ -131,13 +137,14 @@ impl SqliteMemory {
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .disable_statement_logging();
-        let pool = SqlitePoolOptions::new()
-            .max_connections(8)
-            .connect_with(opts)
-            .await?;
-        Ok(Self {
-            pool: Arc::new(pool),
-        })
+        let pool = Arc::new(
+            SqlitePoolOptions::new()
+                .max_connections(8)
+                .connect_with(opts)
+                .await?,
+        );
+        let index = Arc::new(InMemoryEpisodicIndex::new(pool.clone()));
+        Ok(Self { pool, index })
     }
 }
 
@@ -185,21 +192,30 @@ impl MemoryStore for SqliteMemory {
         text: &str,
         embedding: Option<&[f32]>,
     ) -> MemoryResult<()> {
+        // Capture id and ts so we can update the in-memory index after the
+        // INSERT succeeds. The index is only updated on success — if the DB
+        // write fails the entry is absent from both, keeping them consistent.
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
         let blob = embedding.map(encode_vec);
         sqlx::query(
             r#"INSERT INTO episodic_memory
                (id, persona_id, conversation_id, kind, text, embedding, ts)
                VALUES (?, ?, ?, ?, ?, ?, ?)"#,
         )
-        .bind(Uuid::new_v4().to_string())
+        .bind(&id)
         .bind(persona.to_string())
         .bind(conv.to_key())
         .bind(kind.as_str())
         .bind(text)
         .bind(blob)
-        .bind(Utc::now().to_rfc3339())
+        .bind(now.to_rfc3339())
         .execute(&*self.pool)
         .await?;
+        // Update the index only when an embedding is present.
+        if let Some(emb) = embedding {
+            self.index.insert(persona, &id, now, kind, emb).await;
+        }
         Ok(())
     }
 
@@ -209,35 +225,53 @@ impl MemoryStore for SqliteMemory {
         query: &[f32],
         k: usize,
     ) -> MemoryResult<Vec<EpisodicEntry>> {
-        let rows = sqlx::query_as::<_, (String, String, String, String, Option<Vec<u8>>)>(
-            r#"SELECT id, kind, text, ts, embedding
-               FROM episodic_memory
-               WHERE persona_id = ? AND embedding IS NOT NULL"#,
-        )
-        .bind(persona.to_string())
-        .fetch_all(&*self.pool)
-        .await?;
-        let mut scored: Vec<EpisodicEntry> = rows
+        // Step 1: KNN from the in-memory index — no DB round-trip, no blob decode.
+        let hits = self.index.search(persona, query, k).await;
+        if hits.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Step 2: Fetch only the text bodies for the winning ids.
+        // Build a parameterised IN(...) clause.
+        let placeholders = hits
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT id, text FROM episodic_memory WHERE id IN ({placeholders})"
+        );
+        let mut q = sqlx::query_as::<_, (String, String)>(&sql);
+        for h in &hits {
+            q = q.bind(&h.id);
+        }
+        let text_rows: Vec<(String, String)> = q.fetch_all(&*self.pool).await?;
+
+        // Build id → text map (no allocation per hit when the result set is
+        // small, which it always is since k is bounded by the brain).
+        let text_map: std::collections::HashMap<&str, &str> = text_rows
+            .iter()
+            .map(|(id, text)| (id.as_str(), text.as_str()))
+            .collect();
+
+        // Step 3: Reassemble EpisodicEntry in the same order as `hits`.
+        // Hits whose id is not found in the DB are skipped (should never happen
+        // in practice — the index and DB are kept consistent on write).
+        let entries = hits
             .into_iter()
-            .filter_map(|(id, kind, text, ts, embedding)| {
-                let vec = decode_vec(&embedding?);
-                let score = cosine(query, &vec);
+            .filter_map(|h| {
+                let text = text_map.get(h.id.as_str())?.to_string();
                 Some(EpisodicEntry {
-                    id,
-                    kind: EpisodicKind::parse(&kind),
+                    id: h.id,
+                    kind: h.kind,
                     text,
-                    ts: parse_ts(&ts),
-                    score: Some(score),
+                    ts: h.ts,
+                    score: Some(h.score),
                 })
             })
             .collect();
-        scored.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        scored.truncate(k);
-        Ok(scored)
+
+        Ok(entries)
     }
 
     async fn search_semantic(
@@ -308,10 +342,15 @@ impl MemoryStore for SqliteMemory {
     }
 }
 
-fn parse_ts(s: &str) -> DateTime<Utc> {
+pub(crate) fn parse_ts_pub(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s)
         .map(|d| d.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now())
+}
+
+// Keep the private alias so existing callers in this file are unchanged.
+fn parse_ts(s: &str) -> DateTime<Utc> {
+    parse_ts_pub(s)
 }
 
 fn encode_vec(v: &[f32]) -> Vec<u8> {
@@ -322,13 +361,13 @@ fn encode_vec(v: &[f32]) -> Vec<u8> {
     out
 }
 
-fn decode_vec(b: &[u8]) -> Vec<f32> {
+pub(crate) fn decode_vec(b: &[u8]) -> Vec<f32> {
     b.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
 
-fn cosine(a: &[f32], b: &[f32]) -> f32 {
+pub(crate) fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }

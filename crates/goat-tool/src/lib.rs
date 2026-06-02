@@ -185,8 +185,24 @@ pub struct ToolReadSnapshot {
     pub complete: bool,
 }
 
+/// Handles a single tool invocation inside a brain turn.
+///
+/// Implement this trait in a `goat-tool-<name>` crate. The brain resolves
+/// the tool name to a handler via the [`ToolRegistry`] and calls [`call`]
+/// once per tool invocation per round.
+///
+/// [`call`] must never panic. Return a [`ToolOutput`] with a descriptive
+/// error message if the tool cannot complete; the brain forwards the error
+/// text back to the model so it can decide how to proceed.
+///
+/// Register your tool via:
+/// ```ignore
+/// inventory::submit!(ToolFactory { name: MY_TOOL_NAME, default_enabled: true, spec: ..., ctor: ... });
+/// ```
 #[async_trait]
 pub trait ToolHandler: Send + Sync + 'static {
+    /// Executes the tool. `ctx` carries the conversation, persona, and store
+    /// references; `call` contains the tool name and validated JSON arguments.
     async fn call(&self, ctx: ToolContext, call: ToolCall) -> ToolOutput;
 }
 
