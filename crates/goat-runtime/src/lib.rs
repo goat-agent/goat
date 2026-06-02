@@ -17,6 +17,7 @@ use goat_render::{DefaultStreamRenderer, StreamRenderer};
 use goat_store::{SqliteStore, Store};
 use goat_tool::ToolRegistry;
 use goat_types::{Event, InstanceId, PersonaId};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -27,6 +28,7 @@ const REFLECTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(
 
 pub struct Goat {
     join_handles: Vec<tokio::task::JoinHandle<()>>,
+    cancel: CancellationToken,
     _log_guard: Option<WorkerGuard>,
 }
 
@@ -111,6 +113,7 @@ impl Goat {
         );
 
         let renderer: Arc<dyn StreamRenderer> = Arc::new(DefaultStreamRenderer);
+        let cancel = CancellationToken::new();
 
         let mut join_handles = Vec::new();
 
@@ -126,6 +129,7 @@ impl Goat {
             evaluator,
             model_scores,
             bus,
+            cancel: cancel.clone(),
         };
 
         for raw_persona in &cfg.personas {
@@ -143,6 +147,7 @@ impl Goat {
 
         Ok(Self {
             join_handles,
+            cancel,
             _log_guard: log_guard,
         })
     }
@@ -151,8 +156,12 @@ impl Goat {
         info!(handles = self.join_handles.len(), "goat running");
         tokio::signal::ctrl_c().await.ok();
         info!("ctrl-c received; shutting down");
-        for h in self.join_handles.drain(..) {
-            h.abort();
+        self.cancel.cancel();
+        let grace = std::time::Duration::from_secs(10);
+        let handles = std::mem::take(&mut self.join_handles);
+        let drain = futures::future::join_all(handles);
+        if tokio::time::timeout(grace, drain).await.is_err() {
+            warn!("shutdown grace period elapsed; detaching remaining tasks");
         }
         Ok(())
     }
@@ -300,6 +309,7 @@ struct RuntimeShared<'a> {
     evaluator: Arc<dyn Evaluator>,
     model_scores: Arc<ModelScoreStore>,
     bus: EventBus,
+    cancel: CancellationToken,
 }
 
 async fn spawn_persona(
@@ -343,9 +353,17 @@ async fn spawn_persona(
         match channel.clone().bind(raw.id, chan_binding).await {
             Ok((handle, mut rx)) => {
                 let bus_for_pump = shared.bus.clone();
+                let cancel_for_pump = shared.cancel.clone();
                 joins.push(tokio::spawn(async move {
-                    while let Some(msg) = rx.recv().await {
-                        bus_for_pump.publish(Event::Incoming(msg));
+                    loop {
+                        tokio::select! {
+                            biased;
+                            _ = cancel_for_pump.cancelled() => break,
+                            msg = rx.recv() => match msg {
+                                Some(m) => bus_for_pump.publish(Event::Incoming(m)),
+                                None => break,
+                            },
+                        }
                     }
                 }));
                 handles.push(handle);
@@ -386,8 +404,9 @@ async fn spawn_persona(
         llm_max_retries: 3,
     }));
     let bus = shared.bus.clone();
+    let cancel_for_brain = shared.cancel.clone();
     joins.push(tokio::spawn(async move {
-        if let Err(e) = brain.run(bus, handles).await {
+        if let Err(e) = brain.run(bus, handles, cancel_for_brain).await {
             warn!(error = ?e, "brain exited");
         }
     }));
@@ -395,12 +414,16 @@ async fn spawn_persona(
     if raw.autonomy.enabled {
         let bus = shared.bus.clone();
         let persona = raw.id;
+        let cancel_for_tick = shared.cancel.clone();
         joins.push(tokio::spawn(async move {
             let mut tick = tokio::time::interval(REFLECTION_INTERVAL);
             tick.tick().await;
             loop {
-                tick.tick().await;
-                bus.publish(Event::Reflection { persona });
+                tokio::select! {
+                    biased;
+                    _ = cancel_for_tick.cancelled() => break,
+                    _ = tick.tick() => bus.publish(Event::Reflection { persona }),
+                }
             }
         }));
     }
