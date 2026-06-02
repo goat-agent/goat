@@ -9,8 +9,8 @@ use goat_channel::ChannelHandle;
 use goat_command::{CommandOutput, CommandRegistry};
 use goat_evaluator::{Evaluator, ModelScoreStore};
 use goat_llm::{
-    BlockId, ContentPart, LlmChunk, LlmMessage, LlmProvider, LlmRequest, LlmResponse, LlmStream,
-    Model, Role, StopReason, ToolSpec, Usage,
+    BlockId, ContentPart, LlmChunk, LlmError, LlmMessage, LlmProvider, LlmRequest, LlmResponse,
+    LlmStream, Model, Role, StopReason, ToolSpec, Usage,
 };
 use goat_memory::{Embedder, EpisodicKind, MemoryStore};
 use goat_persona::PersonalityCard;
