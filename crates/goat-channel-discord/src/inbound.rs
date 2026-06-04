@@ -58,7 +58,10 @@ pub(crate) async fn gateway_loop(
                         continue;
                     }
                     if !is_allowed_user_id(mc.author.id.get(), &allowed_user_ids) {
-                        debug!(user_id = mc.author.id.get(), "discord: user not in allowlist, ignoring");
+                        debug!(
+                            user_id = mc.author.id.get(),
+                            "discord: user not in allowlist, ignoring"
+                        );
                         continue;
                     }
                     let command = parse_text_command(&mc.content, &mc.id.to_string(), &commands);
