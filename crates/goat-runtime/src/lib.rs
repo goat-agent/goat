@@ -29,6 +29,7 @@ const REFLECTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(
 pub struct Goat {
     join_handles: Vec<tokio::task::JoinHandle<()>>,
     cancel: CancellationToken,
+    _pty_manager: Arc<goat_tool_pty::PtyManager>,
     _log_guard: Option<WorkerGuard>,
 }
 
@@ -94,10 +95,10 @@ impl Goat {
                 .await
                 .context("prepare scheduler")?;
 
+        let cancel = CancellationToken::new();
+
         let mut tools_reg = ToolRegistry::from_inventory();
         goat_tool_schedule::register(&mut tools_reg, store.clone(), scheduler_handle);
-        // Per-persona recall depth so the `recall` tool honours each persona's
-        // configured `episodic_k`, matching the brain's own episodic recall.
         let recall_k: Arc<HashMap<PersonaId, usize>> = Arc::new(
             cfg.personas
                 .iter()
@@ -106,6 +107,11 @@ impl Goat {
                 .collect(),
         );
         goat_tool_memory::register(&mut tools_reg, memory.clone(), embedders.clone(), recall_k);
+        let pty_manager = Arc::new(goat_tool_pty::PtyManager::new(
+            cancel.clone(),
+            goat_tool_pty::MAX_SESSIONS,
+        ));
+        goat_tool_pty::register(&mut tools_reg, pty_manager.clone());
         let tools = Arc::new(tools_reg);
         info!(
             default_tools = tools.default_specs().len(),
@@ -113,7 +119,6 @@ impl Goat {
         );
 
         let renderer: Arc<dyn StreamRenderer> = Arc::new(DefaultStreamRenderer);
-        let cancel = CancellationToken::new();
 
         let mut join_handles = Vec::new();
 
@@ -148,6 +153,7 @@ impl Goat {
         Ok(Self {
             join_handles,
             cancel,
+            _pty_manager: pty_manager,
             _log_guard: log_guard,
         })
     }
