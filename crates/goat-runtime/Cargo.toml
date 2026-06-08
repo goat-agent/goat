@@ -22,6 +22,7 @@ goat-plugin           = { workspace = true }
 goat-tool             = { workspace = true }
 goat-tool-schedule    = { workspace = true }
 goat-tool-memory      = { workspace = true }
+goat-tool-pty         = { workspace = true }
 goat-loop             = { workspace = true }
 goat-skills           = { workspace = true }
 goat-brain            = { workspace = true }

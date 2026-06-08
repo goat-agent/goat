@@ -8,6 +8,8 @@ use goat_types::{ConversationId, PersonaId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod command_safety;
+
 #[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize)]
 pub struct ToolName(Cow<'static, str>);
 
