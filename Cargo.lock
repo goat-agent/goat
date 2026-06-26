@@ -1030,7 +1030,7 @@ dependencies = [
 
 [[package]]
 name = "goat-brain"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1056,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "goat-bus"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1068,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "goat-channel"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "goat-command",
@@ -1084,7 +1084,7 @@ dependencies = [
 
 [[package]]
 name = "goat-channel-discord"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1107,7 +1107,7 @@ dependencies = [
 
 [[package]]
 name = "goat-channel-telegram"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1127,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "goat-command"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "goat-types",
@@ -1141,7 +1141,7 @@ dependencies = [
 
 [[package]]
 name = "goat-command-skill"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "goat-command",
@@ -1155,7 +1155,7 @@ dependencies = [
 
 [[package]]
 name = "goat-config"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "goat-channel",
@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "goat-credentials"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "goat-llm",
  "serde_json",
@@ -1183,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "goat-evaluator"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1199,7 +1199,7 @@ dependencies = [
 
 [[package]]
 name = "goat-llm"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1215,7 +1215,7 @@ dependencies = [
 
 [[package]]
 name = "goat-llm-anthropic"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1235,7 +1235,7 @@ dependencies = [
 
 [[package]]
 name = "goat-llm-codex"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1264,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "goat-llm-gemini"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1284,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "goat-llm-moonshot"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1304,7 +1304,7 @@ dependencies = [
 
 [[package]]
 name = "goat-llm-openai"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1324,7 +1324,7 @@ dependencies = [
 
 [[package]]
 name = "goat-llm-zhipu"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "goat-loop"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1363,7 +1363,7 @@ dependencies = [
 
 [[package]]
 name = "goat-memory"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1383,7 +1383,7 @@ dependencies = [
 
 [[package]]
 name = "goat-persona"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "goat-llm",
  "goat-types",
@@ -1392,7 +1392,7 @@ dependencies = [
 
 [[package]]
 name = "goat-plugin"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1405,7 +1405,7 @@ dependencies = [
 
 [[package]]
 name = "goat-render"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "futures",
@@ -1418,7 +1418,7 @@ dependencies = [
 
 [[package]]
 name = "goat-runtime"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1457,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "goat-skills"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "goat-types",
@@ -1469,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "goat-store"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1486,7 +1486,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tool"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "goat-types",
@@ -1499,7 +1499,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tool-fs"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "globset",
@@ -1516,7 +1516,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tool-memory"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "goat-memory",
@@ -1532,7 +1532,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tool-pty"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "goat-tool",
@@ -1551,7 +1551,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tool-schedule"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1568,7 +1568,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tool-shell"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "goat-tool",
@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tool-skill"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "goat-skills",
@@ -1597,7 +1597,7 @@ dependencies = [
 
 [[package]]
 name = "goat-types"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "serde",
