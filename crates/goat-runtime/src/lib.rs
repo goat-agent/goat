@@ -160,8 +160,8 @@ impl Goat {
 
     pub async fn run(mut self) -> Result<()> {
         info!(handles = self.join_handles.len(), "goat running");
-        tokio::signal::ctrl_c().await.ok();
-        info!("ctrl-c received; shutting down");
+        let signal = shutdown_signal().await;
+        info!(signal = signal, "shutdown signal received; shutting down");
         self.cancel.cancel();
         let grace = std::time::Duration::from_secs(10);
         let handles = std::mem::take(&mut self.join_handles);
@@ -170,6 +170,31 @@ impl Goat {
             warn!("shutdown grace period elapsed; detaching remaining tasks");
         }
         Ok(())
+    }
+}
+
+async fn shutdown_signal() -> &'static str {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut terminate = signal(SignalKind::terminate()).ok();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => "ctrl_c",
+            _ = async {
+                if let Some(stream) = terminate.as_mut() {
+                    stream.recv().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => "sigterm",
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.ok();
+        "ctrl_c"
     }
 }
 
