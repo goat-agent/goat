@@ -1,6 +1,6 @@
 publish = false
 tag-name = "v{{version}}"
-pre-release-commit-message = "release {{version}}"
-tag-message = "release {{version}}"
+pre-release-commit-message = "chore: release"
+tag-message = "chore: release {{tag_name}}"
 consolidate-commits = true
 allow-branch = ["main"]
