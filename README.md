@@ -34,6 +34,10 @@ goat persona      manage personas
 goat skill        inspect agent skills
 ```
 
+## Release
+
+Maintainers cut releases with `cargo release`. The `v{{version}}` tag triggers GitHub Actions to build `goat-<tag>-<target>.tar.gz` assets and matching `.sha256` files for macOS and Linux on x86_64 and arm64; `install.sh` consumes those release assets.
+
 ## License
 
 MIT
