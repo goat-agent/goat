@@ -12,10 +12,10 @@ Autonomous personal AI agent. Single user, single host. Runs personas across cha
 ## Install
 
 ```sh
-curl -fsSL https://goat.sh/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/goat-agent/goat/main/install.sh | sh
 ```
 
-The installer drops the binary in place, walks you through your first provider key and persona, and starts the daemon in the background. `~/.goat/` holds everything from then on.
+The installer downloads the latest GitHub Release binary, verifies the release checksum when local tooling is available, walks you through first-time setup on an interactive fresh install, and installs a user daemon in the background. `~/.goat/` holds everything from then on.
 
 ## Providers
 
