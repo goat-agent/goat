@@ -3,6 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 publish = false
@@ -106,7 +107,7 @@ twilight-model          = "0.16"
 
 [package]
 name = "goat"
-version = "0.1.2"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true

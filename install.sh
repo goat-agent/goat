@@ -2,7 +2,6 @@
 set -eu
 
 REPO="goat-agent/goat"
-API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 INSTALL_DIR="${GOAT_INSTALL_DIR:-${HOME:-}/.local/bin}"
 GOAT_ROOT="${GOAT_ROOT:-${HOME:-}/.goat}"
 BIN_PATH="${INSTALL_DIR}/goat"
@@ -48,10 +47,10 @@ detect_target() {
   esac
 }
 
-latest_tag() {
-  curl -fsSL "$API_URL" \
-    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-    | sed -n '1p'
+fetch() {
+  url=$1
+  dest=$2
+  curl -fL "$url" -o "$dest"
 }
 
 sha256_file() {
@@ -68,6 +67,23 @@ sha256_file() {
   fi
 
   [ "$actual" = "$expected" ] || fail "checksum mismatch for $(basename "$file")"
+}
+
+checksum_for_archive() {
+  checksum=$1
+  archive=$2
+  awk -v archive="$archive" '
+    $2 == archive || $2 == "*" archive { print $1; found = 1; exit }
+    END { if (!found) exit 1 }
+  ' "$checksum"
+}
+
+normalize_tag() {
+  tag=$1
+  case "$tag" in
+    v*) printf '%s\n' "$tag" ;;
+    *) printf 'v%s\n' "$tag" ;;
+  esac
 }
 
 validate_archive() {
@@ -212,27 +228,42 @@ main() {
   need_cmd wc
 
   target=$(detect_target)
-  tag=${GOAT_VERSION:-}
-  if [ -z "$tag" ]; then
-    tag=$(latest_tag)
-    [ -n "$tag" ] || fail "could not resolve latest release tag"
+  requested_tag=${GOAT_VERSION:-}
+  if [ -n "$requested_tag" ]; then
+    tag=$(normalize_tag "$requested_tag")
+    base_url="https://github.com/${REPO}/releases/download/${tag}"
+    label="$tag"
+  else
+    tag=
+    base_url="https://github.com/${REPO}/releases/latest/download"
+    label=latest
   fi
 
-  asset="goat-${tag}-${target}.tar.gz"
-  base_url="https://github.com/${REPO}/releases/download/${tag}"
+  asset="goat-${target}.tar.gz"
 
   TMPDIR_GOAT=$(mktemp -d 2>/dev/null || mktemp -d -t goat)
   archive="$TMPDIR_GOAT/$asset"
-  checksum="$TMPDIR_GOAT/$asset.sha256"
+  checksum="$TMPDIR_GOAT/SHA256SUMS"
   list="$TMPDIR_GOAT/archive.list"
   extract_dir="$TMPDIR_GOAT/extract"
 
-  log "installing goat ${tag} for ${target}"
-  curl -fL "$base_url/$asset" -o "$archive"
-  curl -fL "$base_url/$asset.sha256" -o "$checksum"
+  log "installing goat ${label} for ${target}"
+  if ! fetch "$base_url/$asset" "$archive" || ! fetch "$base_url/SHA256SUMS" "$checksum"; then
+    if [ -z "$tag" ]; then
+      fail "could not download release asset for $target"
+    fi
+    asset="goat-${tag}-${target}.tar.gz"
+    archive="$TMPDIR_GOAT/$asset"
+    checksum="$TMPDIR_GOAT/$asset.sha256"
+    log "falling back to legacy asset layout for ${tag}"
+    fetch "$base_url/$asset" "$archive"
+    fetch "$base_url/$asset.sha256" "$checksum"
+    expected=$(awk '{print $1; exit}' "$checksum")
+  else
+    expected=$(checksum_for_archive "$checksum" "$asset") || fail "checksum missing for $asset"
+  fi
 
-  expected=$(awk '{print $1}' "$checksum")
-  [ -n "$expected" ] || fail "empty checksum file for $asset"
+  [ -n "$expected" ] || fail "empty checksum for $asset"
   sha256_file "$archive" "$expected"
 
   validate_archive "$archive" "$list"
