@@ -1,0 +1,20 @@
+[package]
+name = "goat-search-provider-duckduckgo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+goat-auth = { workspace = true }
+goat-search-provider = { workspace = true }
+chromiumoxide = { workspace = true }
+futures = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
+reqwest = { workspace = true }
+
+[lints]
+workspace = true

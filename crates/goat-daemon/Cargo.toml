@@ -1,0 +1,39 @@
+[package]
+name = "goat-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+goat-protocol = { workspace = true }
+goat-core = { workspace = true }
+goat-config = { workspace = true }
+goat-wire = { workspace = true }
+goat-remote = { workspace = true }
+goat-engine = { workspace = true }
+goat-auth = { workspace = true }
+goat-store = { workspace = true }
+goat-providers = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+goat-remote = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+rcgen = { workspace = true }
+tokio-tungstenite = { workspace = true }
+serde_json = { workspace = true }
+futures = { workspace = true }
+
+[lints]
+workspace = true

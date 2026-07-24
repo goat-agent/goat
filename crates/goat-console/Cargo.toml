@@ -1,0 +1,15 @@
+[package]
+name = "goat-console"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[dependencies]
+dialoguer = { workspace = true }
+unicode-width = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

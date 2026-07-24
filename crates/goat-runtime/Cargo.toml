@@ -1,0 +1,53 @@
+[package]
+name = "goat-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[dependencies]
+goat-agent-command = { workspace = true }
+goat-types            = { workspace = true }
+goat-bus              = { workspace = true }
+goat-store            = { workspace = true }
+goat-memory           = { workspace = true }
+goat-embedding    = { workspace = true }
+goat-config           = { workspace = true }
+goat-model            = { workspace = true }
+goat-auth         = { workspace = true }
+goat-provider     = { workspace = true }
+goat-providers    = { workspace = true }
+goat-channel          = { workspace = true }
+goat-render           = { workspace = true }
+goat-plugin           = { workspace = true }
+goat-agent-tool             = { workspace = true }
+goat-agent-tool-schedule    = { workspace = true }
+goat-agent-tool-goal        = { workspace = true }
+goat-agent-tool-code        = { workspace = true }
+goat-daemon             = { workspace = true }
+goat-agent-tool-memory      = { workspace = true }
+goat-agent-tool-pty         = { workspace = true }
+goat-loop             = { workspace = true }
+goat-sleep            = { workspace = true }
+goat-skills           = { workspace = true }
+goat-brain            = { workspace = true }
+goat-profile          = { workspace = true }
+chrono                = { workspace = true }
+tokio                 = { workspace = true }
+tokio-util            = { workspace = true }
+async-trait           = { workspace = true }
+anyhow                = { workspace = true }
+tracing               = { workspace = true }
+tracing-subscriber    = { workspace = true }
+tracing-appender      = { workspace = true }
+inventory             = { workspace = true }
+futures               = { workspace = true }
+uuid                  = { workspace = true }
+serde_json            = { workspace = true }
+
+[dev-dependencies]
+tempfile              = { workspace = true }
+
+[lints]
+workspace = true

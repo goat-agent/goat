@@ -1,0 +1,20 @@
+[package]
+name = "goat-embedding"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+goat-auth = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

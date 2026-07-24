@@ -1,0 +1,49 @@
+use std::path::PathBuf;
+
+use goat_model::Model;
+use goat_types::ProfileId;
+
+#[derive(Clone, Debug)]
+pub struct ProfileCard {
+    pub system_prompt: String,
+    pub source_path: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProfileBinding {
+    pub name: String,
+    pub config: serde_json::Value,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProfileConfig {
+    pub id: ProfileId,
+    pub slug: String,
+    pub display: String,
+    pub personality: ProfileCard,
+    pub default_model: Model,
+    pub history_window: usize,
+    pub tool_selectors: Vec<String>,
+    pub bindings: Vec<ProfileBinding>,
+    pub memory: MemoryConfig,
+    pub autonomy: AutonomyConfig,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AutonomyConfig {
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MemoryConfig {
+    pub enabled: bool,
+    pub embedding: Option<EmbeddingSettings>,
+    pub episodic_k: usize,
+    pub summarize: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct EmbeddingSettings {
+    pub provider: String,
+    pub model: String,
+}

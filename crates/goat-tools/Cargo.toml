@@ -1,0 +1,19 @@
+[package]
+name = "goat-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+goat-tool = { workspace = true }
+goat-tool-fs = { workspace = true }
+goat-tool-shell = { workspace = true }
+goat-tool-search = { workspace = true }
+goat-tool-skill = { workspace = true }
+goat-tool-web = { workspace = true }
+
+[lints]
+workspace = true

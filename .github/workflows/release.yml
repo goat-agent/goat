@@ -1,0 +1,102 @@
+name: release
+
+on:
+  push:
+    tags:
+      - v*.*.*
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  LINUX_DEPS: >-
+    libwayland-dev libxkbcommon-dev libpipewire-0.3-dev libgbm-dev libdrm-dev
+    libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libegl1-mesa-dev pkg-config
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          manifest_version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "goat-code") | .version')
+          test "$version" = "$manifest_version"
+          prerelease=false
+          case "$version" in
+            *-*) prerelease=true ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS
+      - if: runner.os == 'Windows'
+        run: git config --global core.longpaths true
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo build --profile dist -p goat-code --bin goat-code --target ${{ matrix.target }}
+      - name: package unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/dist/goat-code dist/goat-code
+          tar -C dist -czf goat-code-${{ matrix.target }}.tar.gz goat-code
+      - name: package windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist
+          Copy-Item target/${{ matrix.target }}/dist/goat-code.exe dist/goat-code.exe
+          tar -C dist -czf goat-code-${{ matrix.target }}.tar.gz goat-code.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goat-code-${{ matrix.target }}
+          path: goat-code-${{ matrix.target }}.tar.gz
+
+  publish:
+    needs:
+      - validate
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - shell: bash
+        run: |
+          cd artifacts
+          sha256sum goat-code-*.tar.gz > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          prerelease: ${{ needs.validate.outputs.prerelease }}
+          generate_release_notes: true

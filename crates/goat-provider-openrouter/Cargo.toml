@@ -1,0 +1,16 @@
+[package]
+name = "goat-provider-openrouter"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+goat-provider = { workspace = true }
+goat-provider-openai-compat = { workspace = true }
+goat-auth = { workspace = true }
+
+[lints]
+workspace = true
