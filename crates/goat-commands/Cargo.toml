@@ -1,0 +1,19 @@
+[package]
+name = "goat-commands"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+goat-command = { workspace = true }
+goat-command-settings = { workspace = true }
+goat-command-conversation = { workspace = true }
+goat-command-help = { workspace = true }
+goat-command-app = { workspace = true }
+goat-protocol = { workspace = true }
+
+[lints]
+workspace = true

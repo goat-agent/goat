@@ -1,0 +1,26 @@
+[package]
+name = "goat-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[dependencies]
+goat-sqlite-vec = { workspace = true }
+goat-types  = { workspace = true }
+sqlx        = { workspace = true }
+async-trait = { workspace = true }
+anyhow      = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { workspace = true }
+chrono      = { workspace = true }
+uuid        = { workspace = true }
+serde_json  = { workspace = true }
+tracing     = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

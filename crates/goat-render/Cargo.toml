@@ -1,0 +1,26 @@
+[package]
+name = "goat-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[dependencies]
+goat-channel = { workspace = true }
+goat-provider = { workspace = true }
+goat-types   = { workspace = true }
+async-trait  = { workspace = true }
+futures      = { workspace = true }
+tokio        = { workspace = true }
+tracing      = { workspace = true }
+
+[dev-dependencies]
+goat-channel = { workspace = true, features = ["test-support"] }
+goat-provider = { workspace = true }
+goat-types   = { workspace = true }
+tokio        = { workspace = true, features = ["macros", "rt"] }
+futures      = { workspace = true }
+
+[lints]
+workspace = true

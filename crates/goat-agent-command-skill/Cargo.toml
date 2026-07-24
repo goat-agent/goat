@@ -1,0 +1,22 @@
+[package]
+name = "goat-agent-command-skill"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[dependencies]
+goat-agent-command = { workspace = true }
+goat-skills  = { workspace = true }
+goat-types   = { workspace = true }
+async-trait  = { workspace = true }
+serde_json   = { workspace = true }
+tracing      = { workspace = true }
+inventory    = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,61 @@
+[package]
+name = "goat-code"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "goat"
+path = "src/main.rs"
+
+[dependencies]
+goat-tui = { workspace = true }
+goat-config = { workspace = true }
+goat-daemon = { workspace = true }
+goat-client = { workspace = true }
+goat-wire = { workspace = true }
+goat-protocol = { workspace = true }
+goat-provider = { workspace = true }
+goat-providers = { workspace = true }
+goat-tool-search = { workspace = true }
+goat-auth = { workspace = true }
+goat-worktree = { workspace = true }
+goat-console = { workspace = true }
+goat-agent = { workspace = true }
+goat-runtime = { workspace = true }
+goat-agent-command-skill = { workspace = true }
+goat-agent-tool-fs = { workspace = true }
+goat-agent-tool-shell = { workspace = true }
+goat-agent-tool-skill = { workspace = true }
+goat-channel-discord = { workspace = true }
+goat-channel-telegram = { workspace = true }
+anyhow = { workspace = true }
+tokio-util = { workspace = true }
+tokio = { workspace = true, features = ["io-std"] }
+clap = { workspace = true }
+dialoguer = { workspace = true }
+console = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+color-eyre = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+semver = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+self_replace = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+qrcode = { workspace = true }
+unicode-width = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "goat-provider-anthropic"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+goat-provider = { workspace = true }
+goat-auth = { workspace = true }
+async-trait = { workspace = true }
+async-stream = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures = { workspace = true }
+eventsource-stream = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+open = { workspace = true }
+
+[lints]
+workspace = true

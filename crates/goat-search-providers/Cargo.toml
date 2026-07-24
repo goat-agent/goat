@@ -1,0 +1,19 @@
+[package]
+name = "goat-search-providers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+goat-auth = { workspace = true }
+goat-search-provider = { workspace = true }
+goat-search-provider-duckduckgo = { workspace = true }
+goat-search-provider-searxng = { workspace = true }
+goat-search-provider-brave = { workspace = true }
+goat-search-provider-tavily = { workspace = true }
+
+[lints]
+workspace = true

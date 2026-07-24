@@ -1,0 +1,36 @@
+[package]
+name = "goat-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+goat-protocol = { workspace = true }
+goat-commands = { workspace = true }
+goat-tool = { workspace = true }
+goat-config = { workspace = true }
+goat-worktree = { workspace = true }
+goat-github = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+ratatui = { workspace = true }
+ratatui-image = { workspace = true }
+crossterm = { workspace = true }
+termbg = { workspace = true }
+color-eyre = { workspace = true }
+unicode-width = { workspace = true }
+unicode-normalization = { workspace = true }
+tracing = { workspace = true }
+pulldown-cmark = { workspace = true }
+syntect = { workspace = true }
+image = { workspace = true }
+base64 = { workspace = true }
+arboard = { workspace = true }
+open = { workspace = true }
+percent-encoding = { workspace = true }
+
+[lints]
+workspace = true

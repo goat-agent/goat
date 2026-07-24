@@ -1,0 +1,42 @@
+[package]
+name = "goat-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+goat-core = { workspace = true }
+goat-protocol = { workspace = true }
+goat-provider = { workspace = true }
+goat-providers = { workspace = true }
+goat-auth = { workspace = true }
+goat-store = { workspace = true }
+goat-config = { workspace = true }
+goat-mcp = { workspace = true }
+goat-tool = { workspace = true }
+goat-sandbox = { workspace = true }
+goat-tools = { workspace = true }
+goat-worktree = { workspace = true }
+rand = { workspace = true }
+goat-tool-computer = { workspace = true }
+goat-tool-browser = { workspace = true }
+goat-skill = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["process"] }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+unicode-width = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+async-trait = { workspace = true }
+async-stream = { workspace = true }
+
+[lints]
+workspace = true

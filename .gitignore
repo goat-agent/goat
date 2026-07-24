@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+.DS_Store
+*.swp
+.omx/
+.omc/
+src/.omc/
+*.pdb
+**/*.snap.new
+.env
+.claude/
+.claire/
+/docs/
