@@ -37,6 +37,7 @@ const CLAUDE_CODE_SYSTEM: &str = "You are Claude Code, Anthropic's official CLI 
 fn anthropic_context_window(model: &str) -> u32 {
     let id = model.to_ascii_lowercase();
     if id.contains("fable")
+        || id.contains("opus-5")
         || id.contains("opus-4-8")
         || id.contains("opus-4-7")
         || id.contains("opus-4-6")
@@ -59,6 +60,7 @@ fn anthropic_supports_images(model: &str) -> bool {
 
 const CATALOG: &[&str] = &[
     "claude-fable-5",
+    "claude-opus-5",
     "claude-opus-4-8",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
@@ -215,6 +217,7 @@ struct ThinkingConfig {
 fn uses_effort_param(model: &str) -> bool {
     let id = model.to_ascii_lowercase();
     id.contains("fable")
+        || id.contains("opus-5")
         || id.contains("opus-4-8")
         || id.contains("opus-4-7")
         || id.contains("opus-4-6")
@@ -395,7 +398,11 @@ fn gregorian_to_unix(year: i64, month: i64, day: i64, h: i64, m: i64, s: i64) ->
 
 fn anthropic_efforts(model: &str) -> Vec<Effort> {
     let id = model.to_ascii_lowercase();
-    if id.contains("fable") || id.contains("opus-4-8") || id.contains("opus-4-7") {
+    if id.contains("fable")
+        || id.contains("opus-5")
+        || id.contains("opus-4-8")
+        || id.contains("opus-4-7")
+    {
         vec![
             Effort::Low,
             Effort::Medium,
@@ -1240,6 +1247,28 @@ mod tests {
         let off = super::thinking_config("claude-fable-5", Some(Effort::Off));
         assert!(off.thinking.is_none());
         assert!(off.output_config.is_none());
+    }
+
+    #[test]
+    fn opus_5_uses_output_config_with_xhigh() {
+        use goat_provider::Effort;
+        let cfg = super::thinking_config("claude-opus-5", Some(Effort::Xhigh));
+        assert_eq!(cfg.thinking.unwrap()["type"], "adaptive");
+        assert_eq!(cfg.output_config.unwrap()["effort"], "xhigh");
+        assert_eq!(super::anthropic_context_window("claude-opus-5"), 1_000_000);
+        assert!(super::anthropic_efforts("claude-opus-5").contains(&Effort::Xhigh));
+        assert!(super::CATALOG.contains(&"claude-opus-5"));
+    }
+
+    #[test]
+    fn opus_5_does_not_match_opus_4_5() {
+        use goat_provider::Effort;
+        assert!(!super::uses_effort_param("claude-opus-4-5-20251101"));
+        assert_eq!(
+            super::anthropic_context_window("claude-opus-4-5-20251101"),
+            200_000
+        );
+        assert!(super::anthropic_efforts("claude-opus-4-5-20251101").contains(&Effort::Off));
     }
 
     #[test]
