@@ -221,6 +221,7 @@ fn uses_effort_param(model: &str) -> bool {
         || id.contains("opus-4-8")
         || id.contains("opus-4-7")
         || id.contains("opus-4-6")
+        || id.contains("sonnet-5")
         || id.contains("sonnet-4-6")
 }
 
@@ -402,6 +403,7 @@ fn anthropic_efforts(model: &str) -> Vec<Effort> {
         || id.contains("opus-5")
         || id.contains("opus-4-8")
         || id.contains("opus-4-7")
+        || id.contains("sonnet-5")
     {
         vec![
             Effort::Low,
@@ -410,7 +412,7 @@ fn anthropic_efforts(model: &str) -> Vec<Effort> {
             Effort::Xhigh,
             Effort::Max,
         ]
-    } else if id.contains("opus-4-6") || id.contains("sonnet-5") || id.contains("sonnet-4-6") {
+    } else if id.contains("opus-4-6") || id.contains("sonnet-4-6") {
         vec![Effort::Low, Effort::Medium, Effort::High, Effort::Max]
     } else if id.contains("opus-4-5")
         || id.contains("sonnet-4-5")
@@ -1269,6 +1271,15 @@ mod tests {
             200_000
         );
         assert!(super::anthropic_efforts("claude-opus-4-5-20251101").contains(&Effort::Off));
+    }
+
+    #[test]
+    fn sonnet_5_uses_output_config() {
+        use goat_provider::Effort;
+        let cfg = super::thinking_config("claude-sonnet-5", Some(Effort::Xhigh));
+        assert_eq!(cfg.thinking.unwrap()["type"], "adaptive");
+        assert_eq!(cfg.output_config.unwrap()["effort"], "xhigh");
+        assert!(super::anthropic_efforts("claude-sonnet-5").contains(&Effort::Xhigh));
     }
 
     #[test]
