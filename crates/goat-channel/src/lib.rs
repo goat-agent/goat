@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use goat_agent_command::CommandSpec;
 use goat_types::{
-    ChannelId, ConversationId, IncomingMessage, InstanceId, MessageId, OutgoingBody, ProfileId,
+    ChannelId, IncomingMessage, InstanceId, MessageId, OutgoingBody, ProfileId, ThreadId,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -122,20 +122,34 @@ pub trait ChannelHandle: Send + Sync + 'static {
 
     async fn send(
         &self,
-        conv: &ConversationId,
+        conv: &ThreadId,
         body: OutgoingBody,
         reply_to: Option<MessageId>,
     ) -> ChannelResult<SentRef>;
 
     async fn edit(&self, sent: &SentRef, body: OutgoingBody) -> ChannelResult<()>;
 
-    async fn typing(&self, conv: &ConversationId) -> ChannelResult<TypingGuard>;
+    async fn typing(&self, conv: &ThreadId) -> ChannelResult<TypingGuard>;
 
     async fn prepare_turn(&self, msg: &IncomingMessage) -> ChannelResult<ChannelTurn> {
         Ok(ChannelTurn {
             reply_to: Some(msg.id.clone()),
-            typing: self.typing(&msg.conversation).await?,
+            typing: self.typing(&msg.thread).await?,
         })
+    }
+
+    fn supports_threads(&self) -> bool {
+        false
+    }
+
+    async fn open_thread(
+        &self,
+        parent: &ThreadId,
+        anchor: Option<&MessageId>,
+        title: &str,
+    ) -> ChannelResult<ThreadId> {
+        let _ = (parent, anchor, title);
+        Err(ChannelError::Unsupported("open_thread not supported"))
     }
 }
 

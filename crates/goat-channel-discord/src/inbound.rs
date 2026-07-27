@@ -1,12 +1,12 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
 use goat_agent_command::CommandSpec;
 use goat_types::{
-    Attachment, AttachmentSource, CommandCall, CommandName, ConversationId, IncomingMessage,
-    InstanceId, MessageId, ProfileId, UserHandle,
+    Attachment, AttachmentSource, CommandCall, CommandName, IncomingMessage, InstanceId, MessageId,
+    ProfileId, Surface, ThreadId, UserHandle,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -17,6 +17,10 @@ use twilight_model::application::interaction::{
 };
 use twilight_model::gateway::event::Event;
 use twilight_model::http::interaction::{InteractionResponse, InteractionResponseType};
+use twilight_model::id::Id;
+use twilight_model::id::marker::{ChannelMarker, GuildMarker};
+
+type ChannelMetaCache = HashMap<u64, (bool, Option<u64>)>;
 
 use crate::ID;
 use crate::interaction::{InteractionState, PendingInteraction};
@@ -27,6 +31,7 @@ pub(crate) struct GatewayConfig {
     pub(crate) commands: Vec<CommandSpec>,
     pub(crate) interactions: Arc<InteractionState>,
     pub(crate) allowed_user_ids: HashSet<u64>,
+    pub(crate) bot_id: u64,
     pub(crate) token: String,
     pub(crate) intents: Intents,
 }
@@ -42,10 +47,12 @@ pub(crate) async fn gateway_loop(
         commands,
         interactions,
         allowed_user_ids,
+        bot_id,
         token,
         intents,
     } = cfg;
     let events = EventTypeFlags::MESSAGE_CREATE | EventTypeFlags::INTERACTION_CREATE;
+    let mut channel_cache: ChannelMetaCache = HashMap::new();
     let mut backoff_secs: u64 = 1;
     'reconnect: loop {
         let mut shard = Shard::new(ShardId::ONE, token.clone(), intents);
@@ -64,15 +71,23 @@ pub(crate) async fn gateway_loop(
                         );
                         continue;
                     }
-                    let command = parse_text_command(&mc.content, &mc.id.to_string(), &commands);
+                    let stripped = strip_bot_mention(&mc.content, bot_id);
+                    let command = parse_text_command(&stripped, &mc.id.to_string(), &commands);
                     let text = command
                         .as_ref()
-                        .map_or_else(|| mc.content.clone(), command_text);
+                        .map_or_else(|| stripped.clone(), command_text);
                     let external = match mc.guild_id {
                         Some(g) => format!("g:{}:c:{}", g, mc.channel_id),
                         None => format!("dm:{}", mc.channel_id),
                     };
-                    let conv = ConversationId::new(ID.clone(), instance, external);
+                    let conv = ThreadId::new(ID.clone(), instance, external);
+                    let (surface, parent) =
+                        classify_surface(&http, &mut channel_cache, mc.guild_id, mc.channel_id)
+                            .await;
+                    let mention_ids: Vec<u64> = mc.mentions.iter().map(|m| m.id.get()).collect();
+                    let referenced_author =
+                        mc.referenced_message.as_ref().map(|r| r.author.id.get());
+                    let addressed = is_addressed(&mention_ids, referenced_author, bot_id);
                     let attachments: Vec<Attachment> = mc
                         .attachments
                         .iter()
@@ -89,7 +104,7 @@ pub(crate) async fn gateway_loop(
                     let msg = IncomingMessage {
                         id: MessageId(mc.id.to_string()),
                         profile: persona,
-                        conversation: conv,
+                        thread: conv,
                         from: UserHandle {
                             external: mc.author.id.to_string(),
                             display: Some(mc.author.name.clone()),
@@ -97,6 +112,9 @@ pub(crate) async fn gateway_loop(
                         text,
                         attachments,
                         command,
+                        surface,
+                        addressed,
+                        parent,
                         ts: Utc::now(),
                         raw: serde_json::json!({
                             "channel_id": mc.channel_id.to_string(),
@@ -127,8 +145,15 @@ pub(crate) async fn gateway_loop(
                         }
                         _ => {}
                     }
-                    let Some((msg, pending)) =
-                        interaction_to_incoming(&ic, persona, instance, &commands)
+                    let Some((msg, pending)) = interaction_to_incoming(
+                        &http,
+                        &mut channel_cache,
+                        &ic,
+                        persona,
+                        instance,
+                        &commands,
+                    )
+                    .await
                     else {
                         continue;
                     };
@@ -177,7 +202,9 @@ async fn acknowledge_interaction(
     }
 }
 
-fn interaction_to_incoming(
+async fn interaction_to_incoming(
+    http: &HttpClient,
+    cache: &mut ChannelMetaCache,
     interaction: &twilight_model::gateway::payload::incoming::InteractionCreate,
     persona: ProfileId,
     instance: InstanceId,
@@ -204,6 +231,7 @@ fn interaction_to_incoming(
         Some(guild_id) => format!("g:{guild_id}:c:{channel_id}"),
         None => format!("dm:{channel_id}"),
     };
+    let (surface, parent) = classify_surface(http, cache, interaction.guild_id, channel_id).await;
     let author = interaction.author()?;
     let pending = PendingInteraction {
         application_id: interaction.application_id,
@@ -214,7 +242,7 @@ fn interaction_to_incoming(
         IncomingMessage {
             id: MessageId(interaction.id.to_string()),
             profile: persona,
-            conversation: ConversationId::new(ID.clone(), instance, external),
+            thread: ThreadId::new(ID.clone(), instance, external),
             from: UserHandle {
                 external: author.id.to_string(),
                 display: Some(author.name.clone()),
@@ -232,6 +260,9 @@ fn interaction_to_incoming(
                 args.to_string(),
                 serde_json::json!({ "platform": "discord", "command": data.name }),
             )),
+            surface,
+            addressed: true,
+            parent,
             ts: Utc::now(),
             raw: serde_json::json!({
                 "interaction_id": interaction.id.to_string(),
@@ -245,6 +276,64 @@ fn interaction_to_incoming(
 
 fn is_allowed_user_id(user_id: u64, allowed_user_ids: &HashSet<u64>) -> bool {
     allowed_user_ids.is_empty() || allowed_user_ids.contains(&user_id)
+}
+
+async fn channel_meta(
+    http: &HttpClient,
+    cache: &mut ChannelMetaCache,
+    channel_id: Id<ChannelMarker>,
+) -> (bool, Option<u64>) {
+    let key = channel_id.get();
+    if let Some(hit) = cache.get(&key) {
+        return *hit;
+    }
+    let meta = match http.channel(channel_id).await {
+        Ok(response) => match response.model().await {
+            Ok(channel) => (channel.kind.is_thread(), channel.parent_id.map(Id::get)),
+            Err(e) => {
+                warn!(error = ?e, channel_id = key, "discord: channel decode failed");
+                (false, None)
+            }
+        },
+        Err(e) => {
+            warn!(error = ?e, channel_id = key, "discord: channel lookup failed");
+            (false, None)
+        }
+    };
+    cache.insert(key, meta);
+    meta
+}
+
+async fn classify_surface(
+    http: &HttpClient,
+    cache: &mut ChannelMetaCache,
+    guild_id: Option<Id<GuildMarker>>,
+    channel_id: Id<ChannelMarker>,
+) -> (Surface, Option<String>) {
+    let Some(guild) = guild_id else {
+        return (Surface::Dm, None);
+    };
+    let (is_thread, parent_id) = channel_meta(http, cache, channel_id).await;
+    if is_thread {
+        (
+            Surface::Thread,
+            parent_id.map(|parent| format!("g:{guild}:c:{parent}")),
+        )
+    } else {
+        (Surface::Channel, None)
+    }
+}
+
+fn is_addressed(mention_ids: &[u64], referenced_author_id: Option<u64>, bot_id: u64) -> bool {
+    mention_ids.contains(&bot_id) || referenced_author_id == Some(bot_id)
+}
+
+fn strip_bot_mention(content: &str, bot_id: u64) -> String {
+    content
+        .replace(&format!("<@{bot_id}>"), "")
+        .replace(&format!("<@!{bot_id}>"), "")
+        .trim()
+        .to_string()
 }
 
 pub(crate) fn discord_command_name(skill_name: &str) -> Option<String> {
@@ -321,5 +410,29 @@ mod tests {
     #[test]
     fn allowlist_rejects_unconfigured_user() {
         assert!(!is_allowed_user_id(7, &allowlist(&[42])));
+    }
+
+    #[test]
+    fn addressed_by_direct_mention() {
+        assert!(is_addressed(&[10, 42], None, 42));
+    }
+
+    #[test]
+    fn addressed_by_reply_to_bot() {
+        assert!(is_addressed(&[], Some(42), 42));
+    }
+
+    #[test]
+    fn not_addressed_without_mention_or_reply() {
+        assert!(!is_addressed(&[10, 11], Some(7), 42));
+        assert!(!is_addressed(&[], None, 42));
+    }
+
+    #[test]
+    fn strip_bot_mention_removes_both_forms_and_trims() {
+        assert_eq!(strip_bot_mention("<@42> hello", 42), "hello");
+        assert_eq!(strip_bot_mention("<@!42> hi there", 42), "hi there");
+        assert_eq!(strip_bot_mention("  <@42>  ", 42), "");
+        assert_eq!(strip_bot_mention("no mention here", 42), "no mention here");
     }
 }

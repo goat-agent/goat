@@ -7,7 +7,7 @@ use goat_channel::{
     SentRef, TypingGuard, spawn_typing,
 };
 use goat_types::{
-    ChannelId, ConversationId, IncomingMessage, InstanceId, MessageId, OutgoingBody, ProfileId,
+    ChannelId, IncomingMessage, InstanceId, MessageId, OutgoingBody, ProfileId, ThreadId,
 };
 use twilight_http::Client as HttpClient;
 use twilight_model::id::Id;
@@ -121,7 +121,7 @@ impl ChannelHandle for DiscordHandle {
 
     async fn send(
         &self,
-        conv: &ConversationId,
+        conv: &ThreadId,
         body: OutgoingBody,
         reply_to: Option<MessageId>,
     ) -> ChannelResult<SentRef> {
@@ -170,7 +170,7 @@ impl ChannelHandle for DiscordHandle {
         }
     }
 
-    async fn typing(&self, conv: &ConversationId) -> ChannelResult<TypingGuard> {
+    async fn typing(&self, conv: &ThreadId) -> ChannelResult<TypingGuard> {
         let channel_id = parse_channel_id(&conv.external)?;
         let http = self.http.clone();
         let refresh = CAPABILITIES
@@ -193,8 +193,46 @@ impl ChannelHandle for DiscordHandle {
         }
         Ok(ChannelTurn {
             reply_to: Some(msg.id.clone()),
-            typing: self.typing(&msg.conversation).await?,
+            typing: self.typing(&msg.thread).await?,
         })
+    }
+
+    fn supports_threads(&self) -> bool {
+        true
+    }
+
+    async fn open_thread(
+        &self,
+        parent: &ThreadId,
+        anchor: Option<&MessageId>,
+        title: &str,
+    ) -> ChannelResult<ThreadId> {
+        if parent.external.starts_with("dm:") {
+            return Err(ChannelError::Unsupported("threads require a channel"));
+        }
+        let anchor = anchor.ok_or_else(|| {
+            ChannelError::BadRequest("discord threads need an anchor message".into())
+        })?;
+        let channel_id = parse_channel_id(&parent.external)?;
+        let anchor_id: Id<MessageMarker> = anchor
+            .0
+            .parse::<u64>()
+            .map(Id::new)
+            .map_err(|e| ChannelError::BadRequest(format!("bad anchor message id: {e}")))?;
+        let guild = guild_of(&parent.external).ok_or_else(|| {
+            ChannelError::BadRequest(format!("not a discord guild channel: {}", parent.external))
+        })?;
+        let title = sanitize_thread_title(title);
+        let channel = self
+            .http
+            .create_thread_from_message(channel_id, anchor_id, &title)
+            .await
+            .map_err(|e| ChannelError::Provider(e.to_string()))?
+            .model()
+            .await
+            .map_err(|e| ChannelError::Provider(e.to_string()))?;
+        let external = format!("g:{}:c:{}", guild, channel.id);
+        Ok(ThreadId::new(ID.clone(), self.instance, external))
     }
 }
 
@@ -207,12 +245,32 @@ fn parse_channel_id(s: &str) -> ChannelResult<Id<ChannelMarker>> {
         rest
     } else {
         return Err(ChannelError::BadRequest(format!(
-            "not a discord conversation: {s}"
+            "not a discord thread: {s}"
         )));
     };
     raw.parse::<u64>()
         .map(Id::new)
         .map_err(|e| ChannelError::BadRequest(format!("bad channel_id: {e}")))
+}
+
+fn guild_of(external: &str) -> Option<&str> {
+    external.strip_prefix("g:")?.split(":c:").next()
+}
+
+fn sanitize_thread_title(title: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(100)
+        .collect();
+    if cleaned.is_empty() {
+        "thread".to_string()
+    } else {
+        cleaned
+    }
 }
 
 fn parse_sent_ref(sent: &SentRef) -> ChannelResult<(Id<ChannelMarker>, Id<MessageMarker>)> {
@@ -260,7 +318,7 @@ fn interaction_sent_ref(channel_id: Id<ChannelMarker>, message_id: Id<MessageMar
 mod tests {
     use super::*;
     use chrono::Utc;
-    use goat_types::{ConversationId, UserHandle};
+    use goat_types::{ThreadId, UserHandle};
 
     fn handle(interactions: Arc<InteractionState>) -> DiscordHandle {
         DiscordHandle::new(
@@ -276,7 +334,7 @@ mod tests {
         IncomingMessage {
             id: MessageId(id.to_string()),
             profile: ProfileId::from_slug("dev"),
-            conversation: ConversationId::new(ID.clone(), instance, "dm:456"),
+            thread: ThreadId::new(ID.clone(), instance, "dm:456"),
             from: UserHandle {
                 external: "u".into(),
                 display: None,
@@ -284,6 +342,9 @@ mod tests {
             text: "/daily-operator".into(),
             attachments: Vec::new(),
             command: None,
+            surface: goat_types::Surface::Dm,
+            addressed: true,
+            parent: None,
             ts: Utc::now(),
             raw: serde_json::json!({ "interaction_id": id }),
         }
@@ -338,5 +399,21 @@ mod tests {
         assert_eq!(sent.raw["kind"], INTERACTION_RESPONSE_KIND);
         assert!(sent.raw.get("interaction_token").is_none());
         assert!(sent.raw.get("token").is_none());
+    }
+
+    #[test]
+    fn guild_of_extracts_guild_segment() {
+        assert_eq!(guild_of("g:123:c:456"), Some("123"));
+        assert_eq!(guild_of("dm:456"), None);
+        assert_eq!(guild_of("chan:456"), None);
+    }
+
+    #[test]
+    fn sanitize_thread_title_strips_and_clamps() {
+        assert_eq!(sanitize_thread_title("  hello  "), "hello");
+        assert_eq!(sanitize_thread_title("line\nbreak\ttab"), "linebreaktab");
+        assert_eq!(sanitize_thread_title("   "), "thread");
+        assert_eq!(sanitize_thread_title(""), "thread");
+        assert_eq!(sanitize_thread_title(&"x".repeat(200)).chars().count(), 100);
     }
 }

@@ -111,7 +111,7 @@ impl Goat {
         goat_agent_tool_pty::register(&mut tools_reg, pty_manager.clone());
 
         if let Some(manager) = code {
-            goat_agent_tool_code::register(&mut tools_reg, bus.clone(), manager);
+            goat_agent_tool_code::register(&mut tools_reg, manager);
         }
         let tools = Arc::new(tools_reg);
         info!(
@@ -172,38 +172,6 @@ impl Goat {
             ));
         }
 
-        {
-            let store = shared.store.clone();
-            let bus = shared.bus.clone();
-            let cancel_for_goals = cancel.clone();
-            join_handles.push(tokio::spawn(async move {
-                let mut tick = tokio::time::interval(std::time::Duration::from_mins(15));
-                tick.tick().await;
-                loop {
-                    tokio::select! {
-                        biased;
-                        () = cancel_for_goals.cancelled() => break,
-                        _ = tick.tick() => {
-                            if store.is_paused().await.unwrap_or(false) {
-                                continue;
-                            }
-                            match store.goals_due_for_review(chrono::Utc::now()).await {
-                                Ok(due) => {
-                                    for g in due {
-                                        bus.publish(Event::GoalReview {
-                                            profile: g.persona,
-                                            goal_id: g.id,
-                                        });
-                                    }
-                                }
-                                Err(e) => warn!(error = ?e, "goal-review poll failed"),
-                            }
-                        }
-                    }
-                }
-            }));
-        }
-
         Ok(Self {
             join_handles,
             cancel,
@@ -257,11 +225,11 @@ async fn run_consolidation(
                 continue;
             }
         };
-        let conv = match store.latest_conversation(*persona).await {
+        let conv = match store.latest_thread(*persona).await {
             Ok(Some(c)) => c,
             Ok(None) => continue,
             Err(e) => {
-                warn!(profile = %persona, error = ?e, "sleep: latest_conversation failed");
+                warn!(profile = %persona, error = ?e, "sleep: latest_thread failed");
                 continue;
             }
         };
@@ -499,6 +467,8 @@ async fn spawn_profile(
         goat_root: shared.goat_root.clone(),
         stream_idle_timeout: std::time::Duration::from_mins(1),
         llm_max_retries: 3,
+        intake_debounce: raw.intake_debounce,
+        intake_ceiling: raw.intake_ceiling,
     }));
     let bus = shared.bus.clone();
     let cancel_for_brain = shared.cancel.clone();
@@ -555,6 +525,8 @@ mod tests {
             bindings: vec![],
             memory: MemoryConfig::default(),
             autonomy: AutonomyConfig::default(),
+            intake_debounce: std::time::Duration::from_secs(1),
+            intake_ceiling: std::time::Duration::from_secs(5),
         }
     }
 
@@ -568,8 +540,8 @@ mod tests {
         let goat = Goat::boot_inner(cfg, None, None).await.expect("boot");
         assert_eq!(
             goat.join_handles.len(),
-            3,
-            "expected the scheduler, sleep-job, and goal-review tasks"
+            2,
+            "expected the scheduler and sleep-job tasks"
         );
     }
 
@@ -581,7 +553,7 @@ mod tests {
             agents: vec![persona("alice", "openai/gpt-5.1")],
         };
         let goat = Goat::boot_inner(cfg, None, None).await.expect("boot");
-        assert_eq!(goat.join_handles.len(), 3);
+        assert_eq!(goat.join_handles.len(), 2);
     }
 
     #[tokio::test]
@@ -602,6 +574,6 @@ mod tests {
             agents: vec![p],
         };
         let goat = Goat::boot_inner(cfg, None, None).await.expect("boot");
-        assert_eq!(goat.join_handles.len(), 3);
+        assert_eq!(goat.join_handles.len(), 2);
     }
 }
