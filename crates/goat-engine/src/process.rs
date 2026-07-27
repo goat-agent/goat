@@ -542,25 +542,8 @@ fn kill_group(pgid: Option<i32>) {
     let Some(pgid) = pgid else {
         return;
     };
-    #[cfg(windows)]
-    {
-        let _ = std::process::Command::new("taskkill")
-            .arg("/F")
-            .arg("/T")
-            .arg("/PID")
-            .arg(pgid.to_string())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = std::process::Command::new("kill")
-            .arg("-KILL")
-            .arg(format!("-{pgid}"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+    if let Err(err) = goat_process::kill_group(pgid) {
+        tracing::warn!(%err, pgid, "failed to kill process group");
     }
 }
 
