@@ -54,7 +54,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
@@ -64,7 +64,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      - run: cargo nextest run --workspace --locked --no-fail-fast
+      - name: build test binaries
+        run: cargo nextest run --workspace --locked --no-run
+      - name: run tests
+        run: cargo nextest run --workspace --locked --no-fail-fast
       - name: binary starts
         run: cargo run --locked -p goat-code --bin goat -- --version
 
