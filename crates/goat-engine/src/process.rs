@@ -800,4 +800,45 @@ mod tests {
         assert!(registry.read_new(a.id).await.is_none());
         assert!(registry.read_new(b.id).await.is_none());
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_all_leaves_no_live_group() {
+        let (registry, _events, _wake) = harness();
+        let cwd = std::env::temp_dir();
+        let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+        let pgid = started.pgid.expect("spawned process has a group");
+        assert!(goat_process::group_is_alive(pgid));
+
+        registry.shutdown_all().await;
+
+        assert!(
+            !goat_process::group_is_alive(pgid),
+            "shutdown must reap the process group before it returns"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_reaps_the_whole_group() {
+        let (registry, _events, _wake) = harness();
+        let cwd = std::env::temp_dir();
+        let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+        let pgid = started.pgid.expect("spawned process has a group");
+
+        registry.kill(started.id).await.unwrap();
+        wait_until_exited(&registry, started.id).await;
+
+        assert!(!goat_process::group_is_alive(pgid));
+    }
+
+    #[tokio::test]
+    async fn kill_after_natural_exit_signals_nothing() {
+        let (registry, _events, _wake) = harness();
+        let cwd = std::env::temp_dir();
+        let started = registry.spawn(plat::TRUE, &cwd, false).await.unwrap();
+        wait_until_exited(&registry, started.id).await;
+
+        registry.kill(started.id).await.unwrap();
+    }
 }
