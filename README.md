@@ -7,6 +7,8 @@
    ╚═════╝  ╚═════╝  ╚═╝  ╚═╝    ╚═╝
 ```
 
+[![ci](https://github.com/goat-agent/goat/actions/workflows/ci.yml/badge.svg)](https://github.com/goat-agent/goat/actions/workflows/ci.yml)
+
 A single-user, single-host personal AI in Rust with two capabilities in one product:
 
 - **agent** — an autonomous actor that lives on your chat channels, keeps lifetime memory, runs on
