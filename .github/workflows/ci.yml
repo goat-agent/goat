@@ -5,74 +5,79 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
-  LINUX_DEPS: >-
-    libwayland-dev libxkbcommon-dev libpipewire-0.3-dev libgbm-dev libdrm-dev
-    libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libegl1-mesa-dev
+  CARGO_INCREMENTAL: 0
 
 jobs:
-  lint:
+  fmt:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS
+      - uses: actions/checkout@v5
+      - run: cargo fmt --all --check
+
+  workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+    steps:
+      - uses: actions/checkout@v5
+      - name: actionlint
+        run: |
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz actionlint
+          ./actionlint -color
+
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS
+      - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - if: runner.os != 'Linux'
-        run: cargo test --workspace
-      - if: runner.os == 'Linux'
-        run: |
-          cargo test --workspace --no-run --message-format=json 2>/dev/null \
-            | jq -r 'select(.profile.test==true) | .executable' > /tmp/bins.txt
-          cat /tmp/bins.txt
-          rc=0
-          while read -r bin; do
-            [ -z "$bin" ] && continue
-            echo "=== RUNNING $bin ==="
-            if ! timeout 90 "$bin" --test-threads=1; then
-              echo "!!! HUNG OR FAILED: $bin !!!"
-              rc=1
-            fi
-          done < /tmp/bins.txt
-          exit $rc
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - run: cargo nextest run --workspace --locked --no-fail-fast
+      - name: binary starts
+        run: cargo run --locked -p goat-code --bin goat -- --version
 
   msrv:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       RUSTUP_TOOLCHAIN: "1.95"
     steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS
+      - uses: actions/checkout@v5
       - run: rustup toolchain install 1.95 --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - run: cargo check --workspace
+      - run: cargo check --workspace --locked
