@@ -3,5 +3,4 @@ pub mod channel;
 pub mod doctor;
 pub mod governance;
 pub mod ui;
-pub mod update;
 pub mod verify;

@@ -1,3 +1,4 @@
+#!/bin/sh
 set -eu
 
 repo=goat-agent/goat

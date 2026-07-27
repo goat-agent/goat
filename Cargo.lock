@@ -916,15 +916,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "clap_complete"
-version = "4.6.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db8b397918185f0161ff3d6fcaa9e4bfc09b8367caf6e1d4a2848e5477ed027b"
-dependencies = [
- "clap",
-]
-
-[[package]]
 name = "clap_derive"
 version = "4.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2377,9 +2368,7 @@ version = "0.1.27"
 dependencies = [
  "anyhow",
  "clap",
- "clap_complete",
  "dialoguer",
- "flate2",
  "goat-agent-command-skill",
  "goat-agent-tool-fs",
  "goat-agent-tool-shell",
@@ -2398,14 +2387,8 @@ dependencies = [
  "goat-store",
  "goat-types",
  "inventory",
- "reqwest 0.12.28",
- "self-replace",
- "semver",
- "serde",
  "serde_json",
- "sha2 0.11.0",
  "sqlx",
- "tar",
  "tempfile",
  "tokio",
  "unicode-width 0.2.2",
@@ -2851,6 +2834,7 @@ dependencies = [
  "goat-config",
  "goat-core",
  "goat-engine",
+ "goat-process",
  "goat-protocol",
  "goat-providers",
  "goat-remote",
@@ -2893,6 +2877,7 @@ dependencies = [
  "goat-config",
  "goat-core",
  "goat-mcp",
+ "goat-process",
  "goat-protocol",
  "goat-provider",
  "goat-providers",
@@ -2942,6 +2927,7 @@ dependencies = [
 name = "goat-mcp"
 version = "0.1.27"
 dependencies = [
+ "goat-process",
  "goat-protocol",
  "goat-tool",
  "rmcp",
@@ -2994,6 +2980,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "goat-process"
+version = "0.1.27"
+dependencies = [
+ "rustix 1.1.4",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -3553,6 +3547,7 @@ dependencies = [
 name = "goat-tool-shell"
 version = "0.1.27"
 dependencies = [
+ "goat-process",
  "goat-protocol",
  "goat-sandbox",
  "goat-tool",

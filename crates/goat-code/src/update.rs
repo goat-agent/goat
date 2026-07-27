@@ -63,7 +63,7 @@ pub async fn run(force: bool) -> color_eyre::Result<()> {
     let staged_dir = stage_dir(&latest, target)?;
     reset_dir(&staged_dir)?;
     extract_archive(&archive, &staged_dir)?;
-    let staged_bin = staged_dir.join(exe_name("goat"));
+    let staged_bin = staged_dir.join("goat");
     require_file(&staged_bin)?;
 
     let bin_path = install_bin_path()?;
@@ -145,8 +145,6 @@ fn target_triple() -> color_eyre::Result<&'static str> {
         Ok("x86_64-apple-darwin")
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         Ok("aarch64-apple-darwin")
-    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Ok("x86_64-pc-windows-msvc")
     } else {
         Err(eyre!("unsupported update target"))
     }
@@ -243,14 +241,6 @@ fn require_file(path: &Path) -> color_eyre::Result<()> {
     }
 }
 
-fn exe_name(name: &str) -> String {
-    if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{hex_digest, parse_checksums, parse_tag};
@@ -262,8 +252,8 @@ mod tests {
 
     #[test]
     fn parses_checksums() {
-        let parsed = parse_checksums("abc  goat-code.tar.gz\ndef *other.tar.gz\n");
-        assert_eq!(parsed["goat-code.tar.gz"], "abc");
+        let parsed = parse_checksums("abc  goat-aarch64-apple-darwin.tar.gz\ndef *other.tar.gz\n");
+        assert_eq!(parsed["goat-aarch64-apple-darwin.tar.gz"], "abc");
         assert_eq!(parsed["other.tar.gz"], "def");
     }
 

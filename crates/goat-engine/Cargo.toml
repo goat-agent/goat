@@ -8,6 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+goat-process = { workspace = true }
 goat-core = { workspace = true }
 goat-protocol = { workspace = true }
 goat-provider = { workspace = true }

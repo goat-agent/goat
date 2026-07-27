@@ -243,14 +243,10 @@ impl McpSession {
 
 impl Drop for McpSession {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.pid {
-            let _ = std::process::Command::new("kill")
-                .arg("-KILL")
-                .arg(format!("-{pid}"))
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+        if let Some(pgid) = self.pid.and_then(|pid| i32::try_from(pid).ok())
+            && let Err(err) = goat_process::kill_group(pgid)
+        {
+            tracing::warn!(%err, pgid, server = %self.server_name, "failed to kill mcp process group");
         }
     }
 }

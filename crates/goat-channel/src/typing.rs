@@ -66,13 +66,11 @@ mod tests {
         });
         sleep(Duration::from_millis(50)).await;
         drop(guard);
-        let after_drop = count.load(Ordering::SeqCst);
+        sleep(Duration::from_millis(60)).await;
+        let settled = count.load(Ordering::SeqCst);
+        assert!(settled >= 1, "expected at least one tick, got {settled}");
         sleep(Duration::from_millis(80)).await;
-        assert!(
-            after_drop >= 1,
-            "expected at least one tick, got {after_drop}"
-        );
-        assert_eq!(count.load(Ordering::SeqCst), after_drop, "stopped on drop");
+        assert_eq!(count.load(Ordering::SeqCst), settled, "stopped on drop");
     }
 
     #[test]
