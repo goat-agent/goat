@@ -32,19 +32,10 @@ goat-agent-command-skill  = { workspace = true }
 tokio           = { workspace = true }
 anyhow          = { workspace = true }
 clap            = { version = "4", features = ["derive"] }
-clap_complete   = "4"
 inventory       = { workspace = true }
 dialoguer       = "0.12"
 serde_json      = { workspace = true }
 unicode-width   = "0.2"
-
-reqwest         = { workspace = true }
-serde           = { workspace = true }
-sha2            = { workspace = true }
-self_replace    = { workspace = true }
-tar             = { workspace = true }
-flate2          = { workspace = true }
-semver          = { workspace = true }
 
 [dev-dependencies]
 tempfile        = { workspace = true }
