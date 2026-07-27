@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,7 +24,8 @@ use goat_store::{
     Direction, HistoryRow, ScheduledTaskStatus, Store, TaskRunStatus, ToolInvocationRecord,
     ToolInvocationStatus,
 };
-use goat_types::{ConversationId, Event, MessageId, ProfileId};
+use goat_types::{Event, IncomingMessage, MessageId, ProfileId, Surface, ThreadId};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -223,6 +224,8 @@ pub struct BrainDeps {
     pub goat_root: PathBuf,
     pub stream_idle_timeout: std::time::Duration,
     pub llm_max_retries: usize,
+    pub intake_debounce: std::time::Duration,
+    pub intake_ceiling: std::time::Duration,
 }
 
 pub struct Brain {
@@ -242,6 +245,8 @@ pub struct Brain {
     goat_root: PathBuf,
     stream_idle_timeout: std::time::Duration,
     llm_max_retries: usize,
+    intake_debounce: std::time::Duration,
+    intake_ceiling: std::time::Duration,
 }
 
 impl Brain {
@@ -263,6 +268,8 @@ impl Brain {
             goat_root: deps.goat_root,
             stream_idle_timeout: deps.stream_idle_timeout,
             llm_max_retries: deps.llm_max_retries,
+            intake_debounce: deps.intake_debounce,
+            intake_ceiling: deps.intake_ceiling,
         }
     }
 
@@ -275,49 +282,56 @@ impl Brain {
         let mut sub = bus.subscribe(EventFilter::Persona(self.persona));
         info!(profile = %self.persona, "brain running");
 
+        let mut buffer = IntakeBuffer::new(self.intake_debounce, self.intake_ceiling);
         loop {
+            let deadline = buffer.next_deadline();
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => break,
+                () = wait_intake(deadline) => {
+                    for msg in buffer.drain_due(Instant::now()) {
+                        if let Err(e) = self.handle_turn(&channels, msg).await {
+                            warn!(profile = %self.persona, error = ?e, "turn failed");
+                        }
+                    }
+                }
                 event = sub.recv() => {
                     let Some(event) = event else { break };
                     match event {
                         Event::Incoming(msg) => {
-                            if let Err(e) = self.handle(&channels, msg).await {
-                                warn!(profile = %self.persona, error = ?e, "turn failed");
+                            if !self.should_engage(&msg).await.unwrap_or(false) {
+                                continue;
+                            }
+                            if let Err(e) = self.store.append_incoming(&msg).await {
+                                warn!(profile = %self.persona, error = ?e, "append incoming");
+                                continue;
+                            }
+                            let key = (msg.thread.clone(), msg.from.external.clone());
+                            if msg.command.is_some() {
+                                if let Some(prev) = buffer.take(&key)
+                                    && let Err(e) = self.handle_turn(&channels, prev.last).await
+                                {
+                                    warn!(profile = %self.persona, error = ?e, "turn failed");
+                                }
+                                if let Err(e) = self.handle_turn(&channels, msg).await {
+                                    warn!(profile = %self.persona, error = ?e, "turn failed");
+                                }
+                            } else {
+                                buffer.push(key, msg, Instant::now());
                             }
                         }
-                        Event::SelfTick {
+                        Event::Schedule {
                             run_id, task_id, ..
                         } => {
-                            if let Err(e) = self.handle_self_tick(&channels, run_id, task_id).await {
+                            if let Err(e) = self.handle_schedule(&channels, run_id, task_id).await {
                                 warn!(
                                     profile = %self.persona,
                                     run_id,
                                     task_id,
                                     error = ?e,
-                                    "self-tick failed",
+                                    "schedule failed",
                                 );
                             }
-                        }
-                        Event::GoalReview { goal_id, .. } => {
-                            if let Err(e) = self.handle_goal_review(&channels, goal_id).await {
-                                warn!(
-                                    profile = %self.persona,
-                                    goal_id,
-                                    error = ?e,
-                                    "goal review failed",
-                                );
-                            }
-                        }
-                        Event::CodeUpdate {
-                            conversation,
-                            kind,
-                            text,
-                            ..
-                        } => {
-                            self.handle_code_update(&channels, &conversation, kind, text)
-                                .await;
                         }
                         _ => {}
                     }
@@ -327,28 +341,33 @@ impl Brain {
         Ok(())
     }
 
-    async fn handle(
+    async fn should_engage(&self, msg: &IncomingMessage) -> Result<bool> {
+        match engage_decision(msg.surface, msg.addressed, msg.command.is_some()) {
+            Engagement::Skip => Ok(false),
+            Engagement::NeedsActivity => Ok(self
+                .store
+                .has_agent_activity(self.persona, &msg.thread)
+                .await?),
+            Engagement::Engage => Ok(true),
+        }
+    }
+
+    async fn handle_turn(
         &self,
         channels: &[Arc<dyn ChannelHandle>],
-        msg: goat_types::IncomingMessage,
+        msg: IncomingMessage,
     ) -> Result<()> {
         let handle = channels
             .iter()
-            .find(|h| {
-                h.id() == msg.conversation.channel && h.instance() == msg.conversation.instance
-            })
+            .find(|h| h.id() == msg.thread.channel && h.instance() == msg.thread.instance)
             .cloned()
-            .ok_or_else(|| anyhow!("no channel handle for {:?}", msg.conversation))?;
+            .ok_or_else(|| anyhow!("no channel handle for {:?}", msg.thread))?;
+
         let turn = handle.prepare_turn(&msg).await?;
         let reply_to = turn.reply_to.clone();
         let _typing = turn.typing;
 
-        self.store
-            .append_incoming(&msg)
-            .await
-            .context("append incoming")?;
-
-        let (summary, mut messages) = self.load_context(&msg.conversation).await?;
+        let (summary, mut messages) = self.load_context(&msg.thread).await?;
         if let Some(call) = msg.command.clone() {
             match self.commands.call(call).await {
                 Ok(CommandOutput::Query { content }) => messages.push(LlmMessage {
@@ -360,7 +379,7 @@ impl Brain {
                         .renderer
                         .render(
                             handle,
-                            msg.conversation.clone(),
+                            msg.thread.clone(),
                             reply_to.clone(),
                             text_stream(self.default_model.clone(), text),
                         )
@@ -369,7 +388,7 @@ impl Brain {
                         self.store
                             .append_outgoing_text(
                                 self.persona,
-                                &msg.conversation,
+                                &msg.thread,
                                 &summary.final_text,
                                 Some(&msg.id),
                             )
@@ -391,11 +410,20 @@ impl Brain {
             }
         }
 
-        let summary = self
+        let thread_open =
+            (msg.surface == Surface::Channel && handle.supports_threads()).then(|| ThreadOpenCtx {
+                anchor: msg.id.clone(),
+            });
+
+        let (summary, thread) = self
             .complete_with_tools(
                 handle,
-                msg.conversation.clone(),
-                reply_to,
+                TurnRoute {
+                    thread: msg.thread.clone(),
+                    reply_to,
+                    surface: msg.surface,
+                    thread_open,
+                },
                 &mut messages,
                 TurnMode::Normal,
                 summary,
@@ -404,12 +432,7 @@ impl Brain {
 
         if !summary.final_text.is_empty() {
             self.store
-                .append_outgoing_text(
-                    self.persona,
-                    &msg.conversation,
-                    &summary.final_text,
-                    Some(&msg.id),
-                )
+                .append_outgoing_text(self.persona, &thread, &summary.final_text, Some(&msg.id))
                 .await
                 .context("append outgoing")?;
         }
@@ -496,7 +519,7 @@ impl Brain {
         if out.is_empty() { None } else { Some(out) }
     }
 
-    async fn history_messages(&self, conv: &ConversationId) -> Result<Vec<LlmMessage>> {
+    async fn history_messages(&self, conv: &ThreadId) -> Result<Vec<LlmMessage>> {
         let history = self
             .store
             .recent(self.persona, conv, self.history_window)
@@ -505,19 +528,13 @@ impl Brain {
         Ok(rows_to_messages(history))
     }
 
-    async fn load_context(
-        &self,
-        conv: &ConversationId,
-    ) -> Result<(Option<String>, Vec<LlmMessage>)> {
+    async fn load_context(&self, conv: &ThreadId) -> Result<(Option<String>, Vec<LlmMessage>)> {
         if !self.summarize_enabled {
             return Ok((None, self.history_messages(conv).await?));
         }
 
         let total = self.store.message_count(self.persona, conv).await?;
-        let existing = self
-            .store
-            .get_conversation_summary(self.persona, conv)
-            .await?;
+        let existing = self.store.get_thread_summary(self.persona, conv).await?;
         let mut summary_text = existing.as_ref().map(|s| s.summary.clone());
         let mut summarized = existing.map_or(0, |s| s.summarized_count).min(total);
 
@@ -536,10 +553,10 @@ impl Brain {
                     let new_count = summarized + fold_count;
                     if let Err(e) = self
                         .store
-                        .upsert_conversation_summary(self.persona, conv, &updated, new_count)
+                        .upsert_thread_summary(self.persona, conv, &updated, new_count)
                         .await
                     {
-                        warn!(profile = %self.persona, error = ?e, "upsert_conversation_summary failed");
+                        warn!(profile = %self.persona, error = ?e, "upsert_thread_summary failed");
                         break;
                     }
                     summary_text = Some(updated);
@@ -615,16 +632,14 @@ impl Brain {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn complete_with_tools(
         &self,
         handle: Arc<dyn ChannelHandle>,
-        conv: ConversationId,
-        reply_to: Option<MessageId>,
+        mut route: TurnRoute,
         messages: &mut Vec<LlmMessage>,
         mode: TurnMode,
         summary: Option<String>,
-    ) -> Result<RenderSummary> {
+    ) -> Result<(RenderSummary, ThreadId)> {
         const MAX_TOOL_ROUNDS: usize = 8;
 
         let provider = self.providers.route(&self.default_model)?;
@@ -669,21 +684,30 @@ impl Brain {
             ),
         );
         let system_prompt = match mode {
-            TurnMode::Normal => base_system,
-            TurnMode::SelfTick { .. } => format!(
-                "{base_system}\n\n<self_tick_context>\nYou are running at the \
+            TurnMode::Normal => {
+                format!(
+                    "{base_system}{}",
+                    thread_context_block(route.surface, route.thread_open.is_some())
+                )
+            }
+            TurnMode::Schedule { .. } => format!(
+                "{base_system}\n\n<schedule_context>\nYou are running at the \
                  fire moment of a scheduled task. Read the task and act. \
                  If the task is no longer worth doing, reply with exactly: skip\n\
-                 </self_tick_context>"
+                 </schedule_context>"
             ),
         };
 
         for _round in 0..MAX_TOOL_ROUNDS {
+            let mut round_specs = tool_specs.clone();
+            if route.thread_open.is_some() {
+                round_specs.push(open_thread_tool_spec());
+            }
             let req = build_request(
                 &self.default_model,
                 Some(system_prompt.clone()),
                 messages,
-                &tool_specs,
+                &round_specs,
                 None,
             );
 
@@ -691,32 +715,76 @@ impl Brain {
 
             if folded.tool_calls.is_empty() {
                 let final_text = sanitize_final_text(folded.text);
-                if matches!(mode, TurnMode::SelfTick { .. })
+                if matches!(mode, TurnMode::Schedule { .. })
                     && final_text.trim().eq_ignore_ascii_case("skip")
                 {
-                    return Ok(RenderSummary {
-                        messages_sent: 0,
-                        edits: 0,
-                        final_text: "skip".into(),
-                    });
+                    return Ok((
+                        RenderSummary {
+                            messages_sent: 0,
+                            edits: 0,
+                            final_text: "skip".into(),
+                        },
+                        route.thread,
+                    ));
                 }
-                return self
+                let summary = self
                     .renderer
                     .render(
                         handle,
-                        conv,
-                        reply_to,
+                        route.thread.clone(),
+                        route.reply_to,
                         text_stream(self.default_model.clone(), final_text),
                     )
-                    .await
-                    .map_err(Into::into);
+                    .await?;
+                return Ok((summary, route.thread));
             }
 
             messages.push(assistant_tool_call_message(&folded.tool_calls));
 
             for call in folded.tool_calls {
+                if route.thread_open.is_some() && call.name.as_str() == OPEN_THREAD_TOOL {
+                    match parse_open_thread_args(&call.arguments) {
+                        None => {
+                            route.thread_open = None;
+                            messages.push(tool_result_message(
+                                call.id,
+                                "open_thread needs a non-empty title and seed. Answer inline instead.",
+                            ));
+                        }
+                        Some((title, seed)) => {
+                            let anchor = route.thread_open.as_ref().map(|c| c.anchor.clone());
+                            match handle
+                                .open_thread(&route.thread, anchor.as_ref(), &title)
+                                .await
+                            {
+                                Ok(new_thread) => {
+                                    let _ = self
+                                        .store
+                                        .append_incoming_text(self.persona, &new_thread, &seed)
+                                        .await;
+                                    route.thread = new_thread;
+                                    route.reply_to = None;
+                                    route.thread_open = None;
+                                    messages.push(tool_result_message(
+                                        call.id,
+                                        "Opened a new thread; write your answer to the user now.",
+                                    ));
+                                }
+                                Err(e) => {
+                                    route.thread_open = None;
+                                    messages.push(tool_result_message(
+                                        call.id,
+                                        format!("Could not open a thread: {e}. Answer inline."),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+
                 let output = self
-                    .execute_tool(&conv, &call, read_state.clone(), &allowed_tools)
+                    .execute_tool(&route.thread, &call, read_state.clone(), &allowed_tools)
                     .await;
                 messages.push(LlmMessage {
                     role: Role::Tool,
@@ -728,23 +796,27 @@ impl Brain {
             }
         }
 
-        if matches!(mode, TurnMode::SelfTick { .. }) {
-            return Ok(RenderSummary {
-                messages_sent: 0,
-                edits: 0,
-                final_text: String::new(),
-            });
+        if matches!(mode, TurnMode::Schedule { .. }) {
+            return Ok((
+                RenderSummary {
+                    messages_sent: 0,
+                    edits: 0,
+                    final_text: String::new(),
+                },
+                route.thread,
+            ));
         }
         let text = "I stopped because tool execution exceeded the safety round limit.".to_string();
-        self.renderer
+        let summary = self
+            .renderer
             .render(
                 handle,
-                conv,
-                reply_to,
+                route.thread.clone(),
+                route.reply_to,
                 text_stream(self.default_model.clone(), text),
             )
-            .await
-            .map_err(Into::into)
+            .await?;
+        Ok((summary, route.thread))
     }
 
     async fn finish_run_logged(&self, run_id: i64, status: TaskRunStatus, note: Option<String>) {
@@ -760,7 +832,7 @@ impl Brain {
         }
     }
 
-    async fn handle_self_tick(
+    async fn handle_schedule(
         &self,
         channels: &[Arc<dyn ChannelHandle>],
         run_id: i64,
@@ -819,13 +891,17 @@ impl Brain {
             content: vec![ContentPart::Text(task.task.clone())],
         }];
 
-        let summary = match self
+        let (summary, thread) = match self
             .complete_with_tools(
                 handle,
-                conv.clone(),
-                None,
+                TurnRoute {
+                    thread: conv.clone(),
+                    reply_to: None,
+                    surface: surface_of_external(&conv.external),
+                    thread_open: None,
+                },
                 &mut messages,
-                TurnMode::SelfTick {
+                TurnMode::Schedule {
                     tools: task.tools.clone(),
                 },
                 None,
@@ -837,7 +913,7 @@ impl Brain {
                 self.finish_run_logged(
                     run_id,
                     TaskRunStatus::Failed,
-                    Some(format!("self-tick run errored: {e}")),
+                    Some(format!("schedule run errored: {e}")),
                 )
                 .await;
                 return Err(e);
@@ -859,7 +935,7 @@ impl Brain {
                 run_id,
                 task_id,
                 profile = %self.persona,
-                "self-tick produced empty response; marking failed",
+                "schedule produced empty response; marking failed",
             );
             self.finish_run_logged(
                 run_id,
@@ -871,132 +947,14 @@ impl Brain {
         }
 
         self.store
-            .append_outgoing_text(self.persona, &conv, &summary.final_text, None)
+            .append_outgoing_text(self.persona, &thread, &summary.final_text, None)
             .await
-            .context("append outgoing text for self-tick")?;
+            .context("append outgoing text for schedule")?;
 
         let truncated = truncate_for_summary(&summary.final_text);
         self.finish_run_logged(run_id, TaskRunStatus::Done, Some(truncated))
             .await;
         Ok(())
-    }
-
-    async fn handle_goal_review(
-        &self,
-        channels: &[Arc<dyn ChannelHandle>],
-        goal_id: i64,
-    ) -> Result<()> {
-        let goal = match self.store.get_goal(goal_id).await? {
-            Some(g) if matches!(g.status, goat_store::GoalStatus::Active) => g,
-            _ => return Ok(()),
-        };
-
-        let conv = match &goal.origin_conv {
-            Some(c) => c.clone(),
-            None => {
-                if let Some(c) = self.store.latest_conversation(self.persona).await? {
-                    c
-                } else {
-                    self.bump_goal_review(goal_id).await;
-                    return Ok(());
-                }
-            }
-        };
-
-        let Some(handle) = channels
-            .iter()
-            .find(|h| h.id() == conv.channel && h.instance() == conv.instance)
-            .cloned()
-        else {
-            self.bump_goal_review(goal_id).await;
-            return Ok(());
-        };
-
-        let prompt = format!(
-            "Goal review for goal #{} (priority {}): {}\n{}\n\n\
-             Take one concrete step toward this goal now if useful. Update the \
-             goal with the `goal` tool (mark done/blocked, or set the next \
-             review). Only message me if there is something worth surfacing — \
-             otherwise reply with exactly: skip",
-            goal.id,
-            goal.priority,
-            goal.title,
-            goal.detail.as_deref().unwrap_or("")
-        );
-        let mut messages = vec![LlmMessage {
-            role: Role::User,
-            content: vec![ContentPart::Text(prompt)],
-        }];
-
-        let summary = self
-            .complete_with_tools(
-                handle,
-                conv.clone(),
-                None,
-                &mut messages,
-                TurnMode::SelfTick { tools: Vec::new() },
-                None,
-            )
-            .await?;
-
-        let trimmed = summary.final_text.trim();
-        if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("skip") {
-            self.store
-                .append_outgoing_text(self.persona, &conv, &summary.final_text, None)
-                .await
-                .context("append outgoing text for goal review")?;
-        }
-
-        self.bump_goal_review(goal_id).await;
-        Ok(())
-    }
-
-    async fn bump_goal_review(&self, goal_id: i64) {
-        if let Ok(Some(g)) = self.store.get_goal(goal_id).await
-            && matches!(g.status, goat_store::GoalStatus::Active)
-        {
-            let needs = g.next_review_at.is_none_or(|t| t <= chrono::Utc::now());
-            if needs {
-                let next = chrono::Utc::now() + chrono::Duration::days(1);
-                if let Err(e) = self.store.set_goal_review(goal_id, Some(next)).await {
-                    warn!(goal_id, error = ?e, "failed to bump goal review");
-                }
-            }
-        }
-    }
-
-    async fn handle_code_update(
-        &self,
-        channels: &[Arc<dyn ChannelHandle>],
-        conversation: &ConversationId,
-        kind: goat_types::CodeUpdateKind,
-        text: String,
-    ) {
-        use goat_types::{CodeUpdateKind, OutgoingBody};
-        let Some(handle) = channels
-            .iter()
-            .find(|h| h.id() == conversation.channel && h.instance() == conversation.instance)
-            .cloned()
-        else {
-            return;
-        };
-        let body = match kind {
-            CodeUpdateKind::Progress => format!("⚙️ {text}"),
-            CodeUpdateKind::Ask => format!("❓ goat asks: {text}"),
-            CodeUpdateKind::Done => format!("✅ {text}"),
-            CodeUpdateKind::Failed => format!("⚠️ {text}"),
-        };
-        if let Err(e) = handle
-            .send(conversation, OutgoingBody::Text(body.clone()), None)
-            .await
-        {
-            warn!(error = ?e, "failed to relay code update");
-            return;
-        }
-        let _ = self
-            .store
-            .append_outgoing_text(self.persona, conversation, &body, None)
-            .await;
     }
 
     fn llm_tool_specs(&self, has_skills: bool, mode: &TurnMode) -> Vec<ToolSpec> {
@@ -1007,7 +965,7 @@ impl Brain {
             .filter(|spec| has_skills || spec.name.as_str() != "skill")
             .filter(|spec| match mode {
                 TurnMode::Normal => true,
-                TurnMode::SelfTick { tools } => {
+                TurnMode::Schedule { tools } => {
                     !is_schedule_tool(spec.name.as_str())
                         && selector_allows_empty_denies(spec.name.as_str(), tools)
                 }
@@ -1022,7 +980,7 @@ impl Brain {
 
     async fn execute_tool(
         &self,
-        conv: &ConversationId,
+        conv: &ThreadId,
         call: &ModelToolCall,
         read_state: ToolReadState,
         allowed_tools: &HashSet<String>,
@@ -1053,7 +1011,7 @@ impl Brain {
         }
         let ctx = ToolContext {
             persona: self.persona,
-            conversation: conv.clone(),
+            thread: conv.clone(),
             goat_root: self.goat_root.clone(),
             read_state,
         };
@@ -1071,7 +1029,7 @@ impl Brain {
 
     async fn audit_tool_call(
         &self,
-        conv: &ConversationId,
+        conv: &ThreadId,
         call: &ModelToolCall,
         resolved_name: String,
         output: &ToolOutput,
@@ -1086,7 +1044,7 @@ impl Brain {
         let output_text = output.text_for_model();
         let record = ToolInvocationRecord {
             persona: self.persona,
-            conversation: conv.clone(),
+            thread: conv.clone(),
             call_id: call.id.clone(),
             tool_name: resolved_name,
             args_json: call.arguments.clone(),
@@ -1126,6 +1084,194 @@ fn assistant_tool_call_message(calls: &[ModelToolCall]) -> LlmMessage {
             })
             .collect(),
     }
+}
+
+struct TurnRoute {
+    thread: ThreadId,
+    reply_to: Option<MessageId>,
+    surface: Surface,
+    thread_open: Option<ThreadOpenCtx>,
+}
+
+#[derive(Clone, Debug)]
+struct ThreadOpenCtx {
+    anchor: MessageId,
+}
+
+struct Pending {
+    last: IncomingMessage,
+    first_seen: Instant,
+    deadline: Instant,
+}
+
+struct IntakeBuffer {
+    pending: HashMap<(ThreadId, String), Pending>,
+    debounce: std::time::Duration,
+    ceiling: std::time::Duration,
+}
+
+impl IntakeBuffer {
+    fn new(debounce: std::time::Duration, ceiling: std::time::Duration) -> Self {
+        Self {
+            pending: HashMap::new(),
+            debounce,
+            ceiling,
+        }
+    }
+
+    fn push(&mut self, key: (ThreadId, String), msg: IncomingMessage, now: Instant) {
+        if let Some(existing) = self.pending.get_mut(&key) {
+            existing.last = msg;
+            existing.deadline = (now + self.debounce).min(existing.first_seen + self.ceiling);
+        } else {
+            let deadline = (now + self.debounce).min(now + self.ceiling);
+            self.pending.insert(
+                key,
+                Pending {
+                    last: msg,
+                    first_seen: now,
+                    deadline,
+                },
+            );
+        }
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        self.pending.values().map(|p| p.deadline).min()
+    }
+
+    fn drain_due(&mut self, now: Instant) -> Vec<IncomingMessage> {
+        let due: Vec<(ThreadId, String)> = self
+            .pending
+            .iter()
+            .filter(|(_, p)| p.deadline <= now)
+            .map(|(k, _)| k.clone())
+            .collect();
+        due.into_iter()
+            .filter_map(|k| self.pending.remove(&k).map(|p| p.last))
+            .collect()
+    }
+
+    fn take(&mut self, key: &(ThreadId, String)) -> Option<Pending> {
+        self.pending.remove(key)
+    }
+}
+
+async fn wait_intake(deadline: Option<Instant>) {
+    match deadline {
+        Some(t) => tokio::time::sleep_until(t).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Engagement {
+    Engage,
+    NeedsActivity,
+    Skip,
+}
+
+fn engage_decision(surface: Surface, addressed: bool, has_command: bool) -> Engagement {
+    if has_command {
+        return Engagement::Engage;
+    }
+    match surface {
+        Surface::Dm => Engagement::Engage,
+        Surface::Channel => {
+            if addressed {
+                Engagement::Engage
+            } else {
+                Engagement::Skip
+            }
+        }
+        Surface::Thread => {
+            if addressed {
+                Engagement::Engage
+            } else {
+                Engagement::NeedsActivity
+            }
+        }
+    }
+}
+
+const OPEN_THREAD_TOOL: &str = "open_thread";
+
+fn open_thread_tool_spec() -> ToolSpec {
+    ToolSpec {
+        name: OPEN_THREAD_TOOL.to_string(),
+        description: "Open a new dedicated thread that branches off the current channel message, \
+             for a distinct multi-turn task. Provide a short title and the first user-facing \
+             message (seed) to post into the new thread. Prefer this over answering inline when \
+             the task deserves its own focused space."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Short title for the new thread."
+                },
+                "seed": {
+                    "type": "string",
+                    "description": "First user-facing message to post into the new thread."
+                }
+            },
+            "required": ["title", "seed"]
+        }),
+    }
+}
+
+fn parse_open_thread_args(args: &serde_json::Value) -> Option<(String, String)> {
+    let title = args
+        .get("title")
+        .and_then(|v| v.as_str())?
+        .trim()
+        .to_string();
+    let seed = args
+        .get("seed")
+        .and_then(|v| v.as_str())?
+        .trim()
+        .to_string();
+    if seed.is_empty() {
+        return None;
+    }
+    Some((title, seed))
+}
+
+fn tool_result_message(id: String, content: impl Into<String>) -> LlmMessage {
+    LlmMessage {
+        role: Role::Tool,
+        content: vec![ContentPart::ToolResult {
+            id,
+            content: content.into(),
+        }],
+    }
+}
+
+fn surface_of_external(external: &str) -> Surface {
+    if external.starts_with("dm:") {
+        Surface::Dm
+    } else {
+        Surface::Channel
+    }
+}
+
+fn thread_context_block(surface: Surface, offers_thread: bool) -> String {
+    let location = match surface {
+        Surface::Dm => "a direct message",
+        Surface::Channel => "a shared channel",
+        Surface::Thread => "a thread",
+    };
+    let mut out = format!("\n\n<thread_context>\nYou are replying in {location}.");
+    if offers_thread {
+        out.push_str(
+            " Open a new thread when starting a distinct multi-turn task; \
+             keep casual or quick replies inline.",
+        );
+    }
+    out.push_str("\n</thread_context>");
+    out
 }
 
 fn is_transient_stream_error(e: &StreamError) -> bool {
@@ -1331,7 +1477,7 @@ fn meta_marker_score(text: &str) -> usize {
 #[derive(Clone, Debug)]
 enum TurnMode {
     Normal,
-    SelfTick { tools: Vec<String> },
+    Schedule { tools: Vec<String> },
 }
 
 fn is_schedule_tool(name: &str) -> bool {
@@ -1539,10 +1685,191 @@ mod tests {
     }
 
     #[test]
-    fn self_tick_triggers_skip_guard_but_normal_does_not() {
-        let self_tick = TurnMode::SelfTick { tools: vec![] };
+    fn schedule_triggers_skip_guard_but_normal_does_not() {
+        let schedule = TurnMode::Schedule { tools: vec![] };
         let normal = TurnMode::Normal;
-        assert!(matches!(self_tick, TurnMode::SelfTick { .. }));
-        assert!(!matches!(normal, TurnMode::SelfTick { .. }));
+        assert!(matches!(schedule, TurnMode::Schedule { .. }));
+        assert!(!matches!(normal, TurnMode::Schedule { .. }));
+    }
+
+    #[test]
+    fn engage_decision_table() {
+        let cases = [
+            (Surface::Dm, false, false, Engagement::Engage),
+            (Surface::Dm, true, false, Engagement::Engage),
+            (Surface::Channel, false, false, Engagement::Skip),
+            (Surface::Channel, true, false, Engagement::Engage),
+            (Surface::Channel, false, true, Engagement::Engage),
+            (Surface::Thread, false, false, Engagement::NeedsActivity),
+            (Surface::Thread, true, false, Engagement::Engage),
+            (Surface::Thread, false, true, Engagement::Engage),
+        ];
+        for (surface, addressed, has_command, expected) in cases {
+            assert_eq!(
+                engage_decision(surface, addressed, has_command),
+                expected,
+                "surface={surface:?} addressed={addressed} has_command={has_command}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_open_thread_args_requires_seed() {
+        assert!(parse_open_thread_args(&serde_json::json!({"title": "t"})).is_none());
+        assert!(parse_open_thread_args(&serde_json::json!({"title": "t", "seed": ""})).is_none());
+        assert!(parse_open_thread_args(&serde_json::json!({"title": "t", "seed": "  "})).is_none());
+        let ok = parse_open_thread_args(&serde_json::json!({"title": " t ", "seed": " hi "}));
+        assert_eq!(ok, Some(("t".to_string(), "hi".to_string())));
+    }
+
+    #[test]
+    fn thread_context_block_mentions_open_thread_only_when_offered() {
+        let with = thread_context_block(Surface::Channel, true);
+        assert!(with.contains("<thread_context>"));
+        assert!(with.contains("shared channel"));
+        assert!(with.contains("Open a new thread"));
+        let without = thread_context_block(Surface::Dm, false);
+        assert!(without.contains("direct message"));
+        assert!(!without.contains("Open a new thread"));
+    }
+
+    #[test]
+    fn surface_of_external_classifies_dm_and_channel() {
+        assert_eq!(surface_of_external("dm:123"), Surface::Dm);
+        assert_eq!(surface_of_external("g:1:c:2"), Surface::Channel);
+    }
+
+    use std::time::Duration;
+
+    fn intake_thread(external: &str) -> ThreadId {
+        ThreadId::new(
+            goat_types::ChannelId::new("test"),
+            goat_types::InstanceId::from_slug("i"),
+            external,
+        )
+    }
+
+    fn intake_msg(thread: ThreadId, from: &str, text: &str) -> IncomingMessage {
+        IncomingMessage {
+            id: MessageId(String::new()),
+            profile: ProfileId::from_slug("test"),
+            thread,
+            from: goat_types::UserHandle {
+                external: from.to_string(),
+                display: None,
+            },
+            text: text.to_string(),
+            attachments: vec![],
+            command: None,
+            surface: Surface::Dm,
+            addressed: true,
+            parent: None,
+            ts: chrono::Utc::now(),
+            raw: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn burst_within_debounce_coalesces_into_one() {
+        let base = Instant::now();
+        let mut buf = IntakeBuffer::new(Duration::from_secs(1), Duration::from_secs(5));
+        let key = (intake_thread("t"), "u".to_string());
+        buf.push(key.clone(), intake_msg(intake_thread("t"), "u", "a"), base);
+        buf.push(
+            key.clone(),
+            intake_msg(intake_thread("t"), "u", "b"),
+            base + Duration::from_millis(300),
+        );
+        buf.push(
+            key.clone(),
+            intake_msg(intake_thread("t"), "u", "c"),
+            base + Duration::from_millis(600),
+        );
+
+        assert!(buf.drain_due(base + Duration::from_millis(1500)).is_empty());
+        let due = buf.drain_due(base + Duration::from_millis(1600));
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].text, "c");
+        assert!(buf.next_deadline().is_none());
+    }
+
+    #[test]
+    fn deliberate_pause_is_two_turns() {
+        let base = Instant::now();
+        let mut buf = IntakeBuffer::new(Duration::from_secs(1), Duration::from_secs(5));
+        let key = (intake_thread("t"), "u".to_string());
+
+        buf.push(
+            key.clone(),
+            intake_msg(intake_thread("t"), "u", "first"),
+            base,
+        );
+        let first = buf.drain_due(base + Duration::from_secs(1));
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].text, "first");
+
+        buf.push(
+            key.clone(),
+            intake_msg(intake_thread("t"), "u", "second"),
+            base + Duration::from_secs(10),
+        );
+        let second = buf.drain_due(base + Duration::from_secs(11));
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].text, "second");
+    }
+
+    #[test]
+    fn continuous_stream_force_flushes_at_ceiling() {
+        let base = Instant::now();
+        let mut buf = IntakeBuffer::new(Duration::from_secs(1), Duration::from_secs(5));
+        let key = (intake_thread("t"), "u".to_string());
+
+        let mut t = 0u64;
+        while t <= 4500 {
+            buf.push(
+                key.clone(),
+                intake_msg(intake_thread("t"), "u", "x"),
+                base + Duration::from_millis(t),
+            );
+            t += 500;
+        }
+
+        assert_eq!(buf.next_deadline(), Some(base + Duration::from_secs(5)));
+        assert!(buf.drain_due(base + Duration::from_millis(4999)).is_empty());
+        assert_eq!(buf.drain_due(base + Duration::from_secs(5)).len(), 1);
+    }
+
+    #[test]
+    fn distinct_keys_flush_independently() {
+        let base = Instant::now();
+
+        let mut same_thread = IntakeBuffer::new(Duration::from_secs(1), Duration::from_secs(5));
+        same_thread.push(
+            (intake_thread("t"), "u1".to_string()),
+            intake_msg(intake_thread("t"), "u1", "a"),
+            base,
+        );
+        same_thread.push(
+            (intake_thread("t"), "u2".to_string()),
+            intake_msg(intake_thread("t"), "u2", "b"),
+            base,
+        );
+        assert_eq!(
+            same_thread.drain_due(base + Duration::from_secs(1)).len(),
+            2
+        );
+
+        let mut same_user = IntakeBuffer::new(Duration::from_secs(1), Duration::from_secs(5));
+        same_user.push(
+            (intake_thread("t1"), "u".to_string()),
+            intake_msg(intake_thread("t1"), "u", "a"),
+            base,
+        );
+        same_user.push(
+            (intake_thread("t2"), "u".to_string()),
+            intake_msg(intake_thread("t2"), "u", "b"),
+            base,
+        );
+        assert_eq!(same_user.drain_due(base + Duration::from_secs(1)).len(), 2);
     }
 }

@@ -15,6 +15,8 @@ use crate::ConfigError;
 
 const DEFAULT_HISTORY_WINDOW: usize = 20;
 const DEFAULT_EPISODIC_K: usize = 5;
+const DEFAULT_INTAKE_DEBOUNCE_MS: u64 = 1000;
+const DEFAULT_INTAKE_CEILING_MS: u64 = 5000;
 
 pub const AGENT_DEFINITION_FILE: &str = "agent.md";
 
@@ -87,6 +89,16 @@ fn load_agent(dir: &Path, slug: &str) -> Result<ProfileConfig> {
         bindings,
         memory,
         autonomy,
+        intake_debounce: std::time::Duration::from_millis(
+            runtime
+                .intake_debounce_ms
+                .unwrap_or(DEFAULT_INTAKE_DEBOUNCE_MS),
+        ),
+        intake_ceiling: std::time::Duration::from_millis(
+            runtime
+                .intake_ceiling_ms
+                .unwrap_or(DEFAULT_INTAKE_CEILING_MS),
+        ),
     })
 }
 
@@ -124,6 +136,10 @@ struct AgentRuntimeConfig {
     memory: Option<MemoryRuntimeConfig>,
     #[serde(default)]
     autonomy: Option<AutonomyRuntimeConfig>,
+    #[serde(default)]
+    intake_debounce_ms: Option<u64>,
+    #[serde(default)]
+    intake_ceiling_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
