@@ -2,33 +2,39 @@ name: release
 
 on:
   push:
-    tags:
-      - v*.*.*
+    tags: ["v*.*.*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
-  LINUX_DEPS: >-
-    libwayland-dev libxkbcommon-dev libpipewire-0.3-dev libgbm-dev libdrm-dev
-    libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libegl1-mesa-dev pkg-config
+  CARGO_INCREMENTAL: 0
+  COPYFILE_DISABLE: 1
 
 jobs:
-  validate:
+  verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: version
-        shell: bash
+        name: tag matches manifest
         run: |
-          tag="${GITHUB_REF_NAME}"
-          version="${tag#v}"
-          manifest_version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "goat-code") | .version')
-          test "$version" = "$manifest_version"
+          manifest=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "goat-code") | .version')
+          version="$manifest"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [ "$version" != "$manifest" ]; then
+              echo "tag $GITHUB_REF_NAME does not match manifest version $manifest" >&2
+              exit 1
+            fi
+          fi
           prerelease=false
           case "$version" in
             *-*) prerelease=true ;;
@@ -37,66 +43,88 @@ jobs:
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
   build:
-    needs: validate
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
+            os: ubuntu-22.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-15
           - target: x86_64-apple-darwin
             os: macos-15-intel
-          - target: aarch64-apple-darwin
-            os: macos-14
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS
-      - if: runner.os == 'Windows'
-        run: git config --global core.longpaths true
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@v5
       - run: rustup target add ${{ matrix.target }}
-      - run: cargo build --profile dist -p goat-code --bin goat-code --target ${{ matrix.target }}
-      - name: package unix
-        if: runner.os != 'Windows'
-        shell: bash
+      - run: cargo build --locked --profile dist -p goat-code --bin goat --target ${{ matrix.target }}
+      - name: package
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/dist/goat-code dist/goat-code
-          tar -C dist -czf goat-code-${{ matrix.target }}.tar.gz goat-code
-      - name: package windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist
-          Copy-Item target/${{ matrix.target }}/dist/goat-code.exe dist/goat-code.exe
-          tar -C dist -czf goat-code-${{ matrix.target }}.tar.gz goat-code.exe
-      - uses: actions/upload-artifact@v4
+          cp "target/${{ matrix.target }}/dist/goat" dist/goat
+          tar -C dist -czf "goat-${{ matrix.target }}.tar.gz" goat
+          tar -tzf "goat-${{ matrix.target }}.tar.gz"
+      - uses: actions/upload-artifact@v5
         with:
-          name: goat-code-${{ matrix.target }}
-          path: goat-code-${{ matrix.target }}.tar.gz
+          name: goat-${{ matrix.target }}
+          path: goat-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
 
   publish:
-    needs:
-      - validate
-      - build
+    needs: [verify, build]
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: artifacts
           merge-multiple: true
-      - shell: bash
+      - name: checksums
+        working-directory: artifacts
         run: |
-          cd artifacts
-          sha256sum goat-code-*.tar.gz > SHA256SUMS
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*
-          prerelease: ${{ needs.validate.outputs.prerelease }}
-          generate_release_notes: true
+          sha256sum goat-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=(--repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes)
+          if [ "${{ needs.verify.outputs.prerelease }}" = true ]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" artifacts/* "${flags[@]}"
+
+  smoke:
+    needs: [verify, publish]
+    if: needs.verify.outputs.prerelease == 'false'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: install from release
+        run: |
+          for attempt in 1 2 3; do
+            if sh install.sh; then
+              exit 0
+            fi
+            echo "install attempt $attempt failed, retrying" >&2
+            sleep 15
+          done
+          exit 1
+      - name: installed version matches tag
+        run: |
+          installed=$("$HOME/.goat/bin/goat" --version | awk '{print $NF}')
+          expected="${{ needs.verify.outputs.version }}"
+          if [ "$installed" != "$expected" ]; then
+            echo "installed $installed, expected $expected" >&2
+            exit 1
+          fi

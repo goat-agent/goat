@@ -184,24 +184,10 @@ async fn sweep_orphaned_processes(db_path: &Path) {
 }
 
 fn kill_process_group(pgid: i64) {
-    #[cfg(windows)]
-    {
-        let _ = std::process::Command::new("taskkill")
-            .arg("/F")
-            .arg("/T")
-            .arg("/PID")
-            .arg(pgid.to_string())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
-    #[cfg(not(windows))]
-    if let Ok(pgid) = i32::try_from(pgid) {
-        let _ = std::process::Command::new("kill")
-            .arg("-KILL")
-            .arg(format!("-{pgid}"))
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+    let Ok(pgid) = i32::try_from(pgid) else {
+        return;
+    };
+    if let Err(err) = goat_process::kill_group(pgid) {
+        tracing::warn!(%err, pgid, "failed to kill orphaned process group");
     }
 }

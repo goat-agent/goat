@@ -37,9 +37,10 @@ goat agent list | add | show | remove                        agent management
 goat agent channel | status | log                            agent channels and state
 ```
 
-`goat daemon serve` runs both subsystems in one process; `goat code` auto-spawns it, and the
-installed service keeps it resident so agents run without a separate `run` command. There is no
-ambient "current agent" — with more than one agent, `-a <agent>` is required.
+`goat daemon serve` runs both subsystems in one process; the first client that needs it auto-spawns
+it (`connect_or_spawn`) and it stays resident, so agents run without a separate `run` command. There
+is no service installation and no ambient "current agent" — with more than one agent, `-a <agent>`
+is required.
 
 ## Filesystem
 

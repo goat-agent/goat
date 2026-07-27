@@ -1,0 +1,10 @@
+[test-groups]
+daemon = { max-threads = 1 }
+
+[profile.default]
+slow-timeout = { period = "20s", terminate-after = 3 }
+failure-output = "immediate-final"
+
+[[profile.default.overrides]]
+filter = 'package(goat-daemon)'
+test-group = 'daemon'

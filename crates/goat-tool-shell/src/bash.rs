@@ -28,23 +28,10 @@ impl Drop for ChildGuard {
         if self.reaped {
             return;
         }
-        #[cfg(unix)]
-        if let Some(pid) = self.child.id() {
-            let _ = std::process::Command::new("kill")
-                .arg("-KILL")
-                .arg(format!("-{pid}"))
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-        #[cfg(windows)]
-        if let Some(pid) = self.child.id() {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/T", "/F", "/PID"])
-                .arg(pid.to_string())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+        if let Some(pgid) = self.child.id().and_then(|pid| i32::try_from(pid).ok())
+            && let Err(err) = goat_process::kill_group(pgid)
+        {
+            tracing::warn!(%err, pgid, "failed to kill process group");
         }
         let _ = self.child.start_kill();
     }
