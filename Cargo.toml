@@ -44,6 +44,7 @@ goat-search-providers = { path = "crates/goat-search-providers" }
 goat-engine = { path = "crates/goat-engine" }
 goat-tool = { path = "crates/goat-tool" }
 goat-sandbox = { path = "crates/goat-sandbox" }
+goat-process = { path = "crates/goat-process" }
 goat-tool-fs = { path = "crates/goat-tool-fs" }
 goat-tool-web = { path = "crates/goat-tool-web" }
 goat-tool-shell = { path = "crates/goat-tool-shell" }
@@ -120,6 +121,7 @@ rand = "0.10"
 rmcp = { version = "1.7.0", default-features = false, features = ["client", "transport-child-process"] }
 open = "5"
 fs2 = "0.4"
+rustix = { version = "1", features = ["process"] }
 self_replace = { package = "self-replace", version = "1" }
 
 tracing = "0.1"

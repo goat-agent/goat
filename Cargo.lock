@@ -2834,6 +2834,7 @@ dependencies = [
  "goat-config",
  "goat-core",
  "goat-engine",
+ "goat-process",
  "goat-protocol",
  "goat-providers",
  "goat-remote",
@@ -2876,6 +2877,7 @@ dependencies = [
  "goat-config",
  "goat-core",
  "goat-mcp",
+ "goat-process",
  "goat-protocol",
  "goat-provider",
  "goat-providers",
@@ -2925,6 +2927,7 @@ dependencies = [
 name = "goat-mcp"
 version = "0.1.27"
 dependencies = [
+ "goat-process",
  "goat-protocol",
  "goat-tool",
  "rmcp",
@@ -2977,6 +2980,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "goat-process"
+version = "0.1.27"
+dependencies = [
+ "rustix 1.1.4",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -3536,6 +3547,7 @@ dependencies = [
 name = "goat-tool-shell"
 version = "0.1.27"
 dependencies = [
+ "goat-process",
  "goat-protocol",
  "goat-sandbox",
  "goat-tool",
