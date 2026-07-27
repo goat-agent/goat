@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use goat_channel::{ChannelError, ChannelHandle, ChannelResult, SentRef};
 use goat_provider::{ChunkStream, StreamChunk};
-use goat_types::{ConversationId, MessageId, OutgoingBody};
+use goat_types::{MessageId, OutgoingBody, ThreadId};
 use tracing::warn;
 
 #[derive(Clone, Debug, Default)]
@@ -20,7 +20,7 @@ pub trait StreamRenderer: Send + Sync {
     async fn render(
         &self,
         handle: Arc<dyn ChannelHandle>,
-        conv: ConversationId,
+        conv: ThreadId,
         reply_to: Option<MessageId>,
         stream: ChunkStream,
     ) -> ChannelResult<RenderSummary>;
@@ -36,7 +36,7 @@ impl StreamRenderer for DefaultStreamRenderer {
     async fn render(
         &self,
         handle: Arc<dyn ChannelHandle>,
-        conv: ConversationId,
+        conv: ThreadId,
         reply_to: Option<MessageId>,
         mut stream: ChunkStream,
     ) -> ChannelResult<RenderSummary> {
@@ -118,7 +118,7 @@ impl StreamRenderer for DefaultStreamRenderer {
 
 async fn flush(
     handle: &dyn ChannelHandle,
-    conv: &ConversationId,
+    conv: &ThreadId,
     current: &mut Option<SentRef>,
     text: &str,
     reply_to: Option<MessageId>,
@@ -204,11 +204,11 @@ mod tests {
     use goat_channel::test_support::{MockChannelHandle, MockEvent};
     use goat_channel::{ChannelCapabilities, ChannelIdentity};
     use goat_provider::{StreamChunk, StreamError};
-    use goat_types::{ChannelId, ConversationId, InstanceId, ProfileId};
+    use goat_types::{ChannelId, InstanceId, ProfileId, ThreadId};
 
     fn mock_handle(caps: ChannelCapabilities) -> Arc<MockChannelHandle> {
         MockChannelHandle::new(
-            ChannelId::new("telegram"),
+            ChannelId::new("discord"),
             ProfileId::new(),
             InstanceId::new(),
             ChannelIdentity::new("goatbot", "Goat"),
@@ -216,8 +216,8 @@ mod tests {
         )
     }
 
-    fn conv(instance: InstanceId) -> ConversationId {
-        ConversationId::new(ChannelId::new("telegram"), instance, "chat:1")
+    fn conv(instance: InstanceId) -> ThreadId {
+        ThreadId::new(ChannelId::new("discord"), instance, "chat:1")
     }
 
     fn text_delta(s: &str) -> StreamChunk {

@@ -69,6 +69,7 @@ impl Channel for DiscordChannel {
                 commands,
                 interactions: interactions.clone(),
                 allowed_user_ids,
+                bot_id: me_id,
                 token: cfg.token,
                 intents,
             },

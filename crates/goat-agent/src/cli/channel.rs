@@ -21,7 +21,7 @@ pub enum Cmd {
         about = "Bind a channel to an agent (verifies the token before saving)."
     )]
     Add {
-        #[arg(help = "Channel kind (e.g. `discord`, `telegram`); prompted if omitted.")]
+        #[arg(help = "Channel kind (e.g. `discord`); prompted if omitted.")]
         kind: Option<String>,
         #[arg(
             short = 'a',
