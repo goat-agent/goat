@@ -21,7 +21,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - id: version
         name: tag matches manifest
         run: |
@@ -59,7 +59,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: rustup target add ${{ matrix.target }}
       - run: cargo build --locked --profile dist -p goat-code --bin goat --target ${{ matrix.target }}
       - name: package
@@ -68,7 +68,7 @@ jobs:
           cp "target/${{ matrix.target }}/dist/goat" dist/goat
           tar -C dist -czf "goat-${{ matrix.target }}.tar.gz" goat
           tar -tzf "goat-${{ matrix.target }}.tar.gz"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: goat-${{ matrix.target }}
           path: goat-${{ matrix.target }}.tar.gz
@@ -80,7 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
@@ -109,7 +109,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: install from release
         run: |
           for attempt in 1 2 3; do
