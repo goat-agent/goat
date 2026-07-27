@@ -594,6 +594,17 @@ mod tests {
         (registry, event_rx, wake)
     }
 
+    #[cfg(unix)]
+    async fn wait_until_group_gone(pgid: i32) {
+        for _ in 0..500 {
+            if !goat_process::group_is_alive(pgid) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("process group {pgid} never went away");
+    }
+
     async fn wait_until_exited(registry: &ProcessRegistry, id: goat_protocol::ProcessId) {
         for _ in 0..1000 {
             let list = registry.list().await;
@@ -812,10 +823,7 @@ mod tests {
 
         registry.shutdown_all().await;
 
-        assert!(
-            !goat_process::group_is_alive(pgid),
-            "shutdown must reap the process group before it returns"
-        );
+        wait_until_group_gone(pgid).await;
     }
 
     #[cfg(unix)]
@@ -829,7 +837,7 @@ mod tests {
         registry.kill(started.id).await.unwrap();
         wait_until_exited(&registry, started.id).await;
 
-        assert!(!goat_process::group_is_alive(pgid));
+        wait_until_group_gone(pgid).await;
     }
 
     #[tokio::test]

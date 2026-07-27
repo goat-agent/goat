@@ -108,9 +108,8 @@ mod tests {
         use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};
 
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg("sleep 30")
+        let mut child = Command::new("sleep")
+            .arg("30")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
