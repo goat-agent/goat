@@ -24,7 +24,6 @@ enum Stream {
 
 struct Entry {
     command: String,
-    pgid: Option<i32>,
     db_id: Option<i64>,
     lines: std::collections::VecDeque<Line>,
     dropped: usize,
@@ -163,7 +162,7 @@ impl ProcessRegistry {
             tasks.push(self.spawn_reader(id, pipe, Stream::Err));
         }
         let (kill_tx, kill_rx) = tokio::sync::oneshot::channel();
-        tasks.push(self.spawn_waiter(id, child, kill_rx));
+        tasks.push(self.spawn_waiter(id, child, pgid, kill_rx));
 
         {
             let mut inner = self.inner.lock().await;
@@ -172,7 +171,6 @@ impl ProcessRegistry {
                 id,
                 Entry {
                     command: command.to_owned(),
-                    pgid,
                     db_id: None,
                     lines: std::collections::VecDeque::new(),
                     dropped: 0,
@@ -233,6 +231,7 @@ impl ProcessRegistry {
         self: &Arc<Self>,
         id: ProcessId,
         mut child: tokio::process::Child,
+        pgid: Option<i32>,
         kill_rx: tokio::sync::oneshot::Receiver<()>,
     ) -> tokio::task::JoinHandle<()> {
         let registry = Arc::clone(self);
@@ -240,6 +239,7 @@ impl ProcessRegistry {
             let status = tokio::select! {
                 status = child.wait() => status,
                 _ = kill_rx => {
+                    kill_group(pgid);
                     let _ = child.start_kill();
                     child.wait().await
                 }
@@ -424,7 +424,7 @@ impl ProcessRegistry {
     }
 
     pub(crate) async fn kill(&self, id: ProcessId) -> Result<(), String> {
-        let (pgid, kill_tx) = {
+        let kill_tx = {
             let mut inner = self.inner.lock().await;
             let entry = inner
                 .entries
@@ -435,12 +435,11 @@ impl ProcessRegistry {
             }
             entry.kill_pending = true;
             entry.stdin.take();
-            (entry.pgid, entry.kill_tx.take())
+            entry.kill_tx.take()
         };
         if let Some(tx) = kill_tx {
             let _ = tx.send(());
         }
-        kill_group(pgid);
         Ok(())
     }
 
@@ -461,13 +460,18 @@ impl ProcessRegistry {
     }
 
     pub(crate) async fn shutdown_all(&self) {
-        let entries: Vec<Entry> = {
+        let mut entries: Vec<Entry> = {
             let mut inner = self.inner.lock().await;
             inner.entries.drain().map(|(_, entry)| entry).collect()
         };
-        for entry in &entries {
-            if entry.state == ProcessState::Running {
-                kill_group(entry.pgid);
+        for entry in &mut entries {
+            if let Some(tx) = entry.kill_tx.take() {
+                let _ = tx.send(());
+            }
+        }
+        for entry in &mut entries {
+            for task in entry.tasks.drain(..) {
+                let _ = task.await;
             }
         }
     }
@@ -588,6 +592,17 @@ mod tests {
         let wake = Arc::new(Notify::new());
         let registry = ProcessRegistry::new(event_tx, wake.clone(), None);
         (registry, event_rx, wake)
+    }
+
+    #[cfg(unix)]
+    async fn wait_until_group_gone(pgid: i32) {
+        for _ in 0..500 {
+            if !goat_process::group_is_alive(pgid) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("process group {pgid} never went away");
     }
 
     async fn wait_until_exited(registry: &ProcessRegistry, id: goat_protocol::ProcessId) {
@@ -795,5 +810,43 @@ mod tests {
         assert!(registry.list().await.is_empty());
         assert!(registry.read_new(a.id).await.is_none());
         assert!(registry.read_new(b.id).await.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_all_leaves_no_live_group() {
+        let (registry, _events, _wake) = harness();
+        let cwd = std::env::temp_dir();
+        let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+        let pgid = started.pgid.expect("spawned process has a group");
+        assert!(goat_process::group_is_alive(pgid));
+
+        registry.shutdown_all().await;
+
+        wait_until_group_gone(pgid).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_reaps_the_whole_group() {
+        let (registry, _events, _wake) = harness();
+        let cwd = std::env::temp_dir();
+        let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+        let pgid = started.pgid.expect("spawned process has a group");
+
+        registry.kill(started.id).await.unwrap();
+        wait_until_exited(&registry, started.id).await;
+
+        wait_until_group_gone(pgid).await;
+    }
+
+    #[tokio::test]
+    async fn kill_after_natural_exit_signals_nothing() {
+        let (registry, _events, _wake) = harness();
+        let cwd = std::env::temp_dir();
+        let started = registry.spawn(plat::TRUE, &cwd, false).await.unwrap();
+        wait_until_exited(&registry, started.id).await;
+
+        registry.kill(started.id).await.unwrap();
     }
 }
