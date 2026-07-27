@@ -399,7 +399,7 @@ mod tests {
             dir.path().join("config.json"),
             r#"{
               "channels": {
-                "telegram": {
+                "discord": {
                   "token": "old",
                   "allowed_user_ids": [123]
                 }
@@ -408,12 +408,12 @@ mod tests {
         )
         .unwrap();
 
-        upsert_channel_config(dir.path(), "telegram", json!({ "token": "new" })).unwrap();
+        upsert_channel_config(dir.path(), "discord", json!({ "token": "new" })).unwrap();
 
         let cfg = read_profile_config(dir.path()).unwrap();
-        let telegram = &cfg["channels"]["telegram"];
-        assert_eq!(telegram["token"], "new");
-        assert_eq!(telegram["allowed_user_ids"], json!([123]));
+        let discord = &cfg["channels"]["discord"];
+        assert_eq!(discord["token"], "new");
+        assert_eq!(discord["allowed_user_ids"], json!([123]));
     }
 
     #[test]
@@ -423,7 +423,7 @@ mod tests {
             dir.path().join("config.json"),
             r#"{
               "channels": {
-                "telegram": {
+                "discord": {
                   "token": "new"
                 }
               }
@@ -431,15 +431,10 @@ mod tests {
         )
         .unwrap();
 
-        remove_channel_config(dir.path(), "telegram").unwrap();
+        remove_channel_config(dir.path(), "discord").unwrap();
 
         let cfg = read_profile_config(dir.path()).unwrap();
-        assert!(
-            !cfg["channels"]
-                .as_object()
-                .unwrap()
-                .contains_key("telegram")
-        );
+        assert!(!cfg["channels"].as_object().unwrap().contains_key("discord"));
     }
 
     #[test]
@@ -447,7 +442,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         assert!(bindings_for(dir.path()).is_err());
-        assert!(channel_in_config(dir.path(), "telegram").is_err());
+        assert!(channel_in_config(dir.path(), "discord").is_err());
     }
 
     #[test]
@@ -463,8 +458,8 @@ mod tests {
         .unwrap();
 
         assert!(bindings_for(dir.path()).is_err());
-        assert!(channel_in_config(dir.path(), "telegram").is_err());
-        assert!(upsert_channel_config(dir.path(), "telegram", json!({ "token": "new" })).is_err());
+        assert!(channel_in_config(dir.path(), "discord").is_err());
+        assert!(upsert_channel_config(dir.path(), "discord", json!({ "token": "new" })).is_err());
     }
 
     #[test]

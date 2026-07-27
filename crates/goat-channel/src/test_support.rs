@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use goat_types::{ChannelId, ConversationId, InstanceId, MessageId, OutgoingBody, ProfileId};
+use goat_types::{ChannelId, InstanceId, MessageId, OutgoingBody, ProfileId, ThreadId};
 use tokio::sync::Mutex;
 
 use crate::{
@@ -11,7 +11,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub enum MockEvent {
     Send {
-        conv: ConversationId,
+        conv: ThreadId,
         body: OutgoingBody,
         reply_to: Option<MessageId>,
         sent_id: MessageId,
@@ -21,7 +21,12 @@ pub enum MockEvent {
         body: OutgoingBody,
     },
     Typing {
-        conv: ConversationId,
+        conv: ThreadId,
+    },
+    OpenThread {
+        parent: ThreadId,
+        anchor: Option<MessageId>,
+        title: String,
     },
 }
 
@@ -31,6 +36,7 @@ pub struct MockChannelHandle {
     instance: InstanceId,
     identity: ChannelIdentity,
     capabilities: ChannelCapabilities,
+    supports_threads: bool,
     events: Mutex<Vec<MockEvent>>,
     next_id: Mutex<u64>,
 }
@@ -43,12 +49,34 @@ impl MockChannelHandle {
         identity: ChannelIdentity,
         capabilities: ChannelCapabilities,
     ) -> Arc<Self> {
+        Self::build(id, persona, instance, identity, capabilities, false)
+    }
+
+    pub fn with_threads(
+        id: ChannelId,
+        persona: ProfileId,
+        instance: InstanceId,
+        identity: ChannelIdentity,
+        capabilities: ChannelCapabilities,
+    ) -> Arc<Self> {
+        Self::build(id, persona, instance, identity, capabilities, true)
+    }
+
+    fn build(
+        id: ChannelId,
+        persona: ProfileId,
+        instance: InstanceId,
+        identity: ChannelIdentity,
+        capabilities: ChannelCapabilities,
+        supports_threads: bool,
+    ) -> Arc<Self> {
         Arc::new(Self {
             id,
             persona,
             instance,
             identity,
             capabilities,
+            supports_threads,
             events: Mutex::new(Vec::new()),
             next_id: Mutex::new(0),
         })
@@ -79,7 +107,7 @@ impl ChannelHandle for MockChannelHandle {
 
     async fn send(
         &self,
-        conv: &ConversationId,
+        conv: &ThreadId,
         body: OutgoingBody,
         reply_to: Option<MessageId>,
     ) -> ChannelResult<SentRef> {
@@ -109,12 +137,34 @@ impl ChannelHandle for MockChannelHandle {
         Ok(())
     }
 
-    async fn typing(&self, conv: &ConversationId) -> ChannelResult<TypingGuard> {
+    async fn typing(&self, conv: &ThreadId) -> ChannelResult<TypingGuard> {
         self.events
             .lock()
             .await
             .push(MockEvent::Typing { conv: conv.clone() });
         Ok(TypingGuard::noop())
+    }
+
+    fn supports_threads(&self) -> bool {
+        self.supports_threads
+    }
+
+    async fn open_thread(
+        &self,
+        parent: &ThreadId,
+        anchor: Option<&MessageId>,
+        title: &str,
+    ) -> ChannelResult<ThreadId> {
+        self.events.lock().await.push(MockEvent::OpenThread {
+            parent: parent.clone(),
+            anchor: anchor.cloned(),
+            title: title.to_string(),
+        });
+        Ok(ThreadId::new(
+            parent.channel.clone(),
+            parent.instance,
+            "g:1:c:99999",
+        ))
     }
 }
 
