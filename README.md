@@ -44,7 +44,7 @@ goat doctor | update     diagnose config; update the binary
 ## Providers & channels
 
 Anthropic · OpenAI · Gemini · Moonshot · Zhipu · xAI · DeepSeek · Mistral · Groq · Qwen · local.
-Channels: Telegram · Discord.
+Channels: Discord.
 
 ## Memory
 

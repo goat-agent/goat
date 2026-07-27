@@ -23,7 +23,6 @@ goat-providers = { workspace = true }
 goat-skills     = { workspace = true }
 goat-types      = { workspace = true }
 goat-channel    = { workspace = true }
-goat-channel-telegram = { workspace = true }
 goat-channel-discord  = { workspace = true }
 goat-agent-tool-fs       = { workspace = true }
 goat-agent-tool-shell    = { workspace = true }
