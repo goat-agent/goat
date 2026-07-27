@@ -66,24 +66,8 @@ jobs:
           tool: cargo-nextest
       - name: build test binaries
         run: cargo nextest run --workspace --locked --no-run
-      - name: tests library
-        run: |
-          cargo nextest run --workspace --locked --no-fail-fast \
-            -E 'not (package(goat-daemon) | package(goat-mcp) | package(goat-agent-tool-pty) | package(goat-tool-shell) | package(goat-engine) | package(goat-worktree) | package(goat-remote))'
-      - name: tests worktree
-        run: cargo nextest run --workspace --locked --no-fail-fast -E 'package(goat-worktree)'
-      - name: tests remote
-        run: cargo nextest run --workspace --locked --no-fail-fast -E 'package(goat-remote)'
-      - name: tests engine
-        run: cargo nextest run --workspace --locked --no-fail-fast -E 'package(goat-engine)'
-      - name: tests shell
-        run: cargo nextest run --workspace --locked --no-fail-fast -E 'package(goat-tool-shell)'
-      - name: tests pty
-        run: cargo nextest run --workspace --locked --no-fail-fast -E 'package(goat-agent-tool-pty)'
-      - name: tests mcp
-        run: cargo nextest run --workspace --locked --no-fail-fast -E 'package(goat-mcp)'
-      - name: tests daemon
-        run: cargo nextest run --workspace --locked --no-fail-fast -E 'package(goat-daemon)'
+      - name: run tests
+        run: cargo nextest run --workspace --locked --no-fail-fast
       - name: binary starts
         run: cargo run --locked -p goat-code --bin goat -- --version
 
