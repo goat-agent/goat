@@ -252,8 +252,8 @@ mod tests {
 
     #[test]
     fn parses_checksums() {
-        let parsed = parse_checksums("abc  goat-code.tar.gz\ndef *other.tar.gz\n");
-        assert_eq!(parsed["goat-code.tar.gz"], "abc");
+        let parsed = parse_checksums("abc  goat-aarch64-apple-darwin.tar.gz\ndef *other.tar.gz\n");
+        assert_eq!(parsed["goat-aarch64-apple-darwin.tar.gz"], "abc");
         assert_eq!(parsed["other.tar.gz"], "def");
     }
 
