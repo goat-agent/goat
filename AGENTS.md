@@ -2,7 +2,7 @@
 
 goat is a single-user, single-host personal AI product in Rust with two capabilities:
 
-- **agent** — an autonomous actor resident on chat channels (Discord, Telegram). It reacts to
+- **agent** — an autonomous actor resident on chat channels (Discord). It reacts to
   messages, owns self-tick and goal-review scheduling, keeps lifetime memory, consolidates
   nightly, and delegates coding to the code engine in-process.
 - **code** — a terminal coding agent rendered as a full-screen TUI, backed by the resident daemon,

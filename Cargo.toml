@@ -145,7 +145,6 @@ goat-agent-command            = { path = "crates/goat-agent-command" }
 goat-agent-command-skill      = { path = "crates/goat-agent-command-skill" }
 goat-model              = { path = "crates/goat-model" }
 goat-channel            = { path = "crates/goat-channel" }
-goat-channel-telegram   = { path = "crates/goat-channel-telegram" }
 goat-channel-discord    = { path = "crates/goat-channel-discord" }
 goat-render             = { path = "crates/goat-render" }
 goat-plugin             = { path = "crates/goat-plugin" }
@@ -186,7 +185,6 @@ walkdir                 = "2"
 globset                 = "0.4"
 vt100                   = "0.15"
 libc                    = "0.2"
-teloxide                = { version = "0.17", default-features = false, features = ["macros", "rustls", "ctrlc_handler"] }
 twilight-gateway        = "0.16"
 twilight-http           = "0.16"
 twilight-model          = "0.16"
