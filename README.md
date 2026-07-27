@@ -22,7 +22,9 @@ curl -fsSL https://raw.githubusercontent.com/goat-agent/goat/main/install.sh | s
 ```
 
 The installer downloads the latest release binary, verifies its checksum when local tooling is
-available, installs `goat` into `~/.goat/bin`, and registers a background user daemon.
+available, and installs `goat` into `~/.goat/bin`. macOS and Linux on x86_64 and arm64; there is no
+Windows build. Nothing is registered as a system service — the daemon is spawned on demand by the
+first command that needs it and stays resident until `goat daemon stop`.
 
 ## Commands
 
@@ -62,7 +64,8 @@ the chat, while the full transcript stays in the code thread.
 
 Maintainers cut releases with `cargo release`. The `v{{version}}` tag triggers GitHub Actions to
 build `goat-<target>.tar.gz` assets and `SHA256SUMS` for macOS and Linux on x86_64 and arm64;
-`install.sh` consumes those.
+`install.sh` consumes those. Every asset is then installed through `install.sh` on its own runner
+and checked against the tag before the release is considered good.
 
 ## License
 
