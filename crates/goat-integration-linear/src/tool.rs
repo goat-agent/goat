@@ -5,11 +5,11 @@ use goat_agent_tool::{
     ToolCall, ToolContext, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
 };
 use goat_auth::CredentialStore;
-use goat_integration::{BindingMap, IntegrationBinding, IntegrationRuntime};
+use goat_integration::{BindingMap, IntegrationBinding, IntegrationRuntime, drop_placeholder_args};
 use goat_types::ProfileId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::{ID, mcp};
 
@@ -133,7 +133,9 @@ impl ToolHandler for McpPassthrough {
             Ok(session) => session,
             Err(e) => return ToolOutput::error(e.to_string()),
         };
-        let result = session.call(&self.tool, call.arguments).await;
+        let arguments = drop_placeholder_args(call.arguments);
+        debug!(tool = %self.tool, arguments = %arguments, "calling linear mcp tool");
+        let result = session.call(&self.tool, arguments).await;
         mcp::persist_tokens(&self.credentials, &binding.account, &session).await;
         session.close().await;
         match result {
