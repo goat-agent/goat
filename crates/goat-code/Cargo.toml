@@ -32,6 +32,7 @@ goat-agent-tool-shell = { workspace = true }
 goat-agent-tool-skill = { workspace = true }
 goat-channel-discord = { workspace = true }
 goat-integration-linear = { workspace = true }
+goat-integration-slack  = { workspace = true }
 anyhow = { workspace = true }
 tokio-util = { workspace = true }
 tokio = { workspace = true, features = ["io-std"] }
