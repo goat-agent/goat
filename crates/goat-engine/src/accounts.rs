@@ -576,7 +576,13 @@ pub(crate) fn provider_for(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     cache
         .entry(account.to_owned())
-        .or_insert_with(|| Arc::new(Registry::load(ctx.credentials, account)))
+        .or_insert_with(|| {
+            Arc::new(Registry::load_metered(
+                ctx.credentials,
+                account,
+                ctx.meter.clone(),
+            ))
+        })
         .get(id)
 }
 

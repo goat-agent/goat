@@ -20,6 +20,8 @@ goat-wire = { workspace = true }
 goat-protocol = { workspace = true }
 goat-provider = { workspace = true }
 goat-providers = { workspace = true }
+goat-proxy = { workspace = true }
+goat-store = { workspace = true }
 goat-tool-search = { workspace = true }
 goat-auth = { workspace = true }
 goat-worktree = { workspace = true }
@@ -33,7 +35,9 @@ goat-agent-tool-skill = { workspace = true }
 goat-channel-discord = { workspace = true }
 goat-integration-linear = { workspace = true }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 tokio-util = { workspace = true }
+rustls = { workspace = true }
 tokio = { workspace = true, features = ["io-std"] }
 clap = { workspace = true }
 dialoguer = { workspace = true }
