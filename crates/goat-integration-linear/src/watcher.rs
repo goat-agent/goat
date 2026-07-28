@@ -146,7 +146,7 @@ fn auth_broken_event(persona: ProfileId, account: &str, error: &IntegrationError
         ),
         raw_refs: Vec::new(),
         goal_id: None,
-        notify_conv: None,
+        notify_thread: None,
     }
 }
 
@@ -265,7 +265,7 @@ async fn anchor(
         summary: format!("{} — {}", issue.identifier, issue.title),
         raw_refs: vec![format!("observation:{observation}")],
         goal_id: Some(goal_id),
-        notify_conv: None,
+        notify_thread: None,
     })
 }
 

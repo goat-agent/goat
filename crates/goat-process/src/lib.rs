@@ -20,6 +20,21 @@ pub fn kill_group(pgid: i32) -> Result<(), KillError> {
 }
 
 #[cfg(unix)]
+pub fn group_is_alive(pgid: i32) -> bool {
+    use rustix::process::{Pid, test_kill_process_group};
+
+    let Some(group) = Pid::from_raw(pgid) else {
+        return false;
+    };
+    !matches!(test_kill_process_group(group), Err(rustix::io::Errno::SRCH))
+}
+
+#[cfg(not(unix))]
+pub fn group_is_alive(_pgid: i32) -> bool {
+    false
+}
+
+#[cfg(unix)]
 fn checked_group(pgid: i32) -> Result<rustix::process::Pid, KillError> {
     use rustix::process::{Pid, getpgrp};
 
@@ -93,9 +108,8 @@ mod tests {
         use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};
 
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg("sleep 30")
+        let mut child = Command::new("sleep")
+            .arg("30")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -104,9 +118,11 @@ mod tests {
             .expect("spawn");
 
         let pgid = i32::try_from(child.id()).expect("pid fits");
+        assert!(super::group_is_alive(pgid));
         kill_group(pgid).expect("kill the child group");
 
         let status = child.wait().expect("wait");
         assert!(!status.success(), "child should have been killed");
+        assert!(!super::group_is_alive(pgid));
     }
 }

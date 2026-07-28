@@ -114,13 +114,13 @@ impl fmt::Display for IntegrationId {
 }
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
-pub struct ConversationId {
+pub struct ThreadId {
     pub channel: ChannelId,
     pub instance: InstanceId,
     pub external: String,
 }
 
-impl ConversationId {
+impl ThreadId {
     pub fn new(channel: ChannelId, instance: InstanceId, external: impl Into<String>) -> Self {
         Self {
             channel,
@@ -151,7 +151,7 @@ impl ConversationId {
     }
 }
 
-impl fmt::Display for ConversationId {
+impl fmt::Display for ThreadId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_key())
     }
@@ -244,15 +244,25 @@ impl CommandCall {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum Surface {
+    Dm,
+    Channel,
+    Thread,
+}
+
 #[derive(Clone, Debug)]
 pub struct IncomingMessage {
     pub id: MessageId,
     pub profile: ProfileId,
-    pub conversation: ConversationId,
+    pub thread: ThreadId,
     pub from: UserHandle,
     pub text: String,
     pub attachments: Vec<Attachment>,
     pub command: Option<CommandCall>,
+    pub surface: Surface,
+    pub addressed: bool,
+    pub parent: Option<String>,
     pub ts: DateTime<Utc>,
     pub raw: serde_json::Value,
 }
@@ -270,20 +280,10 @@ pub enum OutgoingBody {
 #[allow(clippy::large_enum_variant)]
 pub enum Event {
     Incoming(IncomingMessage),
-    SelfTick {
+    Schedule {
         profile: ProfileId,
         run_id: i64,
         task_id: i64,
-    },
-    GoalReview {
-        profile: ProfileId,
-        goal_id: i64,
-    },
-    CodeUpdate {
-        profile: ProfileId,
-        conversation: ConversationId,
-        kind: CodeUpdateKind,
-        text: String,
     },
     IntegrationUpdate {
         profile: ProfileId,
@@ -294,16 +294,8 @@ pub enum Event {
         summary: String,
         raw_refs: Vec<String>,
         goal_id: Option<i64>,
-        notify_conv: Option<ConversationId>,
+        notify_thread: Option<ThreadId>,
     },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CodeUpdateKind {
-    Progress,
-    Ask,
-    Done,
-    Failed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -327,10 +319,7 @@ impl Event {
     pub fn profile(&self) -> ProfileId {
         match self {
             Event::Incoming(m) => m.profile,
-            Event::SelfTick { profile, .. }
-            | Event::GoalReview { profile, .. }
-            | Event::CodeUpdate { profile, .. }
-            | Event::IntegrationUpdate { profile, .. } => *profile,
+            Event::Schedule { profile, .. } | Event::IntegrationUpdate { profile, .. } => *profile,
         }
     }
 }
@@ -342,7 +331,7 @@ mod tests {
     #[test]
     fn conversation_key_round_trip() {
         let instance = InstanceId::new();
-        let id = ConversationId::new(ChannelId::new("test"), instance, "chat:123:thread:5");
+        let id = ThreadId::new(ChannelId::new("test"), instance, "chat:123:thread:5");
         let key = id.to_key();
         assert!(key.starts_with("test:"));
         assert!(key.ends_with(":chat:123:thread:5"));
@@ -350,19 +339,19 @@ mod tests {
     }
 
     #[test]
-    fn conversation_key_parse_round_trip() {
-        let id = ConversationId::new(ChannelId::new("telegram"), InstanceId::new(), "chat:123");
-        let parsed = ConversationId::parse_key(&id.to_key()).unwrap();
+    fn thread_key_parse_round_trip() {
+        let id = ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:123");
+        let parsed = ThreadId::parse_key(&id.to_key()).unwrap();
         assert_eq!(parsed, id);
     }
 
     #[test]
-    fn conversation_key_parse_rejects_garbage() {
-        assert!(ConversationId::parse_key("").is_none());
-        assert!(ConversationId::parse_key("telegram").is_none());
-        assert!(ConversationId::parse_key("telegram:not-a-uuid:chat:1").is_none());
-        assert!(ConversationId::parse_key(&format!(":{}:x", Uuid::nil())).is_none());
-        assert!(ConversationId::parse_key(&format!("telegram:{}:", Uuid::nil())).is_none());
+    fn thread_key_parse_rejects_garbage() {
+        assert!(ThreadId::parse_key("").is_none());
+        assert!(ThreadId::parse_key("discord").is_none());
+        assert!(ThreadId::parse_key("discord:not-a-uuid:chat:1").is_none());
+        assert!(ThreadId::parse_key(&format!(":{}:x", Uuid::nil())).is_none());
+        assert!(ThreadId::parse_key(&format!("discord:{}:", Uuid::nil())).is_none());
     }
 
     #[test]
@@ -377,7 +366,7 @@ mod tests {
             summary: "GOA-1".into(),
             raw_refs: vec![],
             goal_id: None,
-            notify_conv: None,
+            notify_thread: None,
         };
         assert_eq!(ev.profile(), p);
     }
@@ -388,7 +377,7 @@ mod tests {
         let msg = IncomingMessage {
             id: MessageId("m1".into()),
             profile: p,
-            conversation: ConversationId::new(ChannelId::new("test"), InstanceId::new(), "x"),
+            thread: ThreadId::new(ChannelId::new("test"), InstanceId::new(), "x"),
             from: UserHandle {
                 external: "u".into(),
                 display: None,
@@ -396,6 +385,9 @@ mod tests {
             text: "hi".into(),
             attachments: vec![],
             command: None,
+            surface: Surface::Dm,
+            addressed: true,
+            parent: None,
             ts: Utc::now(),
             raw: serde_json::Value::Null,
         };

@@ -34,6 +34,8 @@ pub struct ProfileConfig {
     pub integrations: Vec<ProfileIntegration>,
     pub memory: MemoryConfig,
     pub autonomy: AutonomyConfig,
+    pub intake_debounce: std::time::Duration,
+    pub intake_ceiling: std::time::Duration,
 }
 
 #[derive(Clone, Debug, Default)]

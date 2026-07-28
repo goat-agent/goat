@@ -178,9 +178,9 @@ async fn drain_due(
                     run_id = run.id,
                     task_id = run.task_id,
                     profile = %task.persona,
-                    "scheduler dispatching self-tick"
+                    "scheduler dispatching schedule"
                 );
-                bus.publish(Event::SelfTick {
+                bus.publish(Event::Schedule {
                     profile: task.persona,
                     run_id: run.id,
                     task_id: run.task_id,

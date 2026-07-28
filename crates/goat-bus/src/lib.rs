@@ -77,14 +77,14 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use goat_types::{
-        ChannelId, ConversationId, IncomingMessage, InstanceId, MessageId, UserHandle,
+        ChannelId, IncomingMessage, InstanceId, MessageId, Surface, ThreadId, UserHandle,
     };
 
     fn mk_in(persona: ProfileId) -> Event {
         Event::Incoming(IncomingMessage {
             id: MessageId("m".into()),
             profile: persona,
-            conversation: ConversationId::new(ChannelId::new("telegram"), InstanceId::new(), "x"),
+            thread: ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "x"),
             from: UserHandle {
                 external: "u".into(),
                 display: None,
@@ -92,6 +92,9 @@ mod tests {
             text: "hi".into(),
             attachments: vec![],
             command: None,
+            surface: Surface::Dm,
+            addressed: true,
+            parent: None,
             ts: Utc::now(),
             raw: serde_json::Value::Null,
         })
