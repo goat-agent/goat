@@ -92,7 +92,7 @@ fn format_reset(resets_at: Option<i64>) -> String {
     };
     let remaining = ts - now_secs();
     if remaining <= 0 {
-        return "expired".to_owned();
+        return "reset".to_owned();
     }
     #[allow(clippy::cast_sign_loss)]
     let secs = remaining as u64;
