@@ -1,0 +1,990 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>goat proxy</title>
+<style>
+  :root {
+    --primary: #5e6ad2;
+    --primary-hover: #828fff;
+    --ink: #f7f8f8;
+    --ink-muted: #d0d6e0;
+    --ink-subtle: #8a8f98;
+    --ink-tertiary: #62666d;
+    --canvas: #010102;
+    --surface-1: #0f1011;
+    --surface-2: #141516;
+    --surface-3: #18191a;
+    --hairline: #23252a;
+    --hairline-strong: #34343a;
+    --success: #27a644;
+    --danger: #eb5757;
+    --font-display: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-text: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { background: var(--canvas); }
+  body {
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: var(--font-text);
+    font-size: 16px; line-height: 1.5; letter-spacing: -0.05px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .sidebar {
+    position: fixed; inset: 0 auto 0 0; width: 232px;
+    display: flex; flex-direction: column;
+    background: var(--canvas);
+    border-right: 1px solid var(--hairline);
+    padding: 20px 12px;
+    z-index: 10;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 0 10px 20px; }
+  .brand .mark { width: 16px; height: 16px; border-radius: 4px; background: var(--primary); }
+  .brand .word { font-family: var(--font-display); font-size: 16px; font-weight: 600; letter-spacing: -0.4px; }
+  .brand .word span { color: var(--ink-subtle); font-weight: 500; }
+  .nav { display: flex; flex-direction: column; gap: 2px; }
+  .nav button {
+    text-align: left;
+    font-family: var(--font-text); font-size: 14px; font-weight: 500;
+    color: var(--ink-subtle);
+    background: transparent; border: none; border-radius: 6px;
+    padding: 6px 10px; cursor: pointer;
+  }
+  .nav button:hover { color: var(--ink-muted); background: var(--surface-1); }
+  .nav button.active { color: var(--ink); background: var(--surface-2); }
+  .sidebar .foot {
+    margin-top: auto; padding: 12px 10px 0;
+    border-top: 1px solid var(--hairline);
+    font-family: var(--font-mono); font-size: 11px; color: var(--ink-tertiary);
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .sidebar .foot .dot { color: var(--success); }
+
+  main { margin-left: 232px; padding: 32px 40px 96px; max-width: 1280px; }
+  .pagehead { margin-bottom: 24px; display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+  .pagehead h1 { font-family: var(--font-display); font-size: 28px; font-weight: 600; letter-spacing: -0.6px; line-height: 1.2; }
+  .pagehead .sub { font-size: 14px; color: var(--ink-subtle); margin-top: 4px; }
+
+  section { display: none; }
+  section.active { display: block; }
+
+  .panel {
+    background: var(--surface-1);
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 24px;
+  }
+  .eyebrow {
+    font-size: 13px; font-weight: 500; line-height: 1.3;
+    letter-spacing: 0.4px; text-transform: uppercase;
+    color: var(--ink-subtle);
+    margin-bottom: 16px;
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  .eyebrow .note { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0; text-transform: none; color: var(--ink-tertiary); }
+  .cols { display: grid; grid-template-columns: 3fr 2fr; gap: 24px; }
+  @media (max-width: 1100px) { .cols { grid-template-columns: 1fr; } }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .stat { background: var(--surface-1); border: 1px solid var(--hairline); border-radius: 12px; padding: 16px 20px; }
+  .stat .label { font-size: 12px; font-weight: 500; letter-spacing: 0.4px; text-transform: uppercase; color: var(--ink-subtle); }
+  .stat .value { font-family: var(--font-display); font-size: 30px; font-weight: 600; letter-spacing: -0.8px; line-height: 1.2; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .stat .value.danger { color: var(--danger); }
+  .stat .subv { font-family: var(--font-mono); font-size: 11px; color: var(--ink-tertiary); margin-top: 4px; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    font-size: 11px; font-weight: 500; letter-spacing: 0.4px; text-transform: uppercase;
+    color: var(--ink-subtle); text-align: left;
+    padding: 6px 12px; border-bottom: 1px solid var(--hairline); white-space: nowrap;
+  }
+  td {
+    font-size: 14px; padding: 9px 12px;
+    border-bottom: 1px solid var(--hairline);
+    white-space: nowrap; vertical-align: middle;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr.total td { border-top: 1px solid var(--hairline-strong); border-bottom: none; font-weight: 500; }
+  .num { text-align: right; font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .muted { color: var(--ink-muted); }
+  .subtle { color: var(--ink-subtle); }
+  .tertiary { color: var(--ink-tertiary); }
+  .mono { font-family: var(--font-mono); font-size: 13px; }
+  .danger { color: var(--danger); }
+
+  .badge {
+    display: inline-block; font-size: 12px; line-height: 1.4;
+    color: var(--ink-muted); background: var(--surface-2);
+    border: 1px solid var(--hairline); border-radius: 9999px; padding: 2px 8px;
+  }
+  .badge.ok { color: var(--success); border-color: var(--success); background: transparent; }
+  .badge.error { color: var(--danger); border-color: var(--danger); background: transparent; }
+  .badge.cancelled { color: var(--ink-subtle); }
+  .badge.warn { color: var(--primary-hover); border-color: var(--primary); background: transparent; }
+
+  .btn {
+    font-family: var(--font-text); font-size: 14px; font-weight: 500; line-height: 1.2;
+    padding: 8px 14px; border-radius: 8px; border: 1px solid transparent;
+    cursor: pointer; background: transparent; color: var(--ink);
+  }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-secondary { background: var(--surface-1); border-color: var(--hairline); }
+  .btn-secondary:hover { background: var(--surface-2); }
+  .btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+  .btn-sm { font-size: 13px; padding: 5px 10px; }
+  .btn-ghost-danger { color: var(--danger); }
+  .btn-ghost-danger:hover { border-color: var(--danger); }
+
+  .input, select.input {
+    font-family: var(--font-text); font-size: 14px;
+    background: var(--surface-1); color: var(--ink);
+    border: 1px solid var(--hairline); border-radius: 8px;
+    padding: 8px 12px; width: 100%;
+  }
+  .input:focus { outline: 2px solid rgba(94, 105, 209, 0.5); outline-offset: 0; border-color: var(--hairline-strong); }
+  .input::placeholder { color: var(--ink-tertiary); }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 12px; font-weight: 500; letter-spacing: 0.4px; text-transform: uppercase; color: var(--ink-subtle); margin-bottom: 6px; }
+  .field .hint { font-size: 12px; color: var(--ink-tertiary); margin-top: 5px; }
+
+  .controls { display: flex; gap: 4px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+  .controls .sep { width: 1px; height: 18px; background: var(--hairline); margin: 0 8px; }
+  .controls button {
+    font-family: var(--font-text); font-size: 13px; font-weight: 500; line-height: 1.2;
+    color: var(--ink-subtle); background: var(--canvas);
+    border: 1px solid transparent; border-radius: 9999px;
+    padding: 5px 12px; cursor: pointer;
+  }
+  .controls button:hover { color: var(--ink-muted); }
+  .controls button.active { color: var(--ink); background: var(--surface-2); border-color: var(--hairline); }
+  .controls .hint { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--ink-tertiary); }
+
+  .rl-group { margin-bottom: 20px; }
+  .rl-group:last-child { margin-bottom: 0; }
+  .rl-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+  .rl-head .name { font-size: 14px; font-weight: 500; letter-spacing: -0.05px; }
+  .rl-head .age { font-family: var(--font-mono); font-size: 11px; color: var(--ink-tertiary); }
+  .rl-row { display: grid; grid-template-columns: 140px 1fr 200px; gap: 16px; align-items: center; padding: 5px 0; }
+  .rl-row .label { font-size: 14px; color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; }
+  .rl-row .track { height: 6px; background: var(--surface-2); border-radius: 9999px; overflow: hidden; }
+  .rl-row .fill { height: 100%; background: var(--primary); border-radius: 9999px; }
+  .rl-row .fill.hot { background: var(--primary-hover); }
+  .rl-row .val { font-family: var(--font-mono); font-size: 12px; color: var(--ink-subtle); text-align: right; }
+  .rl-row .val b { color: var(--ink-muted); font-weight: 400; }
+
+  .ubar-row { display: grid; grid-template-columns: minmax(140px, 260px) 1fr; gap: 16px; align-items: center; padding: 6px 0; }
+  .ubar-row .key { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ubar-row .track { height: 6px; background: var(--surface-2); border-radius: 9999px; overflow: hidden; }
+  .ubar-row .fill { height: 100%; background: var(--primary); border-radius: 9999px; }
+
+  .mini-track { width: 90px; height: 5px; background: var(--surface-2); border-radius: 9999px; overflow: hidden; display: inline-block; vertical-align: middle; }
+  .mini-fill { height: 100%; background: var(--primary); border-radius: 9999px; }
+  .mini-fill.hot { background: var(--primary-hover); }
+
+  .chart-wrap { padding: 4px 0 0; }
+  .chart-empty { color: var(--ink-tertiary); font-size: 14px; text-align: center; padding: 32px 0; }
+
+  .logbox {
+    background: var(--canvas); border: 1px solid var(--hairline); border-radius: 8px;
+    font-family: var(--font-mono); font-size: 12px; color: var(--ink-muted);
+    padding: 12px 14px; max-height: 220px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 800px) { .form-row { grid-template-columns: 1fr; } }
+  .inline-note { font-size: 13px; margin-top: 10px; }
+  .inline-note.ok { color: var(--success); }
+  .inline-note.error { color: var(--danger); }
+  .inline-note.muted { color: var(--ink-subtle); }
+
+  .empty { color: var(--ink-tertiary); font-size: 14px; text-align: center; padding: 32px 0; }
+  .err { color: var(--danger); font-size: 14px; padding: 12px 0; }
+  .more-wrap { text-align: center; padding-top: 12px; }
+  .link { color: var(--primary-hover); text-decoration: none; font-size: 13px; }
+  .link:hover { text-decoration: underline; }
+
+  @media (max-width: 900px) {
+    .sidebar { position: static; width: auto; flex-direction: row; align-items: center; border-right: none; border-bottom: 1px solid var(--hairline); padding: 12px 16px; }
+    .brand { padding: 0 16px 0 0; }
+    .nav { flex-direction: row; }
+    .sidebar .foot { display: none; }
+    main { margin-left: 0; padding: 20px 16px 64px; }
+    .rl-row { grid-template-columns: 100px 1fr 140px; gap: 10px; }
+    td, th { padding: 8px 8px; }
+  }
+</style>
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand">
+    <div class="mark"></div>
+    <div class="word">goat <span>proxy</span></div>
+  </div>
+  <nav class="nav">
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="usage">Usage</button>
+    <button data-tab="requests">Requests</button>
+    <button data-tab="accounts">Accounts</button>
+  </nav>
+  <div class="foot">
+    <div><span class="dot">●</span> 127.0.0.1:7777</div>
+    <div id="stamp">connecting…</div>
+    <div>auto-refresh 30s</div>
+  </div>
+</aside>
+
+<main>
+  <section id="tab-overview" class="active">
+    <div class="pagehead">
+      <div>
+        <h1>Overview</h1>
+        <div class="sub">LLM traffic through goat, last 24 hours</div>
+      </div>
+    </div>
+    <div class="stats" id="kpis"></div>
+    <div class="panel">
+      <div class="eyebrow">Throughput <span class="note">tokens per hour · utc</span></div>
+      <div class="chart-wrap" id="trend"></div>
+    </div>
+    <div class="panel">
+      <div class="eyebrow">Providers <span class="note">last 24h</span></div>
+      <div id="matrix"></div>
+    </div>
+    <div class="cols">
+      <div class="panel">
+        <div class="eyebrow">Rate limits</div>
+        <div id="rate-limits"></div>
+      </div>
+      <div class="panel">
+        <div class="eyebrow">Accounts <a class="link" href="#accounts" data-nav="accounts">manage →</a></div>
+        <div id="ov-accounts"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="eyebrow">Live traffic <span class="note">latest 10</span></div>
+      <div id="live"></div>
+    </div>
+  </section>
+
+  <section id="tab-usage">
+    <div class="pagehead">
+      <div>
+        <h1>Usage</h1>
+        <div class="sub">Token consumption by hour, day, provider, and model</div>
+      </div>
+    </div>
+    <div class="controls">
+      <button data-group="day" class="active">by day</button>
+      <button data-group="hour">by hour</button>
+      <button data-group="provider">by provider</button>
+      <button data-group="model">by model</button>
+      <div class="sep"></div>
+      <button data-days="7">7d</button>
+      <button data-days="30" class="active">30d</button>
+      <button data-days="90">90d</button>
+      <div class="hint" id="usage-hint"></div>
+    </div>
+    <div class="panel">
+      <div class="eyebrow">Token usage <span class="note" id="usage-chart-note">total tokens · utc</span></div>
+      <div class="chart-wrap" id="usage-chart"></div>
+    </div>
+    <div class="panel">
+      <div class="eyebrow">Breakdown</div>
+      <div id="usage-table"></div>
+    </div>
+  </section>
+
+  <section id="tab-requests">
+    <div class="pagehead">
+      <div>
+        <h1>Requests</h1>
+        <div class="sub">Every LLM call made by the code engine and agents</div>
+      </div>
+    </div>
+    <div class="controls">
+      <button data-status="" class="active">all</button>
+      <button data-status="ok">ok</button>
+      <button data-status="error">error</button>
+      <button data-status="cancelled">cancelled</button>
+      <div class="sep"></div>
+      <button data-source="" class="active">code+agent</button>
+      <button data-source="code">code</button>
+      <button data-source="agent">agent</button>
+      <div class="hint" id="requests-hint"></div>
+    </div>
+    <div class="panel">
+      <div class="eyebrow">Request log</div>
+      <div id="requests"></div>
+      <div class="more-wrap" id="requests-more" style="display:none">
+        <button class="btn btn-secondary btn-sm" id="load-more">load more</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-accounts">
+    <div class="pagehead">
+      <div>
+        <h1>Accounts</h1>
+        <div class="sub">Provider credentials — API keys and OAuth logins</div>
+      </div>
+      <button class="btn btn-primary" id="toggle-add">Add account</button>
+    </div>
+
+    <div class="panel" id="add-panel" style="display:none">
+      <div class="eyebrow">Add account</div>
+      <div class="form-row">
+        <div class="field">
+          <label>Provider</label>
+          <select class="input" id="add-provider"></select>
+          <div class="hint" id="add-provider-hint"></div>
+        </div>
+        <div class="field">
+          <label>Account name</label>
+          <input class="input" id="add-account" placeholder="default" value="default">
+        </div>
+      </div>
+      <div id="add-method-pills" class="controls" style="display:none">
+        <button data-method="key" class="active">API key</button>
+        <button data-method="oauth">OAuth</button>
+      </div>
+      <div id="add-key-area">
+        <div class="form-row">
+          <div class="field">
+            <label>API key</label>
+            <input class="input" id="add-secret" type="password" placeholder="sk-…" autocomplete="off">
+          </div>
+          <div class="field" id="add-endpoint-field" style="display:none">
+            <label>Endpoint</label>
+            <input class="input" id="add-endpoint" placeholder="https://…">
+            <div class="hint" id="add-endpoint-hint"></div>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" id="add-key-submit">Save key</button>
+      </div>
+      <div id="add-oauth-area" style="display:none">
+        <div class="inline-note muted" id="oauth-note" style="margin-bottom:10px"></div>
+        <button class="btn btn-primary btn-sm" id="oauth-start">Start OAuth login</button>
+        <div id="oauth-progress" style="display:none; margin-top:14px">
+          <div class="logbox" id="oauth-log"></div>
+        </div>
+      </div>
+      <div class="inline-note" id="add-note"></div>
+    </div>
+
+    <div class="panel">
+      <div class="eyebrow">Connected accounts</div>
+      <div id="accounts-table"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const REFRESH_MS = 30000;
+const PAGE_SIZE = 100;
+const HOUR_MS = 3600000;
+const DAY_MS = 86400000;
+const state = {
+  group: "day", days: 30,
+  reqStatus: "", reqSource: "", reqOffset: 0, reqRows: [],
+  providers: [], addMethod: "key",
+  oauth: { id: null, timer: null },
+};
+
+function fmtInt(n) { return Number(n || 0).toLocaleString("en-US"); }
+
+function fmtTokens(n) {
+  n = Number(n || 0);
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(n);
+}
+
+function fmtAge(secs) {
+  secs = Math.max(0, Number(secs || 0));
+  if (secs < 60) return "just now";
+  if (secs < 3600) return Math.floor(secs / 60) + "m ago";
+  if (secs < 86400) return Math.floor(secs / 3600) + "h ago";
+  return Math.floor(secs / 86400) + "d ago";
+}
+
+function fmtIn(secs) {
+  secs = Math.max(0, Number(secs || 0));
+  if (secs < 60) return "<1m";
+  if (secs < 3600) return Math.floor(secs / 60) + "m";
+  if (secs < 86400) {
+    const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
+    return m ? h + "h" + m + "m" : h + "h";
+  }
+  return Math.floor(secs / 86400) + "d";
+}
+
+function fmtReset(resetIn) {
+  if (resetIn == null) return "";
+  if (resetIn <= 0) return "reset";
+  return "resets in " + fmtIn(resetIn);
+}
+
+function fmtTime(ms) {
+  return new Date(Number(ms)).toLocaleString("en-US", {
+    month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  });
+}
+
+function fmtDuration(ms) {
+  ms = Number(ms || 0);
+  if (ms >= 10000) return (ms / 1000).toFixed(1) + "s";
+  if (ms >= 1000) return (ms / 1000).toFixed(2) + "s";
+  return ms + "ms";
+}
+
+function fmtExpiry(p) {
+  if (p.expires_at == null) return '<span class="tertiary">—</span>';
+  if (p.expired && p.refreshable) return '<span class="badge warn">will refresh</span>';
+  if (p.expired) return '<span class="badge error">needs login</span>';
+  return '<span class="muted mono">' + fmtIn(p.expires_at - Date.now() / 1000) + " left</span>";
+}
+
+async function getJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(url + " → " + res.status);
+  return res.json();
+}
+
+async function apiSend(url, method, body) {
+  const res = await fetch(url, {
+    method,
+    headers: { "content-type": "application/json", "x-goat-proxy": "1" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || (method + " " + url + " → " + res.status));
+  return json;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function bucketTotal(b) {
+  return b.input_tokens + b.output_tokens + b.cache_read_tokens + b.cache_write_tokens;
+}
+
+function utcHourKeys(n) {
+  const out = [];
+  const base = new Date();
+  base.setUTCMinutes(0, 0, 0);
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(base.getTime() - i * HOUR_MS);
+    out.push(d.toISOString().slice(0, 13).replace("T", " ") + ":00");
+  }
+  return out;
+}
+
+function utcDayKeys(n) {
+  const out = [];
+  const base = new Date();
+  base.setUTCHours(0, 0, 0, 0);
+  for (let i = n - 1; i >= 0; i--) {
+    out.push(new Date(base.getTime() - i * DAY_MS).toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+function columnChart(rows, opts) {
+  const width = 780, height = 150, floor = 18;
+  const n = rows.length;
+  if (!n) return '<div class="chart-empty">no data in this window</div>';
+  const max = Math.max(...rows.map(r => r.value), 1);
+  const bw = (width - 8) / n;
+  const bars = rows.map((r, i) => {
+    const h = r.value > 0 ? Math.max(r.value / max * (height - floor - 14), 2) : 0;
+    const x = 4 + i * bw;
+    const y = height - floor - h;
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(bw - 2, 1).toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" fill="var(--primary)"><title>${esc(r.title)}</title></rect>`;
+  }).join("");
+  const step = Math.max(1, Math.ceil(n / 6));
+  const labels = rows.map((r, i) => i % step === 0
+    ? `<text x="${(4 + i * bw).toFixed(1)}" y="${height - 4}" font-size="10" fill="var(--ink-tertiary)" font-family="ui-monospace, SF Mono, Menlo, monospace">${esc(r.label)}</text>`
+    : "").join("");
+  return `<svg viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="${esc(opts.aria)}">${bars}${labels}</svg>`;
+}
+
+function kpiCard(label, value, sub, danger) {
+  return `<div class="stat"><div class="label">${label}</div>` +
+    `<div class="value${danger ? " danger" : ""}">${value}</div>` +
+    `<div class="subv">${sub}</div></div>`;
+}
+
+async function renderOverview() {
+  const kpisEl = document.getElementById("kpis");
+  try {
+    const [data, live] = await Promise.all([
+      getJson("/api/overview"),
+      getJson("/api/requests?limit=10"),
+    ]);
+    const t = data.last24h;
+    const totalTok = bucketTotal(t);
+    const okCount = t.requests - t.errors - t.cancelled;
+    const errRate = t.requests > 0 ? t.errors / t.requests * 100 : 0;
+    const cacheShare = (t.input_tokens + t.cache_read_tokens) > 0
+      ? t.cache_read_tokens / (t.input_tokens + t.cache_read_tokens) * 100 : 0;
+    kpisEl.innerHTML = [
+      kpiCard("throughput · 24h", fmtInt(t.requests), `ok ${fmtInt(okCount)} · err ${fmtInt(t.errors)} · cncl ${fmtInt(t.cancelled)}`),
+      kpiCard("tokens · 24h", fmtTokens(totalTok), `in ${fmtTokens(t.input_tokens)} · out ${fmtTokens(t.output_tokens)}`),
+      kpiCard("error rate", errRate.toFixed(1) + "%", `${fmtInt(t.errors)} of ${fmtInt(t.requests)} requests`, errRate >= 5),
+      kpiCard("avg latency", fmtDuration(t.avg_duration_ms), "per request"),
+      kpiCard("cache share", cacheShare.toFixed(0) + "%", `read ${fmtTokens(t.cache_read_tokens)}`),
+    ].join("");
+
+    const byHour = new Map(data.hourly_24h.map(b => [b.key, b]));
+    const trendRows = utcHourKeys(24).map(key => {
+      const b = byHour.get(key);
+      const value = b ? bucketTotal(b) : 0;
+      const reqs = b ? b.requests : 0;
+      const errs = b ? b.errors : 0;
+      return {
+        label: key.slice(11, 14) + "00",
+        value,
+        title: `${key} utc — ${fmtTokens(value)} tok · ${reqs} req${errs ? ` · ${errs} err` : ""}`,
+      };
+    });
+    document.getElementById("trend").innerHTML = columnChart(trendRows, { aria: "tokens per hour" });
+
+    const rlByProvider = new Map();
+    for (const e of data.rate_limits) {
+      const pressure = Math.max(...e.windows.map(w => w.reset_in_secs > 0 ? w.used_percent : 0), 0);
+      rlByProvider.set(e.provider, Math.max(rlByProvider.get(e.provider) || 0, pressure));
+    }
+    const matrixEl = document.getElementById("matrix");
+    if (!data.providers_24h.length) {
+      matrixEl.innerHTML = '<div class="empty">no traffic in the last 24h</div>';
+    } else {
+      matrixEl.innerHTML =
+        "<table><tr><th>provider</th><th class='num'>req</th><th class='num'>tokens</th><th class='num'>err %</th>" +
+        "<th class='num'>avg</th><th class='num'>cache</th><th>quota pressure</th></tr>" +
+        data.providers_24h.map(b => {
+          const tokens = bucketTotal(b);
+          const errPct = b.requests > 0 ? b.errors / b.requests * 100 : 0;
+          const share = (b.input_tokens + b.cache_read_tokens) > 0
+            ? b.cache_read_tokens / (b.input_tokens + b.cache_read_tokens) * 100 : 0;
+          const quota = rlByProvider.get(b.key);
+          const quotaCell = quota == null
+            ? '<span class="tertiary">—</span>'
+            : `<span class="mini-track"><span class="mini-fill${quota >= 80 ? " hot" : ""}" style="width:${Math.min(100, quota)}%"></span></span> <span class="mono subtle">${quota.toFixed(0)}%</span>`;
+          return `<tr><td>${esc(b.key)}</td>` +
+            `<td class="num">${fmtInt(b.requests)}</td>` +
+            `<td class="num">${fmtTokens(tokens)}</td>` +
+            `<td class="num${errPct > 0 ? " danger" : ""}">${errPct.toFixed(1)}%</td>` +
+            `<td class="num">${fmtDuration(b.avg_duration_ms)}</td>` +
+            `<td class="num subtle">${share.toFixed(0)}%</td>` +
+            `<td>${quotaCell}</td></tr>`;
+        }).join("") + "</table>";
+    }
+
+    const rlEl = document.getElementById("rate-limits");
+    if (!data.rate_limits.length) {
+      rlEl.innerHTML = '<div class="empty">no rate limit data yet — it appears after the first LLM call</div>';
+    } else {
+      rlEl.innerHTML = data.rate_limits.map(e => {
+        const head =
+          `<div class="rl-head"><span class="name">${esc(e.provider)}</span>` +
+          `<span class="tertiary mono">${esc(e.account)}</span>` +
+          `<span class="age">updated ${fmtAge(e.age_secs)}</span></div>`;
+        const rows = (e.windows || []).map(w => {
+          const pct = Math.min(100, Number(w.used_percent) || 0);
+          const isReset = w.reset_in_secs != null && w.reset_in_secs <= 0;
+          const shown = isReset ? 0 : pct;
+          const cls = "fill" + (!isReset && pct >= 80 ? " hot" : "");
+          const val = isReset ? "reset" : `<b>${pct.toFixed(1)}%</b> used · ${fmtReset(w.reset_in_secs)}`;
+          return `<div class="rl-row"><div class="label">${esc(w.label)}</div>` +
+            `<div class="track"><div class="${cls}" style="width:${shown}%"></div></div>` +
+            `<div class="val">${val}</div></div>`;
+        }).join("");
+        return `<div class="rl-group">${head}${rows}</div>`;
+      }).join("");
+    }
+
+    const accEl = document.getElementById("ov-accounts");
+    accEl.innerHTML = data.providers.length
+      ? "<table><tr><th>provider</th><th>account</th><th>token</th></tr>" +
+        data.providers.map(p =>
+          `<tr><td>${esc(p.provider)}</td><td class="muted">${esc(p.account)}</td><td>${fmtExpiry(p)}</td></tr>`
+        ).join("") + "</table>"
+      : '<div class="empty">no accounts — add one from the Accounts page</div>';
+
+    const liveEl = document.getElementById("live");
+    liveEl.innerHTML = live.requests.length
+      ? "<table><tr><th>when</th><th>src</th><th>provider / model</th><th class='num'>in</th><th class='num'>out</th><th class='num'>time</th><th>status</th></tr>" +
+        live.requests.map(r =>
+          `<tr><td class="muted mono">${fmtAge((Date.now() - r.ts) / 1000)}</td>` +
+          `<td><span class="badge">${esc(r.source)}</span></td>` +
+          `<td>${esc(r.provider)}/${esc(r.model)}</td>` +
+          `<td class="num">${fmtInt(r.input_tokens)}</td><td class="num">${fmtInt(r.output_tokens)}</td>` +
+          `<td class="num">${fmtDuration(r.duration_ms)}</td>` +
+          `<td><span class="badge ${esc(r.status)}">${esc(r.status)}${r.error_kind ? " · " + esc(r.error_kind) : ""}</span></td></tr>`
+        ).join("") + "</table>"
+      : '<div class="empty">no traffic yet — requests appear here as they stream through</div>';
+  } catch (err) {
+    kpisEl.innerHTML = `<div class="err">${esc(err.message)}</div>`;
+  }
+}
+
+async function renderUsage() {
+  const chartEl = document.getElementById("usage-chart");
+  const tableEl = document.getElementById("usage-table");
+  const hintEl = document.getElementById("usage-hint");
+  try {
+    const data = await getJson(`/api/usage?group=${state.group}&days=${state.days}`);
+    hintEl.textContent = `${data.buckets.length} buckets · last ${data.days}d`;
+    if (!data.buckets.length) {
+      chartEl.innerHTML = '<div class="chart-empty">no usage recorded yet</div>';
+      tableEl.innerHTML = '<div class="empty">—</div>';
+      return;
+    }
+    if (state.group === "day" || state.group === "hour") {
+      const keys = state.group === "day" ? utcDayKeys(data.days) : utcHourKeys(Math.min(data.days * 24, 90 * 24));
+      const byKey = new Map(data.buckets.map(b => [b.key, b]));
+      const rows = keys.map(key => {
+        const b = byKey.get(key);
+        const value = b ? bucketTotal(b) : 0;
+        return {
+          label: state.group === "day" ? key.slice(5) : key.slice(11, 14) + "00",
+          value,
+          title: `${key} utc — ${fmtTokens(value)} tok · ${b ? b.requests : 0} req`,
+        };
+      });
+      chartEl.innerHTML = columnChart(rows, { aria: "token usage over time" });
+    } else {
+      const max = Math.max(...data.buckets.map(bucketTotal), 1);
+      chartEl.innerHTML = data.buckets.map(b => {
+        const width = (bucketTotal(b) / max * 100).toFixed(1);
+        return `<div class="ubar-row"><div class="key">${esc(b.key)}</div>` +
+          `<div class="track"><div class="fill" style="width:${width}%"></div></div></div>`;
+      }).join("");
+    }
+    const sums = data.buckets.reduce((a, b) => ({
+      requests: a.requests + b.requests,
+      errors: a.errors + b.errors,
+      cancelled: a.cancelled + b.cancelled,
+      input: a.input + b.input_tokens,
+      output: a.output + b.output_tokens,
+      cr: a.cr + b.cache_read_tokens,
+      cw: a.cw + b.cache_write_tokens,
+      latency: a.latency + b.avg_duration_ms * b.requests,
+    }), { requests: 0, errors: 0, cancelled: 0, input: 0, output: 0, cr: 0, cw: 0, latency: 0 });
+    const avgLatency = sums.requests > 0 ? sums.latency / sums.requests : 0;
+    const row = (key, b, cls) => {
+      const total = bucketTotal(b);
+      const share = (b.input_tokens + b.cache_read_tokens) > 0
+        ? (b.cache_read_tokens / (b.input_tokens + b.cache_read_tokens) * 100).toFixed(0) + "%"
+        : "—";
+      return `<tr${cls ? ` class="${cls}"` : ""}><td>${esc(key)}</td>` +
+        `<td class="num">${fmtInt(b.requests)}</td>` +
+        `<td class="num${b.errors > 0 ? " danger" : ""}">${fmtInt(b.errors)}</td>` +
+        `<td class="num subtle">${fmtInt(b.cancelled)}</td>` +
+        `<td class="num">${fmtInt(b.input_tokens)}</td>` +
+        `<td class="num">${fmtInt(b.output_tokens)}</td>` +
+        `<td class="num subtle">${fmtInt(b.cache_read_tokens)}</td>` +
+        `<td class="num subtle">${fmtInt(b.cache_write_tokens)}</td>` +
+        `<td class="num subtle">${share}</td>` +
+        `<td class="num">${fmtDuration(b.avg_duration_ms)}</td>` +
+        `<td class="num">${fmtInt(total)}</td></tr>`;
+    };
+    tableEl.innerHTML =
+      "<table><tr><th>key</th><th class='num'>req</th><th class='num'>err</th><th class='num'>cncl</th>" +
+      "<th class='num'>input</th><th class='num'>output</th><th class='num'>cache r</th><th class='num'>cache w</th>" +
+      "<th class='num'>cache share</th><th class='num'>avg</th><th class='num'>total</th></tr>" +
+      data.buckets.map(b => row(b.key, b)).join("") +
+      row("total", {
+        requests: sums.requests, errors: sums.errors, cancelled: sums.cancelled,
+        input_tokens: sums.input, output_tokens: sums.output,
+        cache_read_tokens: sums.cr, cache_write_tokens: sums.cw,
+        avg_duration_ms: avgLatency,
+      }, "total") +
+      "</table>";
+  } catch (err) {
+    chartEl.innerHTML = `<div class="err">${esc(err.message)}</div>`;
+  }
+}
+
+function requestRowHtml(r) {
+  return `<tr><td class="mono tertiary">#${r.id}</td>` +
+    `<td class="muted mono">${fmtTime(r.ts)}</td>` +
+    `<td><span class="badge">${esc(r.source)}</span></td>` +
+    `<td>${esc(r.provider)}</td>` +
+    `<td class="muted">${esc(r.account)}</td>` +
+    `<td class="mono">${esc(r.model)}</td>` +
+    `<td class="num">${fmtInt(r.input_tokens)}</td>` +
+    `<td class="num">${fmtInt(r.output_tokens)}</td>` +
+    `<td class="num subtle">${fmtInt(r.cache_read_tokens)}</td>` +
+    `<td class="num subtle">${fmtInt(r.cache_write_tokens)}</td>` +
+    `<td class="num">${fmtDuration(r.duration_ms)}</td>` +
+    `<td><span class="badge ${esc(r.status)}">${esc(r.status)}${r.error_kind ? " · " + esc(r.error_kind) : ""}</span></td></tr>`;
+}
+
+async function renderRequests(reset) {
+  const el = document.getElementById("requests");
+  const hintEl = document.getElementById("requests-hint");
+  const moreEl = document.getElementById("requests-more");
+  if (reset) {
+    state.reqOffset = 0;
+    state.reqRows = [];
+  }
+  try {
+    const qs = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(state.reqOffset) });
+    if (state.reqStatus) qs.set("status", state.reqStatus);
+    if (state.reqSource) qs.set("source", state.reqSource);
+    const data = await getJson("/api/requests?" + qs.toString());
+    state.reqRows = state.reqRows.concat(data.requests);
+    state.reqOffset += data.requests.length;
+    hintEl.textContent = `${state.reqRows.length} shown`;
+    moreEl.style.display = data.requests.length === PAGE_SIZE ? "" : "none";
+    if (!state.reqRows.length) {
+      el.innerHTML = '<div class="empty">no requests recorded yet</div>';
+      return;
+    }
+    el.innerHTML =
+      "<table><tr><th>id</th><th>time</th><th>src</th><th>provider</th><th>account</th><th>model</th>" +
+      "<th class='num'>in</th><th class='num'>out</th><th class='num'>cache r</th><th class='num'>cache w</th>" +
+      "<th class='num'>time</th><th>status</th></tr>" +
+      state.reqRows.map(requestRowHtml).join("") + "</table>";
+  } catch (err) {
+    el.innerHTML = `<div class="err">${esc(err.message)}</div>`;
+  }
+}
+
+function authLabel(auth) {
+  return { none: "local", api_key: "api key", oauth: "oauth", api_key_or_oauth: "key or oauth" }[auth] || auth;
+}
+
+async function renderAccounts() {
+  const tableEl = document.getElementById("accounts-table");
+  try {
+    const data = await getJson("/api/accounts");
+    state.providers = data.providers;
+    const select = document.getElementById("add-provider");
+    const current = select.value;
+    select.innerHTML = data.providers
+      .filter(p => p.auth !== "none")
+      .map(p => `<option value="${esc(p.id)}">${esc(p.id)} · ${authLabel(p.auth)}</option>`)
+      .join("");
+    if (current) select.value = current;
+    renderProviderHint();
+    renderAuthArea();
+
+    tableEl.innerHTML = data.accounts.length
+      ? "<table><tr><th>provider</th><th>account</th><th>auth</th><th>token</th><th class='num'>expires at</th><th></th></tr>" +
+        data.accounts.map(p =>
+          `<tr><td>${esc(p.provider)}</td>` +
+          `<td class="muted">${esc(p.account)}</td>` +
+          `<td><span class="badge">${esc(p.kind)}</span></td>` +
+          `<td>${fmtExpiry(p)}</td>` +
+          `<td class="num tertiary">${p.expires_at ? fmtTime(p.expires_at * 1000) : "—"}</td>` +
+          `<td class="num"><button class="btn btn-ghost-danger btn-sm" data-del="${esc(p.provider)}|${esc(p.account)}">remove</button></td></tr>`
+        ).join("") + "</table>"
+      : '<div class="empty">no accounts yet — add one above</div>';
+    tableEl.querySelectorAll("[data-del]").forEach(btn => {
+      btn.addEventListener("click", () => confirmRemove(btn));
+    });
+  } catch (err) {
+    tableEl.innerHTML = `<div class="err">${esc(err.message)}</div>`;
+  }
+}
+
+function selectedProviderMeta() {
+  const id = document.getElementById("add-provider").value;
+  return state.providers.find(p => p.id === id);
+}
+
+function renderProviderHint() {
+  const meta = selectedProviderMeta();
+  const hintEl = document.getElementById("add-provider-hint");
+  if (!meta) { hintEl.textContent = ""; return; }
+  const bits = [];
+  if (meta.oauth_note) bits.push("oauth: " + meta.oauth_note);
+  if (meta.env_var) bits.push("env: " + meta.env_var);
+  if (meta.setup && meta.setup.length) bits.push(meta.setup.join(" · "));
+  hintEl.textContent = bits.join("  —  ");
+}
+
+function renderAuthArea() {
+  const meta = selectedProviderMeta();
+  const pills = document.getElementById("add-method-pills");
+  const keyArea = document.getElementById("add-key-area");
+  const oauthArea = document.getElementById("add-oauth-area");
+  const endpointField = document.getElementById("add-endpoint-field");
+  if (!meta) { keyArea.style.display = "none"; oauthArea.style.display = "none"; return; }
+
+  if (meta.auth === "api_key_or_oauth") {
+    pills.style.display = "";
+  } else {
+    pills.style.display = "none";
+    state.addMethod = meta.auth === "oauth" ? "oauth" : "key";
+  }
+  document.querySelectorAll("#add-method-pills button").forEach(b =>
+    b.classList.toggle("active", b.dataset.method === state.addMethod));
+
+  keyArea.style.display = state.addMethod === "key" ? "" : "none";
+  oauthArea.style.display = state.addMethod === "oauth" ? "" : "none";
+
+  const hasEndpoint = meta.endpoint_default || meta.endpoint_env_var;
+  endpointField.style.display = hasEndpoint && state.addMethod === "key" ? "" : "none";
+  document.getElementById("add-endpoint-hint").textContent =
+    [meta.endpoint_default ? "default: " + meta.endpoint_default : "",
+     meta.endpoint_env_var ? "env: " + meta.endpoint_env_var : ""].filter(Boolean).join("  —  ");
+  document.getElementById("oauth-note").textContent = meta.oauth_note
+    ? "This provider signs in via OAuth — " + meta.oauth_note + "."
+    : "This provider signs in via OAuth.";
+}
+
+function confirmRemove(btn) {
+  if (btn.dataset.arm === "1") {
+    const [provider, account] = btn.dataset.del.split("|");
+    btn.disabled = true;
+    apiSend(`/api/accounts/${encodeURIComponent(provider)}/${encodeURIComponent(account)}`, "DELETE")
+      .then(() => renderAccounts())
+      .catch(err => { btn.disabled = false; btn.textContent = err.message; });
+    return;
+  }
+  btn.dataset.arm = "1";
+  const prev = btn.textContent;
+  btn.textContent = "confirm?";
+  setTimeout(() => { btn.dataset.arm = ""; btn.textContent = prev; }, 3000);
+}
+
+async function submitApiKey() {
+  const note = document.getElementById("add-note");
+  note.className = "inline-note muted";
+  note.textContent = "saving…";
+  try {
+    const provider = document.getElementById("add-provider").value;
+    const account = document.getElementById("add-account").value.trim() || "default";
+    const secret = document.getElementById("add-secret").value;
+    const endpoint = document.getElementById("add-endpoint").value.trim();
+    const result = await apiSend("/api/accounts", "POST", {
+      provider, account, secret,
+      endpoint: endpoint || undefined,
+    });
+    note.className = "inline-note ok";
+    note.textContent = result.verified
+      ? `saved — verified (${result.models} models reachable)`
+      : "saved — could not verify against the provider yet";
+    document.getElementById("add-secret").value = "";
+    renderAccounts();
+  } catch (err) {
+    note.className = "inline-note error";
+    note.textContent = err.message;
+  }
+}
+
+async function startOAuth() {
+  const note = document.getElementById("add-note");
+  const log = document.getElementById("oauth-log");
+  const progress = document.getElementById("oauth-progress");
+  note.className = "inline-note muted";
+  note.textContent = "starting login…";
+  log.textContent = "";
+  progress.style.display = "";
+  try {
+    const provider = document.getElementById("add-provider").value;
+    const account = document.getElementById("add-account").value.trim() || "default";
+    const { id } = await apiSend("/api/oauth", "POST", { provider, account });
+    state.oauth.id = id;
+    if (state.oauth.timer) clearInterval(state.oauth.timer);
+    state.oauth.timer = setInterval(async () => {
+      try {
+        const s = await getJson("/api/oauth/" + id);
+        log.textContent = (s.messages || []).join("\n");
+        log.scrollTop = log.scrollHeight;
+        if (s.state === "done") {
+          clearInterval(state.oauth.timer);
+          note.className = "inline-note ok";
+          note.textContent = "login complete — account connected";
+          renderAccounts();
+        } else if (s.state === "failed") {
+          clearInterval(state.oauth.timer);
+          note.className = "inline-note error";
+          note.textContent = s.error || "login failed";
+        } else {
+          note.className = "inline-note muted";
+          note.textContent = "waiting for you to approve the login…";
+        }
+      } catch (err) {
+        clearInterval(state.oauth.timer);
+        note.className = "inline-note error";
+        note.textContent = err.message;
+      }
+    }, 1500);
+  } catch (err) {
+    note.className = "inline-note error";
+    note.textContent = err.message;
+  }
+}
+
+function refresh() {
+  document.getElementById("stamp").textContent =
+    "updated " + new Date().toLocaleTimeString("en-US", { hour12: false });
+  renderOverview();
+  renderUsage();
+  if (state.reqOffset <= PAGE_SIZE) renderRequests(true);
+}
+
+function activateTab(name) {
+  const btn = document.querySelector(`.nav button[data-tab="${name}"]`);
+  if (!btn) return;
+  document.querySelectorAll(".nav button").forEach(b => b.classList.toggle("active", b === btn));
+  document.querySelectorAll("main section").forEach(s => s.classList.toggle("active", s.id === "tab-" + name));
+  if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
+  if (name === "accounts") renderAccounts();
+}
+
+document.querySelectorAll(".nav button").forEach(btn => {
+  btn.addEventListener("click", () => activateTab(btn.dataset.tab));
+});
+document.querySelectorAll("[data-nav]").forEach(link => {
+  link.addEventListener("click", ev => {
+    ev.preventDefault();
+    activateTab(link.dataset.nav);
+  });
+});
+
+function bindPills(selector, apply) {
+  document.querySelectorAll(selector).forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(selector).forEach(b => b.classList.toggle("active", b === btn));
+      apply(btn);
+    });
+  });
+}
+bindPills("[data-group]", btn => { state.group = btn.dataset.group; renderUsage(); });
+bindPills("[data-days]", btn => { state.days = Number(btn.dataset.days); renderUsage(); });
+bindPills("[data-status]", btn => { state.reqStatus = btn.dataset.status; renderRequests(true); });
+bindPills("[data-source]", btn => { state.reqSource = btn.dataset.source; renderRequests(true); });
+bindPills("#add-method-pills button", btn => { state.addMethod = btn.dataset.method; renderAuthArea(); });
+
+document.getElementById("load-more").addEventListener("click", () => renderRequests(false));
+document.getElementById("toggle-add").addEventListener("click", () => {
+  const panel = document.getElementById("add-panel");
+  panel.style.display = panel.style.display === "none" ? "" : "none";
+});
+document.getElementById("add-provider").addEventListener("change", () => {
+  renderProviderHint();
+  renderAuthArea();
+});
+document.getElementById("add-key-submit").addEventListener("click", submitApiKey);
+document.getElementById("oauth-start").addEventListener("click", startOAuth);
+
+activateTab(location.hash.slice(1) || "overview");
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
