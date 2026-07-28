@@ -2,6 +2,7 @@ mod auth;
 mod cli;
 mod headless;
 mod logging;
+mod proxy_ops;
 mod search;
 mod ui;
 mod update;
@@ -199,10 +200,54 @@ async fn run_unified_daemon(socket_path: std::path::PathBuf) -> color_eyre::Resu
 
     let manager = goat_daemon::Manager::new(auth_path, db_path.clone());
 
-    let goat = goat_runtime::Goat::boot_with_code(Some(manager.clone()))
+    let proxy_config = goat_config::Config::load().proxy;
+    let mut agent_meter = None;
+    let mut proxy_http = None;
+    if proxy_config.enabled {
+        match goat_store::ProxyStore::open(&db_path).await {
+            Ok(proxy_store) => {
+                let (recorder, _writer) = goat_proxy::Recorder::spawn(proxy_store.clone());
+                manager.set_meter(goat_proxy::Meter::new(
+                    goat_proxy::SOURCE_CODE,
+                    recorder.clone(),
+                ));
+                agent_meter = Some(goat_proxy::Meter::new(goat_proxy::SOURCE_AGENT, recorder));
+                let creds = goat_auth::CredentialStore::new(paths.credentials_json.clone());
+                let ops = proxy_ops::RegistryAccountOps::new(creds.clone());
+                proxy_http = Some((proxy_store, proxy_config.bind, creds, ops));
+            }
+            Err(err) => tracing::warn!(%err, "proxy store unavailable; usage metering disabled"),
+        }
+    }
+
+    let goat = goat_runtime::Goat::boot_with_code_metered(Some(manager.clone()), agent_meter)
         .await
         .map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
     let agent = tokio::spawn(goat.run_until(shutdown.clone()));
+
+    if let Some((proxy_store, bind, creds, ops)) = proxy_http {
+        if let Some(rl_path) = goat_config::rate_limits_path() {
+            let backfilled = goat_proxy::backfill_rate_limits(&proxy_store, &rl_path).await;
+            if backfilled > 0 {
+                tracing::info!(backfilled, "proxy rate limits backfilled");
+            }
+        }
+        match bind.parse::<std::net::SocketAddr>() {
+            Ok(bind) => {
+                let shutdown = shutdown.clone();
+                tokio::spawn(async move {
+                    if let Err(err) =
+                        goat_proxy::serve(bind, proxy_store, creds, ops, shutdown).await
+                    {
+                        tracing::warn!(%err, "proxy dashboard stopped");
+                    }
+                });
+            }
+            Err(err) => {
+                tracing::warn!(%bind, %err, "invalid proxy bind address");
+            }
+        }
+    }
 
     let config = goat_daemon::DaemonConfig {
         socket_path,
