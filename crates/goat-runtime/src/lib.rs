@@ -56,16 +56,24 @@ impl Goat {
     }
 
     pub async fn boot_with_code(code: Option<goat_daemon::Manager>) -> Result<Self> {
+        Self::boot_with_code_metered(code, None).await
+    }
+
+    pub async fn boot_with_code_metered(
+        code: Option<goat_daemon::Manager>,
+        meter: Option<goat_proxy::Meter>,
+    ) -> Result<Self> {
         let paths = GoatPaths::default_layout().context("resolving ~/.goat layout")?;
         std::fs::create_dir_all(&paths.logs_dir).ok();
         let guard = init_logging(&paths.logs_dir);
         let cfg = goat_config::load_from(paths).context("loading config")?;
-        Self::boot_inner(cfg, code, Some(guard)).await
+        Self::boot_inner(cfg, code, meter, Some(guard)).await
     }
 
     async fn boot_inner(
         cfg: LoadedConfig,
         code: Option<goat_daemon::Manager>,
+        meter: Option<goat_proxy::Meter>,
         log_guard: Option<WorkerGuard>,
     ) -> Result<Self> {
         info!(root = %cfg.paths.root.display(), "booting goat");
@@ -77,7 +85,7 @@ impl Goat {
         let store: Arc<dyn Store> = Arc::new(sqlite_store);
 
         let sdk_store = goat_auth::CredentialStore::new(cfg.paths.credentials_json.clone());
-        let providers = build_provider_registry(&sdk_store);
+        let providers = build_provider_registry(&sdk_store, meter.as_ref());
         let embedders = build_embedders(&cfg.agents, &sdk_store).await;
         let channels = build_channel_registry();
 
@@ -311,7 +319,10 @@ async fn shutdown_signal() -> &'static str {
     }
 }
 
-fn build_provider_registry(store: &goat_auth::CredentialStore) -> Arc<ProviderRegistry> {
+fn build_provider_registry(
+    store: &goat_auth::CredentialStore,
+    meter: Option<&goat_proxy::Meter>,
+) -> Arc<ProviderRegistry> {
     use goat_auth::CredentialService;
     use goat_providers::{DEFAULT_ACCOUNT, Registry};
 
@@ -328,7 +339,7 @@ fn build_provider_registry(store: &goat_auth::CredentialStore) -> Arc<ProviderRe
     let mut registry = ProviderRegistry::new();
     let mut logged = std::collections::HashSet::new();
     for account in &accounts {
-        for provider in Registry::load(store, account).all() {
+        for provider in Registry::load_metered(store, account, meter.cloned()).all() {
             if logged.insert(provider.id().to_string()) {
                 info!(provider = %provider.id(), "loaded provider");
             }
@@ -756,7 +767,7 @@ mod tests {
             paths: paths_in(dir.path()),
             agents: vec![],
         };
-        let goat = Goat::boot_inner(cfg, None, None).await.expect("boot");
+        let goat = Goat::boot_inner(cfg, None, None, None).await.expect("boot");
         assert_eq!(
             goat.join_handles.len(),
             2,
@@ -771,7 +782,7 @@ mod tests {
             paths: paths_in(dir.path()),
             agents: vec![persona("alice", "openai/gpt-5.1")],
         };
-        let goat = Goat::boot_inner(cfg, None, None).await.expect("boot");
+        let goat = Goat::boot_inner(cfg, None, None, None).await.expect("boot");
         assert_eq!(goat.join_handles.len(), 2);
     }
 
@@ -792,7 +803,7 @@ mod tests {
             paths: paths_in(dir.path()),
             agents: vec![p],
         };
-        let goat = Goat::boot_inner(cfg, None, None).await.expect("boot");
+        let goat = Goat::boot_inner(cfg, None, None, None).await.expect("boot");
         assert_eq!(goat.join_handles.len(), 2);
     }
 }
