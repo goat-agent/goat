@@ -91,6 +91,29 @@ impl fmt::Display for ChannelId {
 }
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
+pub struct IntegrationId(Cow<'static, str>);
+
+impl IntegrationId {
+    pub const fn from_static(slug: &'static str) -> Self {
+        Self(Cow::Borrowed(slug))
+    }
+
+    pub fn new(slug: impl Into<String>) -> Self {
+        Self(Cow::Owned(slug.into()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for IntegrationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
 pub struct ConversationId {
     pub channel: ChannelId,
     pub instance: InstanceId,
@@ -113,6 +136,18 @@ impl ConversationId {
             self.instance.0,
             self.external
         )
+    }
+
+    pub fn parse_key(key: &str) -> Option<Self> {
+        let mut parts = key.splitn(3, ':');
+        let channel = parts.next().filter(|c| !c.is_empty())?;
+        let instance = parts.next()?.parse::<Uuid>().ok()?;
+        let external = parts.next().filter(|e| !e.is_empty())?;
+        Some(Self::new(
+            ChannelId::new(channel),
+            InstanceId(instance),
+            external,
+        ))
     }
 }
 
@@ -250,6 +285,17 @@ pub enum Event {
         kind: CodeUpdateKind,
         text: String,
     },
+    IntegrationUpdate {
+        profile: ProfileId,
+        integration: IntegrationId,
+        account: String,
+        kind: IntegrationUpdateKind,
+        external_ref: String,
+        summary: String,
+        raw_refs: Vec<String>,
+        goal_id: Option<i64>,
+        notify_conv: Option<ConversationId>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -260,13 +306,31 @@ pub enum CodeUpdateKind {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntegrationUpdateKind {
+    Assigned,
+    Updated,
+    AuthBroken,
+}
+
+impl IntegrationUpdateKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Assigned => "assigned",
+            Self::Updated => "updated",
+            Self::AuthBroken => "auth_broken",
+        }
+    }
+}
+
 impl Event {
     pub fn profile(&self) -> ProfileId {
         match self {
             Event::Incoming(m) => m.profile,
             Event::SelfTick { profile, .. }
             | Event::GoalReview { profile, .. }
-            | Event::CodeUpdate { profile, .. } => *profile,
+            | Event::CodeUpdate { profile, .. }
+            | Event::IntegrationUpdate { profile, .. } => *profile,
         }
     }
 }
@@ -283,6 +347,39 @@ mod tests {
         assert!(key.starts_with("test:"));
         assert!(key.ends_with(":chat:123:thread:5"));
         assert!(key.contains(&instance.0.to_string()));
+    }
+
+    #[test]
+    fn conversation_key_parse_round_trip() {
+        let id = ConversationId::new(ChannelId::new("telegram"), InstanceId::new(), "chat:123");
+        let parsed = ConversationId::parse_key(&id.to_key()).unwrap();
+        assert_eq!(parsed, id);
+    }
+
+    #[test]
+    fn conversation_key_parse_rejects_garbage() {
+        assert!(ConversationId::parse_key("").is_none());
+        assert!(ConversationId::parse_key("telegram").is_none());
+        assert!(ConversationId::parse_key("telegram:not-a-uuid:chat:1").is_none());
+        assert!(ConversationId::parse_key(&format!(":{}:x", Uuid::nil())).is_none());
+        assert!(ConversationId::parse_key(&format!("telegram:{}:", Uuid::nil())).is_none());
+    }
+
+    #[test]
+    fn integration_update_carries_profile() {
+        let p = ProfileId::new();
+        let ev = Event::IntegrationUpdate {
+            profile: p,
+            integration: IntegrationId::from_static("linear"),
+            account: "default".into(),
+            kind: IntegrationUpdateKind::Assigned,
+            external_ref: "linear/default:issue:GOA-1".into(),
+            summary: "GOA-1".into(),
+            raw_refs: vec![],
+            goal_id: None,
+            notify_conv: None,
+        };
+        assert_eq!(ev.profile(), p);
     }
 
     #[test]
