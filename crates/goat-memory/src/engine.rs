@@ -223,7 +223,7 @@ impl MemoryEngine {
             vector::ensure_vec_table(&self.pool, self.dim().unwrap()).await?;
         }
 
-        for scope in self.all_scopes().await? {
+        for scope in self.scopes().await? {
             for rel in self.files.list(&scope).await.unwrap_or_default() {
                 self.reindex_file(&scope, &rel).await?;
             }
@@ -252,7 +252,7 @@ impl MemoryEngine {
         Ok(())
     }
 
-    async fn all_scopes(&self) -> MemoryResult<Vec<Scope>> {
+    pub async fn scopes(&self) -> MemoryResult<Vec<Scope>> {
         let mut scopes = vec![Scope::Owner, Scope::Self_];
         let rows: Vec<(String,)> =
             sqlx::query_as("SELECT DISTINCT scope FROM facts WHERE scope LIKE 'domain:%'")
@@ -411,6 +411,20 @@ mod tests {
             after.iter().all(|h| h.kind != "fact"),
             "invalidated fact left the index"
         );
+    }
+
+    #[tokio::test]
+    async fn scopes_include_domains_with_files() {
+        let (_d, eng) = engine().await;
+        let scope = Scope::domain("linear").unwrap();
+        eng.files()
+            .write(&scope, "notes/context.md", "## ctx\nx")
+            .await
+            .unwrap();
+        let scopes = eng.scopes().await.unwrap();
+        assert!(scopes.contains(&Scope::Owner));
+        assert!(scopes.contains(&Scope::Self_));
+        assert!(scopes.contains(&scope));
     }
 
     #[tokio::test]

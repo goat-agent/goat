@@ -215,7 +215,10 @@ impl ToolHandler for SearchTool {
             Err(e) => return ToolOutput::error(format!("invalid search input: {e}")),
         };
         let k = args.k.unwrap_or(DEFAULT_RECALL_K);
-        let scopes = [Scope::Owner, Scope::Self_];
+        let scopes = match self.engine.scopes().await {
+            Ok(s) => s,
+            Err(_) => vec![Scope::Owner, Scope::Self_],
+        };
         match self.engine.recall(&scopes, &args.query, k).await {
             Ok(hits) => {
                 let results: Vec<_> = hits
