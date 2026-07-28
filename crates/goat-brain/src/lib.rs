@@ -24,7 +24,9 @@ use goat_store::{
     Direction, HistoryRow, ScheduledTaskStatus, Store, TaskRunStatus, ToolInvocationRecord,
     ToolInvocationStatus,
 };
-use goat_types::{ConversationId, Event, MessageId, ProfileId};
+use goat_types::{
+    ConversationId, Event, IntegrationId, IntegrationUpdateKind, MessageId, ProfileId,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -223,6 +225,7 @@ pub struct BrainDeps {
     pub goat_root: PathBuf,
     pub stream_idle_timeout: std::time::Duration,
     pub llm_max_retries: usize,
+    pub integration_tools: Vec<String>,
 }
 
 pub struct Brain {
@@ -242,6 +245,7 @@ pub struct Brain {
     goat_root: PathBuf,
     stream_idle_timeout: std::time::Duration,
     llm_max_retries: usize,
+    integration_tools: Vec<String>,
 }
 
 impl Brain {
@@ -263,6 +267,7 @@ impl Brain {
             goat_root: deps.goat_root,
             stream_idle_timeout: deps.stream_idle_timeout,
             llm_max_retries: deps.llm_max_retries,
+            integration_tools: deps.integration_tools,
         }
     }
 
@@ -318,6 +323,37 @@ impl Brain {
                         } => {
                             self.handle_code_update(&channels, &conversation, kind, text)
                                 .await;
+                        }
+                        Event::IntegrationUpdate {
+                            integration,
+                            account,
+                            kind,
+                            external_ref,
+                            summary,
+                            raw_refs,
+                            goal_id,
+                            notify_conv,
+                            ..
+                        } => {
+                            let update = IntegrationTurn {
+                                integration,
+                                account,
+                                kind,
+                                external_ref,
+                                summary,
+                                raw_refs,
+                                goal_id,
+                                notify_conv,
+                            };
+                            if let Err(e) =
+                                self.handle_integration_update(&channels, update).await
+                            {
+                                warn!(
+                                    profile = %self.persona,
+                                    error = ?e,
+                                    "integration update failed",
+                                );
+                            }
                         }
                         _ => {}
                     }
@@ -676,6 +712,15 @@ impl Brain {
                  If the task is no longer worth doing, reply with exactly: skip\n\
                  </self_tick_context>"
             ),
+            TurnMode::Integration { .. } => format!(
+                "{base_system}\n\n<integration_update_context>\nAn external \
+                 service update woke you. Gather context with your tools, store \
+                 durable findings in memory, keep the work anchor goal current, \
+                 then brief the owner concisely. Do not start the work itself \
+                 and take no external write actions beyond the briefing. If \
+                 nothing is worth surfacing, reply with exactly: skip\n\
+                 </integration_update_context>"
+            ),
         };
 
         for _round in 0..MAX_TOOL_ROUNDS {
@@ -691,9 +736,7 @@ impl Brain {
 
             if folded.tool_calls.is_empty() {
                 let final_text = sanitize_final_text(folded.text);
-                if matches!(mode, TurnMode::SelfTick { .. })
-                    && final_text.trim().eq_ignore_ascii_case("skip")
-                {
+                if mode.is_autonomous() && final_text.trim().eq_ignore_ascii_case("skip") {
                     return Ok(RenderSummary {
                         messages_sent: 0,
                         edits: 0,
@@ -728,7 +771,7 @@ impl Brain {
             }
         }
 
-        if matches!(mode, TurnMode::SelfTick { .. }) {
+        if mode.is_autonomous() {
             return Ok(RenderSummary {
                 messages_sent: 0,
                 edits: 0,
@@ -951,6 +994,72 @@ impl Brain {
         Ok(())
     }
 
+    async fn handle_integration_update(
+        &self,
+        channels: &[Arc<dyn ChannelHandle>],
+        update: IntegrationTurn,
+    ) -> Result<()> {
+        let find = |conv: &ConversationId| {
+            channels
+                .iter()
+                .find(|h| h.id() == conv.channel && h.instance() == conv.instance)
+                .cloned()
+        };
+        let mut resolved = None;
+        if let Some(conv) = &update.notify_conv
+            && let Some(handle) = find(conv)
+        {
+            resolved = Some((conv.clone(), handle));
+        }
+        if resolved.is_none()
+            && let Some(conv) = self.store.latest_conversation(self.persona).await?
+            && let Some(handle) = find(&conv)
+        {
+            resolved = Some((conv, handle));
+        }
+        let Some((conv, handle)) = resolved else {
+            warn!(
+                profile = %self.persona,
+                integration = %update.integration,
+                external_ref = %update.external_ref,
+                "no channel handle for integration update; goal review will resurface it",
+            );
+            return Ok(());
+        };
+
+        let mut messages = vec![LlmMessage {
+            role: Role::User,
+            content: vec![ContentPart::Text(integration_prompt(&update))],
+        }];
+
+        let mut tools = self.integration_tools.clone();
+        tools.extend(
+            ["memory", "memory_search", "fact", "goal"]
+                .iter()
+                .map(std::string::ToString::to_string),
+        );
+
+        let summary = self
+            .complete_with_tools(
+                handle,
+                conv.clone(),
+                None,
+                &mut messages,
+                TurnMode::Integration { tools },
+                None,
+            )
+            .await?;
+
+        let trimmed = summary.final_text.trim();
+        if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("skip") {
+            self.store
+                .append_outgoing_text(self.persona, &conv, &summary.final_text, None)
+                .await
+                .context("append outgoing text for integration update")?;
+        }
+        Ok(())
+    }
+
     async fn bump_goal_review(&self, goal_id: i64) {
         if let Ok(Some(g)) = self.store.get_goal(goal_id).await
             && matches!(g.status, goat_store::GoalStatus::Active)
@@ -1007,7 +1116,7 @@ impl Brain {
             .filter(|spec| has_skills || spec.name.as_str() != "skill")
             .filter(|spec| match mode {
                 TurnMode::Normal => true,
-                TurnMode::SelfTick { tools } => {
+                TurnMode::SelfTick { tools } | TurnMode::Integration { tools } => {
                     !is_schedule_tool(spec.name.as_str())
                         && selector_allows_empty_denies(spec.name.as_str(), tools)
                 }
@@ -1332,6 +1441,56 @@ fn meta_marker_score(text: &str) -> usize {
 enum TurnMode {
     Normal,
     SelfTick { tools: Vec<String> },
+    Integration { tools: Vec<String> },
+}
+
+impl TurnMode {
+    fn is_autonomous(&self) -> bool {
+        !matches!(self, TurnMode::Normal)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct IntegrationTurn {
+    integration: IntegrationId,
+    account: String,
+    kind: IntegrationUpdateKind,
+    external_ref: String,
+    summary: String,
+    raw_refs: Vec<String>,
+    goal_id: Option<i64>,
+    notify_conv: Option<ConversationId>,
+}
+
+fn integration_prompt(update: &IntegrationTurn) -> String {
+    let mut header = format!(
+        "<integration_update integration=\"{}\" account=\"{}\" kind=\"{}\">\n{}\nexternal_ref: {}",
+        update.integration,
+        update.account,
+        update.kind.as_str(),
+        update.summary,
+        update.external_ref,
+    );
+    if let Some(goal_id) = update.goal_id {
+        let _ = write!(header, "\nwork anchor: goal #{goal_id}");
+    }
+    if !update.raw_refs.is_empty() {
+        let _ = write!(
+            header,
+            "\nobservations recorded (raw payload kept losslessly): {}",
+            update.raw_refs.join(", "),
+        );
+    }
+    format!(
+        "{header}\n</integration_update>\n\
+         Gather context now: pull live data with the `{}_*` tools and search \
+         prior knowledge with `memory_search`. Record durable claims with \
+         `fact` in scope domain:{}, using the observation reference above as \
+         source_ref. Keep the work anchor current with `goal`. Then brief me: \
+         what happened, the key context you found, and a suggested first step. \
+         Do not start the work itself.",
+        update.integration, update.integration,
+    )
 }
 
 fn is_schedule_tool(name: &str) -> bool {
@@ -1391,6 +1550,53 @@ const META_LEAK_MARKERS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn integration_turn() -> IntegrationTurn {
+        IntegrationTurn {
+            integration: IntegrationId::from_static("linear"),
+            account: "default".into(),
+            kind: IntegrationUpdateKind::Assigned,
+            external_ref: "linear/default:issue:GOA-1".into(),
+            summary: "GOA-1 — Fix retry storm".into(),
+            raw_refs: vec!["observation:12".into()],
+            goal_id: Some(42),
+            notify_conv: None,
+        }
+    }
+
+    #[test]
+    fn integration_prompt_includes_anchor_and_observations() {
+        let prompt = integration_prompt(&integration_turn());
+        assert!(prompt.starts_with(
+            "<integration_update integration=\"linear\" account=\"default\" kind=\"assigned\">"
+        ));
+        assert!(prompt.contains("GOA-1 — Fix retry storm"));
+        assert!(prompt.contains("external_ref: linear/default:issue:GOA-1"));
+        assert!(prompt.contains("work anchor: goal #42"));
+        assert!(prompt.contains("observations recorded"));
+        assert!(prompt.contains("observation:12"));
+        assert!(prompt.contains("`linear_*` tools"));
+        assert!(prompt.contains("scope domain:linear"));
+        assert!(prompt.contains("Do not start the work itself"));
+    }
+
+    #[test]
+    fn integration_prompt_omits_empty_sections() {
+        let prompt = integration_prompt(&IntegrationTurn {
+            goal_id: None,
+            raw_refs: vec![],
+            ..integration_turn()
+        });
+        assert!(!prompt.contains("work anchor: goal #"));
+        assert!(!prompt.contains("observations recorded"));
+    }
+
+    #[test]
+    fn autonomous_modes_cover_self_tick_and_integration() {
+        assert!(!TurnMode::Normal.is_autonomous());
+        assert!(TurnMode::SelfTick { tools: vec![] }.is_autonomous());
+        assert!(TurnMode::Integration { tools: vec![] }.is_autonomous());
+    }
 
     fn selectors(values: &[&str]) -> Vec<String> {
         values
