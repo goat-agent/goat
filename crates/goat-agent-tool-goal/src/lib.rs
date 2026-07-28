@@ -69,7 +69,7 @@ impl GoalTool {
                     } else {
                         GoalOrigin::Owner
                     },
-                    origin_conv: Some(ctx.conversation.clone()),
+                    origin_conv: Some(ctx.thread.clone()),
                     next_review_at: review_in_days.map(review_at),
                     external_ref: None,
                 };
@@ -174,7 +174,7 @@ mod tests {
     use super::*;
     use goat_agent_tool::ToolReadState;
     use goat_store::SqliteStore;
-    use goat_types::{ChannelId, ConversationId, InstanceId, ProfileId};
+    use goat_types::{ChannelId, InstanceId, ProfileId, ThreadId};
     use std::path::PathBuf;
 
     async fn setup() -> (Arc<dyn Store>, ToolContext) {
@@ -184,12 +184,12 @@ mod tests {
         let store = SqliteStore::open(&path).await.unwrap();
         let persona = ProfileId::new();
         store.ensure_persona(persona, "dev", "dev").await.unwrap();
-        let conv = ConversationId::new(ChannelId::new("telegram"), InstanceId::new(), "chat:1");
-        store.ensure_conversation(&conv, persona).await.unwrap();
+        let conv = ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1");
+        store.ensure_thread(&conv, persona).await.unwrap();
         let store: Arc<dyn Store> = Arc::new(store);
         let ctx = ToolContext {
             persona,
-            conversation: conv,
+            thread: conv,
             goat_root: PathBuf::from("/tmp"),
             read_state: ToolReadState::default(),
         };
