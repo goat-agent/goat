@@ -6,9 +6,7 @@ pub struct AssignedIssue {
     pub id: String,
     pub identifier: String,
     pub title: String,
-    pub url: String,
     pub updated_at: String,
-    pub state: String,
     pub status_type: String,
     pub raw: Value,
 }
@@ -72,23 +70,7 @@ fn parse_issue_node(node: &Value) -> IntegrationResult<AssignedIssue> {
             .unwrap_or(&identifier)
             .to_string(),
         title: field("title")?,
-        url: field("url")?,
         updated_at: field("updatedAt")?,
-        state: node
-            .get("status")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| {
-                node.get("state").and_then(|state| {
-                    state.as_str().map(str::to_string).or_else(|| {
-                        state
-                            .pointer("/name")
-                            .and_then(Value::as_str)
-                            .map(str::to_string)
-                    })
-                })
-            })
-            .unwrap_or_else(|| "unknown".to_string()),
         status_type: node
             .get("statusType")
             .and_then(Value::as_str)
@@ -137,7 +119,6 @@ mod tests {
         assert_eq!(issues.len(), 2);
         assert_eq!(issues[0].identifier, "US-1880");
         assert_eq!(issues[0].id, "US-1880");
-        assert_eq!(issues[0].state, "In Progress");
         assert_eq!(issues[0].status_type, "started");
         assert_eq!(issues[0].raw["description"], "workers hammer the API");
     }
@@ -180,7 +161,6 @@ mod tests {
         let issues = parse_assigned_issues(&flat).unwrap();
         assert_eq!(issues[0].identifier, "US-9");
         assert_eq!(issues[0].id, "uuid-9");
-        assert_eq!(issues[0].state, "Todo");
         assert_eq!(issues[0].status_type, "unknown");
     }
 

@@ -2,8 +2,7 @@
 -- The analogue of `messages.raw` for external services: the full payload is
 -- kept verbatim so nothing the watcher observed is ever lost, while memory
 -- keeps only what the agent distills (facts reference rows here via
--- `observation:<id>`). Rows are integration-owned, append-only, and safe to
--- prune by age later.
+-- `observation:<id>`). Rows are integration-owned and append-only.
 
 CREATE TABLE integration_observations (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

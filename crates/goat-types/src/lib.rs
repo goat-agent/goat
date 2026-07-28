@@ -292,9 +292,7 @@ pub enum Event {
         kind: IntegrationUpdateKind,
         external_ref: String,
         summary: String,
-        raw_refs: Vec<String>,
-        goal_id: Option<i64>,
-        notify_thread: Option<ThreadId>,
+        observation: Option<i64>,
     },
 }
 
@@ -364,9 +362,7 @@ mod tests {
             kind: IntegrationUpdateKind::Assigned,
             external_ref: "linear/default:issue:GOA-1".into(),
             summary: "GOA-1".into(),
-            raw_refs: vec![],
-            goal_id: None,
-            notify_thread: None,
+            observation: None,
         };
         assert_eq!(ev.profile(), p);
     }
