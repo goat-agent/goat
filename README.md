@@ -45,10 +45,12 @@ goat daemon | remote     manage the local daemon and paired devices
 goat doctor | update     diagnose config; update the binary
 ```
 
-## Providers & channels
+## Providers, channels & integrations
 
 Anthropic · OpenAI · Gemini · Moonshot · Zhipu · xAI · DeepSeek · Mistral · Groq · Qwen · local.
 Channels: Discord.
+Integrations: Linear, Slack — connect with `goat integration add`, bind per agent with
+`goat agent integration add`.
 
 ## Memory
 
