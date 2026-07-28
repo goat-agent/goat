@@ -29,6 +29,7 @@ struct ManagerInner {
     next_session: AtomicU64,
     next_client: AtomicU64,
     remote: Mutex<Option<RemoteControls>>,
+    meter: std::sync::OnceLock<goat_proxy::Meter>,
 }
 
 struct RemoteControls {
@@ -49,8 +50,13 @@ impl Manager {
                 next_session: AtomicU64::new(1),
                 next_client: AtomicU64::new(1),
                 remote: Mutex::new(None),
+                meter: std::sync::OnceLock::new(),
             }),
         }
+    }
+
+    pub fn set_meter(&self, meter: goat_proxy::Meter) {
+        let _ = self.inner.meter.set(meter);
     }
 
     pub(crate) fn set_remote(
@@ -183,8 +189,20 @@ impl Manager {
             .await
             .map_err(|e| format!("store: {e}"))?;
         let store_for_pump = store.clone();
-        let registry = goat_providers::Registry::new(&credentials);
-        let agent = GoatAgent::new(registry, store, credentials, None, cwd.clone()).await;
+        let registry = goat_providers::Registry::load_metered(
+            &credentials,
+            goat_providers::DEFAULT_ACCOUNT,
+            self.inner.meter.get().cloned(),
+        );
+        let agent = GoatAgent::new(
+            registry,
+            store,
+            credentials,
+            None,
+            cwd.clone(),
+            self.inner.meter.get().cloned(),
+        )
+        .await;
         let session = Session::spawn(agent);
         let (ops, events, handle) = session.into_parts();
 
