@@ -1,0 +1,27 @@
+[package]
+name = "goat-integration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+
+[dependencies]
+goat-agent-tool = { workspace = true }
+goat-auth   = { workspace = true }
+goat-bus    = { workspace = true }
+goat-store  = { workspace = true }
+goat-types  = { workspace = true }
+async-trait = { workspace = true }
+inventory   = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { workspace = true }
+tokio-util  = { workspace = true }
+tracing     = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
