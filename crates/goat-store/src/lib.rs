@@ -272,6 +272,7 @@ pub struct NewGoal {
     pub origin: GoalOrigin,
     pub origin_conv: Option<ConversationId>,
     pub next_review_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub external_ref: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -289,6 +290,7 @@ pub struct GoalRecord {
     pub last_reviewed_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub external_ref: Option<String>,
 }
 
 #[async_trait]
@@ -415,6 +417,32 @@ pub trait Store: Send + Sync + 'static {
     async fn goals_due_for_review(&self, now: DateTime<Utc>) -> StoreResult<Vec<GoalRecord>>;
 
     async fn get_goal(&self, id: i64) -> StoreResult<Option<GoalRecord>>;
+
+    async fn upsert_goal_external(&self, new: NewGoal) -> StoreResult<i64>;
+
+    async fn goal_by_external_ref(
+        &self,
+        persona: ProfileId,
+        external_ref: &str,
+    ) -> StoreResult<Option<GoalRecord>>;
+
+    async fn integration_state(
+        &self,
+        persona: ProfileId,
+        integration: &str,
+        account: &str,
+        stream: &str,
+    ) -> StoreResult<Option<String>>;
+
+    async fn set_integration_state(
+        &self,
+        persona: ProfileId,
+        integration: &str,
+        account: &str,
+        stream: &str,
+        state: &str,
+    ) -> StoreResult<()>;
+
 }
 
 #[derive(Clone)]
@@ -1100,8 +1128,8 @@ impl Store for SqliteStore {
         let row: (i64,) = sqlx::query_as(
             r"INSERT INTO goals
                (persona_id, title, detail, parent, status, priority, origin,
-                origin_conv, next_review_at, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
+                origin_conv, next_review_at, external_ref, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
                RETURNING id",
         )
         .bind(new.persona.to_string())
@@ -1116,6 +1144,7 @@ impl Store for SqliteStore {
                 .map(goat_types::ConversationId::to_key),
         )
         .bind(new.next_review_at.map(|d| d.to_rfc3339()))
+        .bind(new.external_ref)
         .bind(&now)
         .bind(&now)
         .fetch_one(&*self.pool)
@@ -1197,6 +1226,111 @@ impl Store for SqliteStore {
             None => Ok(None),
         }
     }
+
+    async fn upsert_goal_external(&self, new: NewGoal) -> StoreResult<i64> {
+        let external_ref = new.external_ref.ok_or(StoreError::InvalidEnum {
+            field: "goals.external_ref",
+            value: "null".into(),
+        })?;
+        if let Some(conv) = &new.origin_conv {
+            self.ensure_conversation(conv, new.persona).await?;
+        }
+        let now = Utc::now().to_rfc3339();
+        let row: (i64,) = sqlx::query_as(
+            r"INSERT INTO goals
+               (persona_id, title, detail, parent, status, priority, origin,
+                origin_conv, next_review_at, external_ref, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(persona_id, external_ref) WHERE external_ref IS NOT NULL
+               DO UPDATE SET title = excluded.title,
+                             detail = excluded.detail,
+                             next_review_at = excluded.next_review_at,
+                             updated_at = excluded.updated_at
+               RETURNING id",
+        )
+        .bind(new.persona.to_string())
+        .bind(&new.title)
+        .bind(new.detail)
+        .bind(new.parent)
+        .bind(new.priority)
+        .bind(new.origin.as_str())
+        .bind(
+            new.origin_conv
+                .as_ref()
+                .map(goat_types::ConversationId::to_key),
+        )
+        .bind(new.next_review_at.map(|d| d.to_rfc3339()))
+        .bind(&external_ref)
+        .bind(&now)
+        .bind(&now)
+        .fetch_one(&*self.pool)
+        .await?;
+        Ok(row.0)
+    }
+
+    async fn goal_by_external_ref(
+        &self,
+        persona: ProfileId,
+        external_ref: &str,
+    ) -> StoreResult<Option<GoalRecord>> {
+        let found: Option<(i64,)> =
+            sqlx::query_as(r"SELECT id FROM goals WHERE persona_id = ? AND external_ref = ?")
+                .bind(persona.to_string())
+                .bind(external_ref)
+                .fetch_optional(&*self.pool)
+                .await?;
+        match found {
+            Some((id,)) => Ok(Some(load_goal(&self.pool, id).await?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn integration_state(
+        &self,
+        persona: ProfileId,
+        integration: &str,
+        account: &str,
+        stream: &str,
+    ) -> StoreResult<Option<String>> {
+        let row: Option<(String,)> = sqlx::query_as(
+            r"SELECT state FROM integration_state
+               WHERE persona_id = ? AND integration = ? AND account = ? AND stream = ?",
+        )
+        .bind(persona.to_string())
+        .bind(integration)
+        .bind(account)
+        .bind(stream)
+        .fetch_optional(&*self.pool)
+        .await?;
+        Ok(row.map(|(state,)| state))
+    }
+
+    async fn set_integration_state(
+        &self,
+        persona: ProfileId,
+        integration: &str,
+        account: &str,
+        stream: &str,
+        state: &str,
+    ) -> StoreResult<()> {
+        sqlx::query(
+            r"INSERT INTO integration_state
+               (persona_id, integration, account, stream, state, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(persona_id, integration, account, stream)
+               DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
+        )
+        .bind(persona.to_string())
+        .bind(integration)
+        .bind(account)
+        .bind(stream)
+        .bind(state)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&*self.pool)
+        .await?;
+        Ok(())
+    }
+
 }
 
 async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<ScheduledTaskRecord> {
@@ -1287,17 +1421,17 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
         String,
         Option<String>,
         Option<String>,
+        String,
+        String,
         Option<String>,
-        String,
-        String,
         Option<String>,
         Option<String>,
         Option<String>,
     ) = sqlx::query_as(
         r"SELECT g.id, g.persona_id, g.title, g.detail, g.parent, g.status,
-                  g.priority, g.origin, g.origin_conv, g.next_review_at,
+                  g.priority, g.origin, g.next_review_at,
                   g.last_reviewed_at, g.created_at, g.updated_at,
-                  c.channel, c.instance, c.external
+                  c.channel, c.instance, c.external, g.external_ref
            FROM goals g
            LEFT JOIN conversations c ON c.id = g.origin_conv
            WHERE g.id = ?",
@@ -1307,7 +1441,7 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
     .await?;
 
     let persona = ProfileId(Uuid::parse_str(&row.1)?);
-    let origin_conv = match (&row.13, &row.14, &row.15) {
+    let origin_conv = match (&row.12, &row.13, &row.14) {
         (Some(channel), Some(instance), Some(external)) => Some(ConversationId::new(
             ChannelId::new(channel.clone()),
             InstanceId(Uuid::parse_str(instance)?),
@@ -1315,8 +1449,8 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
         )),
         _ => None,
     };
-    let next_review_at = row.9.as_deref().map(parse_ts).transpose()?;
-    let last_reviewed_at = row.10.as_deref().map(parse_ts).transpose()?;
+    let next_review_at = row.8.as_deref().map(parse_ts).transpose()?;
+    let last_reviewed_at = row.9.as_deref().map(parse_ts).transpose()?;
 
     Ok(GoalRecord {
         id: row.0,
@@ -1330,8 +1464,9 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
         origin_conv,
         next_review_at,
         last_reviewed_at,
-        created_at: parse_ts(&row.11)?,
-        updated_at: parse_ts(&row.12)?,
+        created_at: parse_ts(&row.10)?,
+        updated_at: parse_ts(&row.11)?,
+        external_ref: row.15,
     })
 }
 
@@ -1709,6 +1844,7 @@ mod tests {
             origin: GoalOrigin::Owner,
             origin_conv: None,
             next_review_at: None,
+            external_ref: None,
         }
     }
 
@@ -1821,5 +1957,96 @@ mod tests {
         assert!(after.last_reviewed_at.is_some());
         let stored = after.next_review_at.expect("next_review_at set");
         assert_eq!(stored.to_rfc3339(), next.to_rfc3339());
+    }
+
+    #[tokio::test]
+    async fn upsert_goal_external_is_idempotent() {
+        let s = fresh().await;
+        let p = fixture_persona(&s).await;
+        let anchor = NewGoal {
+            title: "GOA-1 fix retry storm".into(),
+            detail: Some("first".into()),
+            external_ref: Some("linear/default:issue:GOA-1".into()),
+            ..new_goal(p)
+        };
+
+        let first = s.upsert_goal_external(anchor.clone()).await.unwrap();
+        s.update_goal_status(first, GoalStatus::Waiting)
+            .await
+            .unwrap();
+
+        let second = s
+            .upsert_goal_external(NewGoal {
+                detail: Some("second".into()),
+                ..anchor
+            })
+            .await
+            .unwrap();
+        assert_eq!(first, second);
+
+        let g = s
+            .goal_by_external_ref(p, "linear/default:issue:GOA-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(g.id, first);
+        assert_eq!(g.detail.as_deref(), Some("second"));
+        assert_eq!(g.status, GoalStatus::Waiting);
+        assert_eq!(
+            g.external_ref.as_deref(),
+            Some("linear/default:issue:GOA-1")
+        );
+        assert!(
+            s.goal_by_external_ref(p, "missing")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_goal_external_requires_ref() {
+        let s = fresh().await;
+        let p = fixture_persona(&s).await;
+        assert!(s.upsert_goal_external(new_goal(p)).await.is_err());
+    }
+
+
+    #[tokio::test]
+    async fn integration_state_round_trip() {
+        let s = fresh().await;
+        let p = fixture_persona(&s).await;
+
+        assert!(
+            s.integration_state(p, "linear", "default", "assigned")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        s.set_integration_state(p, "linear", "default", "assigned", r#"{"watermark":"a"}"#)
+            .await
+            .unwrap();
+        s.set_integration_state(p, "linear", "default", "assigned", r#"{"watermark":"b"}"#)
+            .await
+            .unwrap();
+        s.set_integration_state(p, "linear", "work", "assigned", r#"{"watermark":"c"}"#)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            s.integration_state(p, "linear", "default", "assigned")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(r#"{"watermark":"b"}"#)
+        );
+        assert_eq!(
+            s.integration_state(p, "linear", "work", "assigned")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(r#"{"watermark":"c"}"#)
+        );
     }
 }
