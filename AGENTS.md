@@ -31,6 +31,7 @@ autonomous actor. Bare `goat` prints help.
 
 ```
 goat setup | doctor | provider | update | daemon | remote   shared
+goat integration add | list | remove                         external-service connections
 goat code [-c] [-w <name>] [--headless] [-p]                 coding TUI
 goat code worktree | search                                  coding subcommands
 goat agent list | add | show | remove                        agent management
@@ -81,6 +82,11 @@ The inlined provider SDK and the terminal design system — used by both capabil
 - `goat-agent` — library exposing the `goat agent`/`setup`/`doctor` CLI (`cli` module).
 - `goat-types`, `goat-bus`, `goat-model` — IDs/events, event bus, model registry.
 - `goat-channel` / `goat-channel-*` — channel trait and one crate per chat channel.
+- `goat-integration` / `goat-integration-*` — external-service integrations, one crate per vendor.
+  An integration contributes tools (discovered from the service, e.g. a hosted MCP server's
+  `list_tools`) and an optional polling watcher that publishes `Event::IntegrationUpdate` on
+  deterministic diffs. Connections (OAuth/keys) are global; per-agent binding lives in the agent's
+  `integrations` config map. Raw observations persist losslessly in `integration_observations`.
 - `goat-brain` — per-agent conversation loop and turn handling.
 - `goat-runtime` — wires the runtime over trait registries; `Goat::boot`/`boot_with_code`.
 - `goat-profile` — agent config value objects.
@@ -154,7 +160,8 @@ boundary. Do not add a second styling or prompt system, and do not push domain c
 
 ## Extension boundaries
 
-- Providers live in `goat-provider-<name>`; channels in `goat-channel-<name>`.
+- Providers live in `goat-provider-<name>`; channels in `goat-channel-<name>`; integrations in
+  `goat-integration-<name>`.
 - Shared crates must not know concrete provider/channel names (`openai`, `discord`, …).
 - Concrete extension crates are linked by the final binary; runtime discovers them through
   inventory registries. Provider/channel crates expose `pub const ID` via `from_static(...)`.
