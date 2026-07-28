@@ -18,6 +18,12 @@ pub use code::{
     NewThread, NewToolCall, NewTurn, OpenPrompt, OrphanProcess, StoredMessage, Thread,
 };
 
+mod proxy;
+pub use proxy::{
+    NewRequest, ProxyResult, ProxyStore, ProxyStoreError, RateLimitRow, RequestRow, Totals,
+    UsageBucket,
+};
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("sqlx: {0}")]
