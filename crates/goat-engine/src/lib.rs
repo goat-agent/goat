@@ -58,6 +58,7 @@ pub struct GoatAgent {
     target: Option<ModelTarget>,
     mcp: Arc<goat_mcp::McpManager>,
     cwd: PathBuf,
+    meter: Option<goat_proxy::Meter>,
 }
 
 impl GoatAgent {
@@ -67,6 +68,7 @@ impl GoatAgent {
         credentials: CredentialStore,
         target: Option<ModelTarget>,
         cwd: PathBuf,
+        meter: Option<goat_proxy::Meter>,
     ) -> Self {
         let config = goat_config::Config::load();
         let mcp = goat_mcp::load_manager(goat_config::mcp_config_path().as_deref(), &cwd).await;
@@ -91,6 +93,7 @@ impl GoatAgent {
             target,
             mcp,
             cwd,
+            meter,
         }
     }
 }
@@ -118,6 +121,7 @@ pub(crate) struct Ctx<'a> {
     pub(crate) asks: &'a Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>>,
     pub(crate) rl_cache: &'a std::sync::Mutex<rate_limit_cache::RateLimitCache>,
     pub(crate) rl_path: Option<&'a std::path::Path>,
+    pub(crate) meter: &'a Option<goat_proxy::Meter>,
     pub(crate) cwd: &'a std::path::Path,
     pub(crate) date: &'a str,
 }
@@ -225,6 +229,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
         target,
         mcp,
         cwd,
+        meter,
     } = agent;
     let mut state = SessionState {
         target,
@@ -296,6 +301,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                 asks: &asks,
                 rl_cache: &rl_cache,
                 rl_path: rl_path.as_deref(),
+                meter: &meter,
                 cwd: &cwd,
                 date: &session_date,
             }
@@ -658,6 +664,7 @@ mod tests {
                 credentials,
                 Some(target("mock")),
                 std::env::temp_dir(),
+                None,
             )
             .await,
             calls,
@@ -915,6 +922,7 @@ mod tests {
             credentials,
             Some(target("mock")),
             std::env::temp_dir(),
+            None,
         )
         .await;
         let session = Session::spawn(agent);
@@ -1005,6 +1013,7 @@ mod tests {
             credentials.clone(),
             Some(target("mock")),
             std::env::temp_dir(),
+            None,
         )
         .await;
         let session = Session::spawn(agent);
@@ -1036,6 +1045,7 @@ mod tests {
             credentials,
             Some(target("mock")),
             std::env::temp_dir(),
+            None,
         )
         .await;
         let session2 = Session::spawn(agent2);
@@ -1124,6 +1134,7 @@ mod tests {
                 credentials,
                 Some(target("mock")),
                 std::env::temp_dir(),
+                None,
             )
             .await,
             calls,
@@ -1270,6 +1281,7 @@ mod tests {
             credentials,
             Some(target("mock")),
             std::env::temp_dir(),
+            None,
         )
         .await;
         let session = Session::spawn(agent);
@@ -1321,6 +1333,7 @@ mod tests {
             credentials,
             Some(target("mock")),
             std::env::temp_dir(),
+            None,
         )
         .await;
         let session = Session::spawn(agent);
@@ -1384,6 +1397,7 @@ mod tests {
             credentials,
             Some(target("mock")),
             std::env::temp_dir(),
+            None,
         )
         .await
     }
@@ -1481,6 +1495,7 @@ mod tests {
             credentials,
             Some(target("mock")),
             std::env::temp_dir(),
+            None,
         )
         .await;
         let session = Session::spawn(agent);
@@ -1567,6 +1582,7 @@ mod tests {
             credentials,
             Some(target("ghost")),
             std::env::temp_dir(),
+            None,
         )
         .await;
         let session = Session::spawn(agent);
@@ -1665,6 +1681,7 @@ mod tests {
             credentials,
             Some(target("mock")),
             std::env::temp_dir(),
+            None,
         )
         .await;
         let session = Session::spawn(agent);
@@ -1725,6 +1742,7 @@ mod tests {
             credentials,
             Some(target("mock")),
             std::env::temp_dir(),
+            None,
         )
         .await;
         let session = Session::spawn(agent);
@@ -1770,6 +1788,7 @@ mod tests {
             credentials,
             Some(target("mock")),
             std::env::temp_dir(),
+            None,
         )
         .await;
         let session = Session::spawn(agent);
@@ -1818,6 +1837,7 @@ mod tests {
             credentials,
             Some(target("mock")),
             std::env::temp_dir(),
+            None,
         )
         .await;
         let session = Session::spawn(agent);
