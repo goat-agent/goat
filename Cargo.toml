@@ -151,6 +151,7 @@ goat-channel-telegram   = { path = "crates/goat-channel-telegram" }
 goat-channel-discord    = { path = "crates/goat-channel-discord" }
 goat-render             = { path = "crates/goat-render" }
 goat-plugin             = { path = "crates/goat-plugin" }
+goat-integration        = { path = "crates/goat-integration" }
 goat-agent-tool               = { path = "crates/goat-agent-tool" }
 goat-agent-tool-fs            = { path = "crates/goat-agent-tool-fs" }
 goat-agent-tool-shell         = { path = "crates/goat-agent-tool-shell" }
