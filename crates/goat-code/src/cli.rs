@@ -50,6 +50,11 @@ pub enum Command {
     Code(CodeArgs),
     #[command(subcommand, about = "Manage agents")]
     Agent(goat_agent::cli::agent::Cmd),
+    #[command(
+        subcommand,
+        about = "Connect external services (Linear, …) shared by every agent"
+    )]
+    Integration(goat_agent::cli::integration::ConnectCmd),
     #[command(about = "First-run setup — providers, then an optional agent")]
     Setup,
     #[command(about = "Parse every config file and report what would load")]
