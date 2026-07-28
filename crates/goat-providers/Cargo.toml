@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 goat-provider = { workspace = true }
 goat-auth = { workspace = true }
+goat-proxy = { workspace = true }
 tokio = { workspace = true }
 goat-provider-openai = { workspace = true }
 goat-provider-openai-codex = { workspace = true }

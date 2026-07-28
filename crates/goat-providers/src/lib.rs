@@ -15,6 +15,14 @@ impl Registry {
     }
 
     pub fn load(store: &CredentialStore, account: &str) -> Self {
+        Self::load_metered(store, account, None)
+    }
+
+    pub fn load_metered(
+        store: &CredentialStore,
+        account: &str,
+        meter: Option<goat_proxy::Meter>,
+    ) -> Self {
         let providers: Vec<Arc<dyn Provider>> = vec![
             Arc::new(goat_provider_openai::build(store, account)),
             Arc::new(goat_provider_openai_codex::build(store, account)),
@@ -34,6 +42,13 @@ impl Registry {
             Arc::new(goat_provider_local::lmstudio()),
             Arc::new(goat_provider_local::llama_cpp()),
         ];
+        let providers = match meter {
+            Some(meter) => providers
+                .into_iter()
+                .map(|provider| meter.wrap(provider, account))
+                .collect(),
+            None => providers,
+        };
         Self { providers }
     }
 
