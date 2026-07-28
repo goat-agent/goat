@@ -443,6 +443,31 @@ pub trait Store: Send + Sync + 'static {
         state: &str,
     ) -> StoreResult<()>;
 
+    async fn record_observation(&self, new: NewObservation) -> StoreResult<i64>;
+
+    async fn get_observation(&self, id: i64) -> StoreResult<Option<ObservationRecord>>;
+}
+
+#[derive(Clone, Debug)]
+pub struct NewObservation {
+    pub persona: ProfileId,
+    pub integration: String,
+    pub account: String,
+    pub external_ref: String,
+    pub kind: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Clone, Debug)]
+pub struct ObservationRecord {
+    pub id: i64,
+    pub persona: ProfileId,
+    pub integration: String,
+    pub account: String,
+    pub external_ref: String,
+    pub kind: String,
+    pub payload: serde_json::Value,
+    pub observed_at: DateTime<Utc>,
 }
 
 #[derive(Clone)]
@@ -1331,6 +1356,49 @@ impl Store for SqliteStore {
         Ok(())
     }
 
+    async fn record_observation(&self, new: NewObservation) -> StoreResult<i64> {
+        let row: (i64,) = sqlx::query_as(
+            r"INSERT INTO integration_observations
+               (persona_id, integration, account, external_ref, kind, payload, observed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               RETURNING id",
+        )
+        .bind(new.persona.to_string())
+        .bind(&new.integration)
+        .bind(&new.account)
+        .bind(&new.external_ref)
+        .bind(&new.kind)
+        .bind(new.payload.to_string())
+        .bind(Utc::now().to_rfc3339())
+        .fetch_one(&*self.pool)
+        .await?;
+        Ok(row.0)
+    }
+
+    async fn get_observation(&self, id: i64) -> StoreResult<Option<ObservationRecord>> {
+        let row: Option<(i64, String, String, String, String, String, String, String)> =
+            sqlx::query_as(
+                r"SELECT id, persona_id, integration, account, external_ref, kind,
+                          payload, observed_at
+                   FROM integration_observations WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_optional(&*self.pool)
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        Ok(Some(ObservationRecord {
+            id: row.0,
+            persona: ProfileId(Uuid::parse_str(&row.1)?),
+            integration: row.2,
+            account: row.3,
+            external_ref: row.4,
+            kind: row.5,
+            payload: serde_json::from_str(&row.6)?,
+            observed_at: parse_ts(&row.7)?,
+        }))
+    }
 }
 
 async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<ScheduledTaskRecord> {
@@ -2011,6 +2079,29 @@ mod tests {
         assert!(s.upsert_goal_external(new_goal(p)).await.is_err());
     }
 
+    #[tokio::test]
+    async fn observation_round_trip() {
+        let s = fresh().await;
+        let p = fixture_persona(&s).await;
+        let id = s
+            .record_observation(NewObservation {
+                persona: p,
+                integration: "linear".into(),
+                account: "default".into(),
+                external_ref: "linear/default:issue:US-1".into(),
+                kind: "assigned".into(),
+                payload: serde_json::json!({ "id": "US-1", "title": "t" }),
+            })
+            .await
+            .unwrap();
+
+        let record = s.get_observation(id).await.unwrap().unwrap();
+        assert_eq!(record.persona, p);
+        assert_eq!(record.integration, "linear");
+        assert_eq!(record.external_ref, "linear/default:issue:US-1");
+        assert_eq!(record.payload["title"], "t");
+        assert!(s.get_observation(9999).await.unwrap().is_none());
+    }
 
     #[tokio::test]
     async fn integration_state_round_trip() {
