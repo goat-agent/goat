@@ -29,6 +29,7 @@ fn into_eyre(err: &anyhow::Error) -> color_eyre::Report {
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let matches = Cli::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).map_err(|e| eyre!(e.to_string()))?;
 
