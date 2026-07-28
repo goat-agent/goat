@@ -13,6 +13,7 @@ goat-core = { workspace = true }
 goat-protocol = { workspace = true }
 goat-provider = { workspace = true }
 goat-providers = { workspace = true }
+goat-proxy = { workspace = true }
 goat-auth = { workspace = true }
 goat-store = { workspace = true }
 goat-config = { workspace = true }
