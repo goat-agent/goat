@@ -272,7 +272,6 @@ pub struct NewGoal {
     pub origin: GoalOrigin,
     pub origin_conv: Option<ThreadId>,
     pub next_review_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub external_ref: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -290,7 +289,6 @@ pub struct GoalRecord {
     pub last_reviewed_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
-    pub external_ref: Option<String>,
 }
 
 #[async_trait]
@@ -422,14 +420,6 @@ pub trait Store: Send + Sync + 'static {
     async fn goals_due_for_review(&self, now: DateTime<Utc>) -> StoreResult<Vec<GoalRecord>>;
 
     async fn get_goal(&self, id: i64) -> StoreResult<Option<GoalRecord>>;
-
-    async fn upsert_goal_external(&self, new: NewGoal) -> StoreResult<i64>;
-
-    async fn goal_by_external_ref(
-        &self,
-        persona: ProfileId,
-        external_ref: &str,
-    ) -> StoreResult<Option<GoalRecord>>;
 
     async fn integration_state(
         &self,
@@ -1188,8 +1178,8 @@ impl Store for SqliteStore {
         let row: (i64,) = sqlx::query_as(
             r"INSERT INTO goals
                (persona_id, title, detail, parent, status, priority, origin,
-                origin_conv, next_review_at, external_ref, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
+                origin_conv, next_review_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
                RETURNING id",
         )
         .bind(new.persona.to_string())
@@ -1200,7 +1190,6 @@ impl Store for SqliteStore {
         .bind(new.origin.as_str())
         .bind(new.origin_conv.as_ref().map(goat_types::ThreadId::to_key))
         .bind(new.next_review_at.map(|d| d.to_rfc3339()))
-        .bind(new.external_ref)
         .bind(&now)
         .bind(&now)
         .fetch_one(&*self.pool)
@@ -1279,60 +1268,6 @@ impl Store for SqliteStore {
             .await?;
         match exists {
             Some(_) => Ok(Some(load_goal(&self.pool, id).await?)),
-            None => Ok(None),
-        }
-    }
-
-    async fn upsert_goal_external(&self, new: NewGoal) -> StoreResult<i64> {
-        let external_ref = new.external_ref.ok_or(StoreError::InvalidEnum {
-            field: "goals.external_ref",
-            value: "null".into(),
-        })?;
-        if let Some(conv) = &new.origin_conv {
-            self.ensure_thread(conv, new.persona).await?;
-        }
-        let now = Utc::now().to_rfc3339();
-        let row: (i64,) = sqlx::query_as(
-            r"INSERT INTO goals
-               (persona_id, title, detail, parent, status, priority, origin,
-                origin_conv, next_review_at, external_ref, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(persona_id, external_ref) WHERE external_ref IS NOT NULL
-               DO UPDATE SET title = excluded.title,
-                             detail = excluded.detail,
-                             next_review_at = excluded.next_review_at,
-                             updated_at = excluded.updated_at
-               RETURNING id",
-        )
-        .bind(new.persona.to_string())
-        .bind(&new.title)
-        .bind(new.detail)
-        .bind(new.parent)
-        .bind(new.priority)
-        .bind(new.origin.as_str())
-        .bind(new.origin_conv.as_ref().map(goat_types::ThreadId::to_key))
-        .bind(new.next_review_at.map(|d| d.to_rfc3339()))
-        .bind(&external_ref)
-        .bind(&now)
-        .bind(&now)
-        .fetch_one(&*self.pool)
-        .await?;
-        Ok(row.0)
-    }
-
-    async fn goal_by_external_ref(
-        &self,
-        persona: ProfileId,
-        external_ref: &str,
-    ) -> StoreResult<Option<GoalRecord>> {
-        let found: Option<(i64,)> =
-            sqlx::query_as(r"SELECT id FROM goals WHERE persona_id = ? AND external_ref = ?")
-                .bind(persona.to_string())
-                .bind(external_ref)
-                .fetch_optional(&*self.pool)
-                .await?;
-        match found {
-            Some((id,)) => Ok(Some(load_goal(&self.pool, id).await?)),
             None => Ok(None),
         }
     }
@@ -1521,12 +1456,11 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
         Option<String>,
         Option<String>,
         Option<String>,
-        Option<String>,
     ) = sqlx::query_as(
         r"SELECT g.id, g.persona_id, g.title, g.detail, g.parent, g.status,
                   g.priority, g.origin, g.next_review_at,
                   g.last_reviewed_at, g.created_at, g.updated_at,
-                  c.channel, c.instance, c.external, g.external_ref
+                  c.channel, c.instance, c.external
            FROM goals g
            LEFT JOIN threads c ON c.id = g.origin_conv
            WHERE g.id = ?",
@@ -1561,7 +1495,6 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
         last_reviewed_at,
         created_at: parse_ts(&row.10)?,
         updated_at: parse_ts(&row.11)?,
-        external_ref: row.15,
     })
 }
 
@@ -1965,7 +1898,6 @@ mod tests {
             origin: GoalOrigin::Owner,
             origin_conv: None,
             next_review_at: None,
-            external_ref: None,
         }
     }
 
@@ -2076,58 +2008,6 @@ mod tests {
         assert!(after.last_reviewed_at.is_some());
         let stored = after.next_review_at.expect("next_review_at set");
         assert_eq!(stored.to_rfc3339(), next.to_rfc3339());
-    }
-
-    #[tokio::test]
-    async fn upsert_goal_external_is_idempotent() {
-        let s = fresh().await;
-        let p = fixture_persona(&s).await;
-        let anchor = NewGoal {
-            title: "GOA-1 fix retry storm".into(),
-            detail: Some("first".into()),
-            external_ref: Some("linear/default:issue:GOA-1".into()),
-            ..new_goal(p)
-        };
-
-        let first = s.upsert_goal_external(anchor.clone()).await.unwrap();
-        s.update_goal_status(first, GoalStatus::Waiting)
-            .await
-            .unwrap();
-
-        let second = s
-            .upsert_goal_external(NewGoal {
-                detail: Some("second".into()),
-                ..anchor
-            })
-            .await
-            .unwrap();
-        assert_eq!(first, second);
-
-        let g = s
-            .goal_by_external_ref(p, "linear/default:issue:GOA-1")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(g.id, first);
-        assert_eq!(g.detail.as_deref(), Some("second"));
-        assert_eq!(g.status, GoalStatus::Waiting);
-        assert_eq!(
-            g.external_ref.as_deref(),
-            Some("linear/default:issue:GOA-1")
-        );
-        assert!(
-            s.goal_by_external_ref(p, "missing")
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[tokio::test]
-    async fn upsert_goal_external_requires_ref() {
-        let s = fresh().await;
-        let p = fixture_persona(&s).await;
-        assert!(s.upsert_goal_external(new_goal(p)).await.is_err());
     }
 
     #[tokio::test]

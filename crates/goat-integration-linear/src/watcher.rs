@@ -2,10 +2,8 @@ use std::fmt::Write as _;
 use std::future::Future;
 use std::time::Duration;
 
-use chrono::Utc;
 use goat_auth::CredentialStore;
 use goat_integration::{IntegrationError, IntegrationResult, IntegrationRuntime};
-use goat_store::{GoalOrigin, NewGoal};
 use goat_types::{Event, IntegrationUpdateKind, ProfileId};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -144,9 +142,7 @@ fn auth_broken_event(persona: ProfileId, account: &str, error: &IntegrationError
             "linear polling keeps failing to authenticate ({error}); \
              reconnect with `goat agent integration add linear`"
         ),
-        raw_refs: Vec::new(),
-        goal_id: None,
-        notify_thread: None,
+        observation: None,
     }
 }
 
@@ -181,13 +177,13 @@ async fn process(
 
     let mut events = Vec::new();
     for issue in &assigned {
-        match anchor(persona, runtime, account, issue).await {
+        match observe(persona, runtime, account, issue).await {
             Ok(event) => events.push(event),
             Err(e) => {
                 warn!(
                     issue = %issue.identifier,
                     error = %e,
-                    "failed to anchor linear change; retrying next poll",
+                    "failed to record linear observation; retrying next poll",
                 );
                 revert_seen(&mut next, prev.as_ref(), &issue.id);
             }
@@ -226,7 +222,7 @@ fn revert_seen(next: &mut WatchState, prev: Option<&WatchState>, id: &str) {
     }
 }
 
-async fn anchor(
+async fn observe(
     persona: ProfileId,
     runtime: &IntegrationRuntime,
     account: &str,
@@ -243,19 +239,6 @@ async fn anchor(
             issue.raw.clone(),
         )
         .await?;
-    let goal_id = runtime
-        .upsert_anchor(NewGoal {
-            persona,
-            title: format!("{} {}", issue.identifier, issue.title),
-            detail: Some(format!("{}\nstate: {}", issue.url, issue.state)),
-            parent: None,
-            priority: 3,
-            origin: GoalOrigin::Owner,
-            origin_conv: None,
-            next_review_at: Some(Utc::now() + chrono::Duration::hours(1)),
-            external_ref: Some(external_ref.clone()),
-        })
-        .await?;
     Ok(Event::IntegrationUpdate {
         profile: persona,
         integration: ID,
@@ -263,9 +246,7 @@ async fn anchor(
         kind: IntegrationUpdateKind::Assigned,
         external_ref,
         summary: format!("{} — {}", issue.identifier, issue.title),
-        raw_refs: vec![format!("observation:{observation}")],
-        goal_id: Some(goal_id),
-        notify_thread: None,
+        observation: Some(observation),
     })
 }
 
@@ -312,9 +293,7 @@ mod tests {
             id: id.into(),
             identifier: identifier.into(),
             title: format!("{identifier} title"),
-            url: format!("https://linear.app/goat/issue/{identifier}"),
             updated_at: updated_at.into(),
-            state: "Todo".into(),
             status_type: "unstarted".into(),
             raw: serde_json::json!({ "id": id, "identifier": identifier }),
         }
@@ -435,8 +414,7 @@ mod tests {
             kind,
             external_ref,
             summary,
-            raw_refs,
-            goal_id,
+            observation,
             ..
         } = event
         else {
@@ -445,32 +423,18 @@ mod tests {
         assert_eq!(kind, IntegrationUpdateKind::Assigned);
         assert_eq!(external_ref, "linear/default:issue:GOA-2");
         assert_eq!(summary, "GOA-2 — GOA-2 title");
-        assert_eq!(raw_refs.len(), 1);
-        assert!(raw_refs[0].starts_with("observation:"));
 
         cancel.cancel();
         handle.await.unwrap();
 
-        let goal = runtime
+        let record = runtime
             .store
-            .goal_by_external_ref(persona, "linear/default:issue:GOA-2")
-            .await
-            .unwrap()
-            .expect("anchor goal");
-        assert_eq!(Some(goal.id), goal_id);
-
-        let observation_id: i64 = raw_refs[0]
-            .strip_prefix("observation:")
-            .unwrap()
-            .parse()
-            .unwrap();
-        let observation = runtime
-            .store
-            .get_observation(observation_id)
+            .get_observation(observation.expect("observation id"))
             .await
             .unwrap()
             .expect("observation recorded");
-        assert_eq!(observation.payload["identifier"], "GOA-2");
+        assert_eq!(record.payload["identifier"], "GOA-2");
+        assert_eq!(record.external_ref, "linear/default:issue:GOA-2");
 
         drop(runtime);
         let mut extra = 0;

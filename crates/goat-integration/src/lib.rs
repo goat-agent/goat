@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use goat_agent_tool::{ToolName, ToolRegistry};
 use goat_auth::CredentialStore;
 use goat_bus::EventBus;
-use goat_store::{NewGoal, NewObservation, Store, StoreError};
+use goat_store::{NewObservation, Store, StoreError};
 use goat_types::{Event, IntegrationId, ProfileId};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -98,13 +98,6 @@ impl IntegrationRuntime {
                 kind: kind.to_string(),
                 payload,
             })
-            .await
-            .map_err(|e| store_err(&e))
-    }
-
-    pub async fn upsert_anchor(&self, new: NewGoal) -> IntegrationResult<i64> {
-        self.store
-            .upsert_goal_external(new)
             .await
             .map_err(|e| store_err(&e))
     }

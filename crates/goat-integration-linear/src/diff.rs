@@ -40,9 +40,7 @@ mod tests {
             id: id.into(),
             identifier: identifier.into(),
             title: format!("{identifier} title"),
-            url: format!("https://linear.app/{identifier}"),
             updated_at: updated_at.into(),
-            state: "Todo".into(),
             status_type: "unstarted".into(),
             raw: Value::Null,
         }

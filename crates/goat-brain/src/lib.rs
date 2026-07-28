@@ -345,9 +345,7 @@ impl Brain {
                             kind,
                             external_ref,
                             summary,
-                            raw_refs,
-                            goal_id,
-                            notify_thread,
+                            observation,
                             ..
                         } => {
                             let update = IntegrationTurn {
@@ -356,9 +354,7 @@ impl Brain {
                                 kind,
                                 external_ref,
                                 summary,
-                                raw_refs,
-                                goal_id,
-                                notify_thread,
+                                observation,
                             };
                             if let Err(e) =
                                 self.handle_integration_update(&channels, update).await
@@ -1006,24 +1002,14 @@ impl Brain {
         channels: &[Arc<dyn ChannelHandle>],
         update: IntegrationTurn,
     ) -> Result<()> {
-        let find = |thread: &ThreadId| {
-            channels
+        let resolved = match self.store.latest_thread(self.persona).await? {
+            Some(thread) => channels
                 .iter()
                 .find(|h| h.id() == thread.channel && h.instance() == thread.instance)
                 .cloned()
+                .map(|handle| (thread, handle)),
+            None => None,
         };
-        let mut resolved = None;
-        if let Some(thread) = &update.notify_thread
-            && let Some(handle) = find(thread)
-        {
-            resolved = Some((thread.clone(), handle));
-        }
-        if resolved.is_none()
-            && let Some(thread) = self.store.latest_thread(self.persona).await?
-            && let Some(handle) = find(&thread)
-        {
-            resolved = Some((thread, handle));
-        }
         let Some((thread, handle)) = resolved else {
             warn!(
                 profile = %self.persona,
@@ -1041,7 +1027,7 @@ impl Brain {
 
         let mut tools = self.integration_tools.clone();
         tools.extend(
-            ["memory", "memory_search", "fact", "goal"]
+            ["memory_search", "fact"]
                 .iter()
                 .map(std::string::ToString::to_string),
         );
@@ -1608,9 +1594,7 @@ struct IntegrationTurn {
     kind: IntegrationUpdateKind,
     external_ref: String,
     summary: String,
-    raw_refs: Vec<String>,
-    goal_id: Option<i64>,
-    notify_thread: Option<ThreadId>,
+    observation: Option<i64>,
 }
 
 fn integration_prompt(update: &IntegrationTurn) -> String {
@@ -1622,14 +1606,10 @@ fn integration_prompt(update: &IntegrationTurn) -> String {
         update.summary,
         update.external_ref,
     );
-    if let Some(goal_id) = update.goal_id {
-        let _ = write!(header, "\nwork anchor: goal #{goal_id}");
-    }
-    if !update.raw_refs.is_empty() {
+    if let Some(observation) = update.observation {
         let _ = write!(
             header,
-            "\nobservations recorded (raw payload kept losslessly): {}",
-            update.raw_refs.join(", "),
+            "\nobservation recorded (raw payload kept losslessly): observation:{observation}",
         );
     }
     format!(
@@ -1637,9 +1617,8 @@ fn integration_prompt(update: &IntegrationTurn) -> String {
          Gather context now: pull live data with the `{}_*` tools and search \
          prior knowledge with `memory_search`. Record durable claims with \
          `fact` in scope domain:{}, using the observation reference above as \
-         source_ref. Keep the work anchor current with `goal`. Then brief me: \
-         what happened, the key context you found, and a suggested first step. \
-         Do not start the work itself.",
+         source_ref. Then brief me: what happened, the key context you found, \
+         and a suggested first step. Do not start the work itself.",
         update.integration, update.integration,
     )
 }
@@ -1709,22 +1688,18 @@ mod tests {
             kind: IntegrationUpdateKind::Assigned,
             external_ref: "linear/default:issue:GOA-1".into(),
             summary: "GOA-1 — Fix retry storm".into(),
-            raw_refs: vec!["observation:12".into()],
-            goal_id: Some(42),
-            notify_thread: None,
+            observation: Some(12),
         }
     }
 
     #[test]
-    fn integration_prompt_includes_anchor_and_observations() {
+    fn integration_prompt_includes_observation() {
         let prompt = integration_prompt(&integration_turn());
         assert!(prompt.starts_with(
             "<integration_update integration=\"linear\" account=\"default\" kind=\"assigned\">"
         ));
         assert!(prompt.contains("GOA-1 — Fix retry storm"));
         assert!(prompt.contains("external_ref: linear/default:issue:GOA-1"));
-        assert!(prompt.contains("work anchor: goal #42"));
-        assert!(prompt.contains("observations recorded"));
         assert!(prompt.contains("observation:12"));
         assert!(prompt.contains("`linear_*` tools"));
         assert!(prompt.contains("scope domain:linear"));
@@ -1732,14 +1707,12 @@ mod tests {
     }
 
     #[test]
-    fn integration_prompt_omits_empty_sections() {
+    fn integration_prompt_omits_missing_observation() {
         let prompt = integration_prompt(&IntegrationTurn {
-            goal_id: None,
-            raw_refs: vec![],
+            observation: None,
             ..integration_turn()
         });
-        assert!(!prompt.contains("work anchor: goal #"));
-        assert!(!prompt.contains("observations recorded"));
+        assert!(!prompt.contains("observation recorded"));
     }
 
     #[test]
