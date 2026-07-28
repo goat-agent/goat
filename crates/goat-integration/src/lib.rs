@@ -1,3 +1,7 @@
+pub mod schema;
+
+pub use schema::drop_placeholder_args;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
