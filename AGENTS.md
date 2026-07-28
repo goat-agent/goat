@@ -76,6 +76,10 @@ The inlined provider SDK and the terminal design system — used by both capabil
   coding tables, one migration history, FTS5 + sqlite-vec.
 - `goat-config` — owns the `~/.goat/` layout, product settings, and agent definitions.
 - `goat-sqlite-vec` — FFI isolation for the statically linked `sqlite-vec` extension.
+- `goat-proxy` — provider usage metering (`MeteredProvider` + `Recorder`, wired through
+  `Registry::load_metered`), the daemon-hosted localhost dashboard (usage, rate limits, request
+  log) with account management (API key + OAuth login, backfilled from `rate_limits.json`);
+  state lives in the `proxy_`-prefixed tables via `goat-store`'s `ProxyStore`.
 
 ### agent
 
