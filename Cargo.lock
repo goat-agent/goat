@@ -2610,6 +2610,7 @@ dependencies = [
  "goat-console",
  "goat-daemon",
  "goat-integration-linear",
+ "goat-integration-slack",
  "goat-protocol",
  "goat-provider",
  "goat-providers",
