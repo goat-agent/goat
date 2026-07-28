@@ -71,6 +71,7 @@ impl GoalTool {
                     },
                     origin_conv: Some(ctx.conversation.clone()),
                     next_review_at: review_in_days.map(review_at),
+                    external_ref: None,
                 };
                 match self.store.create_goal(new).await {
                     Ok(id) => ToolOutput::structured(json!({ "created": id })),
