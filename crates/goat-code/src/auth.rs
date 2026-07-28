@@ -673,6 +673,7 @@ fn logout(
     let key = match service {
         CredentialService::Model => CredentialKey::model(provider, account),
         CredentialService::Search => CredentialKey::search(provider, account),
+        CredentialService::Integration => CredentialKey::integration(provider, account),
     };
     if store.remove(&key).map_err(storage_error)? {
         ui::success(&format!("disconnected {provider} ({account})"));

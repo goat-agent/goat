@@ -12,6 +12,7 @@ use goat_brain::{Brain, BrainDeps, ProviderRegistry};
 use goat_bus::EventBus;
 use goat_channel::{Channel, ChannelBinding, ChannelFactory, ChannelHandle};
 use goat_config::{GoatPaths, LoadedConfig};
+use goat_integration::{Integration, IntegrationBinding, IntegrationRuntime};
 use goat_memory::Embedder;
 use goat_profile::ProfileConfig;
 use goat_render::{DefaultStreamRenderer, StreamRenderer};
@@ -113,6 +114,29 @@ impl Goat {
         if let Some(manager) = code {
             goat_agent_tool_code::register(&mut tools_reg, manager);
         }
+
+        let integrations = goat_integration::registry_from_inventory();
+        let connections = load_integration_connections(&cfg.paths.config_json);
+        let integration_bindings =
+            build_integration_bindings(&cfg.agents, &integrations, &connections);
+        let integration_runtime = IntegrationRuntime {
+            credentials: sdk_store.clone(),
+            store: store.clone(),
+            bus: bus.clone(),
+        };
+        let mut integration_tool_names: HashMap<String, Vec<String>> = HashMap::new();
+        for (id, integration) in &integrations {
+            if let Some(bindings) = integration_bindings.get(id).filter(|b| !b.is_empty()) {
+                let names = integration
+                    .register_tools(&mut tools_reg, &integration_runtime, bindings.clone())
+                    .await;
+                integration_tool_names.insert(
+                    id.clone(),
+                    names.iter().map(|n| n.as_str().to_string()).collect(),
+                );
+            }
+        }
+
         let tools = Arc::new(tools_reg);
         info!(
             default_tools = tools.default_specs().len(),
@@ -126,6 +150,10 @@ impl Goat {
         let shared = RuntimeShared {
             providers: providers.clone(),
             channels: &channels,
+            integrations: &integrations,
+            integration_bindings: &integration_bindings,
+            integration_runtime,
+            integration_tool_names,
             tools,
             goat_root: cfg.paths.root.clone(),
             store,
@@ -369,9 +397,79 @@ fn build_channel_registry() -> HashMap<String, Arc<dyn Channel>> {
     by_name
 }
 
+fn load_integration_connections(
+    config_json: &std::path::Path,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    std::fs::read_to_string(config_json)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<goat_config::Config>(&raw).ok())
+        .map(|config| config.integrations)
+        .unwrap_or_default()
+}
+
+fn merge_binding_config(
+    connection: Option<&serde_json::Value>,
+    binding: &serde_json::Value,
+) -> serde_json::Value {
+    match (
+        connection.and_then(serde_json::Value::as_object),
+        binding.as_object(),
+    ) {
+        (Some(base), Some(over)) => {
+            let mut merged = base.clone();
+            merged.extend(over.clone());
+            serde_json::Value::Object(merged)
+        }
+        (Some(base), None) => serde_json::Value::Object(base.clone()),
+        (None, _) => binding.clone(),
+    }
+}
+
+fn build_integration_bindings(
+    agents: &[ProfileConfig],
+    integrations: &HashMap<String, Arc<dyn Integration>>,
+    connections: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> HashMap<String, Arc<goat_integration::BindingMap>> {
+    let mut maps: HashMap<String, goat_integration::BindingMap> = HashMap::new();
+    for agent in agents {
+        for profile_integration in &agent.integrations {
+            let name = profile_integration.name.as_str();
+            if !integrations.contains_key(name) {
+                warn!(
+                    profile = %agent.slug,
+                    integration = %name,
+                    "unknown integration in agent config",
+                );
+                continue;
+            }
+            let Some(factory) = goat_integration::factory_for(name) else {
+                continue;
+            };
+            if let Err(e) = (factory.validate_config)(&profile_integration.config) {
+                warn!(
+                    profile = %agent.slug,
+                    integration = %name,
+                    error = %e,
+                    "skipping integration binding: invalid config",
+                );
+                continue;
+            }
+            let merged = merge_binding_config(connections.get(name), &profile_integration.config);
+            maps.entry(name.to_string())
+                .or_default()
+                .insert(agent.id, IntegrationBinding::from_config(merged));
+        }
+    }
+    maps.into_iter().map(|(k, v)| (k, Arc::new(v))).collect()
+}
+
 struct RuntimeShared<'a> {
     providers: Arc<ProviderRegistry>,
     channels: &'a HashMap<String, Arc<dyn Channel>>,
+    integrations: &'a HashMap<String, Arc<dyn Integration>>,
+    integration_bindings: &'a HashMap<String, Arc<goat_integration::BindingMap>>,
+    integration_runtime: IntegrationRuntime,
+    integration_tool_names: HashMap<String, Vec<String>>,
     tools: Arc<ToolRegistry>,
     goat_root: std::path::PathBuf,
     store: Arc<dyn Store>,
@@ -450,6 +548,32 @@ async fn spawn_profile(
         anyhow::bail!("no successful channel bindings");
     }
 
+    for profile_integration in &raw.integrations {
+        let Some(integration) = shared.integrations.get(profile_integration.name.as_str()) else {
+            warn!(
+                profile = %raw.slug,
+                integration = %profile_integration.name,
+                "skipping integration: no compiled-in integration with this name",
+            );
+            continue;
+        };
+        let Some(binding) = shared
+            .integration_bindings
+            .get(profile_integration.name.as_str())
+            .and_then(|map| map.get(&raw.id))
+        else {
+            continue;
+        };
+        if let Some(handle) = integration.spawn_watcher(
+            raw.id,
+            binding.clone(),
+            shared.integration_runtime.clone(),
+            shared.cancel.clone(),
+        ) {
+            joins.push(handle);
+        }
+    }
+
     let brain = Arc::new(Brain::new(BrainDeps {
         persona: raw.id,
         personality: Arc::new(raw.personality.clone()),
@@ -467,6 +591,13 @@ async fn spawn_profile(
         goat_root: shared.goat_root.clone(),
         stream_idle_timeout: std::time::Duration::from_mins(1),
         llm_max_retries: 3,
+        integration_tools: raw
+            .integrations
+            .iter()
+            .filter_map(|pi| shared.integration_tool_names.get(pi.name.as_str()))
+            .flatten()
+            .cloned()
+            .collect(),
         intake_debounce: raw.intake_debounce,
         intake_ceiling: raw.intake_ceiling,
     }));
@@ -523,11 +654,99 @@ mod tests {
             history_window: 10,
             tool_selectors: vec![],
             bindings: vec![],
+            integrations: vec![],
             memory: MemoryConfig::default(),
             autonomy: AutonomyConfig::default(),
             intake_debounce: std::time::Duration::from_secs(1),
             intake_ceiling: std::time::Duration::from_secs(5),
         }
+    }
+
+    struct FakeIntegration;
+
+    #[async_trait::async_trait]
+    impl Integration for FakeIntegration {
+        fn id(&self) -> goat_types::IntegrationId {
+            goat_types::IntegrationId::from_static("fake")
+        }
+
+        fn metadata(&self) -> goat_integration::IntegrationMetadata {
+            goat_integration::IntegrationMetadata {
+                id: "fake",
+                display: "Fake",
+                auth: goat_integration::IntegrationAuth::Secret,
+                secret_label: "key",
+                env_var: None,
+                setup: "none",
+                has_watcher: false,
+            }
+        }
+
+        async fn register_tools(
+            &self,
+            _registry: &mut ToolRegistry,
+            _runtime: &IntegrationRuntime,
+            _bindings: Arc<goat_integration::BindingMap>,
+        ) -> Vec<goat_agent_tool::ToolName> {
+            vec![goat_agent_tool::ToolName::from_static("fake")]
+        }
+
+        async fn verify(
+            &self,
+            _config: &serde_json::Value,
+            _credentials: &goat_auth::CredentialStore,
+        ) -> goat_integration::IntegrationResult<String> {
+            Ok("fake".into())
+        }
+    }
+
+    inventory::submit! {
+        goat_integration::IntegrationFactory {
+            id: goat_types::IntegrationId::from_static("fake"),
+            ctor: || Arc::new(FakeIntegration),
+            validate_config: |config| {
+                if config.get("bad").is_some() {
+                    Err(goat_integration::IntegrationError::Config("bad".into()))
+                } else {
+                    Ok(())
+                }
+            },
+        }
+    }
+
+    #[test]
+    fn integration_bindings_validate_and_group_by_persona() {
+        let integrations = goat_integration::registry_from_inventory();
+        assert!(integrations.contains_key("fake"));
+
+        let mut good = persona("good", "gpt-x");
+        good.integrations = vec![goat_profile::ProfileIntegration {
+            name: "fake".into(),
+            config: serde_json::json!({ "account": "work" }),
+        }];
+        let mut bad = persona("bad", "gpt-x");
+        bad.integrations = vec![
+            goat_profile::ProfileIntegration {
+                name: "fake".into(),
+                config: serde_json::json!({ "bad": true }),
+            },
+            goat_profile::ProfileIntegration {
+                name: "unknown".into(),
+                config: serde_json::json!({}),
+            },
+        ];
+
+        let connections = std::collections::BTreeMap::from([(
+            "fake".to_string(),
+            serde_json::json!({ "client_id": "shared-client" }),
+        )]);
+        let maps = build_integration_bindings(&[good.clone(), bad], &integrations, &connections);
+        let fake = maps.get("fake").expect("fake map");
+        assert_eq!(fake.len(), 1);
+        let binding = fake.get(&good.id).expect("good binding");
+        assert_eq!(binding.account, "work");
+        assert_eq!(binding.config["client_id"], "shared-client");
+        assert!(!maps.contains_key("unknown"));
     }
 
     #[tokio::test]

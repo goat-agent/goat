@@ -118,7 +118,8 @@ image = { version = "0.25", default-features = false, features = [
 chromiumoxide = "0.9"
 arboard = "3.6.1"
 rand = "0.10"
-rmcp = { version = "1.7.0", default-features = false, features = ["client", "transport-child-process"] }
+rmcp = { version = "1.7.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "auth", "reqwest-tls-no-provider"] }
+rmcp-reqwest = { package = "reqwest", version = "0.13", default-features = false }
 open = "5"
 fs2 = "0.4"
 rustix = { version = "1", features = ["process"] }
@@ -150,6 +151,8 @@ goat-channel            = { path = "crates/goat-channel" }
 goat-channel-discord    = { path = "crates/goat-channel-discord" }
 goat-render             = { path = "crates/goat-render" }
 goat-plugin             = { path = "crates/goat-plugin" }
+goat-integration        = { path = "crates/goat-integration" }
+goat-integration-linear = { path = "crates/goat-integration-linear" }
 goat-agent-tool               = { path = "crates/goat-agent-tool" }
 goat-agent-tool-fs            = { path = "crates/goat-agent-tool-fs" }
 goat-agent-tool-shell         = { path = "crates/goat-agent-tool-shell" }

@@ -420,6 +420,49 @@ pub trait Store: Send + Sync + 'static {
     async fn goals_due_for_review(&self, now: DateTime<Utc>) -> StoreResult<Vec<GoalRecord>>;
 
     async fn get_goal(&self, id: i64) -> StoreResult<Option<GoalRecord>>;
+
+    async fn integration_state(
+        &self,
+        persona: ProfileId,
+        integration: &str,
+        account: &str,
+        stream: &str,
+    ) -> StoreResult<Option<String>>;
+
+    async fn set_integration_state(
+        &self,
+        persona: ProfileId,
+        integration: &str,
+        account: &str,
+        stream: &str,
+        state: &str,
+    ) -> StoreResult<()>;
+
+    async fn record_observation(&self, new: NewObservation) -> StoreResult<i64>;
+
+    async fn get_observation(&self, id: i64) -> StoreResult<Option<ObservationRecord>>;
+}
+
+#[derive(Clone, Debug)]
+pub struct NewObservation {
+    pub persona: ProfileId,
+    pub integration: String,
+    pub account: String,
+    pub external_ref: String,
+    pub kind: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Clone, Debug)]
+pub struct ObservationRecord {
+    pub id: i64,
+    pub persona: ProfileId,
+    pub integration: String,
+    pub account: String,
+    pub external_ref: String,
+    pub kind: String,
+    pub payload: serde_json::Value,
+    pub observed_at: DateTime<Utc>,
 }
 
 #[derive(Clone)]
@@ -1228,6 +1271,96 @@ impl Store for SqliteStore {
             None => Ok(None),
         }
     }
+
+    async fn integration_state(
+        &self,
+        persona: ProfileId,
+        integration: &str,
+        account: &str,
+        stream: &str,
+    ) -> StoreResult<Option<String>> {
+        let row: Option<(String,)> = sqlx::query_as(
+            r"SELECT state FROM integration_state
+               WHERE persona_id = ? AND integration = ? AND account = ? AND stream = ?",
+        )
+        .bind(persona.to_string())
+        .bind(integration)
+        .bind(account)
+        .bind(stream)
+        .fetch_optional(&*self.pool)
+        .await?;
+        Ok(row.map(|(state,)| state))
+    }
+
+    async fn set_integration_state(
+        &self,
+        persona: ProfileId,
+        integration: &str,
+        account: &str,
+        stream: &str,
+        state: &str,
+    ) -> StoreResult<()> {
+        sqlx::query(
+            r"INSERT INTO integration_state
+               (persona_id, integration, account, stream, state, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(persona_id, integration, account, stream)
+               DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
+        )
+        .bind(persona.to_string())
+        .bind(integration)
+        .bind(account)
+        .bind(stream)
+        .bind(state)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&*self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn record_observation(&self, new: NewObservation) -> StoreResult<i64> {
+        let row: (i64,) = sqlx::query_as(
+            r"INSERT INTO integration_observations
+               (persona_id, integration, account, external_ref, kind, payload, observed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               RETURNING id",
+        )
+        .bind(new.persona.to_string())
+        .bind(&new.integration)
+        .bind(&new.account)
+        .bind(&new.external_ref)
+        .bind(&new.kind)
+        .bind(new.payload.to_string())
+        .bind(Utc::now().to_rfc3339())
+        .fetch_one(&*self.pool)
+        .await?;
+        Ok(row.0)
+    }
+
+    async fn get_observation(&self, id: i64) -> StoreResult<Option<ObservationRecord>> {
+        let row: Option<(i64, String, String, String, String, String, String, String)> =
+            sqlx::query_as(
+                r"SELECT id, persona_id, integration, account, external_ref, kind,
+                          payload, observed_at
+                   FROM integration_observations WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_optional(&*self.pool)
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        Ok(Some(ObservationRecord {
+            id: row.0,
+            persona: ProfileId(Uuid::parse_str(&row.1)?),
+            integration: row.2,
+            account: row.3,
+            external_ref: row.4,
+            kind: row.5,
+            payload: serde_json::from_str(&row.6)?,
+            observed_at: parse_ts(&row.7)?,
+        }))
+    }
 }
 
 async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<ScheduledTaskRecord> {
@@ -1318,7 +1451,6 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
         String,
         Option<String>,
         Option<String>,
-        Option<String>,
         String,
         String,
         Option<String>,
@@ -1326,7 +1458,7 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
         Option<String>,
     ) = sqlx::query_as(
         r"SELECT g.id, g.persona_id, g.title, g.detail, g.parent, g.status,
-                  g.priority, g.origin, g.origin_conv, g.next_review_at,
+                  g.priority, g.origin, g.next_review_at,
                   g.last_reviewed_at, g.created_at, g.updated_at,
                   c.channel, c.instance, c.external
            FROM goals g
@@ -1338,7 +1470,7 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
     .await?;
 
     let persona = ProfileId(Uuid::parse_str(&row.1)?);
-    let origin_conv = match (&row.13, &row.14, &row.15) {
+    let origin_conv = match (&row.12, &row.13, &row.14) {
         (Some(channel), Some(instance), Some(external)) => Some(ThreadId::new(
             ChannelId::new(channel.clone()),
             InstanceId(Uuid::parse_str(instance)?),
@@ -1346,8 +1478,8 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
         )),
         _ => None,
     };
-    let next_review_at = row.9.as_deref().map(parse_ts).transpose()?;
-    let last_reviewed_at = row.10.as_deref().map(parse_ts).transpose()?;
+    let next_review_at = row.8.as_deref().map(parse_ts).transpose()?;
+    let last_reviewed_at = row.9.as_deref().map(parse_ts).transpose()?;
 
     Ok(GoalRecord {
         id: row.0,
@@ -1361,8 +1493,8 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
         origin_conv,
         next_review_at,
         last_reviewed_at,
-        created_at: parse_ts(&row.11)?,
-        updated_at: parse_ts(&row.12)?,
+        created_at: parse_ts(&row.10)?,
+        updated_at: parse_ts(&row.11)?,
     })
 }
 
@@ -1876,5 +2008,67 @@ mod tests {
         assert!(after.last_reviewed_at.is_some());
         let stored = after.next_review_at.expect("next_review_at set");
         assert_eq!(stored.to_rfc3339(), next.to_rfc3339());
+    }
+
+    #[tokio::test]
+    async fn observation_round_trip() {
+        let s = fresh().await;
+        let p = fixture_persona(&s).await;
+        let id = s
+            .record_observation(NewObservation {
+                persona: p,
+                integration: "linear".into(),
+                account: "default".into(),
+                external_ref: "linear/default:issue:US-1".into(),
+                kind: "assigned".into(),
+                payload: serde_json::json!({ "id": "US-1", "title": "t" }),
+            })
+            .await
+            .unwrap();
+
+        let record = s.get_observation(id).await.unwrap().unwrap();
+        assert_eq!(record.persona, p);
+        assert_eq!(record.integration, "linear");
+        assert_eq!(record.external_ref, "linear/default:issue:US-1");
+        assert_eq!(record.payload["title"], "t");
+        assert!(s.get_observation(9999).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn integration_state_round_trip() {
+        let s = fresh().await;
+        let p = fixture_persona(&s).await;
+
+        assert!(
+            s.integration_state(p, "linear", "default", "assigned")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        s.set_integration_state(p, "linear", "default", "assigned", r#"{"watermark":"a"}"#)
+            .await
+            .unwrap();
+        s.set_integration_state(p, "linear", "default", "assigned", r#"{"watermark":"b"}"#)
+            .await
+            .unwrap();
+        s.set_integration_state(p, "linear", "work", "assigned", r#"{"watermark":"c"}"#)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            s.integration_state(p, "linear", "default", "assigned")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(r#"{"watermark":"b"}"#)
+        );
+        assert_eq!(
+            s.integration_state(p, "linear", "work", "assigned")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(r#"{"watermark":"c"}"#)
+        );
     }
 }

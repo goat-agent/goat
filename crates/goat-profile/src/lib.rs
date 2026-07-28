@@ -16,6 +16,12 @@ pub struct ProfileBinding {
 }
 
 #[derive(Clone, Debug)]
+pub struct ProfileIntegration {
+    pub name: String,
+    pub config: serde_json::Value,
+}
+
+#[derive(Clone, Debug)]
 pub struct ProfileConfig {
     pub id: ProfileId,
     pub slug: String,
@@ -25,6 +31,7 @@ pub struct ProfileConfig {
     pub history_window: usize,
     pub tool_selectors: Vec<String>,
     pub bindings: Vec<ProfileBinding>,
+    pub integrations: Vec<ProfileIntegration>,
     pub memory: MemoryConfig,
     pub autonomy: AutonomyConfig,
     pub intake_debounce: std::time::Duration,
