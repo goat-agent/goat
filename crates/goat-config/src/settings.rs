@@ -22,6 +22,7 @@ pub struct Config {
     pub remote: RemoteConfig,
     pub search: SearchConfig,
     pub web_fetch: WebFetchConfig,
+    pub proxy: ProxyConfig,
     pub integrations: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
@@ -68,6 +69,22 @@ impl Default for RemoteConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProxyConfig {
+    pub enabled: bool,
+    pub bind: String,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            bind: "127.0.0.1:7777".to_owned(),
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -78,6 +95,7 @@ impl Default for Config {
             remote: RemoteConfig::default(),
             search: SearchConfig::default(),
             web_fetch: WebFetchConfig::default(),
+            proxy: ProxyConfig::default(),
             integrations: std::collections::BTreeMap::new(),
         }
     }
@@ -125,7 +143,7 @@ pub enum SettingsError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, RemoteConfig, SearchConfig, ThemeChoice, WebFetchConfig};
+    use super::{Config, ProxyConfig, RemoteConfig, SearchConfig, ThemeChoice, WebFetchConfig};
 
     #[test]
     fn defaults_to_dark() {
@@ -161,6 +179,22 @@ mod tests {
     }
 
     #[test]
+    fn proxy_defaults_enabled_on_localhost() {
+        let cfg = Config::from_json("{}").unwrap();
+        assert!(cfg.proxy.enabled);
+        assert_eq!(cfg.proxy.bind, "127.0.0.1:7777");
+    }
+
+    #[test]
+    fn parses_proxy_overrides() {
+        let cfg =
+            Config::from_json(r#"{ "proxy": { "enabled": false, "bind": "127.0.0.1:9000" } }"#)
+                .unwrap();
+        assert!(!cfg.proxy.enabled);
+        assert_eq!(cfg.proxy.bind, "127.0.0.1:9000");
+    }
+
+    #[test]
     fn round_trips_through_json() {
         let cfg = Config {
             theme: ThemeChoice::Light,
@@ -170,6 +204,7 @@ mod tests {
             remote: RemoteConfig::default(),
             search: SearchConfig::default(),
             web_fetch: WebFetchConfig::default(),
+            proxy: ProxyConfig::default(),
             integrations: std::collections::BTreeMap::new(),
         };
         let raw = serde_json::to_string(&cfg).unwrap();
