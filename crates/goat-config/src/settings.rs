@@ -22,6 +22,7 @@ pub struct Config {
     pub remote: RemoteConfig,
     pub search: SearchConfig,
     pub web_fetch: WebFetchConfig,
+    pub integrations: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -77,6 +78,7 @@ impl Default for Config {
             remote: RemoteConfig::default(),
             search: SearchConfig::default(),
             web_fetch: WebFetchConfig::default(),
+            integrations: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -168,6 +170,7 @@ mod tests {
             remote: RemoteConfig::default(),
             search: SearchConfig::default(),
             web_fetch: WebFetchConfig::default(),
+            integrations: std::collections::BTreeMap::new(),
         };
         let raw = serde_json::to_string(&cfg).unwrap();
         assert_eq!(Config::from_json(&raw).unwrap(), cfg);

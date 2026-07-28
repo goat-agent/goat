@@ -20,6 +20,7 @@ use goat_agent_tool_fs as _;
 use goat_agent_tool_shell as _;
 use goat_agent_tool_skill as _;
 use goat_channel_discord as _;
+use goat_integration_linear as _;
 
 fn into_eyre(err: &anyhow::Error) -> color_eyre::Report {
     eyre!(err.to_string())
@@ -37,6 +38,9 @@ async fn main() -> color_eyre::Result<()> {
         }
         Some(Command::Code(args)) => run_code(args).await,
         Some(Command::Agent(c)) => goat_agent::cli::agent::run(c)
+            .await
+            .map_err(|e| into_eyre(&e)),
+        Some(Command::Integration(c)) => goat_agent::cli::integration::run_connect(c)
             .await
             .map_err(|e| into_eyre(&e)),
         Some(Command::Setup) => auth::run_setup().await,

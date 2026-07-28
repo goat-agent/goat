@@ -6,6 +6,7 @@ use anyhow::{Context, Result, anyhow};
 use goat_model::Model;
 use goat_profile::{
     AutonomyConfig, EmbeddingSettings, MemoryConfig, ProfileBinding, ProfileCard, ProfileConfig,
+    ProfileIntegration,
 };
 use goat_types::ProfileId;
 use serde::Deserialize;
@@ -69,6 +70,7 @@ fn load_agent(dir: &Path, slug: &str) -> Result<ProfileConfig> {
     };
 
     let bindings = bindings_from_config(&runtime.channels);
+    let integrations = integrations_from_config(&runtime.integrations);
     let memory = runtime
         .memory
         .map(MemoryRuntimeConfig::into_config)
@@ -87,6 +89,7 @@ fn load_agent(dir: &Path, slug: &str) -> Result<ProfileConfig> {
         history_window: runtime.history_window.unwrap_or(DEFAULT_HISTORY_WINDOW),
         tool_selectors: runtime.tools.unwrap_or_else(|| vec!["*".to_string()]),
         bindings,
+        integrations,
         memory,
         autonomy,
         intake_debounce: std::time::Duration::from_millis(
@@ -119,6 +122,16 @@ fn bindings_from_config(configured: &BTreeMap<String, serde_json::Value>) -> Vec
         .collect()
 }
 
+fn integrations_from_config(
+    configured: &BTreeMap<String, serde_json::Value>,
+) -> Vec<ProfileIntegration> {
+    configured
+        .clone()
+        .into_iter()
+        .map(|(name, config)| ProfileIntegration { name, config })
+        .collect()
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentRuntimeConfig {
@@ -130,6 +143,8 @@ struct AgentRuntimeConfig {
     tools: Option<Vec<String>>,
     #[serde(default)]
     channels: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    integrations: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     history_window: Option<usize>,
     #[serde(default)]
@@ -221,5 +236,25 @@ mod tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].slug, "main");
         assert_eq!(agents[0].personality.system_prompt, "You are main.");
+        assert!(agents[0].integrations.is_empty());
+    }
+
+    #[test]
+    fn loads_agent_integrations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("agents").join("main");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("agent.md"), "You are main.").unwrap();
+        fs::write(
+            dir.join("config.json"),
+            r#"{ "model": "anthropic/claude-x", "channels": {},
+                 "integrations": { "linear": { "account": "default", "poll_seconds": 60 } } }"#,
+        )
+        .unwrap();
+
+        let agents = scan_agents(&tmp.path().join("agents")).unwrap();
+        assert_eq!(agents[0].integrations.len(), 1);
+        assert_eq!(agents[0].integrations[0].name, "linear");
+        assert_eq!(agents[0].integrations[0].config["account"], "default");
     }
 }

@@ -19,6 +19,7 @@ goat-auth         = { workspace = true }
 goat-provider     = { workspace = true }
 goat-providers    = { workspace = true }
 goat-channel          = { workspace = true }
+goat-integration      = { workspace = true }
 goat-render           = { workspace = true }
 goat-plugin           = { workspace = true }
 goat-agent-tool             = { workspace = true }

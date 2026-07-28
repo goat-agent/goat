@@ -59,6 +59,7 @@ pub enum CredentialService {
     #[default]
     Model,
     Search,
+    Integration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -81,6 +82,14 @@ impl CredentialKey {
     pub fn search(provider: impl Into<String>, account: impl Into<String>) -> Self {
         Self {
             service: CredentialService::Search,
+            provider: provider.into(),
+            account: account.into(),
+        }
+    }
+
+    pub fn integration(provider: impl Into<String>, account: impl Into<String>) -> Self {
+        Self {
+            service: CredentialService::Integration,
             provider: provider.into(),
             account: account.into(),
         }
@@ -628,6 +637,16 @@ mod tests {
         assert_eq!(key.service, CredentialService::Model);
         assert_eq!(key.provider, "openai");
         assert_eq!(key.account, "default");
+    }
+
+    #[test]
+    fn integration_key_serde_round_trip() {
+        let key = CredentialKey::integration("linear", "default");
+        let raw = serde_json::to_string(&key).unwrap();
+        assert!(raw.contains(r#""service":"integration""#));
+        let parsed: CredentialKey = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed, key);
+        assert_eq!(parsed.service, CredentialService::Integration);
     }
 
     #[test]

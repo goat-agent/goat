@@ -18,6 +18,8 @@ goat-store      = { workspace = true }
 sqlx            = { workspace = true }
 goat-model      = { workspace = true }
 goat-auth   = { workspace = true }
+goat-integration = { workspace = true }
+open        = { workspace = true }
 goat-provider = { workspace = true }
 goat-providers = { workspace = true }
 goat-skills     = { workspace = true }
