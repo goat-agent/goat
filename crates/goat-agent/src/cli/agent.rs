@@ -22,6 +22,8 @@ pub enum Cmd {
     Remove { slug: String },
     #[command(subcommand, about = "Manage an agent's channel bindings")]
     Channel(super::channel::Cmd),
+    #[command(subcommand, about = "Manage an agent's integration bindings")]
+    Integration(super::integration::Cmd),
     #[command(about = "Show agent and channel state")]
     Status,
     #[command(about = "Show recent actions the agent took")]
@@ -39,6 +41,7 @@ pub async fn run(cmd: Cmd) -> Result<()> {
         Cmd::Show { slug } => show(&paths, &slug),
         Cmd::Remove { slug } => remove(&paths, &slug),
         Cmd::Channel(c) => super::channel::run(c).await,
+        Cmd::Integration(c) => super::integration::run(c).await,
         Cmd::Status => super::governance::status(),
         Cmd::Log { limit } => super::governance::log(limit).await,
     }
@@ -315,37 +318,34 @@ fn config_object(value: &mut Value) -> Result<&mut Map<String, Value>> {
     Ok(value.as_object_mut().expect("object checked"))
 }
 
-fn channels_object(value: &mut Value) -> Result<&mut Map<String, Value>> {
+fn section_object<'a>(value: &'a mut Value, section: &str) -> Result<&'a mut Map<String, Value>> {
     let obj = config_object(value)?;
-    let entry = obj.entry("channels").or_insert_with(|| json!({}));
+    let entry = obj.entry(section).or_insert_with(|| json!({}));
     if !entry.is_object() {
-        return Err(anyhow!("config.json channels must be a JSON object"));
+        return Err(anyhow!("config.json {section} must be a JSON object"));
     }
     Ok(entry.as_object_mut().expect("object checked"))
 }
 
-fn channels_from_config(dir: &std::path::Path) -> Result<Vec<String>> {
-    let cfg = read_profile_config(dir)?;
-    let Some(channels) = cfg.get("channels") else {
-        return Ok(Vec::new());
-    };
-    let channels = channels
-        .as_object()
-        .ok_or_else(|| anyhow!("config.json channels must be a JSON object"))?;
-    Ok(channels.keys().cloned().collect())
+fn section_keys(dir: &std::path::Path, section: &str) -> Result<Vec<String>> {
+    Ok(section_entries(dir, section)?
+        .into_iter()
+        .map(|(kind, _)| kind)
+        .collect())
 }
 
-pub(crate) fn channels_from_config_with_values(
+pub(crate) fn section_entries(
     dir: &std::path::Path,
+    section: &str,
 ) -> Result<Vec<(String, Value)>> {
     let cfg = read_profile_config(dir)?;
-    let Some(channels) = cfg.get("channels") else {
+    let Some(entries) = cfg.get(section) else {
         return Ok(Vec::new());
     };
-    let channels = channels
+    let entries = entries
         .as_object()
-        .ok_or_else(|| anyhow!("config.json channels must be a JSON object"))?;
-    let mut out = channels
+        .ok_or_else(|| anyhow!("config.json {section} must be a JSON object"))?;
+    let mut out = entries
         .iter()
         .map(|(kind, config)| (kind.clone(), config.clone()))
         .collect::<Vec<_>>();
@@ -353,15 +353,53 @@ pub(crate) fn channels_from_config_with_values(
     Ok(out)
 }
 
+pub(crate) fn section_contains(dir: &std::path::Path, section: &str, kind: &str) -> Result<bool> {
+    Ok(section_entries(dir, section)?
+        .iter()
+        .any(|(k, _)| k == kind))
+}
+
+pub(crate) fn upsert_section_config(
+    dir: &std::path::Path,
+    section: &str,
+    kind: &str,
+    value: Value,
+) -> Result<()> {
+    let mut cfg = read_profile_config(dir)?;
+    let entries = section_object(&mut cfg, section)?;
+    match (entries.get_mut(kind), value) {
+        (Some(Value::Object(existing)), Value::Object(new)) => {
+            existing.extend(new);
+        }
+        (_, value) => {
+            entries.insert(kind.to_string(), value);
+        }
+    }
+    write_profile_config(dir, &cfg)
+}
+
+pub(crate) fn remove_section_config(
+    dir: &std::path::Path,
+    section: &str,
+    kind: &str,
+) -> Result<()> {
+    let mut cfg = read_profile_config(dir)?;
+    section_object(&mut cfg, section)?.remove(kind);
+    write_profile_config(dir, &cfg)
+}
+
+fn channels_from_config(dir: &std::path::Path) -> Result<Vec<String>> {
+    section_keys(dir, "channels")
+}
+
+pub(crate) fn channels_from_config_with_values(
+    dir: &std::path::Path,
+) -> Result<Vec<(String, Value)>> {
+    section_entries(dir, "channels")
+}
+
 pub(crate) fn channel_in_config(dir: &std::path::Path, kind: &str) -> Result<bool> {
-    let cfg = read_profile_config(dir)?;
-    let Some(channels) = cfg.get("channels") else {
-        return Ok(false);
-    };
-    let channels = channels
-        .as_object()
-        .ok_or_else(|| anyhow!("config.json channels must be a JSON object"))?;
-    Ok(channels.contains_key(kind))
+    section_contains(dir, "channels", kind)
 }
 
 pub(crate) fn upsert_channel_config(
@@ -369,23 +407,11 @@ pub(crate) fn upsert_channel_config(
     kind: &str,
     channel: Value,
 ) -> Result<()> {
-    let mut cfg = read_profile_config(dir)?;
-    let channels = channels_object(&mut cfg)?;
-    match (channels.get_mut(kind), channel) {
-        (Some(Value::Object(existing)), Value::Object(new)) => {
-            existing.extend(new);
-        }
-        (_, channel) => {
-            channels.insert(kind.to_string(), channel);
-        }
-    }
-    write_profile_config(dir, &cfg)
+    upsert_section_config(dir, "channels", kind, channel)
 }
 
 pub(crate) fn remove_channel_config(dir: &std::path::Path, kind: &str) -> Result<()> {
-    let mut cfg = read_profile_config(dir)?;
-    channels_object(&mut cfg)?.remove(kind);
-    write_profile_config(dir, &cfg)
+    remove_section_config(dir, "channels", kind)
 }
 
 #[cfg(test)]

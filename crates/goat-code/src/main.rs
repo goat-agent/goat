@@ -41,6 +41,9 @@ async fn main() -> color_eyre::Result<()> {
         Some(Command::Agent(c)) => goat_agent::cli::agent::run(c)
             .await
             .map_err(|e| into_eyre(&e)),
+        Some(Command::Integration(c)) => goat_agent::cli::integration::run_connect(c)
+            .await
+            .map_err(|e| into_eyre(&e)),
         Some(Command::Setup) => auth::run_setup().await,
         Some(Command::Doctor(args)) => goat_agent::cli::doctor::run(args)
             .await
