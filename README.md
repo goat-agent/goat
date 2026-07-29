@@ -47,7 +47,11 @@ goat doctor | update     diagnose config; update the binary
 
 ## Providers, channels & integrations
 
-Anthropic · OpenAI · Gemini · Moonshot · Zhipu · xAI · DeepSeek · Mistral · Groq · Qwen · local.
+Provider ids, as typed into `goat provider login`: `anthropic`, `openai`, `openai-codex`, `gemini`,
+`xai`, `kimi`, `kimi-code`, `zai`, `zai-coding`, `deepseek`, `qwen`, `minimax`, `mistral`, `groq`,
+`openrouter`, `vercel`, and the local trio `ollama`, `lmstudio`, `llama-cpp`. `openai-codex`,
+`kimi-code` and `zai-coding` are the subscription/coding-plan surfaces; `openrouter` and `vercel`
+are aggregators.
 Channels: Discord.
 Integrations: GitHub, Linear, Notion, PostHog, Sentry, Slack, Tiro — connect with `goat integration add`,
 bind per agent with `goat agent integration add`. GitHub reads its credential from the `gh` cli, so

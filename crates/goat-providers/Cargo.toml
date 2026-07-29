@@ -27,6 +27,8 @@ goat-provider-kimi = { workspace = true }
 goat-provider-kimi-code = { workspace = true }
 goat-provider-qwen = { workspace = true }
 goat-provider-xai = { workspace = true }
+goat-provider-minimax = { workspace = true }
+goat-provider-vercel = { workspace = true }
 
 [lints]
 workspace = true

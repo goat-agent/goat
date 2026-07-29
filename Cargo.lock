@@ -3252,6 +3252,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-provider-minimax"
+version = "0.1.27"
+dependencies = [
+ "goat-auth",
+ "goat-provider",
+ "goat-provider-openai-compat",
+]
+
+[[package]]
 name = "goat-provider-mistral"
 version = "0.1.27"
 dependencies = [
@@ -3323,6 +3332,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-provider-vercel"
+version = "0.1.27"
+dependencies = [
+ "goat-auth",
+ "goat-provider",
+ "goat-provider-openai-compat",
+]
+
+[[package]]
 name = "goat-provider-xai"
 version = "0.1.27"
 dependencies = [
@@ -3368,11 +3386,13 @@ dependencies = [
  "goat-provider-kimi",
  "goat-provider-kimi-code",
  "goat-provider-local",
+ "goat-provider-minimax",
  "goat-provider-mistral",
  "goat-provider-openai",
  "goat-provider-openai-codex",
  "goat-provider-openrouter",
  "goat-provider-qwen",
+ "goat-provider-vercel",
  "goat-provider-xai",
  "goat-provider-zai",
  "goat-provider-zai-coding",
