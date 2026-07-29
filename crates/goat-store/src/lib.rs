@@ -447,6 +447,14 @@ pub trait Store: Send + Sync + 'static {
     async fn record_observation(&self, new: NewObservation) -> StoreResult<i64>;
 
     async fn get_observation(&self, id: i64) -> StoreResult<Option<ObservationRecord>>;
+
+    async fn observations_by_ref(
+        &self,
+        persona: ProfileId,
+        integration: &str,
+        external_ref: &str,
+        limit: i64,
+    ) -> StoreResult<Vec<ObservationRecord>>;
 }
 
 #[derive(Clone, Debug)]
@@ -1367,6 +1375,44 @@ impl Store for SqliteStore {
             observed_at: parse_ts(&row.7)?,
         }))
     }
+
+    async fn observations_by_ref(
+        &self,
+        persona: ProfileId,
+        integration: &str,
+        external_ref: &str,
+        limit: i64,
+    ) -> StoreResult<Vec<ObservationRecord>> {
+        let rows: Vec<(i64, String, String, String, String, String, String, String)> =
+            sqlx::query_as(
+                r"SELECT id, persona_id, integration, account, external_ref, kind,
+                          payload, observed_at
+                   FROM integration_observations
+                   WHERE persona_id = ? AND integration = ? AND external_ref = ?
+                   ORDER BY id DESC
+                   LIMIT ?",
+            )
+            .bind(persona.to_string())
+            .bind(integration)
+            .bind(external_ref)
+            .bind(limit.max(1))
+            .fetch_all(&*self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ObservationRecord {
+                    id: row.0,
+                    persona: ProfileId(Uuid::parse_str(&row.1)?),
+                    integration: row.2,
+                    account: row.3,
+                    external_ref: row.4,
+                    kind: row.5,
+                    payload: serde_json::from_str(&row.6)?,
+                    observed_at: parse_ts(&row.7)?,
+                })
+            })
+            .collect()
+    }
 }
 
 async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<ScheduledTaskRecord> {
@@ -2038,6 +2084,67 @@ mod tests {
         assert_eq!(record.external_ref, "linear/default:issue:US-1");
         assert_eq!(record.payload["title"], "t");
         assert!(s.get_observation(9999).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn observations_by_ref_returns_the_history_newest_first() {
+        let s = fresh().await;
+        let p = fixture_persona(&s).await;
+        let other = ProfileId::from_slug("other");
+        s.ensure_persona(other, "other", "other").await.unwrap();
+
+        for n in 0..3 {
+            s.record_observation(NewObservation {
+                persona: p,
+                integration: "sentry".into(),
+                account: "default".into(),
+                external_ref: "sentry/default:issue:E-1".into(),
+                kind: "updated".into(),
+                payload: serde_json::json!({ "seen": n }),
+            })
+            .await
+            .unwrap();
+        }
+        s.record_observation(NewObservation {
+            persona: p,
+            integration: "sentry".into(),
+            account: "default".into(),
+            external_ref: "sentry/default:issue:E-2".into(),
+            kind: "updated".into(),
+            payload: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+        s.record_observation(NewObservation {
+            persona: other,
+            integration: "sentry".into(),
+            account: "default".into(),
+            external_ref: "sentry/default:issue:E-1".into(),
+            kind: "updated".into(),
+            payload: serde_json::json!({ "seen": "theirs" }),
+        })
+        .await
+        .unwrap();
+
+        let found = s
+            .observations_by_ref(p, "sentry", "sentry/default:issue:E-1", 10)
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 3);
+        assert_eq!(found[0].payload["seen"], 2);
+        assert_eq!(found[2].payload["seen"], 0);
+
+        let capped = s
+            .observations_by_ref(p, "sentry", "sentry/default:issue:E-1", 2)
+            .await
+            .unwrap();
+        assert_eq!(capped.len(), 2);
+
+        let none = s
+            .observations_by_ref(p, "sentry", "sentry/default:issue:missing", 10)
+            .await
+            .unwrap();
+        assert!(none.is_empty());
     }
 
     #[tokio::test]
