@@ -5,7 +5,7 @@ use goat_provider_openai_compat::ResponsesProvider;
 pub const PROVIDER_ID: &str = "openai";
 const BASE_URL: &str = "https://api.openai.com/v1";
 const ENV_VAR: &str = "OPENAI_API_KEY";
-const SEARCH_MODEL: &str = "gpt-4.1";
+const SEARCH_MODEL: &str = "gpt-5.6-luna";
 
 const CATALOG: &[&str] = &[
     "gpt-5.6",
@@ -21,6 +21,9 @@ const CATALOG: &[&str] = &[
 ];
 
 const CONTEXT_WINDOWS: &[(&str, u32)] = &[
+    ("gpt-5.6", 1_050_000),
+    ("gpt-5.5", 1_050_000),
+    ("gpt-5.4", 1_050_000),
     ("gpt-5", 400_000),
     ("gpt-4.1", 1_047_576),
     ("o3", 200_000),
