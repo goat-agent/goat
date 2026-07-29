@@ -38,7 +38,7 @@ const CATALOG: &[&str] = &[
 ];
 const SEARCH_MODEL: &str = "gpt-5.6-luna";
 
-const CONTEXT_WINDOWS: &[(&str, u32)] = &[("gpt-5", 272_000)];
+const CONTEXT_WINDOWS: &[(&str, u32)] = &[("gpt-5", 400_000)];
 const DEVICE_TOKEN: &str = "https://auth.openai.com/deviceauth/token";
 const DEVICE_VERIFY_URL: &str = "https://auth.openai.com/codex/device";
 
@@ -527,6 +527,7 @@ impl Provider for CodexProvider {
             req.temperature,
             req.max_tokens,
         );
+        let session_id = goat_auth::random_state();
         goat_provider_openai_compat::run_request(
             &client,
             &url,
@@ -534,7 +535,11 @@ impl Provider for CodexProvider {
             account.as_deref(),
             &body,
             Some(goat_provider_openai_compat::parse_codex_ratelimits),
-            &[],
+            &[
+                ("originator", ORIGINATOR),
+                ("session_id", session_id.as_str()),
+                ("OpenAI-Beta", "responses=experimental"),
+            ],
         )
         .await
     }
