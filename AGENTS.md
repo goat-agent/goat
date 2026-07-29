@@ -63,7 +63,10 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
 - Provider-specific request bodies, streaming, auth, and error mapping stay inside each provider
   crate. No shared provider "quirks" flags.
 - **Registration is not uniform — check before assuming `inventory` picks your crate up:**
-  - channels and integrations: `inventory` + `pub const ID` via `from_static(...)`.
+  - channels and integrations: `inventory` + `pub const ID` via `from_static(...)`. A channel's
+    `ChannelFactory` also carries `metadata: fn() -> ChannelMetadata`, which is how it declares its
+    display name, its setup text, and one `SecretSpec` per secret it needs — the CLI drives its
+    prompts off that list, so a channel that forgets it gets asked for nothing.
   - agent commands: `inventory`, but the constant is a plain `pub const ID: &str`.
   - agent tools: `inventory` + `pub const NAME: ToolName` for `fs`/`shell`/`skill` only. `goal`,
     `memory`, `pty`, `code`, and `schedule` need injected runtime deps and are wired by explicit
@@ -85,6 +88,13 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
   `OAuth` round trip, or `External`, meaning a host tool such as `gh` owns the credential and the
   `config.json` entry is itself the connection marker. Per-agent binding lives in the agent's
   `integrations` config map. Raw observations persist losslessly in `integration_observations`.
+- Channel bindings are per-agent, and **no secret ever lives in `config.json`.** The `channels.<kind>`
+  map records *that* an agent uses a channel — an empty object is a complete binding, so never delete
+  one for looking empty — while every secret sits in `credentials.json` under
+  `{ service: channel, provider: <kind>, account: <agent slug>, slot: <secret name> }`. `slot` is the
+  axis that lets one binding hold several secrets; `account` is the agent, not a workspace. A boot
+  that finds a declared slot sitting in `config.json` moves it into the store and rewrites the file
+  (`goat-runtime::channel_secrets`); the stored value always wins over a stale config one.
 
 ## Where things live
 
