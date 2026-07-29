@@ -121,7 +121,7 @@ impl Integration for SentryIntegration {
         account: &str,
         present_url: &(dyn for<'a> Fn(&'a str) + Send + Sync),
     ) -> IntegrationResult<serde_json::Value> {
-        use rmcp::transport::auth::OAuthState;
+        use rmcp::transport::auth::{AuthorizationRequest, OAuthState};
 
         let (listener, port) = goat_auth::bind_loopback()
             .await
@@ -132,7 +132,7 @@ impl Integration for SentryIntegration {
             .await
             .map_err(|e| IntegrationError::Auth(e.to_string()))?;
         oauth
-            .start_authorization(&[], &redirect, Some("goat"))
+            .start_authorization(AuthorizationRequest::new(&redirect).with_client_name("goat"))
             .await
             .map_err(|e| IntegrationError::Auth(format!("authorization start failed: {e}")))?;
         let auth_url = oauth

@@ -367,7 +367,7 @@ fn leak(value: String) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use rmcp::model::{CallToolResult, Content};
+    use rmcp::model::{CallToolResult, ContentBlock};
     use serde_json::json;
 
     use super::names::exposed_tool_name;
@@ -421,7 +421,10 @@ mod tests {
 
     #[test]
     fn converts_error_result_to_error() {
-        let result = convert_result("tool", CallToolResult::error(vec![Content::text("bad")]));
+        let result = convert_result(
+            "tool",
+            CallToolResult::error(vec![ContentBlock::text("bad")]),
+        );
         assert!(matches!(result, Err(err) if err.to_string().contains("bad")));
     }
 }

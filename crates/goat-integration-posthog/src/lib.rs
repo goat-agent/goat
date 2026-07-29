@@ -74,7 +74,7 @@ impl Integration for PosthogIntegration {
         account: &str,
         present_url: &(dyn for<'a> Fn(&'a str) + Send + Sync),
     ) -> IntegrationResult<serde_json::Value> {
-        use rmcp::transport::auth::OAuthState;
+        use rmcp::transport::auth::{AuthorizationRequest, OAuthState};
 
         let (listener, port) = goat_auth::bind_loopback()
             .await
@@ -85,7 +85,11 @@ impl Integration for PosthogIntegration {
             .await
             .map_err(|e| IntegrationError::Auth(e.to_string()))?;
         oauth
-            .start_authorization(mcp::SCOPES, &redirect, Some("goat"))
+            .start_authorization(
+                AuthorizationRequest::new(&redirect)
+                    .with_client_name("goat")
+                    .with_scopes(mcp::SCOPES.iter().copied()),
+            )
             .await
             .map_err(|e| IntegrationError::Auth(format!("authorization start failed: {e}")))?;
         let auth_url = oauth

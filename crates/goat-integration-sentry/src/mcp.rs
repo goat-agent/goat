@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use goat_auth::{Credential, CredentialKey, CredentialStore, SecretString, TokenSet};
 use goat_integration::{IntegrationError, IntegrationResult};
-use rmcp::model::{CallToolRequestParams, CallToolResult, ClientRequest, RawContent, ServerResult};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResult, ClientRequest, ContentBlock, ServerResult,
+};
 use rmcp::service::{PeerRequestOptions, RunningService};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::auth::{AuthClient, OAuthState, OAuthTokenResponse};
@@ -179,10 +181,10 @@ fn retry_after_seconds(rendered: &str) -> Option<u64> {
 
 impl SentrySession {
     pub fn server_name(&self) -> String {
-        self.service.peer_info().map_or_else(
-            || "sentry mcp".to_string(),
-            |info| info.server_info.name.clone(),
-        )
+        self.service
+            .peer_info()
+            .and_then(|info| info.server_info.clone())
+            .map_or_else(|| "sentry mcp".to_string(), |server| server.name)
     }
 
     pub async fn call(&self, tool: &str, arguments: Value) -> IntegrationResult<Value> {
@@ -276,8 +278,8 @@ fn collect_text(result: &CallToolResult) -> String {
     result
         .content
         .iter()
-        .filter_map(|content| match &content.raw {
-            RawContent::Text(text) => Some(text.text.clone()),
+        .filter_map(|content| match content {
+            ContentBlock::Text(text) => Some(text.text.clone()),
             _ => None,
         })
         .collect::<Vec<_>>()
