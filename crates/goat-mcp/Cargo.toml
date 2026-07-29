@@ -9,9 +9,13 @@ publish = false
 
 [dependencies]
 goat-process = { workspace = true }
+goat-auth    = { workspace = true }
 rmcp = { workspace = true }
 rmcp-reqwest = { workspace = true }
 rustls = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+url = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

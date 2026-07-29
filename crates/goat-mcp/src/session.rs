@@ -123,11 +123,14 @@ impl McpSession {
         Ok((session, tools))
     }
 
-    pub async fn connect_http(
+    pub async fn connect_http<C>(
         server_name: String,
         endpoint: &HttpEndpoint,
-        client: rmcp_reqwest::Client,
-    ) -> Result<Self, McpError> {
+        client: C,
+    ) -> Result<Self, McpError>
+    where
+        C: rmcp::transport::streamable_http_client::StreamableHttpClient + 'static,
+    {
         let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.url.clone());
         if let Some(auth) = &endpoint.auth_header {
             config = config.auth_header(auth.clone());
