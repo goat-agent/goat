@@ -87,10 +87,16 @@ The inlined provider SDK and the terminal design system — used by both capabil
 - `goat-types`, `goat-bus`, `goat-model` — IDs/events, event bus, model registry.
 - `goat-channel` / `goat-channel-*` — channel trait and one crate per chat channel.
 - `goat-integration` / `goat-integration-*` — external-service integrations, one crate per vendor.
-  An integration contributes tools (discovered from the service, e.g. a hosted MCP server's
+  An integration may contribute tools (discovered from the service, e.g. a hosted MCP server's
   `list_tools`) and an optional polling watcher that publishes `Event::IntegrationUpdate` on
-  deterministic diffs. Connections (OAuth/keys) are global; per-agent binding lives in the agent's
-  `integrations` config map. Raw observations persist losslessly in `integration_observations`.
+  deterministic diffs. Neither is required: a connection plus a watcher is a complete integration,
+  and `goat-integration-github` is one — the agent already reaches GitHub through `shell` and the
+  `gh` cli, so it registers no tools. Watchers own polling and diffing, never the policy of what is
+  worth watching; that is declared per-agent in the binding config. Connections are global —
+  `IntegrationAuth` decides whether the credential is a pasted `Secret`, an `OAuth` round trip, or
+  `External` (owned by a host tool such as `gh`, in which case the `config.json` entry is the
+  connection marker). Per-agent binding lives in the agent's `integrations` config map. Raw
+  observations persist losslessly in `integration_observations`.
 - `goat-brain` — per-agent conversation loop and turn handling.
 - `goat-runtime` — wires the runtime over trait registries; `Goat::boot`/`boot_with_code`.
 - `goat-profile` — agent config value objects.
