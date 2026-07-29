@@ -6,18 +6,11 @@ const BASE_URL: &str = "https://api.deepseek.com";
 const HOST: &str = "api.deepseek.com";
 const ENV_VAR: &str = "DEEPSEEK_API_KEY";
 
-const CATALOG: &[&str] = &[
-    "deepseek-v4-pro",
-    "deepseek-v4-flash",
-    "deepseek-chat",
-    "deepseek-reasoner",
-];
+const CATALOG: &[&str] = &["deepseek-v4-pro", "deepseek-v4-flash"];
 
 const CONTEXT_WINDOWS: &[(&str, u32)] = &[
     ("deepseek-v4-pro", 1_000_000),
     ("deepseek-v4-flash", 1_000_000),
-    ("deepseek-chat", 1_000_000),
-    ("deepseek-reasoner", 1_000_000),
 ];
 
 pub fn build(store: &CredentialStore, account: &str) -> OpenAiCompatProvider {
