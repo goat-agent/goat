@@ -1027,7 +1027,7 @@ impl Brain {
 
         let mut tools = self.integration_tools.clone();
         tools.extend(
-            ["memory_search", "fact"]
+            ["memory_search", "fact", "observation"]
                 .iter()
                 .map(std::string::ToString::to_string),
         );
@@ -1609,16 +1609,17 @@ fn integration_prompt(update: &IntegrationTurn) -> String {
     if let Some(observation) = update.observation {
         let _ = write!(
             header,
-            "\nobservation recorded (raw payload kept losslessly): observation:{observation}",
+            "\nobservation recorded (raw payload kept losslessly): observation:{observation}\n\
+             read it back with the `observation` tool, id {observation}",
         );
     }
     format!(
         "{header}\n</integration_update>\n\
-         Gather context now: pull live data with the `{}_*` tools and search \
-         prior knowledge with `memory_search`. Record durable claims with \
-         `fact` in scope domain:{}, using the observation reference above as \
-         source_ref. Then brief me: what happened, the key context you found, \
-         and a suggested first step. Do not start the work itself.",
+         Gather context now: pull live data with the `{}_*` tools, read what the watcher \
+         actually saw with `observation`, and search prior knowledge with `memory_search`. \
+         Record durable claims with `fact` in scope domain:{}, using the observation \
+         reference above as source_ref. Then brief me: what happened, the key context you \
+         found, and a suggested first step. Do not start the work itself.",
         update.integration, update.integration,
     )
 }

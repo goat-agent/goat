@@ -100,6 +100,7 @@ impl Goat {
         let mut tools_reg = ToolRegistry::from_inventory();
         goat_agent_tool_schedule::register(&mut tools_reg, store.clone(), scheduler_handle);
         goat_agent_tool_goal::register(&mut tools_reg, store.clone());
+        goat_agent_tool_observation::register(&mut tools_reg, store.clone());
 
         let mem_embedder: Option<Arc<dyn Embedder>> = embedders.values().next().cloned();
         let memory_engine = Arc::new(
