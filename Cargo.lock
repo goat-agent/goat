@@ -2668,6 +2668,7 @@ dependencies = [
  "goat-integration-posthog",
  "goat-integration-sentry",
  "goat-integration-slack",
+ "goat-integration-tiro",
  "goat-protocol",
  "goat-provider",
  "goat-providers",
