@@ -7,23 +7,21 @@ const HOST: &str = "api.groq.com";
 const ENV_VAR: &str = "GROQ_API_KEY";
 
 const CATALOG: &[&str] = &[
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
-    "qwen/qwen3-32b",
+    "openai/gpt-oss-safeguard-20b",
     "qwen/qwen3.6-27b",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
     "groq/compound",
     "groq/compound-mini",
 ];
 
 const CONTEXT_WINDOWS: &[(&str, u32)] = &[
-    ("llama-3.3", 131_072),
-    ("llama-3.1", 131_072),
     ("openai/gpt-oss", 131_072),
     ("qwen/qwen3", 131_072),
-    ("meta-llama/llama-4-scout", 131_072),
+    ("llama-3.3", 131_072),
+    ("llama-3.1", 131_072),
     ("groq/compound", 131_072),
 ];
 
