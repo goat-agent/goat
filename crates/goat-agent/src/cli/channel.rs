@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use clap::Subcommand;
-use goat_channel::ChannelFactory;
+use goat_auth::CredentialStore;
+use goat_channel::{ChannelFactory, ChannelSecrets};
 use goat_config::GoatPaths;
 use serde_json::{Value, json};
 
@@ -18,7 +19,7 @@ const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 pub enum Cmd {
     #[command(
         visible_alias = "new",
-        about = "Bind a channel to an agent (verifies the token before saving)."
+        about = "Bind a channel to an agent (verifies the secrets before storing them)."
     )]
     Add {
         #[arg(help = "Channel kind (e.g. `discord`); prompted if omitted.")]
@@ -31,7 +32,7 @@ pub enum Cmd {
         profile: Option<String>,
         #[arg(
             long,
-            help = "Skip the live credential check and save the token as-is."
+            help = "Store the secrets without checking them against the API."
         )]
         no_verify: bool,
     },
@@ -43,7 +44,7 @@ pub enum Cmd {
     #[command(
         visible_alias = "rm",
         aliases = ["del", "delete"],
-        about = "Remove a channel binding."
+        about = "Remove a channel binding and its stored secrets."
     )]
     Remove {
         kind: String,
@@ -76,56 +77,42 @@ async fn channel_add(
         ui::pair("profile", &slug);
         let dir = paths.agents_dir.join(&slug);
 
-        let kind = if let Some(k) = kind {
-            let k = k.trim().to_string();
-            if !known_channel(&k) {
-                return Err(anyhow!("unknown channel `{k}`"));
-            }
-            k
-        } else {
-            let mut items: Vec<(String, String)> = inventory::iter::<ChannelFactory>()
-                .map(|f| (f.id.to_string(), f.id.to_string()))
-                .collect();
-            items.sort_by(|a, b| a.1.cmp(&b.1));
-            ui::pick("channel", &items)?
+        let factory = match kind {
+            Some(kind) => resolve_factory(kind.trim())?,
+            None => resolve_factory(&pick_channel()?)?,
         };
+        let kind = factory.id.as_str();
+        let metadata = (factory.metadata)();
 
-        if channel_in_config(&dir, &kind)?
-            && !ui::confirm(&format!("overwrite config.json.channels.{kind}?"), false)?
+        if channel_in_config(&dir, kind)?
+            && !ui::confirm(&format!("replace the {kind} binding for {slug}?"), false)?
         {
             return Ok(Footer::Cancel);
         }
 
-        let Some(token) = ui::secret(&format!("{kind} token"))? else {
+        ui::line(&ui::dim(metadata.setup));
+        let Some(secrets) = prompt_secrets(&metadata)? else {
             return Ok(Footer::Cancel);
         };
-        let config = json!({ "token": token });
 
+        let config = json!({});
         if no_verify {
             ui::line(&ui::dim("skipped verification (--no-verify)"));
         } else {
-            let identity = verify_channel(&kind, &config).await?;
-            ui::pair("verified", &identity);
+            ui::pair(
+                "verified",
+                &verify_channel(factory, &config, &secrets).await?,
+            );
         }
 
-        upsert_channel_config(&dir, &kind, config)?;
-        ui::pair("file", &dir.join("config.json").display().to_string());
+        let store = CredentialStore::new(paths.credentials_json.clone());
+        goat_channel::save_secrets(&store, &factory.id, &slug, &secrets)?;
+        upsert_channel_config(&dir, kind, config)?;
+        ui::pair("secrets", &paths.credentials_json.display().to_string());
+        ui::pair("binding", &dir.join("config.json").display().to_string());
         Ok(Footer::Ok("Saved"))
     })
     .await
-}
-
-async fn verify_channel(kind: &str, config: &Value) -> Result<String> {
-    let factory = channel_factory(kind).ok_or_else(|| anyhow!("unknown channel `{kind}`"))?;
-    let channel = (factory.ctor)();
-    match tokio::time::timeout(VERIFY_TIMEOUT, channel.verify(config)).await {
-        Ok(Ok(identity)) => Ok(identity.handle),
-        Ok(Err(e)) => Err(anyhow!("{e} — not saved")),
-        Err(_) => Err(anyhow!(
-            "verification timed out after {}s — not saved",
-            VERIFY_TIMEOUT.as_secs()
-        )),
-    }
 }
 
 fn channel_list(paths: &GoatPaths, profile: Option<&str>) -> Result<()> {
@@ -133,24 +120,29 @@ fn channel_list(paths: &GoatPaths, profile: Option<&str>) -> Result<()> {
         let slug = resolve_profile(paths, profile)?;
         ui::pair("profile", &slug);
         let dir = paths.agents_dir.join(&slug);
-        let mut table = Table::new(["kind", "status", "path"]);
+        let store = CredentialStore::new(paths.credentials_json.clone());
+        let mut table = Table::new(["kind", "status", "secrets"]);
         let mut rows = 0;
         for (kind, config) in channels_from_config_with_values(&dir)? {
-            let path = dir.join("config.json");
-            let (badge, style) = match validate_channel_config(&kind, &config) {
+            let (badge, style) = match binding_status(&kind, &config, &store, &slug) {
                 Ok(()) => ("ok".to_string(), Palette::Success),
-                Err(e) => (format!("warn: {e}"), Palette::Warning),
+                Err(problem) => (problem, Palette::Warning),
             };
+            let slots = goat_channel::secret_specs(&kind)
+                .iter()
+                .map(|spec| spec.slot)
+                .collect::<Vec<_>>()
+                .join(", ");
             table.styled_row(vec![
                 (kind, Palette::Plain),
                 (badge, style),
-                (path.display().to_string(), Palette::Plain),
+                (slots, Palette::Plain),
             ]);
             rows += 1;
         }
         if rows == 0 {
             ui::line(&ui::dim("none yet"));
-            return Ok(Footer::Hint("none", "goat channel add".into()));
+            return Ok(Footer::Hint("none", "goat agent channel add".into()));
         }
         table.render();
         Ok(Footer::None)
@@ -166,23 +158,87 @@ fn channel_remove(paths: &GoatPaths, kind: &str, profile: Option<&str>) -> Resul
         if !channel_in_config(&dir, kind)? {
             return Err(anyhow!("no binding for {slug}/{kind}"));
         }
-        if !ui::confirm(&format!("delete config.json.channels.{kind}?"), false)? {
+        if !ui::confirm(
+            &format!("remove the {kind} binding and its secrets?"),
+            false,
+        )? {
             return Ok(Footer::Cancel);
         }
         remove_channel_config(&dir, kind)?;
+        if let Some(factory) = goat_channel::factory_for(kind) {
+            let store = CredentialStore::new(paths.credentials_json.clone());
+            goat_channel::forget_secrets(&store, &factory.id, &slug, (factory.metadata)().secrets)?;
+        }
         Ok(Footer::Ok("Removed"))
     })
 }
 
-fn known_channel(slug: &str) -> bool {
-    channel_factory(slug).is_some()
+fn pick_channel() -> Result<String> {
+    let items: Vec<(String, String)> = goat_channel::registered_ids()
+        .into_iter()
+        .map(|id| {
+            let label = goat_channel::metadata_for(id)
+                .map_or_else(|| id.to_string(), |meta| format!("{id} — {}", meta.display));
+            (id.to_string(), label)
+        })
+        .collect();
+    Ok(ui::pick("channel", &items)?)
 }
 
-fn channel_factory(slug: &str) -> Option<&'static ChannelFactory> {
-    inventory::iter::<ChannelFactory>().find(|f| f.id.as_str() == slug)
+fn resolve_factory(kind: &str) -> Result<&'static ChannelFactory> {
+    goat_channel::factory_for(kind).ok_or_else(|| {
+        ui::report_hint(
+            format!("unknown channel `{kind}`"),
+            format!(
+                "known channels: {}",
+                goat_channel::registered_ids().join(", ")
+            ),
+        )
+    })
 }
 
-fn validate_channel_config(kind: &str, config: &Value) -> Result<()> {
-    let factory = channel_factory(kind).ok_or_else(|| anyhow!("unknown channel"))?;
-    (factory.validate_config)(config).map_err(Into::into)
+fn prompt_secrets(metadata: &goat_channel::ChannelMetadata) -> Result<Option<ChannelSecrets>> {
+    let mut secrets = ChannelSecrets::new();
+    for spec in metadata.secrets {
+        let Some(value) = ui::secret(spec.label)? else {
+            return Ok(None);
+        };
+        secrets.insert(spec.slot, value);
+    }
+    Ok(Some(secrets))
+}
+
+async fn verify_channel(
+    factory: &'static ChannelFactory,
+    config: &Value,
+    secrets: &ChannelSecrets,
+) -> Result<String> {
+    let channel = (factory.ctor)();
+    match tokio::time::timeout(VERIFY_TIMEOUT, channel.verify(config, secrets)).await {
+        Ok(Ok(identity)) => Ok(identity.handle),
+        Ok(Err(e)) => Err(anyhow!("{e} — nothing was stored")),
+        Err(_) => Err(anyhow!(
+            "verification timed out after {}s — nothing was stored",
+            VERIFY_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+fn binding_status(
+    kind: &str,
+    config: &Value,
+    store: &CredentialStore,
+    slug: &str,
+) -> Result<(), String> {
+    let Some(factory) = goat_channel::factory_for(kind) else {
+        return Err("warn: no compiled-in channel with this name".to_string());
+    };
+    (factory.validate_config)(config).map_err(|e| format!("warn: {e}"))?;
+    let specs = (factory.metadata)().secrets;
+    let missing = goat_channel::load_secrets(store, &factory.id, slug, specs).missing(specs);
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("warn: missing {}", missing.join(", ")))
+    }
 }

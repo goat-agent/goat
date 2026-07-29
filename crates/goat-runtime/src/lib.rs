@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+mod channel_secrets;
 mod embed;
 use embed::OpenAiEmbedderAdapter;
 
@@ -165,6 +166,8 @@ impl Goat {
             integration_tool_names,
             tools,
             goat_root: cfg.paths.root.clone(),
+            agents_dir: cfg.paths.agents_dir.clone(),
+            credentials: sdk_store.clone(),
             store,
             memory_engine,
             renderer,
@@ -484,6 +487,8 @@ struct RuntimeShared<'a> {
     integration_tool_names: HashMap<String, Vec<String>>,
     tools: Arc<ToolRegistry>,
     goat_root: std::path::PathBuf,
+    agents_dir: std::path::PathBuf,
+    credentials: goat_auth::CredentialStore,
     store: Arc<dyn Store>,
     memory_engine: Arc<goat_memory::MemoryEngine>,
     renderer: Arc<dyn StreamRenderer>,
@@ -523,11 +528,23 @@ async fn spawn_profile(
             );
             continue;
         };
-        let instance_slug = format!("{}/{}/{}", raw.id, channel.id(), binding.name);
+        let channel_id = channel.id();
+        let instance_slug = format!("{}/{}/{}", raw.id, channel_id, binding.name);
+        let mut config = binding.config.clone();
+        let secrets = channel_secrets::resolve_for_binding(
+            &shared.credentials,
+            &shared.agents_dir,
+            &raw.slug,
+            &channel_id,
+            &binding.name,
+            goat_channel::secret_specs(channel_id.as_str()),
+            &mut config,
+        );
         let chan_binding = ChannelBinding {
             instance: InstanceId::from_slug(&instance_slug),
-            config: binding.config.clone(),
+            config,
             commands: command_specs.clone(),
+            secrets,
         };
         match channel.clone().bind(raw.id, chan_binding).await {
             Ok((handle, mut rx)) => {

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use goat_agent_command::{CommandArgs, CommandSpec};
 use goat_channel::{
     BindOutput, Channel, ChannelBinding, ChannelError, ChannelHandle, ChannelIdentity,
-    ChannelResult,
+    ChannelResult, ChannelSecrets,
 };
 use goat_types::{ChannelId, ProfileId};
 use tokio::sync::mpsc;
@@ -18,11 +18,11 @@ use twilight_model::application::command::{
 use twilight_model::id::Id;
 use twilight_model::id::marker::ApplicationMarker;
 
-use crate::ID;
 use crate::config::DiscordConfig;
 use crate::handle::DiscordHandle;
 use crate::inbound::{GatewayConfig, gateway_loop};
 use crate::interaction::InteractionState;
+use crate::{ID, TOKEN_SLOT};
 
 const INCOMING_CAPACITY: usize = 256;
 
@@ -40,10 +40,11 @@ impl Channel for DiscordChannel {
         persona: ProfileId,
         binding: ChannelBinding,
     ) -> ChannelResult<BindOutput> {
+        let token = binding.secrets.require(TOKEN_SLOT)?.to_owned();
         let cfg: DiscordConfig = serde_json::from_value(binding.config)
             .map_err(|e| ChannelError::Config(format!("discord: {e}")))?;
         let commands = binding.commands;
-        let http = Arc::new(HttpClient::new(cfg.token.clone()));
+        let http = Arc::new(HttpClient::new(token.clone()));
         let (me_id, identity) = current_identity(&http).await?;
         let application_id: Id<ApplicationMarker> = Id::new(me_id);
 
@@ -70,7 +71,7 @@ impl Channel for DiscordChannel {
                 interactions: interactions.clone(),
                 allowed_user_ids,
                 bot_id: me_id,
-                token: cfg.token,
+                token,
                 intents,
             },
         ));
@@ -86,10 +87,14 @@ impl Channel for DiscordChannel {
         Ok((handle, rx))
     }
 
-    async fn verify(&self, config: &serde_json::Value) -> ChannelResult<ChannelIdentity> {
-        let cfg: DiscordConfig = serde_json::from_value(config.clone())
+    async fn verify(
+        &self,
+        config: &serde_json::Value,
+        secrets: &ChannelSecrets,
+    ) -> ChannelResult<ChannelIdentity> {
+        serde_json::from_value::<DiscordConfig>(config.clone())
             .map_err(|e| ChannelError::Config(format!("discord: {e}")))?;
-        let http = HttpClient::new(cfg.token);
+        let http = HttpClient::new(secrets.require(TOKEN_SLOT)?.to_owned());
         let (_, identity) = current_identity(&http).await?;
         Ok(identity)
     }
