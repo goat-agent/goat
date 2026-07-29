@@ -20,9 +20,9 @@ const CATALOG: &[&str] = &["glm-5.2", "glm-5.1", "glm-5-turbo", "glm-4.7"];
 
 const CONTEXT: &[(&str, u32)] = &[
     ("glm-5.2", 1_000_000),
-    ("glm-5.1", 198_000),
-    ("glm-5-turbo", 128_000),
-    ("glm-4.7", 128_000),
+    ("glm-5.1", 204_800),
+    ("glm-5-turbo", 204_800),
+    ("glm-4.7", 204_800),
 ];
 
 pub fn build(store: &CredentialStore, account: &str) -> OpenAiCompatProvider {

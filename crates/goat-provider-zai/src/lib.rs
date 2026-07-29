@@ -23,14 +23,14 @@ const CATALOG: &[&str] = &[
 ];
 
 const CONTEXT: &[(&str, u32)] = &[
-    ("glm-5.2", 128_000),
-    ("glm-5.1", 128_000),
-    ("glm-5", 128_000),
-    ("glm-4.7", 128_000),
-    ("glm-4.6", 128_000),
-    ("glm-4.5", 128_000),
-    ("glm-4-32b", 128_000),
-    ("glm-5v", 128_000),
+    ("glm-5.2", 1_000_000),
+    ("glm-5.1", 204_800),
+    ("glm-5v", 204_800),
+    ("glm-5", 204_800),
+    ("glm-4.7", 204_800),
+    ("glm-4.6", 204_800),
+    ("glm-4.5", 131_072),
+    ("glm-4-32b", 131_072),
 ];
 
 pub fn build(store: &CredentialStore, account: &str) -> OpenAiCompatProvider {
@@ -105,7 +105,10 @@ mod tests {
         let store = store("goat-provider-zai-metadata.json");
         let provider = build(&store, "default");
         assert_eq!(provider.catalog(), CATALOG);
-        assert_eq!(provider.context_window("glm-5.2"), Some(128_000));
+        assert_eq!(provider.context_window("glm-5.2"), Some(1_000_000));
+        assert_eq!(provider.context_window("glm-5-turbo"), Some(204_800));
+        assert_eq!(provider.context_window("glm-4.7-flash"), Some(204_800));
+        assert_eq!(provider.context_window("glm-4.5-air"), Some(131_072));
         assert_eq!(
             provider.efforts("glm-5.2"),
             vec![
