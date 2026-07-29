@@ -49,7 +49,7 @@ goat doctor | update     diagnose config; update the binary
 
 Anthropic · OpenAI · Gemini · Moonshot · Zhipu · xAI · DeepSeek · Mistral · Groq · Qwen · local.
 Channels: Discord.
-Integrations: Linear, Sentry, Slack — connect with `goat integration add`, bind per agent with
+Integrations: Linear, Notion, PostHog, Sentry, Slack — connect with `goat integration add`, bind per agent with
 `goat agent integration add`.
 
 ## Memory
