@@ -2662,7 +2662,11 @@ dependencies = [
  "goat-config",
  "goat-console",
  "goat-daemon",
+ "goat-integration-github",
  "goat-integration-linear",
+ "goat-integration-notion",
+ "goat-integration-posthog",
+ "goat-integration-sentry",
  "goat-integration-slack",
  "goat-protocol",
  "goat-provider",
@@ -2883,6 +2887,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-integration-github"
+version = "0.1.27"
+dependencies = [
+ "async-trait",
+ "goat-agent-tool",
+ "goat-auth",
+ "goat-bus",
+ "goat-github",
+ "goat-integration",
+ "goat-store",
+ "goat-types",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "goat-integration-linear"
 version = "0.1.27"
 dependencies = [
@@ -2893,6 +2918,76 @@ dependencies = [
  "goat-bus",
  "goat-integration",
  "goat-memory",
+ "goat-store",
+ "goat-types",
+ "inventory",
+ "reqwest 0.13.4",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "goat-integration-notion"
+version = "0.1.27"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "goat-agent-tool",
+ "goat-auth",
+ "goat-bus",
+ "goat-integration",
+ "goat-store",
+ "goat-types",
+ "inventory",
+ "reqwest 0.13.4",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "goat-integration-posthog"
+version = "0.1.27"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "goat-agent-tool",
+ "goat-auth",
+ "goat-integration",
+ "goat-types",
+ "inventory",
+ "reqwest 0.13.4",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "goat-integration-sentry"
+version = "0.1.27"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "goat-agent-tool",
+ "goat-auth",
+ "goat-bus",
+ "goat-integration",
  "goat-store",
  "goat-types",
  "inventory",

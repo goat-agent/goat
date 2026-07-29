@@ -74,10 +74,21 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
   - code tools: `ToolRegistry::builtin()` aggregates fs, shell, search, skill, and web.
     `goat-tool-browser` and `goat-tool-computer` bypass it and are wired directly into
     `GoatAgent::new` behind `config.browser_enabled` / `config.computer_use_enabled`.
+- **An integration owes neither tools nor a watcher.** Tools are usually discovered from a hosted
+  MCP server's `list_tools`, and a watcher polls and publishes `Event::IntegrationUpdate` on
+  deterministic diffs — but a connection plus a watcher is already a complete integration
+  (`goat-integration-github` registers no tools; the agent reaches GitHub through `shell` and `gh`),
+  and so is a connection plus tools (`goat-integration-posthog` has no watcher). Watchers own
+  polling and diffing, never the policy of what is worth watching — that is declared per-agent in
+  the binding config, and several watchers decline to spawn until it is.
+- Connections are global; `IntegrationAuth` decides how one is established — a pasted `Secret`, an
+  `OAuth` round trip, or `External`, meaning a host tool such as `gh` owns the credential and the
+  `config.json` entry is itself the connection marker. Per-agent binding lives in the agent's
+  `integrations` config map. Raw observations persist losslessly in `integration_observations`.
 
 ## Where things live
 
-`crates/` is flat, 90 crates, every one prefixed `goat-`. The prefix tells you the family:
+`crates/` is flat, 94 crates, every one prefixed `goat-`. The prefix tells you the family:
 `goat-agent*` is the autonomous actor, `goat-code`/`goat-core`/`goat-engine`/`goat-tui` and the
 `goat-tool-*`/`goat-command-*` families are coding, and `goat-provider*`/`goat-store`/`goat-config`/
 `goat-auth`/`goat-console`/`goat-protocol`/`goat-proxy` are shared. `ls crates/` beats any list
