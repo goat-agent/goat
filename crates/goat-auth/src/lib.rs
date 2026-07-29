@@ -60,6 +60,7 @@ pub enum CredentialService {
     Model,
     Search,
     Integration,
+    Channel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -68,6 +69,8 @@ pub struct CredentialKey {
     pub service: CredentialService,
     pub provider: String,
     pub account: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
 }
 
 impl CredentialKey {
@@ -76,6 +79,7 @@ impl CredentialKey {
             service: CredentialService::Model,
             provider: provider.into(),
             account: account.into(),
+            slot: None,
         }
     }
 
@@ -84,6 +88,7 @@ impl CredentialKey {
             service: CredentialService::Search,
             provider: provider.into(),
             account: account.into(),
+            slot: None,
         }
     }
 
@@ -92,6 +97,20 @@ impl CredentialKey {
             service: CredentialService::Integration,
             provider: provider.into(),
             account: account.into(),
+            slot: None,
+        }
+    }
+
+    pub fn channel(
+        provider: impl Into<String>,
+        account: impl Into<String>,
+        slot: impl Into<String>,
+    ) -> Self {
+        Self {
+            service: CredentialService::Channel,
+            provider: provider.into(),
+            account: account.into(),
+            slot: Some(slot.into()),
         }
     }
 }
@@ -647,6 +666,52 @@ mod tests {
         let parsed: CredentialKey = serde_json::from_str(&raw).unwrap();
         assert_eq!(parsed, key);
         assert_eq!(parsed.service, CredentialService::Integration);
+    }
+
+    #[test]
+    fn channel_key_carries_a_slot_and_stays_distinct_per_slot() {
+        let bot = CredentialKey::channel("slack", "personal", "bot_token");
+        let app = CredentialKey::channel("slack", "personal", "app_token");
+        assert_ne!(bot, app);
+        assert_eq!(bot.service, CredentialService::Channel);
+        assert_eq!(bot.account, "personal");
+        assert_eq!(bot.slot.as_deref(), Some("bot_token"));
+
+        let raw = serde_json::to_string(&bot).unwrap();
+        assert!(raw.contains(r#""service":"channel""#));
+        assert!(raw.contains(r#""slot":"bot_token""#));
+        let parsed: CredentialKey = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed, bot);
+    }
+
+    #[test]
+    fn non_channel_keys_omit_the_slot_field_entirely() {
+        let raw = serde_json::to_string(&CredentialKey::model("anthropic", "default")).unwrap();
+        assert!(!raw.contains("slot"));
+    }
+
+    #[test]
+    fn channel_slots_round_trip_through_the_store() {
+        let dir = std::env::temp_dir().join(format!("goat-auth-slots-{}", std::process::id()));
+        let path = dir.join("credentials.json");
+        let store = CredentialStore::new(path.clone());
+        let bot = CredentialKey::channel("slack", "personal", "bot_token");
+        let app = CredentialKey::channel("slack", "personal", "app_token");
+        store
+            .store(&bot, Credential::ApiKey(SecretString::from("xoxb-1")))
+            .unwrap();
+        store
+            .store(&app, Credential::ApiKey(SecretString::from("xapp-1")))
+            .unwrap();
+
+        assert_eq!(store.get(&bot).unwrap().bearer(), "xoxb-1");
+        assert_eq!(store.get(&app).unwrap().bearer(), "xapp-1");
+        assert_eq!(store.entries().len(), 2);
+
+        assert!(store.remove(&bot).unwrap());
+        assert!(store.get(&bot).is_none());
+        assert_eq!(store.get(&app).unwrap().bearer(), "xapp-1");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
