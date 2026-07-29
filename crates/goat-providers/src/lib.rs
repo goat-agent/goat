@@ -38,6 +38,8 @@ impl Registry {
             Arc::new(goat_provider_kimi::build(store, account)),
             Arc::new(goat_provider_kimi_code::build(store, account)),
             Arc::new(goat_provider_qwen::build(store, account)),
+            Arc::new(goat_provider_minimax::build(store, account)),
+            Arc::new(goat_provider_vercel::build(store, account)),
             Arc::new(goat_provider_local::ollama()),
             Arc::new(goat_provider_local::lmstudio()),
             Arc::new(goat_provider_local::llama_cpp()),
@@ -90,7 +92,7 @@ mod tests {
             std::env::temp_dir().join("goat-providers-registry-test.json"),
         );
         let registry = Registry::new(&store);
-        assert_eq!(registry.all().len(), 17);
+        assert_eq!(registry.all().len(), 19);
         assert!(registry.get(&ProviderId::from("anthropic")).is_some());
         assert!(registry.get(&ProviderId::from("openrouter")).is_some());
         assert!(registry.get(&ProviderId::from("groq")).is_some());
@@ -109,6 +111,8 @@ mod tests {
         assert!(registry.get(&ProviderId::from("kimi")).is_some());
         assert!(registry.get(&ProviderId::from("kimi-code")).is_some());
         assert!(registry.get(&ProviderId::from("qwen")).is_some());
+        assert!(registry.get(&ProviderId::from("minimax")).is_some());
+        assert!(registry.get(&ProviderId::from("vercel")).is_some());
         assert!(registry.get(&ProviderId::from("ollama")).is_some());
         assert!(registry.get(&ProviderId::from("does-not-exist")).is_none());
     }

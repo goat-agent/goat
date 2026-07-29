@@ -26,6 +26,8 @@ goat-provider-mistral = { path = "crates/goat-provider-mistral" }
 goat-provider-zai = { path = "crates/goat-provider-zai" }
 goat-provider-zai-coding = { path = "crates/goat-provider-zai-coding" }
 goat-provider-kimi = { path = "crates/goat-provider-kimi" }
+goat-provider-minimax = { path = "crates/goat-provider-minimax" }
+goat-provider-vercel = { path = "crates/goat-provider-vercel" }
 goat-provider-qwen = { path = "crates/goat-provider-qwen" }
 goat-provider-kimi-code = { path = "crates/goat-provider-kimi-code" }
 goat-provider-xai = { path = "crates/goat-provider-xai" }
