@@ -2,7 +2,8 @@
 
 goat is a single-user, single-host personal AI product in Rust with two capabilities:
 
-- **agent** — an autonomous actor holding a resident Discord gateway connection. It reacts to
+- **agent** — an autonomous actor holding a resident chat connection (Discord gateway, Slack Socket
+  Mode). It reacts to
   messages, runs `once`/`cron` tasks it registers for itself through the `schedule` tool,
   consolidates memory nightly at 04:00, and delegates coding to the code engine in-process.
 - **code** — a terminal coding agent rendered as a full-screen TUI, always spoken to through the
@@ -77,6 +78,12 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
   - code tools: `ToolRegistry::builtin()` aggregates fs, shell, search, skill, and web.
     `goat-tool-browser` and `goat-tool-computer` bypass it and are wired directly into
     `GoatAgent::new` behind `config.browser_enabled` / `config.computer_use_enabled`.
+- **A channel owes no tools.** It is a presence, not a reach: it holds a resident connection under a
+  bot identity and turns inbound traffic into `IncomingMessage`. Workspace-wide search and posting
+  where the bot is not a member belong to the matching integration. `slack` is deliberately both —
+  `goat-channel-slack` is the bot people address (`xoxb-` + `xapp-`, Socket Mode) and
+  `goat-integration-slack` reaches in as the owner (`xoxp-`, hosted MCP). Their token capabilities
+  are disjoint, so the two cannot be merged and neither is redundant.
 - **An integration owes neither tools nor a watcher.** Tools are usually discovered from a hosted
   MCP server's `list_tools`, and a watcher polls and publishes `Event::IntegrationUpdate` on
   deterministic diffs — but a connection plus a watcher is already a complete integration
