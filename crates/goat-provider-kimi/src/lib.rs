@@ -1,8 +1,6 @@
 use goat_auth::CredentialStore;
-use goat_provider::ProviderMetadata;
-use goat_provider_openai_compat::{
-    ChatDiscovery, ChatValidation, OpenAiCompatProvider, api_key, no_efforts,
-};
+use goat_provider::{Effort, ProviderMetadata};
+use goat_provider_openai_compat::{ChatDiscovery, ChatValidation, OpenAiCompatProvider, api_key};
 
 pub const PROVIDER_ID: &str = "kimi";
 
@@ -17,6 +15,7 @@ const KIMI_SETUP: &[&str] = &[
 ];
 
 const CATALOG: &[&str] = &[
+    "kimi-k3",
     "kimi-k2.7-code",
     "kimi-k2.7-code-highspeed",
     "kimi-k2.6",
@@ -24,16 +23,16 @@ const CATALOG: &[&str] = &[
     "moonshot-v1-128k",
     "moonshot-v1-32k",
     "moonshot-v1-8k",
-    "moonshot-v1-auto",
     "moonshot-v1-128k-vision-preview",
     "moonshot-v1-32k-vision-preview",
     "moonshot-v1-8k-vision-preview",
 ];
 
 const CONTEXT: &[(&str, u32)] = &[
-    ("kimi-k2.7", 256_000),
-    ("kimi-k2.6", 256_000),
-    ("kimi-k2.5", 256_000),
+    ("kimi-k3", 1_000_000),
+    ("kimi-k2.7", 262_144),
+    ("kimi-k2.6", 262_144),
+    ("kimi-k2.5", 262_144),
     ("moonshot-v1-128k-vision-preview", 128_000),
     ("moonshot-v1-32k-vision-preview", 32_000),
     ("moonshot-v1-8k-vision-preview", 8_000),
@@ -47,8 +46,7 @@ pub fn build(store: &CredentialStore, account: &str) -> OpenAiCompatProvider {
         .with_catalog(CATALOG)
         .with_context_windows(CONTEXT)
         .with_vision_filter(kimi_vision_model)
-        .with_efforts(no_efforts)
-        .with_reasoning_effort(false)
+        .with_efforts(kimi_efforts)
         .with_validation(ChatValidation::CatalogOnly)
         .with_discovery(ChatDiscovery::CatalogOnly)
         .with_metadata(ProviderMetadata {
@@ -63,5 +61,13 @@ pub fn build(store: &CredentialStore, account: &str) -> OpenAiCompatProvider {
 
 fn kimi_vision_model(id: &str) -> bool {
     let id = id.to_ascii_lowercase();
-    id.starts_with("kimi-k2.6") || id.contains("vision-preview")
+    id.starts_with("kimi-k3") || id.starts_with("kimi-k2.6") || id.contains("vision-preview")
+}
+
+fn kimi_efforts(model: &str) -> Vec<Effort> {
+    if model.starts_with("kimi-k3") {
+        vec![Effort::Low, Effort::High, Effort::Max]
+    } else {
+        Vec::new()
+    }
 }
