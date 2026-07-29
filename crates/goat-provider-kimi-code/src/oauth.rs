@@ -66,6 +66,7 @@ pub async fn login(status: &mpsc::Sender<String>) -> Result<TokenSet, KimiCodeOA
             "device authorization returned an invalid verification URL".to_owned(),
         ));
     }
+    let _ = open::that(url);
     let _ = status
         .send(format!("open {url} and enter code: {}", device.user_code))
         .await;

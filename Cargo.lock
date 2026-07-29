@@ -3237,6 +3237,7 @@ dependencies = [
  "goat-auth",
  "goat-provider",
  "goat-provider-openai-compat",
+ "open",
  "reqwest 0.12.28",
  "serde",
  "thiserror 2.0.19",
