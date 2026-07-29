@@ -2662,6 +2662,7 @@ dependencies = [
  "goat-config",
  "goat-console",
  "goat-daemon",
+ "goat-integration-github",
  "goat-integration-linear",
  "goat-integration-slack",
  "goat-protocol",
