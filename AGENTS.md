@@ -2,15 +2,15 @@
 
 goat is a single-user, single-host personal AI product in Rust with two capabilities:
 
-- **agent** — an autonomous actor resident on chat channels (Discord). It reacts to
-  messages, owns self-tick and goal-review scheduling, keeps lifetime memory, consolidates
-  nightly, and delegates coding to the code engine in-process.
-- **code** — a terminal coding agent rendered as a full-screen TUI, backed by the resident daemon,
-  holding live sessions keyed by cwd.
+- **agent** — an autonomous actor holding a resident Discord gateway connection. It reacts to
+  messages, runs `once`/`cron` tasks it registers for itself through the `schedule` tool,
+  consolidates memory nightly at 04:00, and delegates coding to the code engine in-process.
+- **code** — a terminal coding agent rendered as a full-screen TUI, always spoken to through the
+  resident daemon.
 
 One binary (`goat`), one daemon, one database (`~/.goat/goat.db`), one config tree (`~/.goat/`).
-This file is the source of truth for agents working here; `CLAUDE.md` imports it. When a crate
-grows its own conventions, add a nested `crates/<name>/AGENTS.md` — the closest file wins.
+`CLAUDE.md` imports this file. When a crate grows its own conventions, add
+`crates/<name>/AGENTS.md` — the closest file wins. `crates/goat-engine/AGENTS.md` is the only one.
 
 ## Commands
 
@@ -27,124 +27,6 @@ Use `cargo nextest`, **not** `cargo test`. `.config/nextest.toml` pins `goat-dae
 `cargo fmt --all`, the clippy line, and the nextest line must all pass before any change is done.
 For a narrow change run the smallest relevant check; for a broad one run all four. CI adds
 `--locked`, runs `actionlint`, smoke-tests `goat --version`, and rechecks on the pinned MSRV.
-
-## CLI
-
-Three groups, by ownership: bare `goat` is shared, `goat code` is coding, `goat agent` is the
-autonomous actor. Bare `goat` prints help.
-
-```
-goat setup | doctor | provider | update | daemon | remote   shared
-goat integration add | list | remove                         external-service connections
-goat code [-c] [-w <name>] [--headless] [-p]                 coding TUI
-goat code worktree | search                                  coding subcommands
-goat agent list | add | show | remove                        agent management
-goat agent channel | status | log                            agent channels and state
-```
-
-`goat daemon serve` runs both subsystems in one process; the first client that needs it auto-spawns
-it (`connect_or_spawn`) and it stays resident, so agents run without a separate `run` command. There
-is no service installation and no ambient "current agent" — with more than one agent, `-a <agent>`
-is required.
-
-## Filesystem
-
-```
-~/.goat/
-├─ credentials.json          provider keys (shared goat-sdk format)
-├─ config.json               product settings
-├─ goat.db                   the one database (agent tables + code_ tables)
-├─ bin/goat
-├─ memory/                   long-term memory (files + FTS5 + sqlite-vec index)
-├─ skills/
-├─ agents/<slug>/            agent.md, config.json, memory/, skills/
-├─ remote/                   paired devices, CA
-├─ browser/  logs/  update/
-```
-
-## Workspace
-
-`crates/` is flat; every crate is prefixed `goat-`. Four families.
-
-### Shared
-
-The inlined provider SDK and the terminal design system — used by both capabilities.
-
-- `goat-protocol` — wire contract (`Op`, `Event`, `TaskId`); serde only; leaf.
-- `goat-provider` / `goat-provider-*` / `goat-providers` — the `Provider` trait, one crate per LLM
-  provider, and the registry. Providers classify their own wire errors; callers never inspect
-  error strings.
-- `goat-auth` — credential store (API keys, OAuth tokens).
-- `goat-console` — the terminal design system (see below).
-- `goat-store` — the one SQLx/SQLite store: agent tables plus `CodeStore` over the `code_`-prefixed
-  coding tables, one migration history, FTS5 + sqlite-vec.
-- `goat-config` — owns the `~/.goat/` layout, product settings, and agent definitions.
-- `goat-sqlite-vec` — FFI isolation for the statically linked `sqlite-vec` extension.
-- `goat-proxy` — provider usage metering (`MeteredProvider` + `Recorder`, wired through
-  `Registry::load_metered`), the daemon-hosted localhost dashboard (usage, rate limits, request
-  log) with account management (API key + OAuth login, backfilled from `rate_limits.json`);
-  state lives in the `proxy_`-prefixed tables via `goat-store`'s `ProxyStore`.
-
-### agent
-
-- `goat-agent` — library exposing the `goat agent`/`setup`/`doctor` CLI (`cli` module).
-- `goat-types`, `goat-bus`, `goat-model` — IDs/events, event bus, model registry.
-- `goat-channel` / `goat-channel-*` — channel trait and one crate per chat channel.
-- `goat-integration` / `goat-integration-*` — external-service integrations, one crate per vendor.
-  An integration contributes tools (discovered from the service, e.g. a hosted MCP server's
-  `list_tools`) and an optional polling watcher that publishes `Event::IntegrationUpdate` on
-  deterministic diffs. Connections (OAuth/keys) are global; per-agent binding lives in the agent's
-  `integrations` config map. Raw observations persist losslessly in `integration_observations`.
-- `goat-brain` — per-agent conversation loop and turn handling.
-- `goat-runtime` — wires the runtime over trait registries; `Goat::boot`/`boot_with_code`.
-- `goat-profile` — agent config value objects.
-- `goat-memory` — lifetime memory (files, `facts`, derived FTS5 + sqlite-vec) behind `MemoryEngine`.
-- `goat-sleep`, `goat-loop`, `goat-skills`, `goat-render`, `goat-plugin`.
-- `goat-agent-tool`, `goat-agent-tool-*` — the agent tool trait and one crate per tool
-  (fs, shell, skill, schedule, goal, memory, pty, code). `goat-agent-tool-code` delegates a coding
-  task to the code engine in-process via `Manager::delegate_code`.
-- `goat-agent-command`, `goat-agent-command-skill` — channel slash commands.
-
-### code
-
-- `goat-code` — the `goat` binary: CLI, logging, and the unified `goat daemon`.
-- `goat-core` — `Session` and the `Engine` trait; owns the `Op → Event` loop and nothing else.
-- `goat-engine` — `GoatAgent`, the production `Engine`: LLM loop, tool dispatch, retry, mid-turn
-  steering, auto-compaction, and the `Agent` delegation tool. See `crates/goat-engine/AGENTS.md`.
-- `goat-tui` — full-screen ratatui app (The Elm Architecture).
-- `goat-wire`, `goat-daemon`, `goat-client`, `goat-remote` — the daemon wire contract, the resident
-  daemon (`Manager`), the thin client, and mTLS-over-WebSocket remote access.
-- `goat-worktree`, `goat-sandbox`, `goat-mcp`.
-- `goat-tool`, `goat-tool-*`, `goat-tools` — the code tool trait, one crate per tool, and registry.
-- `goat-command`, `goat-command-*`, `goat-commands` — the TUI command trait, per-category crates,
-  and registry.
-- `goat-skill`, `goat-github`.
-
-## Design system
-
-`goat-console` is the shared terminal design system; every CLI surface renders through it. It is
-domain-free — it knows tokens, structure, and interaction, never providers, accounts, or agents.
-
-- `color` — `ColorMode`, `Palette`, and the `cell`/`paint` text helpers: the tokens.
-- `layout` — `Table`, `Footer`, `cell`/`section`/`line`, and `pair`/`pair_styled`: structure.
-  `Table` is the one list component — the same styled rows both `render` to output and `pick` an
-  index interactively, so a list and its selectable form never diverge. `pair` is the one
-  label/value row (`pair_styled` colours the value); there is no second row printer.
-- `interact` — `select_index`/`pick` (index/value pickers), `prompt`/`secret` (text and hidden
-  input), `confirm`, and status lines (`success`/`warning`/`note`). One text primitive and one
-  secret primitive, both over plain labels. All are cancellable: pickers return `None` on Esc,
-  and `prompt`/`secret` return `None` on an empty submit (surfaced as an `❯`-marked prompt with a
-  muted "go back" hint), so every step of a flow can back out to the previous one.
-- `theme` — the single dialoguer `Theme` (`❯` accent marker, muted defaults, warning-coloured
-  errors) shared by every picker and prompt.
-- `error` — `ConsoleError` plus `report`/`fail`: one failure format.
-
-It is error-agnostic: `cell` is generic over the closure error, and interactive helpers return
-`ConsoleError` that both `anyhow` and `color_eyre` absorb through `?`. Domain UI (provider/account
-resolution, auth-method choice) lives in each binary's `ui` facade, which also re-exports the system
-and supplies its own `report`/`fail` in its native error type, so the UI error never leaks across the
-boundary. Do not add a second styling or prompt system, and do not push domain concepts into
-`goat-console`.
 
 ## Rules
 
@@ -165,6 +47,8 @@ boundary. Do not add a second styling or prompt system, and do not push domain c
 - `ProfileId` is explicit, constructor-injected, never ambient. `ProfileId::from_slug` must stay
   deterministic; the `GOAT_NAMESPACE` constant (a fixed `Uuid`, not an environment variable) must
   never change — it keys every stored id.
+- `goat-console` is the only styling and prompt system. Do not add a second, and do not push domain
+  concepts (providers, accounts, agents) into it — domain UI belongs in each binary's `ui` facade.
 - `goat-types::Event` and the channel/command/integration surface types are `#[non_exhaustive]`;
   append variants and keep wildcard handling. `goat-protocol::Event` and `goat-provider::StreamChunk`
   are not — changing them breaks the whole wire and provider surface at once.
@@ -191,21 +75,62 @@ boundary. Do not add a second styling or prompt system, and do not push domain c
     `goat-tool-browser` and `goat-tool-computer` bypass it and are wired directly into
     `GoatAgent::new` behind `config.browser_enabled` / `config.computer_use_enabled`.
 
-## Architecture
+## Where things live
 
-- `Engine` is an object-safe actor: `fn spawn(self, ops, events) -> JoinHandle`. No `async_trait`,
-  no `Stream`. The UI and engine communicate only through `goat-protocol` over bounded
-  `tokio::mpsc` channels.
-- `GoatAgent` owns a `Conversation` (single source of truth for the LLM context); the TUI keeps an
-  append-only render mirror from `Event`s. Messages persist losslessly as `Vec<ContentBlock>` JSON;
-  the table is append-only. Compactions are recorded separately, so `/resume` rebuilds the
-  compacted engine history while the transcript replays full scrollback with markers.
-- Long-running policy is split by ownership: providers classify wire failures into `StreamError`;
-  the engine decides — retry with jittered backoff, reactive compaction on overflow, or abort.
-- `goat daemon serve` builds one code `Manager`, boots the agent runtime with it
-  (`Goat::boot_with_code`), and runs the socket server (`serve_with`) under one shutdown token. The
-  `code_task` tool drives that same `Manager` in-process — no wire hop.
-- Memory is currently assistant-global by `Scope` (`owner`/`self`/`domain`), not per-agent.
+`crates/` is flat, 90 crates, every one prefixed `goat-`. The prefix tells you the family:
+`goat-agent*` is the autonomous actor, `goat-code`/`goat-core`/`goat-engine`/`goat-tui` and the
+`goat-tool-*`/`goat-command-*` families are coding, and `goat-provider*`/`goat-store`/`goat-config`/
+`goat-auth`/`goat-console`/`goat-protocol`/`goat-proxy` are shared. `ls crates/` beats any list
+kept here.
+
+Placements that contradict the naming:
+
+- `goat-skill` (singular) is a code crate; `goat-skills` (plural) is an agent crate. Different
+  scopes, different parsers.
+- `goat-provider-openai-compat` registers nothing — it is the shared base thirteen OpenAI-compatible
+  crates build on. `goat-provider-local` registers three providers (ollama, lmstudio, llama.cpp).
+- `goat-embedding` is agent-side and reaches memory only through `goat-runtime`'s adapter;
+  `goat-memory` defines its own `Embedder` trait and does not depend on it.
+- `goat-command-*` is the **TUI** slash-command family. Channel slash commands are
+  `goat-agent-command-*`.
+- `Manager` lives in `goat-daemon`, not in an engine crate.
+
+## Filesystem
+
+Everything is under `~/.goat/`, laid out by `goat-config`'s `GoatPaths`; `HOME` is the only thing
+that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The parts that mislead:
+
+- **Memory and skills are not per-agent.** `agents/<slug>/` holds only `agent.md` and `config.json`.
+  Memory is one global tree at `memory/<scope>/` keyed by `Scope` (`owner`, `self`, `domain/<name>`);
+  per-persona skills live at `profiles/<slug>/skills/`.
+- `~/.goat/agents/*.md` does double duty: `AgentRegistry::load` also scans it (plus the project-local
+  `.goat/agents/`) as the **code engine's subagent registry**.
+- `~/.agents/skills` is a third, separate skill scope. `<repo>/.goat/worktrees/` is created inside
+  the *target* repository and is unrelated to the home tree.
+- `goat.db` is one file holding three table sets: unprefixed agent tables, `code_`, and `proxy_`.
+
+## Non-obvious behavior
+
+- `Engine`'s only method takes `self` by value, so it is not callable through a trait object;
+  nothing uses `dyn Engine`. Decoupling comes from generics plus bounded `tokio::mpsc` channels
+  (32 ops, 512 events) carrying `goat-protocol`. The trait avoids `async_trait` and `Stream` —
+  both are used freely elsewhere.
+- `code_messages` is insert-only; compactions live in `code_compactions`. `/resume` rebuilds engine
+  history from the **latest compaction alone**, while the transcript replays full scrollback with a
+  marker per compaction.
+- Providers classify wire failures into `StreamError`; the engine decides — retry with jittered
+  backoff, reactive compaction on `ContextOverflow`, or abort. Callers never inspect error strings.
+- Sessions are keyed by `SessionId`, with a secondary index by `thread_id`. There is no cwd map:
+  `goat code` defaults to a **new** session, and only `-c` resolves cwd to the latest thread through
+  a database query. Several live sessions can share a cwd.
+- `goat daemon serve` builds one `Manager`, opens `ProxyStore`, spawns a `Recorder` with two
+  `Meter`s (one code, one agent), boots the agent runtime via `Goat::boot_with_code_metered`,
+  backfills `rate_limits.json`, serves the proxy dashboard, and runs `serve_with` — all under one
+  shutdown token. The `code_task` tool drives that same `Manager` in-process, no wire hop.
+- `goat integration` manages the global connection to a service; `goat agent integration` binds an
+  already-connected service to one agent. Both take `-a <agent>` where an agent is implied.
+- `interact::pick` is the one non-cancellable picker: it promotes Esc to `ConsoleError("cancelled")`,
+  while `select_index` and `Table::pick` return `None`.
 
 ## Testing
 
