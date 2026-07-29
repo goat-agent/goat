@@ -7,27 +7,29 @@ const HOST: &str = "api.mistral.ai";
 const ENV_VAR: &str = "MISTRAL_API_KEY";
 
 const CATALOG: &[&str] = &[
-    "mistral-medium-latest",
     "mistral-large-latest",
+    "mistral-medium-latest",
     "mistral-small-latest",
-    "ministral-14b-latest",
-    "ministral-8b-latest",
-    "ministral-3b-latest",
+    "ministral-3-14b-latest",
+    "ministral-3-8b-latest",
+    "ministral-3-3b-latest",
     "codestral-latest",
-    "devstral-2512",
 ];
 
 const CONTEXT_WINDOWS: &[(&str, u32)] = &[
-    ("mistral-medium", 256_000),
-    ("mistral-large", 256_000),
-    ("mistral-small", 256_000),
-    ("ministral", 256_000),
-    ("codestral", 131_072),
-    ("devstral-2512", 262_144),
+    ("mistral-large", 262_144),
+    ("mistral-medium", 262_144),
+    ("mistral-small", 262_144),
+    ("ministral-3", 262_144),
+    ("codestral", 262_144),
 ];
 
 fn is_vision_model(id: &str) -> bool {
-    id.to_ascii_lowercase().contains("pixtral")
+    let id = id.to_ascii_lowercase();
+    id.contains("pixtral")
+        || id.starts_with("mistral-large")
+        || id.starts_with("mistral-medium")
+        || id.starts_with("mistral-small")
 }
 
 pub fn build(store: &CredentialStore, account: &str) -> OpenAiCompatProvider {
