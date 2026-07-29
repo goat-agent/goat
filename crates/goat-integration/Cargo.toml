@@ -6,12 +6,18 @@ license.workspace = true
 publish.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+test-support = ["dep:tempfile"]
+
 [dependencies]
 goat-agent-tool = { workspace = true }
 goat-auth   = { workspace = true }
 goat-bus    = { workspace = true }
 goat-store  = { workspace = true }
 goat-types  = { workspace = true }
+serde       = { workspace = true }
+tempfile    = { workspace = true, optional = true }
 async-trait = { workspace = true }
 inventory   = { workspace = true }
 serde_json  = { workspace = true }
@@ -21,7 +27,8 @@ tokio-util  = { workspace = true }
 tracing     = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+goat-integration = { workspace = true, features = ["test-support"] }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
