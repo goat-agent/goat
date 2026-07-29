@@ -202,6 +202,30 @@ pub(crate) fn parse_token_response(tokens: TokenResponse) -> Result<TokenSet, Ki
     ))
 }
 
+pub fn identity_headers() -> Vec<(String, String)> {
+    vec![
+        (
+            USER_AGENT.as_str().to_owned(),
+            format!("goat-code/{}", env!("CARGO_PKG_VERSION")),
+        ),
+        ("x-msh-platform".to_owned(), "kimi_code_cli".to_owned()),
+        (
+            "x-msh-version".to_owned(),
+            env!("CARGO_PKG_VERSION").to_owned(),
+        ),
+        ("x-msh-device-name".to_owned(), ascii_header(&device_name())),
+        (
+            "x-msh-device-model".to_owned(),
+            ascii_header(&device_model()),
+        ),
+        (
+            "x-msh-os-version".to_owned(),
+            ascii_header(std::env::consts::OS),
+        ),
+        ("x-msh-device-id".to_owned(), ascii_header(&device_id())),
+    ]
+}
+
 fn kimi_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
@@ -209,23 +233,15 @@ fn kimi_headers() -> HeaderMap {
         CONTENT_TYPE,
         HeaderValue::from_static("application/x-www-form-urlencoded"),
     );
-    headers.insert(USER_AGENT, HeaderValue::from_static("goat-code/0.1.14"));
-    insert_header(&mut headers, "X-Msh-Platform", "kimi_code_cli");
-    insert_header(&mut headers, "X-Msh-Version", env!("CARGO_PKG_VERSION"));
-    insert_header(&mut headers, "X-Msh-Device-Name", &device_name());
-    insert_header(&mut headers, "X-Msh-Device-Model", &device_model());
-    insert_header(&mut headers, "X-Msh-Os-Version", std::env::consts::OS);
-    insert_header(&mut headers, "X-Msh-Device-Id", &device_id());
-    headers
-}
-
-fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) {
-    if let Ok(value) = HeaderValue::from_str(&ascii_header(value)) {
-        headers.insert(
-            HeaderName::from_static(name.to_ascii_lowercase().leak()),
-            value,
-        );
+    for (name, value) in identity_headers() {
+        let Ok(name) = HeaderName::try_from(name.as_str()) else {
+            continue;
+        };
+        if let Ok(value) = HeaderValue::from_str(&value) {
+            headers.insert(name, value);
+        }
     }
+    headers
 }
 
 fn ascii_header(value: &str) -> String {

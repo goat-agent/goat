@@ -7,7 +7,7 @@ use goat_provider::{
     Request, StreamError, ValidateError, Validated, WebSearchOutput,
 };
 use goat_provider_openai_compat::{
-    ChatDiscovery, OpenAiCompatProvider, enforce_https_host, no_efforts, no_vision,
+    ChatDiscovery, OpenAiCompatProvider, enforce_https_host, no_vision,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -22,16 +22,16 @@ const SETUP: &[&str] = &[
 ];
 
 const CATALOG: &[&str] = &[
-    "kimi-k2.7-code",
-    "kimi-k2.7-code-highspeed",
-    "kimi-k2.6",
-    "kimi-k2.5",
+    "k3",
+    "k3-256k",
+    "kimi-for-coding",
+    "kimi-for-coding-highspeed",
 ];
 
 const CONTEXT_WINDOWS: &[(&str, u32)] = &[
-    ("kimi-k2.7", 256_000),
-    ("kimi-k2.6", 256_000),
-    ("kimi-k2.5", 256_000),
+    ("k3-256k", 262_144),
+    ("k3", 1_048_576),
+    ("kimi-for-coding", 262_144),
 ];
 
 pub fn build(store: &CredentialStore, account: &str) -> KimiCodeProvider {
@@ -50,8 +50,25 @@ impl KimiCodeProvider {
         Self {
             store,
             key,
-            client: oauth::oauth_client(),
+            client: goat_provider_openai_compat::http_client(),
         }
+    }
+
+    fn chat_provider(&self, token: String) -> OpenAiCompatProvider {
+        OpenAiCompatProvider::new(
+            ProviderId::from(PROVIDER_ID),
+            BASE_URL,
+            Some(token),
+            AuthMethod::OAuth,
+        )
+        .with_client(self.client.clone())
+        .with_extra_headers(oauth::identity_headers())
+        .with_catalog(CATALOG)
+        .with_context_windows(CONTEXT_WINDOWS)
+        .with_vision_filter(no_vision)
+        .with_images(false)
+        .with_efforts(kimi_code_efforts)
+        .with_discovery(ChatDiscovery::CatalogOnly)
     }
 }
 
@@ -90,8 +107,8 @@ impl Provider for KimiCodeProvider {
         CATALOG
     }
 
-    fn efforts(&self, _model: &str) -> Vec<Effort> {
-        Vec::new()
+    fn efforts(&self, model: &str) -> Vec<Effort> {
+        kimi_code_efforts(model)
     }
 
     fn context_window(&self, model: &str) -> Option<u32> {
@@ -138,57 +155,26 @@ impl Provider for KimiCodeProvider {
     }
 
     async fn stream(&self, req: Request) -> Result<ChunkStream, StreamError> {
-        let store = self.store.clone();
-        let key = self.key.clone();
-        let Some(token) = oauth::current_token(&store, &key).await else {
+        let Some(token) = oauth::current_token(&self.store, &self.key).await else {
             return Err(StreamError::auth("no credentials"));
         };
-        let provider = OpenAiCompatProvider::new(
-            ProviderId::from(PROVIDER_ID),
-            BASE_URL,
-            Some(token),
-            AuthMethod::OAuth,
-        )
-        .with_catalog(CATALOG)
-        .with_context_windows(CONTEXT_WINDOWS)
-        .with_vision_filter(no_vision)
-        .with_efforts(no_efforts)
-        .with_reasoning_effort(false);
-        provider.stream(req).await
+        self.chat_provider(token).stream(req).await
     }
 
     fn discover(&self, out: mpsc::Sender<Model>) -> JoinHandle<()> {
-        let store = self.store.clone();
-        let key = self.key.clone();
         tokio::spawn(async move {
-            let Some(token) = oauth::current_token(&store, &key).await else {
-                for id in CATALOG {
-                    if out
-                        .send(Model {
-                            id: (*id).to_owned(),
-                            supports_images: false,
-                        })
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
+            for id in CATALOG {
+                if out
+                    .send(Model {
+                        id: (*id).to_owned(),
+                        supports_images: false,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
                 }
-                return;
-            };
-            let provider = OpenAiCompatProvider::new(
-                ProviderId::from(PROVIDER_ID),
-                BASE_URL,
-                Some(token),
-                AuthMethod::OAuth,
-            )
-            .with_catalog(CATALOG)
-            .with_context_windows(CONTEXT_WINDOWS)
-            .with_model_filter(chat_model)
-            .with_vision_filter(no_vision)
-            .with_discovery(ChatDiscovery::CatalogOnly);
-            let handle = provider.discover(out);
-            let _ = handle.await;
+            }
         })
     }
 
@@ -202,9 +188,12 @@ impl Provider for KimiCodeProvider {
     }
 }
 
-fn chat_model(id: &str) -> bool {
-    let id = id.to_ascii_lowercase();
-    !id.contains("embedding") && !id.contains("image") && !id.contains("video")
+fn kimi_code_efforts(model: &str) -> Vec<Effort> {
+    if model.starts_with("k3") {
+        vec![Effort::Low, Effort::High, Effort::Max]
+    } else {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]
@@ -228,6 +217,18 @@ mod tests {
         assert_eq!(provider.metadata().oauth, Some("device code"));
         assert!(!provider.authenticated());
         assert_eq!(provider.catalog(), CATALOG);
+        assert_eq!(provider.context_window("k3"), Some(1_048_576));
+        assert_eq!(provider.context_window("k3-256k"), Some(262_144));
+        assert_eq!(provider.context_window("kimi-for-coding"), Some(262_144));
+        assert_eq!(
+            provider.context_window("kimi-for-coding-highspeed"),
+            Some(262_144)
+        );
+        assert_eq!(
+            provider.efforts("k3"),
+            vec![Effort::Low, Effort::High, Effort::Max]
+        );
+        assert!(provider.efforts("kimi-for-coding").is_empty());
         assert!(valid_kimi_verification_url(
             "https://auth.kimi.com/device?code=abc"
         ));
