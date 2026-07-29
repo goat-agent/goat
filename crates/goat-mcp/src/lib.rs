@@ -1,39 +1,21 @@
-use std::{
-    collections::{HashMap, HashSet},
-    path::Path,
-    process::Stdio,
-    sync::Arc,
-    time::Duration,
-};
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
 
-use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolContext, ToolError, ToolFuture, ToolOutput};
-use rmcp::{
-    RoleClient, ServiceExt,
-    model::{CallToolRequestParams, ClientRequest, ServerResult, Tool as McpTool},
-    service::{PeerRequestOptions, RunningService, ServiceError},
-    transport::{ConfigureCommandExt, TokioChildProcess},
-};
+use rmcp::service::ServiceError;
 use serde::Deserialize;
-use serde_json::{Map, Value};
-use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    process::Command,
-    sync::Mutex,
-};
-use tokio_util::sync::CancellationToken;
 
-const START_TIMEOUT: Duration = Duration::from_secs(10);
-const CALL_TIMEOUT: Duration = Duration::from_mins(2);
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
-
-mod convert;
 mod names;
+mod result;
+mod session;
 
-use convert::convert_result;
-use names::unique_tool_name;
+pub use names::sanitize_component;
+pub use result::{McpContent, McpImage, McpToolResult};
+pub use rmcp::model::Tool as McpTool;
+pub use session::{CALL_TIMEOUT, HttpEndpoint, McpSession, START_TIMEOUT, http_client};
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum McpError {
     #[error("mcp config io failed: {0}")]
     Io(#[from] std::io::Error),
@@ -47,10 +29,16 @@ pub enum McpError {
         #[source]
         source: ServiceError,
     },
+    #[error("mcp server {server} rejected the arguments: {message}")]
+    InvalidParams { server: String, message: String },
     #[error("mcp tool {tool} returned an error: {message}")]
     ToolError { tool: String, message: String },
-    #[error("mcp tool input must be a json object")]
-    InputNotObject,
+    #[error("mcp tool {tool} arguments must be a json object, found {found}")]
+    InputNotObject { tool: String, found: String },
+    #[error(
+        "mcp server {server} asked for more input while running {tool}; goat cannot answer mid-call yet"
+    )]
+    InputRequired { server: String, tool: String },
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -93,284 +81,48 @@ pub async fn load_manager(path: Option<&Path>, cwd: &Path) -> Arc<McpManager> {
     }
 }
 
+pub struct McpServer {
+    pub name: String,
+    pub session: Arc<McpSession>,
+    pub tools: Vec<McpTool>,
+}
+
 #[derive(Default)]
 pub struct McpManager {
-    tools: Vec<McpToolAdapter>,
-    sessions: Vec<Arc<McpSession>>,
+    servers: Vec<McpServer>,
 }
 
 impl McpManager {
     pub async fn start(config: McpConfig, cwd: &Path) -> Arc<Self> {
-        let mut tools = Vec::new();
-        let mut sessions = Vec::new();
-        let mut used_names = HashSet::new();
-        let mut servers: Vec<_> = config.mcp_servers.into_iter().collect();
-        servers.sort_by(|a, b| a.0.cmp(&b.0));
-        for (server_name, server_config) in servers {
-            match McpSession::start(server_name.clone(), server_config, cwd).await {
-                Ok((session, discovered)) => {
-                    let session = Arc::new(session);
-                    for tool in discovered {
-                        let exposed_name =
-                            unique_tool_name(&mut used_names, &server_name, &tool.name);
-                        tools.push(McpToolAdapter::new(
-                            exposed_name,
-                            server_name.clone(),
-                            tool,
-                            session.clone(),
-                        ));
-                    }
-                    sessions.push(session);
-                }
-                Err(err) => tracing::warn!(%err, server = %server_name, "skipping mcp server"),
+        let mut servers = Vec::new();
+        let mut configured: Vec<_> = config.mcp_servers.into_iter().collect();
+        configured.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, server_config) in configured {
+            match McpSession::connect_stdio(name.clone(), server_config, cwd).await {
+                Ok((session, tools)) => servers.push(McpServer {
+                    name,
+                    session: Arc::new(session),
+                    tools,
+                }),
+                Err(err) => tracing::warn!(%err, server = %name, "skipping mcp server"),
             }
         }
-        tools.sort_by(|a, b| a.name.cmp(b.name));
-        Arc::new(Self { tools, sessions })
+        Arc::new(Self { servers })
     }
 
-    pub fn tools(&self) -> Vec<Box<dyn Tool>> {
-        self.tools
-            .iter()
-            .cloned()
-            .map(|tool| Box::new(tool) as Box<dyn Tool>)
-            .collect()
-    }
-
-    pub fn len(&self) -> usize {
-        self.tools.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.tools.is_empty()
+    pub fn servers(&self) -> &[McpServer] {
+        &self.servers
     }
 
     pub async fn shutdown(&self) {
-        for session in &self.sessions {
-            session.shutdown().await;
+        for server in &self.servers {
+            server.session.close().await;
         }
     }
-}
-
-struct McpSession {
-    server_name: String,
-    pid: Option<u32>,
-    client: Mutex<RunningService<RoleClient, ()>>,
-}
-
-impl McpSession {
-    async fn start(
-        server_name: String,
-        config: ServerConfig,
-        cwd: &Path,
-    ) -> Result<(Self, Vec<McpTool>), McpError> {
-        let mut command = Command::new(&config.command);
-        command
-            .args(&config.args)
-            .envs(&config.env)
-            .current_dir(cwd);
-        let (transport, stderr) = TokioChildProcess::builder(command.configure(|cmd| {
-            cmd.stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            #[cfg(unix)]
-            {
-                cmd.process_group(0);
-            }
-        }))
-        .spawn()?;
-        let pid = transport.id();
-        if let Some(stderr) = stderr {
-            spawn_stderr_logger(server_name.clone(), stderr);
-        }
-        let token = CancellationToken::new();
-        let client = tokio::time::timeout(START_TIMEOUT, ().serve_with_ct(transport, token))
-            .await
-            .map_err(|_| McpError::Initialize {
-                server: server_name.clone(),
-                message: format!("timed out after {}s", START_TIMEOUT.as_secs()),
-            })?
-            .map_err(|err| McpError::Initialize {
-                server: server_name.clone(),
-                message: err.to_string(),
-            })?;
-        let tools = list_all_tools_with_timeout(&client, &server_name).await?;
-        Ok((
-            Self {
-                server_name,
-                pid,
-                client: Mutex::new(client),
-            },
-            tools,
-        ))
-    }
-
-    async fn call(&self, tool_name: &str, input: &str) -> Result<ToolOutput, McpError> {
-        let args = input_arguments(input)?;
-        let params = CallToolRequestParams::new(tool_name.to_owned()).with_arguments(args);
-        let request = ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(params));
-        let client = self.client.lock().await;
-        let handle = client
-            .send_cancellable_request(request, request_options(CALL_TIMEOUT))
-            .await
-            .map_err(|source| McpError::Request {
-                server: self.server_name.clone(),
-                source,
-            })?;
-        let result = handle
-            .await_response()
-            .await
-            .map_err(|source| McpError::Request {
-                server: self.server_name.clone(),
-                source,
-            })?;
-        let ServerResult::CallToolResult(result) = result else {
-            return Err(McpError::Request {
-                server: self.server_name.clone(),
-                source: ServiceError::UnexpectedResponse,
-            });
-        };
-        convert_result(tool_name, result)
-    }
-
-    async fn shutdown(&self) {
-        let mut client = self.client.lock().await;
-        if let Err(err) = client.close_with_timeout(SHUTDOWN_TIMEOUT).await {
-            tracing::warn!(%err, server = %self.server_name, "failed to close mcp session");
-        }
-    }
-}
-
-impl Drop for McpSession {
-    fn drop(&mut self) {
-        if let Some(pgid) = self.pid.and_then(|pid| i32::try_from(pid).ok())
-            && let Err(err) = goat_process::kill_group(pgid)
-        {
-            tracing::warn!(%err, pgid, server = %self.server_name, "failed to kill mcp process group");
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct McpToolAdapter {
-    name: &'static str,
-    description: &'static str,
-    parameters: Value,
-    original_name: String,
-    server_name: String,
-    session: Arc<McpSession>,
-}
-
-impl McpToolAdapter {
-    fn new(
-        exposed_name: String,
-        server_name: String,
-        tool: McpTool,
-        session: Arc<McpSession>,
-    ) -> Self {
-        let description = tool
-            .description
-            .map_or_else(String::new, std::borrow::Cow::into_owned);
-        Self {
-            name: leak(exposed_name),
-            description: leak(description),
-            parameters: Value::Object((*tool.input_schema).clone()),
-            original_name: tool.name.into_owned(),
-            server_name,
-            session,
-        }
-    }
-}
-
-impl Tool for McpToolAdapter {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn description(&self) -> &'static str {
-        self.description
-    }
-
-    fn parameters(&self) -> Value {
-        self.parameters.clone()
-    }
-
-    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolContext) -> ToolFuture<'a> {
-        Box::pin(async move {
-            self.session
-                .call(&self.original_name, input)
-                .await
-                .map_err(|err| ToolError::Execution {
-                    message: err.to_string(),
-                })
-        })
-    }
-
-    fn display_input(&self, input: &str) -> ToolDisplay {
-        ToolDisplay::with_detail(
-            format!("{} on {}", self.original_name, self.server_name),
-            input.to_owned(),
-        )
-    }
-}
-
-async fn list_all_tools_with_timeout(
-    client: &RunningService<RoleClient, ()>,
-    server_name: &str,
-) -> Result<Vec<McpTool>, McpError> {
-    tokio::time::timeout(CALL_TIMEOUT, client.list_all_tools())
-        .await
-        .map_err(|_| McpError::Initialize {
-            server: server_name.to_owned(),
-            message: format!("tools/list timed out after {}s", CALL_TIMEOUT.as_secs()),
-        })?
-        .map_err(|source| McpError::Request {
-            server: server_name.to_owned(),
-            source,
-        })
-}
-
-fn request_options(timeout: Duration) -> PeerRequestOptions {
-    let mut options = PeerRequestOptions::no_options();
-    options.timeout = Some(timeout);
-    options
-}
-
-fn spawn_stderr_logger(server_name: String, stderr: tokio::process::ChildStderr) {
-    tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    tracing::warn!(server = %server_name, stream = "stderr", "{line}");
-                }
-                Ok(None) => break,
-                Err(err) => {
-                    tracing::warn!(%err, server = %server_name, "failed to read mcp stderr");
-                    break;
-                }
-            }
-        }
-    });
-}
-
-fn input_arguments(input: &str) -> Result<Map<String, Value>, McpError> {
-    match serde_json::from_str::<Value>(input)? {
-        Value::Object(map) => Ok(map),
-        _ => Err(McpError::InputNotObject),
-    }
-}
-
-fn leak(value: String) -> &'static str {
-    Box::leak(value.into_boxed_str())
 }
 
 #[cfg(test)]
 mod tests {
-    use rmcp::model::{CallToolResult, ContentBlock};
-    use serde_json::json;
-
-    use super::names::exposed_tool_name;
     use super::*;
 
     #[test]
@@ -393,38 +145,15 @@ mod tests {
         assert_eq!(server.env.get("A").unwrap(), "B");
     }
 
-    #[test]
-    fn sanitizes_names() {
-        assert_eq!(
-            exposed_tool_name("File System", "Read.Path"),
-            "mcp__file_system__read_path"
-        );
-        assert_eq!(exposed_tool_name("한글", "!!!"), "mcp__unnamed__unnamed");
+    #[tokio::test]
+    async fn a_manager_without_config_has_no_servers() {
+        let manager = load_manager(None, Path::new(".")).await;
+        assert!(manager.servers().is_empty());
     }
 
-    #[test]
-    fn unique_names_are_deterministic() {
-        let mut used = HashSet::new();
-        assert_eq!(unique_tool_name(&mut used, "a-b", "c"), "mcp__a_b__c");
-        assert_eq!(unique_tool_name(&mut used, "a_b", "c"), "mcp__a_b__c_2");
-    }
-
-    #[test]
-    fn converts_text_and_structured_result() {
-        let output =
-            convert_result("tool", CallToolResult::structured(json!({"ok": true}))).unwrap();
-        assert_eq!(
-            output.as_text().unwrap(),
-            "{\"ok\":true}\nstructuredContent: {\"ok\":true}"
-        );
-    }
-
-    #[test]
-    fn converts_error_result_to_error() {
-        let result = convert_result(
-            "tool",
-            CallToolResult::error(vec![ContentBlock::text("bad")]),
-        );
-        assert!(matches!(result, Err(err) if err.to_string().contains("bad")));
+    #[tokio::test]
+    async fn a_missing_config_path_is_not_fatal() {
+        let manager = load_manager(Some(Path::new("/nonexistent/mcp.json")), Path::new(".")).await;
+        assert!(manager.servers().is_empty());
     }
 }

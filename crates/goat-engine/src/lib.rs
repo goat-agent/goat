@@ -26,6 +26,7 @@ mod compaction;
 mod conversation;
 mod delegate;
 mod instructions;
+mod mcp_tools;
 mod persist;
 mod process;
 mod process_tools;
@@ -72,9 +73,11 @@ impl GoatAgent {
     ) -> Self {
         let config = goat_config::Config::load();
         let mcp = goat_mcp::load_manager(goat_config::mcp_config_path().as_deref(), &cwd).await;
-        let mut tools = ToolRegistry::builtin().with_many(mcp.tools());
-        if !mcp.is_empty() {
-            tracing::info!(tool_count = mcp.len(), "registered mcp tools");
+        let mcp_tools = mcp_tools::adapt(&mcp);
+        let tool_count = mcp_tools.len();
+        let mut tools = ToolRegistry::builtin().with_many(mcp_tools);
+        if tool_count > 0 {
+            tracing::info!(tool_count, "registered mcp tools");
         }
         if config.computer_use_enabled {
             match goat_tool_computer::desktop_tool() {

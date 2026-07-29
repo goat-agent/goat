@@ -3075,9 +3075,9 @@ name = "goat-mcp"
 version = "0.1.27"
 dependencies = [
  "goat-process",
- "goat-protocol",
- "goat-tool",
+ "reqwest 0.13.4",
  "rmcp",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",
