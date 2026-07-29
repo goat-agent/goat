@@ -42,7 +42,7 @@ struct ChatOptions {
     discovery: ChatDiscovery,
     model_list_source: Option<ModelListSource>,
     metadata: ProviderMetadata,
-    extra_headers: &'static [(&'static str, &'static str)],
+    extra_headers: Vec<(String, String)>,
 }
 
 impl Default for ChatOptions {
@@ -62,7 +62,7 @@ impl Default for ChatOptions {
             discovery: ChatDiscovery::ModelsEndpoint,
             model_list_source: None,
             metadata: ProviderMetadata::default(),
-            extra_headers: &[],
+            extra_headers: Vec::new(),
         }
     }
 }
@@ -112,6 +112,12 @@ impl OpenAiCompatProvider {
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    #[must_use]
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
     }
 
     #[must_use]
@@ -199,8 +205,15 @@ impl OpenAiCompatProvider {
     }
 
     #[must_use]
-    pub fn with_extra_headers(mut self, headers: &'static [(&'static str, &'static str)]) -> Self {
-        self.options.extra_headers = headers;
+    pub fn with_extra_headers<K, V>(mut self, headers: impl IntoIterator<Item = (K, V)>) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.options.extra_headers = headers
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect();
         self
     }
 }
@@ -638,8 +651,8 @@ impl Provider for OpenAiCompatProvider {
         if let Some(token) = &bearer {
             builder = builder.bearer_auth(token);
         }
-        for (name, value) in options.extra_headers {
-            builder = builder.header(*name, *value);
+        for (name, value) in &options.extra_headers {
+            builder = builder.header(name, value);
         }
         let resp = builder
             .send()
@@ -979,7 +992,7 @@ mod tests {
             None,
             AuthMethod::None,
         )
-        .with_extra_headers(HEADERS);
+        .with_extra_headers(HEADERS.iter().copied());
         let mut stream = provider
             .stream(Request {
                 model: "grok-composer-2.5-fast".to_owned(),
