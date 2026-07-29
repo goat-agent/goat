@@ -156,6 +156,7 @@ goat-render             = { path = "crates/goat-render" }
 goat-plugin             = { path = "crates/goat-plugin" }
 goat-integration        = { path = "crates/goat-integration" }
 goat-integration-linear = { path = "crates/goat-integration-linear" }
+goat-integration-posthog = { path = "crates/goat-integration-posthog" }
 goat-integration-slack  = { path = "crates/goat-integration-slack" }
 goat-agent-tool               = { path = "crates/goat-agent-tool" }
 goat-agent-tool-fs            = { path = "crates/goat-agent-tool-fs" }
