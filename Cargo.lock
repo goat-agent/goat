@@ -2475,6 +2475,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-agent-tool-observation"
+version = "0.1.27"
+dependencies = [
+ "async-trait",
+ "goat-agent-tool",
+ "goat-store",
+ "goat-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "goat-agent-tool-pty"
 version = "0.1.27"
 dependencies = [
@@ -3481,6 +3495,7 @@ dependencies = [
  "goat-agent-tool-code",
  "goat-agent-tool-goal",
  "goat-agent-tool-memory",
+ "goat-agent-tool-observation",
  "goat-agent-tool-pty",
  "goat-agent-tool-schedule",
  "goat-auth",
