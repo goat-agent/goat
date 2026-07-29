@@ -37,6 +37,7 @@ goat-integration-github = { workspace = true }
 goat-integration-linear = { workspace = true }
 goat-integration-notion = { workspace = true }
 goat-integration-posthog = { workspace = true }
+goat-integration-sentry = { workspace = true }
 goat-integration-slack  = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }

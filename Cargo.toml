@@ -159,6 +159,7 @@ goat-integration-github = { path = "crates/goat-integration-github" }
 goat-integration-linear = { path = "crates/goat-integration-linear" }
 goat-integration-notion = { path = "crates/goat-integration-notion" }
 goat-integration-posthog = { path = "crates/goat-integration-posthog" }
+goat-integration-sentry = { path = "crates/goat-integration-sentry" }
 goat-integration-slack  = { path = "crates/goat-integration-slack" }
 goat-agent-tool               = { path = "crates/goat-agent-tool" }
 goat-agent-tool-fs            = { path = "crates/goat-agent-tool-fs" }
