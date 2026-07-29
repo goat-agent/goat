@@ -2956,6 +2956,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-integration-mcp"
+version = "0.1.27"
+dependencies = [
+ "async-trait",
+ "goat-agent-tool",
+ "goat-auth",
+ "goat-integration",
+ "goat-mcp",
+ "goat-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "goat-integration-notion"
 version = "0.1.27"
 dependencies = [
@@ -3090,6 +3108,9 @@ dependencies = [
 name = "goat-mcp"
 version = "0.1.27"
 dependencies = [
+ "async-trait",
+ "chrono",
+ "goat-auth",
  "goat-process",
  "reqwest 0.13.4",
  "rmcp",
@@ -3101,6 +3122,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
 ]
 
 [[package]]

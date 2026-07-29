@@ -5,6 +5,7 @@ use std::sync::Arc;
 use rmcp::service::ServiceError;
 use serde::Deserialize;
 
+pub mod auth;
 mod names;
 mod result;
 mod session;
