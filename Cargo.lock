@@ -2663,6 +2663,7 @@ dependencies = [
  "goat-console",
  "goat-daemon",
  "goat-integration-linear",
+ "goat-integration-notion",
  "goat-integration-posthog",
  "goat-integration-slack",
  "goat-protocol",
@@ -2894,6 +2895,30 @@ dependencies = [
  "goat-bus",
  "goat-integration",
  "goat-memory",
+ "goat-store",
+ "goat-types",
+ "inventory",
+ "reqwest 0.13.4",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "goat-integration-notion"
+version = "0.1.27"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "goat-agent-tool",
+ "goat-auth",
+ "goat-bus",
+ "goat-integration",
  "goat-store",
  "goat-types",
  "inventory",
