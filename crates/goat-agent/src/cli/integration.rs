@@ -59,6 +59,7 @@ async fn connect_add(paths: &GoatPaths, kind: Option<String>) -> Result<()> {
 fn connect_list(paths: &GoatPaths) -> Result<()> {
     ui::cell("Integration Connections", || {
         let store = CredentialStore::new(paths.credentials_json.clone());
+        let config = Config::load();
         let mut table = Table::new(["kind", "auth"]);
         let mut rows = 0;
         for (key, cred_kind) in store.entries() {
@@ -68,6 +69,19 @@ fn connect_list(paths: &GoatPaths) -> Result<()> {
             table.styled_row(vec![
                 (key.provider, Palette::Plain),
                 (format!("{cred_kind:?}").to_lowercase(), Palette::Success),
+            ]);
+            rows += 1;
+        }
+        for factory in goat_integration::factories() {
+            let kind = factory.id.as_str();
+            if auth_kind(kind) != Some(IntegrationAuth::External)
+                || !config.integrations.contains_key(kind)
+            {
+                continue;
+            }
+            table.styled_row(vec![
+                (kind.to_string(), Palette::Plain),
+                ("external".to_string(), Palette::Success),
             ]);
             rows += 1;
         }
@@ -84,15 +98,14 @@ fn connect_remove(paths: &GoatPaths, kind: &str) -> Result<()> {
     ui::cell("Integration Disconnect", || {
         let kind = kind.trim();
         let store = CredentialStore::new(paths.credentials_json.clone());
-        let key = CredentialKey::integration(kind, DEFAULT_ACCOUNT);
-        if store.get(&key).is_none() {
+        let mut config = Config::load();
+        if !is_connected(kind, &store, &config) {
             return Err(anyhow!("no connection for `{kind}`"));
         }
         if !ui::confirm(&format!("disconnect {kind} for every agent?"), false)? {
             return Ok(Footer::Cancel);
         }
-        store.remove(&key)?;
-        let mut config = Config::load();
+        store.remove(&CredentialKey::integration(kind, DEFAULT_ACCOUNT))?;
         if config.integrations.remove(kind).is_some() {
             config.save()?;
         }
@@ -134,8 +147,31 @@ async fn connect_flow(paths: &GoatPaths, kind: &str) -> Result<String> {
             }
             config.save()?;
         }
+        IntegrationAuth::External => {}
     }
-    verify_connection(&integration, kind, &store).await
+    let identity = verify_connection(&integration, kind, &store).await?;
+    if metadata.auth == IntegrationAuth::External {
+        let mut config = Config::load();
+        config
+            .integrations
+            .entry(kind.to_string())
+            .or_insert_with(|| json!({}));
+        config.save()?;
+    }
+    Ok(identity)
+}
+
+fn auth_kind(kind: &str) -> Option<IntegrationAuth> {
+    integration_factory(kind).map(|factory| (factory.ctor)().metadata().auth)
+}
+
+fn is_connected(kind: &str, store: &CredentialStore, config: &Config) -> bool {
+    if auth_kind(kind) == Some(IntegrationAuth::External) {
+        return config.integrations.contains_key(kind);
+    }
+    store
+        .get(&CredentialKey::integration(kind, DEFAULT_ACCOUNT))
+        .is_some()
 }
 
 async fn verify_connection(
@@ -224,9 +260,7 @@ async fn bind_add(
         }
 
         let store = CredentialStore::new(paths.credentials_json.clone());
-        let connected = store
-            .get(&CredentialKey::integration(&kind, DEFAULT_ACCOUNT))
-            .is_some();
+        let connected = is_connected(&kind, &store, &Config::load());
         if connected {
             if !no_verify {
                 let (integration, _) = instantiate(&kind)?;
@@ -252,12 +286,11 @@ fn bind_list(paths: &GoatPaths, profile: Option<&str>) -> Result<()> {
         ui::pair("profile", &slug);
         let dir = paths.agents_dir.join(&slug);
         let store = CredentialStore::new(paths.credentials_json.clone());
+        let config = Config::load();
         let mut table = Table::new(["kind", "status"]);
         let mut rows = 0;
         for (kind, _) in section_entries(&dir, SECTION)? {
-            let connected = store
-                .get(&CredentialKey::integration(&kind, DEFAULT_ACCOUNT))
-                .is_some();
+            let connected = is_connected(&kind, &store, &config);
             let (badge, style) = if connected {
                 ("connected".to_string(), Palette::Success)
             } else {
