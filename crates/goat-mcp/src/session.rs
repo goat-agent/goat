@@ -64,6 +64,7 @@ impl HttpEndpoint {
 }
 
 pub fn http_client() -> Result<rmcp_reqwest::Client, McpError> {
+    ensure_crypto_provider();
     rmcp_reqwest::Client::builder()
         .timeout(HTTP_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
@@ -72,6 +73,13 @@ pub fn http_client() -> Result<rmcp_reqwest::Client, McpError> {
             server: "http".to_owned(),
             message: err.to_string(),
         })
+}
+
+fn ensure_crypto_provider() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
 }
 
 pub struct McpSession {
@@ -332,6 +340,12 @@ mod tests {
         let out = headers("test", &raw);
         assert_eq!(out.len(), 1);
         assert!(out.contains_key(&rmcp_reqwest::header::HeaderName::try_from("x-good").unwrap()));
+    }
+
+    #[test]
+    fn http_client_builds_without_a_preinstalled_crypto_provider() {
+        assert!(http_client().is_ok());
+        assert!(http_client().is_ok());
     }
 
     #[test]

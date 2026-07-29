@@ -3077,6 +3077,7 @@ dependencies = [
  "goat-process",
  "reqwest 0.13.4",
  "rmcp",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",
