@@ -1,5 +1,5 @@
 use goat_tool::{ToolImage, ToolOutput};
-use rmcp::model::{CallToolResult, Content, RawContent, ResourceContents};
+use rmcp::model::{CallToolResult, ContentBlock, ResourceContents};
 
 use crate::McpError;
 
@@ -47,25 +47,26 @@ enum ToolResultPart {
     Image(ToolImage),
 }
 
-fn content_to_tool_content(content: Content) -> ToolResultPart {
-    match content.raw {
-        RawContent::Text(text) => ToolResultPart::Text(text.text),
-        RawContent::Image(image) => ToolResultPart::Image(ToolImage {
+fn content_to_tool_content(content: ContentBlock) -> ToolResultPart {
+    match content {
+        ContentBlock::Text(text) => ToolResultPart::Text(text.text),
+        ContentBlock::Image(image) => ToolResultPart::Image(ToolImage {
             media_type: image.mime_type,
             data: image.data,
         }),
-        RawContent::Audio(audio) => ToolResultPart::Text(format!(
+        ContentBlock::Audio(audio) => ToolResultPart::Text(format!(
             "audio result: mimeType={}, base64Bytes={}",
             audio.mime_type,
             audio.data.len()
         )),
-        RawContent::Resource(resource) => {
+        ContentBlock::Resource(resource) => {
             ToolResultPart::Text(resource_fallback(resource.resource))
         }
-        RawContent::ResourceLink(resource) => ToolResultPart::Text(format!(
+        ContentBlock::ResourceLink(resource) => ToolResultPart::Text(format!(
             "resource link: uri={}, name={}",
             resource.uri, resource.name
         )),
+        other => ToolResultPart::Text(render_unknown("content block", &other)),
     }
 }
 
@@ -93,7 +94,15 @@ fn resource_fallback(resource: ResourceContents) -> String {
             mime_type.unwrap_or_default(),
             blob.len()
         ),
+        ref other => render_unknown("resource contents", other),
     }
+}
+
+fn render_unknown<T: serde::Serialize>(kind: &str, value: &T) -> String {
+    serde_json::to_string(value).map_or_else(
+        |_| format!("unrecognized {kind}"),
+        |json| format!("unrecognized {kind}: {json}"),
+    )
 }
 
 fn summary(parts: &[String]) -> String {

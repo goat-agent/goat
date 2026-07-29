@@ -121,7 +121,7 @@ image = { version = "0.25", default-features = false, features = [
 chromiumoxide = "0.9"
 arboard = "3.6.1"
 rand = "0.10"
-rmcp = { version = "1.7.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "auth", "reqwest-tls-no-provider"] }
+rmcp = { version = "3.0.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "auth", "reqwest-tls-no-provider"] }
 rmcp-reqwest = { package = "reqwest", version = "0.13", default-features = false }
 open = "5"
 fs2 = "0.4"
