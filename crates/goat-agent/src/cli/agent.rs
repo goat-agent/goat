@@ -197,7 +197,7 @@ fn add(paths: &GoatPaths, slug: Option<String>) -> Result<()> {
             None => create_interactive(paths)?,
         };
         let _ = slug;
-        Ok(Footer::Hint("Created", "goat channel add".into()))
+        Ok(Footer::Hint("Created", "goat agent channel add".into()))
     })
 }
 
