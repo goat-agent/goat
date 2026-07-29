@@ -2663,6 +2663,7 @@ dependencies = [
  "goat-console",
  "goat-daemon",
  "goat-integration-linear",
+ "goat-integration-posthog",
  "goat-integration-slack",
  "goat-protocol",
  "goat-provider",
@@ -2894,6 +2895,28 @@ dependencies = [
  "goat-integration",
  "goat-memory",
  "goat-store",
+ "goat-types",
+ "inventory",
+ "reqwest 0.13.4",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "goat-integration-posthog"
+version = "0.1.27"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "goat-agent-tool",
+ "goat-auth",
+ "goat-integration",
  "goat-types",
  "inventory",
  "reqwest 0.13.4",

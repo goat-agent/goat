@@ -22,6 +22,7 @@ use goat_agent_tool_shell as _;
 use goat_agent_tool_skill as _;
 use goat_channel_discord as _;
 use goat_integration_linear as _;
+use goat_integration_posthog as _;
 use goat_integration_slack as _;
 
 fn into_eyre(err: &anyhow::Error) -> color_eyre::Report {
