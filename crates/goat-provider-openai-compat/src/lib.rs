@@ -6,6 +6,7 @@ pub mod responses;
 pub mod vision;
 
 pub use chat::{ChatDiscovery, ChatValidation, OpenAiCompatProvider};
+pub use common::http_client;
 pub use headers::parse_codex_ratelimits;
 pub use hosted::{api_key, enforce_https_host, no_efforts, no_vision};
 pub use responses::{

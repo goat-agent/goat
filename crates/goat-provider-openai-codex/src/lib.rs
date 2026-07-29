@@ -534,6 +534,7 @@ impl Provider for CodexProvider {
             account.as_deref(),
             &body,
             Some(goat_provider_openai_compat::parse_codex_ratelimits),
+            &[],
         )
         .await
     }

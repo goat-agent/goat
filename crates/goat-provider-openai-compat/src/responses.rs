@@ -252,6 +252,7 @@ pub async fn run_request(
     account_id: Option<&str>,
     body: &serde_json::Value,
     parse_rate_limits: Option<fn(&reqwest::header::HeaderMap) -> Option<RateLimitSnapshot>>,
+    extra_headers: &[(&str, &str)],
 ) -> Result<ChunkStream, StreamError> {
     let mut builder = client
         .post(url)
@@ -262,6 +263,9 @@ pub async fn run_request(
     }
     if let Some(account) = account_id {
         builder = builder.header("chatgpt-account-id", account);
+    }
+    for (name, value) in extra_headers {
+        builder = builder.header(*name, *value);
     }
     let resp = builder
         .send()
@@ -486,6 +490,7 @@ pub struct ResponsesProvider {
     context_windows: &'static [(&'static str, u32)],
     search_model: Option<&'static str>,
     metadata: ProviderMetadata,
+    extra_headers: Vec<(String, String)>,
 }
 
 impl ResponsesProvider {
@@ -508,7 +513,21 @@ impl ResponsesProvider {
             context_windows: &[],
             search_model: None,
             metadata: ProviderMetadata::default(),
+            extra_headers: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_extra_headers<K, V>(mut self, headers: impl IntoIterator<Item = (K, V)>) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.extra_headers = headers
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect();
+        self
     }
 
     #[must_use]
@@ -742,6 +761,11 @@ impl Provider for ResponsesProvider {
             req.temperature,
             req.max_tokens,
         );
+        let headers: Vec<(&str, &str)> = self
+            .extra_headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
         run_request(
             &client,
             &url,
@@ -749,6 +773,7 @@ impl Provider for ResponsesProvider {
             None,
             &body,
             rate_limits_parser,
+            &headers,
         )
         .await
     }
