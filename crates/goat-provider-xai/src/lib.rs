@@ -35,12 +35,11 @@ const OAUTH_CATALOG: &[&str] = &[
 
 const API_KEY_CATALOG: &[&str] = &[
     "grok-4.5",
-    "grok-4",
-    "grok-4-fast-reasoning",
-    "grok-4-fast-non-reasoning",
-    "grok-3",
-    "grok-3-fast",
-    "grok-3-mini",
+    "grok-4.3",
+    "grok-build-0.1",
+    "grok-4.20-0309-reasoning",
+    "grok-4.20-0309-non-reasoning",
+    "grok-4.20-multi-agent-0309",
 ];
 
 const CATALOG: &[&str] = &[
@@ -51,12 +50,12 @@ const CATALOG: &[&str] = &[
     "grok-4.20-0309-reasoning",
     "grok-4.20-0309-non-reasoning",
     "grok-4.20-multi-agent-0309",
-    "grok-4",
-    "grok-4-fast-reasoning",
-    "grok-4-fast-non-reasoning",
-    "grok-3",
-    "grok-3-fast",
-    "grok-3-mini",
+];
+
+const GROK_CLI_HEADERS: &[(&str, &str)] = &[
+    ("User-Agent", "xai-grok-cli"),
+    ("x-grok-client-version", "0.2.82"),
+    ("x-grok-client-identifier", "xai-grok-cli"),
 ];
 
 const OAUTH_CONTEXT: &[(&str, u32)] = &[
@@ -69,8 +68,9 @@ const OAUTH_CONTEXT: &[(&str, u32)] = &[
 
 const API_KEY_CONTEXT: &[(&str, u32)] = &[
     ("grok-4.5", 500_000),
-    ("grok-4", 256_000),
-    ("grok-3", 131_072),
+    ("grok-4.3", 1_000_000),
+    ("grok-4.20", 1_000_000),
+    ("grok-build", 256_000),
 ];
 
 pub fn build(store: &CredentialStore, account: &str) -> XaiProvider {
@@ -138,6 +138,7 @@ impl XaiProvider {
         .with_vision_filter(vision_model)
         .with_efforts(no_efforts)
         .with_reasoning_effort(false)
+        .with_extra_headers(GROK_CLI_HEADERS.iter().copied())
     }
 
     fn responses_provider(bearer: String) -> ResponsesProvider {
@@ -151,6 +152,7 @@ impl XaiProvider {
         .with_context_windows(OAUTH_CONTEXT)
         .with_vision_filter(vision_model)
         .with_model_filter(oauth_chat_model)
+        .with_extra_headers(GROK_CLI_HEADERS.iter().copied())
     }
 
     async fn emit_models(provider: &XaiProvider, out: &mpsc::Sender<Model>) -> bool {
@@ -358,7 +360,8 @@ mod tests {
             Some(200_000)
         );
         assert_eq!(provider.context_window("grok-4.3"), Some(1_000_000));
-        assert_eq!(provider.context_window("grok-4"), Some(256_000));
+        assert_eq!(provider.context_window("grok-4.5"), Some(500_000));
+        assert_eq!(provider.context_window("grok-build-0.1"), Some(256_000));
         assert!(!provider.supports_images("grok-composer-2.5-fast"));
         assert_eq!(
             provider.efforts("grok-4.3"),
