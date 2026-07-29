@@ -17,12 +17,16 @@ grows its own conventions, add a nested `crates/<name>/AGENTS.md` — the closes
 | Command | Purpose |
 |---------|---------|
 | `cargo build --workspace` | Build every crate |
-| `cargo test --workspace` | Run all tests |
+| `cargo nextest run --workspace` | Run all tests |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Lint; warnings are errors |
 | `cargo fmt --all` | Format (`--check` to verify only) |
 
-`cargo fmt --all`, the `clippy` line, and `cargo test --workspace` must all pass before any change
-is done. For a narrow change, run the smallest relevant check; for a broad one, run all four.
+Use `cargo nextest`, **not** `cargo test`. `.config/nextest.toml` pins `goat-daemon` tests to
+`max-threads = 1`; plain `cargo test` ignores that file and races them.
+
+`cargo fmt --all`, the clippy line, and the nextest line must all pass before any change is done.
+For a narrow change run the smallest relevant check; for a broad one run all four. CI adds
+`--locked`, runs `actionlint`, smoke-tests `goat --version`, and rechecks on the pinned MSRV.
 
 ## CLI
 
@@ -146,31 +150,46 @@ boundary. Do not add a second styling or prompt system, and do not push domain c
 
 - **No comments.** None of any kind — no `//`, `///`, `//!`, block comments, or TOML `#`. Convey
   intent through names and structure.
-- Centralize dependency versions in the root `[workspace.dependencies]`; crates inherit with
+- Centralize versions, `edition`, and `rust-version` in the root workspace tables; inherit with
   `{ workspace = true }`.
 - `unsafe` is forbidden workspace-wide (`unsafe_code = "forbid"`). The only opt-outs are the two
-  FFI-isolation leaves, `goat-sqlite-vec` and `goat-agent-tool-pty`. Do not add a third; isolate
-  new FFI in its own leaf crate.
+  FFI-isolation leaves, `goat-sqlite-vec` and `goat-agent-tool-pty`, which omit `[lints.rust]`
+  rather than inheriting it. Do not add a third; isolate new FFI in its own leaf crate.
 - Edition 2024, MSRV 1.95. clippy `pedantic` at warn; keep the tree clean under `-D warnings`.
 - Errors: library crates use `thiserror` enums. The agent binary/runtime boundary uses `anyhow`;
-  the code application boundary uses `color_eyre::Result`. The shared `goat-console` returns
-  `ConsoleError`, converted at each boundary's `ui` facade.
-- **Logging goes to a rolling file, never stdout/stderr** — stdout corrupts the full-screen TUI.
-  Use `tracing`; `GOAT_LOG` sets the filter.
+  the code application boundary uses `color_eyre::Result`, bridged by `goat-code`'s `into_eyre`.
+  `goat-console` returns `ConsoleError`, converted at each boundary's `ui` facade.
+- **Log output goes to a rolling file, never stdout/stderr** — stdout corrupts the full-screen TUI.
+  Use `tracing`; `GOAT_LOG` sets the filter and is the only environment variable the product reads.
+  Deliberate CLI output on non-TUI paths goes through `goat-console`, not `tracing`.
 - `ProfileId` is explicit, constructor-injected, never ambient. `ProfileId::from_slug` must stay
-  deterministic; the `GOAT_NAMESPACE` UUID value must never change — it keys every stored id.
-- `Event` and `LlmChunk` are `#[non_exhaustive]`; append variants and keep wildcard handling.
-- Do not skip hooks with `--no-verify`. Do not force-push.
+  deterministic; the `GOAT_NAMESPACE` constant (a fixed `Uuid`, not an environment variable) must
+  never change — it keys every stored id.
+- `goat-types::Event` and the channel/command/integration surface types are `#[non_exhaustive]`;
+  append variants and keep wildcard handling. `goat-protocol::Event` and `goat-provider::StreamChunk`
+  are not — changing them breaks the whole wire and provider surface at once.
+- Do not skip hooks with `--no-verify`. Do not force-push. Neither is mechanically enforced; there
+  are no git hooks in this repository.
 
 ## Extension boundaries
 
-- Providers live in `goat-provider-<name>`; channels in `goat-channel-<name>`; integrations in
-  `goat-integration-<name>`.
-- Shared crates must not know concrete provider/channel names (`openai`, `discord`, …).
-- Concrete extension crates are linked by the final binary; runtime discovers them through
-  inventory registries. Provider/channel crates expose `pub const ID` via `from_static(...)`.
+- Providers live in `goat-provider-<name>`, channels in `goat-channel-<name>`, integrations in
+  `goat-integration-<name>`, search backends in `goat-search-provider-<name>`. Shared crates must
+  never know a concrete name (`openai`, `discord`, …).
 - Provider-specific request bodies, streaming, auth, and error mapping stay inside each provider
   crate. No shared provider "quirks" flags.
+- **Registration is not uniform — check before assuming `inventory` picks your crate up:**
+  - channels and integrations: `inventory` + `pub const ID` via `from_static(...)`.
+  - agent commands: `inventory`, but the constant is a plain `pub const ID: &str`.
+  - agent tools: `inventory` + `pub const NAME: ToolName` for `fs`/`shell`/`skill` only. `goal`,
+    `memory`, `pty`, `code`, and `schedule` need injected runtime deps and are wired by explicit
+    `register()` calls in `goat-runtime`.
+  - LLM providers and search providers: **no `inventory` at all.** `Registry::load_metered` and
+    `goat-search-providers::metadata` build hardcoded lists, and identity is a runtime
+    `ProviderId::from("…")`. Adding a provider means editing that list by hand.
+  - code tools: `ToolRegistry::builtin()` aggregates fs, shell, search, skill, and web.
+    `goat-tool-browser` and `goat-tool-computer` bypass it and are wired directly into
+    `GoatAgent::new` behind `config.browser_enabled` / `config.computer_use_enabled`.
 
 ## Architecture
 
@@ -193,4 +212,8 @@ boundary. Do not add a second styling or prompt system, and do not push domain c
 The full-screen TUI needs a real tty, so it is not driven headlessly. Test the pure `App::update`
 reducer and the engine's `Op → Event` behavior instead. Non-TUI binary paths (`--version`,
 `--help`, `update`, `--print-log-path`) are safe anywhere. The headless bridge needs no tty; its
-codec round-trips and shutdown handshake are unit-tested.
+codec round-trips and shutdown handshake are unit-tested in `goat-code`'s `headless` module.
+
+Tests are inline `#[cfg(test)]` modules by default, concentrated in `goat-tui` and `goat-engine`.
+The only `tests/` directories are `goat-daemon`, `goat-remote`, and `goat-tool-browser` (real
+Chrome).
