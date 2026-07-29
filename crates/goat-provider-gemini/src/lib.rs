@@ -19,7 +19,7 @@ use tokio::{sync::Mutex, sync::mpsc, task::JoinHandle};
 pub const PROVIDER_ID: &str = "gemini";
 pub const ENV_VAR: &str = "GEMINI_API_KEY";
 const GL_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
-const SEARCH_MODEL: &str = "gemini-3.5-flash";
+const SEARCH_MODEL: &str = "gemini-3.6-flash";
 
 fn gemini_supports_images(model: &str) -> bool {
     let id = model.to_ascii_lowercase();
@@ -27,13 +27,23 @@ fn gemini_supports_images(model: &str) -> bool {
 }
 
 const CATALOG: &[&str] = &[
+    "gemini-3.6-flash",
     "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
     "gemini-3.1-pro-preview",
     "gemini-3.1-flash-lite",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
 ];
+
+const CONTEXT_WINDOWS: &[(&str, u32)] = &[("gemini-3", 1_048_576), ("gemini-2.5", 1_048_576)];
+
+fn gemini_context_window(model: &str) -> Option<u32> {
+    CONTEXT_WINDOWS
+        .iter()
+        .find_map(|(prefix, window)| model.starts_with(prefix).then_some(*window))
+}
 
 pub struct GeminiProvider {
     store: CredentialStore,
@@ -222,6 +232,10 @@ impl Provider for GeminiProvider {
 
     fn supports_images(&self, model: &str) -> bool {
         gemini_supports_images(model)
+    }
+
+    fn context_window(&self, model: &str) -> Option<u32> {
+        gemini_context_window(model)
     }
 
     fn authenticated(&self) -> bool {
