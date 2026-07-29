@@ -316,15 +316,31 @@ pub fn valid_kimi_verification_url(url: &str) -> bool {
     reqwest::Url::parse(url)
         .ok()
         .and_then(|url| {
-            (url.scheme() == "https")
-                .then(|| url.host_str().is_some_and(|host| host == "auth.kimi.com"))
+            (url.scheme() == "https").then(|| {
+                url.host_str()
+                    .is_some_and(|host| host == "kimi.com" || host.ends_with(".kimi.com"))
+            })
         })
         .unwrap_or(false)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{TokenResponse, parse_token_response};
+    use super::{TokenResponse, parse_token_response, valid_kimi_verification_url};
+
+    #[test]
+    fn accepts_kimi_verification_hosts() {
+        assert!(valid_kimi_verification_url(
+            "https://www.kimi.com/code/authorize_device?user_code=J2V4-A52W"
+        ));
+        assert!(valid_kimi_verification_url("https://auth.kimi.com/device"));
+        assert!(valid_kimi_verification_url("https://kimi.com/device"));
+        assert!(!valid_kimi_verification_url("http://www.kimi.com/device"));
+        assert!(!valid_kimi_verification_url(
+            "https://kimi.com.evil.io/device"
+        ));
+        assert!(!valid_kimi_verification_url("https://evil.io/device"));
+    }
 
     #[test]
     fn parses_kimi_token_response_without_leaking_secrets() {
