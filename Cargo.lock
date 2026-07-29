@@ -2662,6 +2662,7 @@ dependencies = [
  "goat-config",
  "goat-console",
  "goat-daemon",
+ "goat-integration-github",
  "goat-integration-linear",
  "goat-integration-notion",
  "goat-integration-posthog",
@@ -2880,6 +2881,27 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "goat-integration-github"
+version = "0.1.27"
+dependencies = [
+ "async-trait",
+ "goat-agent-tool",
+ "goat-auth",
+ "goat-bus",
+ "goat-github",
+ "goat-integration",
+ "goat-store",
+ "goat-types",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",

@@ -123,6 +123,7 @@ fn store_err(e: &StoreError) -> IntegrationError {
 pub enum IntegrationAuth {
     Secret,
     OAuth,
+    External,
 }
 
 #[derive(Clone, Copy, Debug)]
