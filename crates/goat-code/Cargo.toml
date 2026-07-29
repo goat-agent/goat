@@ -33,6 +33,7 @@ goat-agent-tool-fs = { workspace = true }
 goat-agent-tool-shell = { workspace = true }
 goat-agent-tool-skill = { workspace = true }
 goat-channel-discord = { workspace = true }
+goat-integration-github = { workspace = true }
 goat-integration-linear = { workspace = true }
 goat-integration-notion = { workspace = true }
 goat-integration-posthog = { workspace = true }
