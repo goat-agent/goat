@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 pub fn sanitize_component(input: &str) -> String {
     let mut output = String::new();
     let mut last_was_sep = false;
@@ -22,25 +20,25 @@ pub fn sanitize_component(input: &str) -> String {
     }
 }
 
-pub fn exposed_tool_name(server: &str, tool: &str) -> String {
-    format!(
-        "mcp__{}__{}",
-        sanitize_component(server),
-        sanitize_component(tool)
-    )
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-pub(crate) fn unique_tool_name(used: &mut HashSet<String>, server: &str, tool: &str) -> String {
-    let base = exposed_tool_name(server, tool);
-    if used.insert(base.clone()) {
-        return base;
+    #[test]
+    fn lowercases_and_collapses_separators() {
+        assert_eq!(sanitize_component("File System"), "file_system");
+        assert_eq!(sanitize_component("Read.Path"), "read_path");
+        assert_eq!(sanitize_component("a---b"), "a_b");
     }
-    let mut index = 2;
-    loop {
-        let candidate = format!("{base}_{index}");
-        if used.insert(candidate.clone()) {
-            return candidate;
-        }
-        index += 1;
+
+    #[test]
+    fn trailing_separators_are_trimmed() {
+        assert_eq!(sanitize_component("name!!!"), "name");
+    }
+
+    #[test]
+    fn unrepresentable_input_gets_a_placeholder() {
+        assert_eq!(sanitize_component("한글"), "unnamed");
+        assert_eq!(sanitize_component("!!!"), "unnamed");
     }
 }
