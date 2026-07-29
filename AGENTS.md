@@ -132,6 +132,33 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
 - `interact::pick` is the one non-cancellable picker: it promotes Esc to `ConsoleError("cancelled")`,
   while `select_index` and `Table::pick` return `None`.
 
+## Vestigial — present in code, does nothing
+
+Do not build on these, and do not describe them as features:
+
+- `goat-plugin` — no `impl Plugin` anywhere, no `inventory::iter::<PluginFactory>()`, and
+  `goat-runtime` declares the dependency without importing it.
+- `AutonomyConfig.enabled` — parsed from `config.json` under `deny_unknown_fields`, then read by
+  nothing. Setting it has no effect.
+- `MemoryConfig.episodic_k` — parsed and stored, never passed to `BrainDeps`; recall hardcodes 6.
+- Per-agent `EmbeddingSettings` — collected per profile, then `boot_inner` takes
+  `embedders.values().next()` for the single global `MemoryEngine`, so with more than one configured
+  agent the winner is arbitrary. Only `openai` is implemented; other values warn and are skipped.
+- Goal review — `next_review_at`, `goals_due_for_review`, and `idx_goals_review` are complete and
+  unit-tested, but nothing outside `goat-store` calls them. There is no trigger. `goals.parent` is
+  likewise always `None`; the tool schema has no parameter for it.
+- `set_paused` has no callers, so the `is_paused` gate in the scheduler, runtime, and integrations
+  can never be closed.
+- `core_memory` survives `0012_drop_v1_memory.sql` awaiting a `goat memory migrate` command that
+  does not exist.
+- `Event::ProcessObserved` is consumed by the TUI but published by nobody; `Op::Login` has a full
+  engine handler but no client constructs it. `GoatPaths::{agent_dir, memory_dir}` and
+  `Model::with_account` have zero callers.
+
+There is no `self-tick` and no goal-review scheduling. Both were removed in `7c2a7ad`; the only
+schedule kinds are `once` and `cron`, and an agent gets them only by calling the `schedule` tool.
+Two `goat-brain` test names still say `self_tick` — they exercise `TurnMode::Schedule`.
+
 ## Testing
 
 The full-screen TUI needs a real tty, so it is not driven headlessly. Test the pure `App::update`
