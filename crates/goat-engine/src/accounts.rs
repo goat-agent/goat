@@ -677,9 +677,9 @@ mod tests {
         let oauth_models =
             models_for_provider(&store, &ProviderId::from("xai"), &["oauth".to_owned()]);
         assert!(oauth_models.iter().any(|id| id == "grok-4.3"));
-        assert!(!oauth_models.iter().any(|id| id == "grok-4"));
+        assert!(oauth_models.iter().any(|id| id == "grok-composer-2.5-fast"));
         let api_models = models_for_provider(&store, &ProviderId::from("xai"), &["api".to_owned()]);
-        assert!(api_models.iter().any(|id| id == "grok-4"));
+        assert!(api_models.iter().any(|id| id == "grok-4.3"));
         assert!(!api_models.iter().any(|id| id == "grok-composer-2.5-fast"));
     }
 
