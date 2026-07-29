@@ -389,3 +389,36 @@ mod tests {
         assert!(!summary.contains("goat agent integration add"));
     }
 }
+
+#[cfg(all(test, feature = "test-support"))]
+mod contract_tests {
+    use crate::diff::{REBUILD, RETAIN, SETTLE};
+    use crate::test_support::{WatchContract, assert_watch_contract};
+    use goat_types::{IntegrationId, IntegrationUpdateKind};
+
+    fn contract(name: &'static str, diff: crate::diff::DiffOps) -> WatchContract {
+        WatchContract {
+            integration: IntegrationId::from_static(name),
+            stream: "items".to_owned(),
+            kind: IntegrationUpdateKind::Assigned,
+            entity: "issue",
+            overflow_tail: "issues waiting",
+            diff,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_rebuild_policy_honours_the_watch_contract() {
+        assert_watch_contract(&contract("rebuilder", REBUILD)).await;
+    }
+
+    #[tokio::test]
+    async fn the_retain_policy_honours_the_watch_contract() {
+        assert_watch_contract(&contract("retainer", RETAIN)).await;
+    }
+
+    #[tokio::test]
+    async fn the_settle_policy_honours_the_watch_contract() {
+        assert_watch_contract(&contract("settler", SETTLE)).await;
+    }
+}

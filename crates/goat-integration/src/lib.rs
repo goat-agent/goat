@@ -2,6 +2,9 @@ pub mod diff;
 pub mod schema;
 pub mod watch;
 
+#[cfg(feature = "test-support")]
+pub mod test_support;
+
 pub use schema::drop_placeholder_args;
 
 use std::collections::HashMap;
