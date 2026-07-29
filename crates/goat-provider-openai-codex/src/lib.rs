@@ -23,22 +23,23 @@ const CALLBACK_PORT: u16 = 1455;
 const SCOPES: &str =
     "openid profile email offline_access api.connectors.read api.connectors.invoke";
 const ORIGINATOR: &str = "codex_cli_rs";
+const CLIENT_VERSION: &str = "0.133.0";
 const BASE: &str = "https://chatgpt.com/backend-api/codex";
 const DEFAULT_INSTRUCTIONS: &str = "You are goat, a coding assistant running in a terminal.";
 const DEVICE_USERCODE: &str = "https://auth.openai.com/deviceauth/usercode";
 
 const CATALOG: &[&str] = &[
-    "gpt-5.6",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
     "gpt-5.5",
+    "gpt-5.3-codex-spark",
     "gpt-5.4",
     "gpt-5.4-mini",
 ];
 const SEARCH_MODEL: &str = "gpt-5.6-luna";
 
-const CONTEXT_WINDOWS: &[(&str, u32)] = &[("gpt-5", 400_000)];
+const CONTEXT_WINDOWS: &[(&str, u32)] = &[("gpt-5.3-codex-spark", 128_000), ("gpt-5", 272_000)];
 const DEVICE_TOKEN: &str = "https://auth.openai.com/deviceauth/token";
 const DEVICE_VERIFY_URL: &str = "https://auth.openai.com/codex/device";
 
@@ -74,6 +75,16 @@ fn authorize_url(challenge: &str, state: &str) -> Result<String, CodexError> {
     )
     .map(|url| url.to_string())
     .map_err(|err| CodexError::Url(err.to_string()))
+}
+
+fn codex_user_agent() -> String {
+    format!(
+        "{ORIGINATOR}/{CLIENT_VERSION} ({} {}; {}) goat/{}",
+        std::env::consts::OS,
+        std::env::consts::FAMILY,
+        std::env::consts::ARCH,
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 fn account_id(access_token: &str) -> Option<String> {
@@ -299,7 +310,7 @@ impl CodexProvider {
 
 async fn fetch_models(client: &reqwest::Client, access: &str, account: Option<&str>) -> Vec<Model> {
     let mut builder = client
-        .get(format!("{BASE}/models?client_version=0.0.0"))
+        .get(format!("{BASE}/models?client_version={CLIENT_VERSION}"))
         .bearer_auth(access)
         .header("Accept", "application/json");
     if let Some(account) = account {
@@ -528,6 +539,7 @@ impl Provider for CodexProvider {
             req.max_tokens,
         );
         let session_id = goat_auth::random_state();
+        let user_agent = codex_user_agent();
         goat_provider_openai_compat::run_request(
             &client,
             &url,
@@ -539,6 +551,7 @@ impl Provider for CodexProvider {
                 ("originator", ORIGINATOR),
                 ("session_id", session_id.as_str()),
                 ("OpenAI-Beta", "responses=experimental"),
+                ("User-Agent", user_agent.as_str()),
             ],
         )
         .await
