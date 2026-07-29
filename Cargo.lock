@@ -2668,6 +2668,7 @@ dependencies = [
  "goat-integration-posthog",
  "goat-integration-sentry",
  "goat-integration-slack",
+ "goat-integration-tiro",
  "goat-protocol",
  "goat-provider",
  "goat-providers",
@@ -3022,6 +3023,30 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "goat-integration-tiro"
+version = "0.1.27"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "goat-agent-tool",
+ "goat-auth",
+ "goat-bus",
+ "goat-integration",
+ "goat-store",
+ "goat-types",
+ "inventory",
+ "reqwest 0.13.4",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
 ]
 
 [[package]]

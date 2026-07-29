@@ -39,6 +39,7 @@ goat-integration-notion = { workspace = true }
 goat-integration-posthog = { workspace = true }
 goat-integration-sentry = { workspace = true }
 goat-integration-slack  = { workspace = true }
+goat-integration-tiro   = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 tokio-util = { workspace = true }

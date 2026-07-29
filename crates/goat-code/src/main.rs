@@ -27,6 +27,7 @@ use goat_integration_notion as _;
 use goat_integration_posthog as _;
 use goat_integration_sentry as _;
 use goat_integration_slack as _;
+use goat_integration_tiro as _;
 
 fn into_eyre(err: &anyhow::Error) -> color_eyre::Report {
     eyre!(err.to_string())
