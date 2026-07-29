@@ -38,7 +38,7 @@ goat code worktree       manage git worktrees
 goat code search         manage search providers
 goat agent add | list    manage agents
 goat agent show | remove inspect or archive an agent
-goat agent channel       bind an agent to a chat channel (verifies the token)
+goat agent channel       bind an agent to a chat channel (verifies the secrets)
 goat agent status | log  show state and recent actions
 goat provider            manage LLM keys
 goat daemon | remote     manage the local daemon and paired devices
@@ -52,10 +52,18 @@ Provider ids, as typed into `goat provider login`: `anthropic`, `openai`, `opena
 `openrouter`, `vercel`, and the local trio `ollama`, `lmstudio`, `llama-cpp`. `openai-codex`,
 `kimi-code` and `zai-coding` are the subscription/coding-plan surfaces; `openrouter` and `vercel`
 are aggregators.
-Channels: Discord.
+Channels: Discord, Slack — bind with `goat agent channel add`. A channel is where the agent *is*:
+it holds a resident connection under its own bot identity, and people talk to it there. Slack needs
+two tokens (a `xoxb-` bot token to speak, a `xapp-` app-level token to open the socket); the setup
+text printed by `goat agent channel add slack` carries the app manifest.
+
 Integrations: GitHub, Linear, Notion, PostHog, Sentry, Slack, Tiro — connect with `goat integration add`,
 bind per agent with `goat agent integration add`. GitHub reads its credential from the `gh` cli, so
 run `gh auth login` first.
+
+Slack appears in both lists and they are different things. The **channel** is the bot people address;
+the **integration** reaches into Slack as *you* (`xoxp-` user token) to search and read history. The
+two token types have disjoint capabilities, so neither replaces the other — add both if you want both.
 
 ## Memory
 

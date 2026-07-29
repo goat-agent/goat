@@ -8,11 +8,16 @@ use goat_types::{
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+mod secrets;
 mod typing;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
+pub use secrets::{
+    ChannelMetadata, ChannelSecrets, SecretSpec, forget as forget_secrets, load as load_secrets,
+    save as save_secrets, secret_key,
+};
 pub use typing::{TypingGuard, spawn_typing};
 
 #[derive(Debug, Error)]
@@ -37,6 +42,7 @@ pub struct ChannelBinding {
     pub instance: InstanceId,
     pub config: serde_json::Value,
     pub commands: Vec<CommandSpec>,
+    pub secrets: ChannelSecrets,
 }
 
 #[derive(Clone, Debug)]
@@ -109,7 +115,11 @@ pub trait Channel: Send + Sync + 'static {
         binding: ChannelBinding,
     ) -> ChannelResult<BindOutput>;
 
-    async fn verify(&self, config: &serde_json::Value) -> ChannelResult<ChannelIdentity>;
+    async fn verify(
+        &self,
+        config: &serde_json::Value,
+        secrets: &ChannelSecrets,
+    ) -> ChannelResult<ChannelIdentity>;
 }
 
 #[async_trait]
@@ -157,6 +167,31 @@ pub struct ChannelFactory {
     pub id: ChannelId,
     pub ctor: fn() -> Arc<dyn Channel>,
     pub validate_config: fn(&serde_json::Value) -> ChannelResult<()>,
+    pub metadata: fn() -> ChannelMetadata,
 }
 
 inventory::collect!(ChannelFactory);
+
+#[must_use]
+pub fn factory_for(id: &str) -> Option<&'static ChannelFactory> {
+    inventory::iter::<ChannelFactory>().find(|factory| factory.id.as_str() == id)
+}
+
+#[must_use]
+pub fn registered_ids() -> Vec<&'static str> {
+    let mut ids: Vec<&'static str> = inventory::iter::<ChannelFactory>()
+        .map(|factory| factory.id.as_str())
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+#[must_use]
+pub fn metadata_for(id: &str) -> Option<ChannelMetadata> {
+    factory_for(id).map(|factory| (factory.metadata)())
+}
+
+#[must_use]
+pub fn secret_specs(id: &str) -> &'static [SecretSpec] {
+    metadata_for(id).map_or(&[], |metadata| metadata.secrets)
+}

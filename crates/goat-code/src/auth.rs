@@ -674,6 +674,11 @@ fn logout(
         CredentialService::Model => CredentialKey::model(provider, account),
         CredentialService::Search => CredentialKey::search(provider, account),
         CredentialService::Integration => CredentialKey::integration(provider, account),
+        CredentialService::Channel => {
+            return Err(color_eyre::eyre::eyre!(
+                "channel secrets are scoped to one agent and one slot; remove them with `goat agent channel rm {provider}`"
+            ));
+        }
     };
     if store.remove(&key).map_err(storage_error)? {
         ui::success(&format!("disconnected {provider} ({account})"));
