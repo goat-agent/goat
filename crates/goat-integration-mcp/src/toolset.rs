@@ -48,6 +48,26 @@ pub fn prefixed(prefix: &str, raw: &str) -> String {
     }
 }
 
+pub fn normalized(prefix: &str, name: &str) -> String {
+    let flat = name.replace('-', "_");
+    let flat_prefix = prefix.replace('-', "_");
+    flat.strip_prefix(&flat_prefix).unwrap_or(&flat).to_owned()
+}
+
+pub fn pick_tool<'a, I>(available: I, candidates: &[&str], prefix: &str) -> Option<String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let available: Vec<&str> = available.into_iter().collect();
+    candidates.iter().find_map(|candidate| {
+        let want = normalized(prefix, candidate);
+        available
+            .iter()
+            .find(|name| normalized(prefix, name) == want)
+            .map(|name| (*name).to_owned())
+    })
+}
+
 pub fn first_binding(bindings: &BindingMap) -> Option<(ProfileId, &IntegrationBinding)> {
     bindings
         .iter()
@@ -234,6 +254,58 @@ mod tests {
         assert_eq!(prefixed("acme_", "search"), "acme_search");
         assert_eq!(prefixed("acme_", "acme_search"), "acme_search");
         assert_eq!(prefixed("", "search"), "search");
+    }
+
+    #[test]
+    fn a_prefix_is_stripped_exactly_once() {
+        assert_eq!(normalized("slack_", "slack_search_public"), "search_public");
+        assert_eq!(
+            normalized("slack_", "slack_slack_search_public"),
+            "slack_search_public"
+        );
+    }
+
+    #[test]
+    fn hyphen_and_underscore_spellings_are_the_same_tool() {
+        assert_eq!(
+            normalized("notion_", "notion-query-data-sources"),
+            "query_data_sources"
+        );
+        assert_eq!(
+            normalized("notion_", "notion_query_data_sources"),
+            "query_data_sources"
+        );
+    }
+
+    #[test]
+    fn the_first_matching_candidate_wins() {
+        let available = ["slack_search_messages", "slack_search_public"];
+        let picked = pick_tool(
+            available.iter().copied(),
+            &[
+                "search_public_and_private",
+                "search_messages",
+                "search_public",
+            ],
+            "slack_",
+        );
+        assert_eq!(picked.as_deref(), Some("slack_search_messages"));
+    }
+
+    #[test]
+    fn a_hyphenated_remote_name_is_still_found() {
+        let available = ["notion-query-data-sources"];
+        let picked = pick_tool(
+            available.iter().copied(),
+            &["query_data_sources"],
+            "notion_",
+        );
+        assert_eq!(picked.as_deref(), Some("notion-query-data-sources"));
+    }
+
+    #[test]
+    fn nothing_matching_resolves_to_none() {
+        assert!(pick_tool(["a", "b"].iter().copied(), &["c"], "x_").is_none());
     }
 
     #[test]
