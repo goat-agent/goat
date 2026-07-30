@@ -2,9 +2,11 @@
 name = "goat-agent-tool-code"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 authors.workspace = true
+publish.workspace = true
 
 [dependencies]
 goat-agent-tool        = { workspace = true }
