@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use goat_agent_command::CommandSpec;
+use goat_agent_command::{CommandArgs, CommandSpec};
 use goat_types::{
     Attachment, AttachmentSource, CommandCall, CommandName, IncomingMessage, InstanceId, MessageId,
     ProfileId, Surface, ThreadId, UserHandle,
@@ -216,15 +216,40 @@ async fn interaction_to_incoming(
     let spec = commands.iter().find(|command| {
         discord_command_name(command.name.as_str()).as_deref() == Some(data.name.as_str())
     })?;
-    let args = data
-        .options
-        .iter()
-        .find(|option| option.name == "args")
-        .and_then(|option| match &option.value {
-            CommandOptionValue::String(value) => Some(value.as_str()),
-            _ => None,
-        })
-        .unwrap_or("");
+    let option_value = |name: &str| {
+        data.options
+            .iter()
+            .find(|option| option.name == name)
+            .and_then(|option| match &option.value {
+                CommandOptionValue::String(value) => Some(value.as_str()),
+                _ => None,
+            })
+    };
+    let (args, named) = match &spec.args {
+        CommandArgs::Named(specs) => {
+            let values: Vec<(&str, &str)> = specs
+                .iter()
+                .filter_map(|arg| option_value(&arg.name).map(|value| (arg.name.as_str(), value)))
+                .collect();
+            let joined = values
+                .iter()
+                .map(|(_, value)| quote_arg(value))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let map: serde_json::Map<String, serde_json::Value> = values
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), serde_json::Value::from(value)))
+                .collect();
+            (joined, Some(serde_json::Value::Object(map)))
+        }
+        _ => (option_value("args").unwrap_or("").to_string(), None),
+    };
+    let raw_command = match &named {
+        Some(arguments) => {
+            serde_json::json!({ "platform": "discord", "command": data.name, "arguments": arguments })
+        }
+        None => serde_json::json!({ "platform": "discord", "command": data.name }),
+    };
     #[allow(deprecated)]
     let channel_id = interaction.channel_id?;
     let external = match interaction.guild_id {
@@ -250,15 +275,15 @@ async fn interaction_to_incoming(
             text: command_text(&CommandCall::new(
                 interaction.id.to_string(),
                 CommandName::new(spec.name.as_str().to_string()).ok()?,
-                args.to_string(),
-                serde_json::json!({ "platform": "discord", "command": data.name }),
+                args.clone(),
+                raw_command.clone(),
             )),
             attachments: Vec::new(),
             command: Some(CommandCall::new(
                 interaction.id.to_string(),
                 CommandName::new(spec.name.as_str().to_string()).ok()?,
-                args.to_string(),
-                serde_json::json!({ "platform": "discord", "command": data.name }),
+                args,
+                raw_command,
             )),
             surface,
             addressed: true,
@@ -368,6 +393,14 @@ fn parse_text_command(text: &str, call_id: &str, commands: &[CommandSpec]) -> Op
         args.to_string(),
         serde_json::json!({ "platform": "discord", "command": head }),
     ))
+}
+
+fn quote_arg(value: &str) -> String {
+    if value.chars().any(char::is_whitespace) {
+        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        value.to_string()
+    }
 }
 
 fn command_text(call: &CommandCall) -> String {
