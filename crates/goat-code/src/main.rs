@@ -23,6 +23,7 @@ use goat_agent_tool_skill as _;
 use goat_channel_discord as _;
 use goat_channel_slack as _;
 use goat_integration_github as _;
+use goat_integration_langfuse as _;
 use goat_integration_linear as _;
 use goat_integration_notion as _;
 use goat_integration_posthog as _;

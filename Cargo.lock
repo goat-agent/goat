@@ -2707,6 +2707,7 @@ dependencies = [
  "goat-console",
  "goat-daemon",
  "goat-integration-github",
+ "goat-integration-langfuse",
  "goat-integration-linear",
  "goat-integration-notion",
  "goat-integration-posthog",
@@ -2943,6 +2944,22 @@ dependencies = [
  "goat-agent-tool",
  "goat-auth",
  "goat-github",
+ "goat-integration",
+ "goat-integration-mcp",
+ "goat-types",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "goat-integration-langfuse"
+version = "0.1.27"
+dependencies = [
+ "goat-auth",
  "goat-integration",
  "goat-integration-mcp",
  "goat-types",
