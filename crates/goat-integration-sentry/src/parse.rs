@@ -46,16 +46,6 @@ impl Issue {
     }
 }
 
-pub struct FetchPage {
-    pub issues: Vec<Issue>,
-}
-
-pub fn parse_page(data: &Value) -> IntegrationResult<FetchPage> {
-    Ok(FetchPage {
-        issues: parse_issues(data)?,
-    })
-}
-
 pub fn parse_issues(data: &Value) -> IntegrationResult<Vec<Issue>> {
     issue_array(data)
         .ok_or_else(|| {
