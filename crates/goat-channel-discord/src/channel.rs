@@ -7,7 +7,7 @@ use goat_channel::{
     BindOutput, Channel, ChannelBinding, ChannelError, ChannelHandle, ChannelIdentity,
     ChannelResult, ChannelSecrets,
 };
-use goat_types::{ChannelId, ProfileId};
+use goat_types::{AgentId, ChannelId};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use twilight_gateway::Intents;
@@ -37,7 +37,7 @@ impl Channel for DiscordChannel {
 
     async fn bind(
         self: Arc<Self>,
-        persona: ProfileId,
+        agent: AgentId,
         binding: ChannelBinding,
     ) -> ChannelResult<BindOutput> {
         let token = binding.secrets.require(TOKEN_SLOT)?.to_owned();
@@ -65,7 +65,7 @@ impl Channel for DiscordChannel {
             http.clone(),
             tx,
             GatewayConfig {
-                persona,
+                agent,
                 instance: binding.instance,
                 commands,
                 interactions: interactions.clone(),
@@ -76,10 +76,10 @@ impl Channel for DiscordChannel {
             },
         ));
 
-        info!(profile = %persona, "discord bot bound: {}", identity.handle);
+        info!(agent = %agent, "discord bot bound: {}", identity.handle);
         let handle: Arc<dyn ChannelHandle> = Arc::new(DiscordHandle::new(
             binding.instance,
-            persona,
+            agent,
             identity,
             http,
             interactions,

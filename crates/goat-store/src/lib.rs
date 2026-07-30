@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use goat_types::{ChannelId, IncomingMessage, InstanceId, MessageId, ProfileId, ThreadId};
+use goat_types::{AgentId, ChannelId, IncomingMessage, InstanceId, MessageId, ThreadId};
 use sqlx::ConnectOptions;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use thiserror::Error;
@@ -65,7 +65,7 @@ pub enum Direction {
 
 #[derive(Clone, Debug)]
 pub struct ToolInvocationRecord {
-    pub persona: ProfileId,
+    pub agent: AgentId,
     pub thread: ThreadId,
     pub call_id: String,
     pub tool_name: String,
@@ -172,7 +172,7 @@ impl TaskRunStatus {
 
 #[derive(Clone, Debug)]
 pub struct NewScheduledTask {
-    pub persona: ProfileId,
+    pub agent: AgentId,
     pub task: String,
     pub tools: Vec<String>,
     pub origin_conv: ThreadId,
@@ -183,7 +183,7 @@ pub struct NewScheduledTask {
 #[derive(Clone, Debug)]
 pub struct ScheduledTaskRecord {
     pub id: i64,
-    pub persona: ProfileId,
+    pub agent: AgentId,
     pub task: String,
     pub tools: Vec<String>,
     pub origin_conv: ThreadId,
@@ -270,7 +270,7 @@ impl GoalOrigin {
 
 #[derive(Clone, Debug)]
 pub struct NewGoal {
-    pub persona: ProfileId,
+    pub agent: AgentId,
     pub title: String,
     pub detail: Option<String>,
     pub parent: Option<i64>,
@@ -283,7 +283,7 @@ pub struct NewGoal {
 #[derive(Clone, Debug)]
 pub struct GoalRecord {
     pub id: i64,
-    pub persona: ProfileId,
+    pub agent: AgentId,
     pub title: String,
     pub detail: Option<String>,
     pub parent: Option<i64>,
@@ -299,24 +299,24 @@ pub struct GoalRecord {
 
 #[async_trait]
 pub trait Store: Send + Sync + 'static {
-    async fn ensure_persona(&self, id: ProfileId, slug: &str, display: &str) -> StoreResult<()>;
+    async fn ensure_agent(&self, id: AgentId, slug: &str, display: &str) -> StoreResult<()>;
 
-    async fn ensure_thread(&self, conv: &ThreadId, persona: ProfileId) -> StoreResult<()>;
+    async fn ensure_thread(&self, conv: &ThreadId, agent: AgentId) -> StoreResult<()>;
 
     async fn append_incoming(&self, msg: &IncomingMessage) -> StoreResult<()>;
 
     async fn append_incoming_text(
         &self,
-        agent: ProfileId,
+        agent: AgentId,
         thread: &ThreadId,
         text: &str,
     ) -> StoreResult<()>;
 
-    async fn has_agent_activity(&self, agent: ProfileId, thread: &ThreadId) -> StoreResult<bool>;
+    async fn has_agent_activity(&self, agent: AgentId, thread: &ThreadId) -> StoreResult<bool>;
 
     async fn append_outgoing_text(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         conv: &ThreadId,
         text: &str,
         reply_to: Option<&MessageId>,
@@ -332,16 +332,16 @@ pub trait Store: Send + Sync + 'static {
 
     async fn recent(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         conv: &ThreadId,
         limit: usize,
     ) -> StoreResult<Vec<HistoryRow>>;
 
-    async fn message_count(&self, persona: ProfileId, conv: &ThreadId) -> StoreResult<usize>;
+    async fn message_count(&self, agent: AgentId, conv: &ThreadId) -> StoreResult<usize>;
 
     async fn messages_from(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         conv: &ThreadId,
         offset: usize,
         limit: usize,
@@ -349,13 +349,13 @@ pub trait Store: Send + Sync + 'static {
 
     async fn get_thread_summary(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         conv: &ThreadId,
     ) -> StoreResult<Option<ThreadSummary>>;
 
     async fn upsert_thread_summary(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         conv: &ThreadId,
         summary: &str,
         summarized_count: usize,
@@ -386,20 +386,20 @@ pub trait Store: Send + Sync + 'static {
 
     async fn cancel_tasks_by_match(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         match_text: &str,
     ) -> StoreResult<Vec<i64>>;
 
     async fn list_active_tasks(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
     ) -> StoreResult<Vec<(ScheduledTaskRecord, Option<DateTime<Utc>>)>>;
 
     async fn get_scheduled_task(&self, id: i64) -> StoreResult<Option<ScheduledTaskRecord>>;
 
     async fn similar_active_tasks(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         needle: &str,
     ) -> StoreResult<Vec<ScheduledTaskRecord>>;
 
@@ -409,7 +409,7 @@ pub trait Store: Send + Sync + 'static {
 
     async fn all_pending_runs(&self) -> StoreResult<Vec<(i64, i64, DateTime<Utc>)>>;
 
-    async fn latest_thread(&self, persona: ProfileId) -> StoreResult<Option<ThreadId>>;
+    async fn latest_thread(&self, agent: AgentId) -> StoreResult<Option<ThreadId>>;
 
     async fn create_goal(&self, new: NewGoal) -> StoreResult<i64>;
 
@@ -421,7 +421,7 @@ pub trait Store: Send + Sync + 'static {
         next_review_at: Option<DateTime<Utc>>,
     ) -> StoreResult<()>;
 
-    async fn active_goals(&self, persona: ProfileId) -> StoreResult<Vec<GoalRecord>>;
+    async fn active_goals(&self, agent: AgentId) -> StoreResult<Vec<GoalRecord>>;
 
     async fn goals_due_for_review(&self, now: DateTime<Utc>) -> StoreResult<Vec<GoalRecord>>;
 
@@ -429,7 +429,7 @@ pub trait Store: Send + Sync + 'static {
 
     async fn integration_state(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         integration: &str,
         account: &str,
         stream: &str,
@@ -437,7 +437,7 @@ pub trait Store: Send + Sync + 'static {
 
     async fn set_integration_state(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         integration: &str,
         account: &str,
         stream: &str,
@@ -450,7 +450,7 @@ pub trait Store: Send + Sync + 'static {
 
     async fn observations_by_ref(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         integration: &str,
         external_ref: &str,
         limit: i64,
@@ -459,7 +459,7 @@ pub trait Store: Send + Sync + 'static {
 
 #[derive(Clone, Debug)]
 pub struct NewObservation {
-    pub persona: ProfileId,
+    pub agent: AgentId,
     pub integration: String,
     pub account: String,
     pub external_ref: String,
@@ -470,7 +470,7 @@ pub struct NewObservation {
 #[derive(Clone, Debug)]
 pub struct ObservationRecord {
     pub id: i64,
-    pub persona: ProfileId,
+    pub agent: AgentId,
     pub integration: String,
     pub account: String,
     pub external_ref: String,
@@ -542,9 +542,9 @@ fn restrict_db_permissions(_path: &Path) {}
 
 #[async_trait]
 impl Store for SqliteStore {
-    async fn ensure_persona(&self, id: ProfileId, slug: &str, display: &str) -> StoreResult<()> {
+    async fn ensure_agent(&self, id: AgentId, slug: &str, display: &str) -> StoreResult<()> {
         sqlx::query(
-            r"INSERT INTO personas (id, slug, display, created_at)
+            r"INSERT INTO agents (id, slug, display, created_at)
                VALUES (?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET slug = excluded.slug, display = excluded.display",
         )
@@ -557,14 +557,14 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    async fn ensure_thread(&self, conv: &ThreadId, persona: ProfileId) -> StoreResult<()> {
+    async fn ensure_thread(&self, conv: &ThreadId, agent: AgentId) -> StoreResult<()> {
         sqlx::query(
-            r"INSERT INTO threads (id, persona_id, channel, instance, external, created_at)
+            r"INSERT INTO threads (id, agent_id, channel, instance, external, created_at)
                VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO NOTHING",
         )
         .bind(conv.to_key())
-        .bind(persona.to_string())
+        .bind(agent.to_string())
         .bind(conv.channel.as_str())
         .bind(conv.instance.to_string())
         .bind(&conv.external)
@@ -574,17 +574,17 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    async fn latest_thread(&self, persona: ProfileId) -> StoreResult<Option<ThreadId>> {
+    async fn latest_thread(&self, agent: AgentId) -> StoreResult<Option<ThreadId>> {
         let row: Option<(String, String, String)> = sqlx::query_as(
             r"SELECT c.channel, c.instance, c.external
                FROM threads c
                JOIN messages m ON m.thread_id = c.id
-               WHERE c.persona_id = ?
+               WHERE c.agent_id = ?
                GROUP BY c.id
                ORDER BY MAX(m.ts) DESC
                LIMIT 1",
         )
-        .bind(persona.to_string())
+        .bind(agent.to_string())
         .fetch_optional(&*self.pool)
         .await?;
 
@@ -602,16 +602,16 @@ impl Store for SqliteStore {
     }
 
     async fn append_incoming(&self, msg: &IncomingMessage) -> StoreResult<()> {
-        self.ensure_thread(&msg.thread, msg.profile).await?;
+        self.ensure_thread(&msg.thread, msg.agent).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, persona_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
+               (id, thread_id, agent_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
                VALUES (?, ?, ?, 'in', 'text', ?, NULL, NULL, ?, ?)
                ON CONFLICT(id) DO NOTHING",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(msg.thread.to_key())
-        .bind(msg.profile.to_string())
+        .bind(msg.agent.to_string())
         .bind(&msg.text)
         .bind(msg.ts.to_rfc3339())
         .bind(msg.raw.to_string())
@@ -622,14 +622,14 @@ impl Store for SqliteStore {
 
     async fn append_incoming_text(
         &self,
-        agent: ProfileId,
+        agent: AgentId,
         thread: &ThreadId,
         text: &str,
     ) -> StoreResult<()> {
         self.ensure_thread(thread, agent).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, persona_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
+               (id, thread_id, agent_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
                VALUES (?, ?, ?, 'in', 'text', ?, NULL, NULL, ?, NULL)",
         )
         .bind(Uuid::new_v4().to_string())
@@ -642,11 +642,11 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    async fn has_agent_activity(&self, agent: ProfileId, thread: &ThreadId) -> StoreResult<bool> {
+    async fn has_agent_activity(&self, agent: AgentId, thread: &ThreadId) -> StoreResult<bool> {
         let row: (bool,) = sqlx::query_as(
             r"SELECT EXISTS(
                 SELECT 1 FROM messages
-                WHERE persona_id = ? AND thread_id = ? AND direction = 'out'
+                WHERE agent_id = ? AND thread_id = ? AND direction = 'out'
                 LIMIT 1
             )",
         )
@@ -659,20 +659,20 @@ impl Store for SqliteStore {
 
     async fn append_outgoing_text(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         conv: &ThreadId,
         text: &str,
         reply_to: Option<&MessageId>,
     ) -> StoreResult<()> {
-        self.ensure_thread(conv, persona).await?;
+        self.ensure_thread(conv, agent).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, persona_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
+               (id, thread_id, agent_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
                VALUES (?, ?, ?, 'out', 'text', ?, NULL, ?, ?, NULL)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(conv.to_key())
-        .bind(persona.to_string())
+        .bind(agent.to_string())
         .bind(text)
         .bind(reply_to.map(|m| m.0.clone()))
         .bind(Utc::now().to_rfc3339())
@@ -682,16 +682,16 @@ impl Store for SqliteStore {
     }
 
     async fn append_tool_invocation(&self, record: ToolInvocationRecord) -> StoreResult<()> {
-        self.ensure_thread(&record.thread, record.persona).await?;
+        self.ensure_thread(&record.thread, record.agent).await?;
         sqlx::query(
             r"INSERT INTO tool_invocations
-               (id, thread_id, persona_id, call_id, tool_name, args_json, status,
+               (id, thread_id, agent_id, call_id, tool_name, args_json, status,
                 output_preview, error, started_at, finished_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(record.thread.to_key())
-        .bind(record.persona.to_string())
+        .bind(record.agent.to_string())
         .bind(record.call_id)
         .bind(record.tool_name)
         .bind(record.args_json.to_string())
@@ -751,7 +751,7 @@ impl Store for SqliteStore {
 
     async fn recent(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         conv: &ThreadId,
         limit: usize,
     ) -> StoreResult<Vec<HistoryRow>> {
@@ -759,11 +759,11 @@ impl Store for SqliteStore {
         let rows = sqlx::query_as::<_, (String, String, String)>(
             r"SELECT direction, text, ts
                FROM messages
-               WHERE persona_id = ? AND thread_id = ? AND text IS NOT NULL
+               WHERE agent_id = ? AND thread_id = ? AND text IS NOT NULL
                ORDER BY ts DESC
                LIMIT ?",
         )
-        .bind(persona.to_string())
+        .bind(agent.to_string())
         .bind(conv.to_key())
         .bind(limit)
         .fetch_all(&*self.pool)
@@ -785,12 +785,12 @@ impl Store for SqliteStore {
         Ok(history)
     }
 
-    async fn message_count(&self, persona: ProfileId, conv: &ThreadId) -> StoreResult<usize> {
+    async fn message_count(&self, agent: AgentId, conv: &ThreadId) -> StoreResult<usize> {
         let row: (i64,) = sqlx::query_as(
             r"SELECT COUNT(*) FROM messages
-               WHERE persona_id = ? AND thread_id = ? AND text IS NOT NULL",
+               WHERE agent_id = ? AND thread_id = ? AND text IS NOT NULL",
         )
-        .bind(persona.to_string())
+        .bind(agent.to_string())
         .bind(conv.to_key())
         .fetch_one(&*self.pool)
         .await?;
@@ -799,7 +799,7 @@ impl Store for SqliteStore {
 
     async fn messages_from(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         conv: &ThreadId,
         offset: usize,
         limit: usize,
@@ -810,11 +810,11 @@ impl Store for SqliteStore {
         let rows = sqlx::query_as::<_, (String, String, String)>(
             r"SELECT direction, text, ts
                FROM messages
-               WHERE persona_id = ? AND thread_id = ? AND text IS NOT NULL
+               WHERE agent_id = ? AND thread_id = ? AND text IS NOT NULL
                ORDER BY ts ASC, id ASC
                LIMIT ? OFFSET ?",
         )
-        .bind(persona.to_string())
+        .bind(agent.to_string())
         .bind(conv.to_key())
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
         .bind(i64::try_from(offset).unwrap_or(i64::MAX))
@@ -836,14 +836,14 @@ impl Store for SqliteStore {
 
     async fn get_thread_summary(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         conv: &ThreadId,
     ) -> StoreResult<Option<ThreadSummary>> {
         let row: Option<(String, i64)> = sqlx::query_as(
             r"SELECT summary, summarized_count FROM thread_summary
-               WHERE persona_id = ? AND thread_id = ?",
+               WHERE agent_id = ? AND thread_id = ?",
         )
-        .bind(persona.to_string())
+        .bind(agent.to_string())
         .bind(conv.to_key())
         .fetch_optional(&*self.pool)
         .await?;
@@ -855,15 +855,15 @@ impl Store for SqliteStore {
 
     async fn upsert_thread_summary(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         conv: &ThreadId,
         summary: &str,
         summarized_count: usize,
     ) -> StoreResult<()> {
-        self.ensure_thread(conv, persona).await?;
+        self.ensure_thread(conv, agent).await?;
         sqlx::query(
             r"INSERT INTO thread_summary
-               (thread_id, persona_id, summary, summarized_count, updated_at)
+               (thread_id, agent_id, summary, summarized_count, updated_at)
                VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(thread_id) DO UPDATE SET
                  summary = excluded.summary,
@@ -871,7 +871,7 @@ impl Store for SqliteStore {
                  updated_at = excluded.updated_at",
         )
         .bind(conv.to_key())
-        .bind(persona.to_string())
+        .bind(agent.to_string())
         .bind(summary)
         .bind(i64::try_from(summarized_count).unwrap_or(i64::MAX))
         .bind(Utc::now().to_rfc3339())
@@ -881,7 +881,7 @@ impl Store for SqliteStore {
     }
 
     async fn insert_scheduled_task(&self, new: NewScheduledTask) -> StoreResult<i64> {
-        self.ensure_thread(&new.origin_conv, new.persona).await?;
+        self.ensure_thread(&new.origin_conv, new.agent).await?;
         let (kind_str, once_at, cron) = match &new.schedule {
             ScheduleKind::Once(at) => ("once", Some(at.to_rfc3339()), None),
             ScheduleKind::Cron(expr) => ("cron", None, Some(expr.clone())),
@@ -889,12 +889,12 @@ impl Store for SqliteStore {
         let tools_json = serde_json::to_string(&new.tools)?;
         let row: (i64,) = sqlx::query_as(
             r"INSERT INTO scheduled_tasks
-               (persona_id, task, tools, origin_conv, schedule_kind, once_at,
+               (agent_id, task, tools, origin_conv, schedule_kind, once_at,
                 cron, status, created_at, created_by_msg_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
                RETURNING id",
         )
-        .bind(new.persona.to_string())
+        .bind(new.agent.to_string())
         .bind(&new.task)
         .bind(tools_json)
         .bind(new.origin_conv.to_key())
@@ -1036,15 +1036,15 @@ impl Store for SqliteStore {
 
     async fn cancel_tasks_by_match(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         match_text: &str,
     ) -> StoreResult<Vec<i64>> {
         let pattern = format!("%{match_text}%");
         let ids: Vec<(i64,)> = sqlx::query_as(
             r"SELECT id FROM scheduled_tasks
-               WHERE persona_id = ? AND status = 'active' AND task LIKE ?",
+               WHERE agent_id = ? AND status = 'active' AND task LIKE ?",
         )
-        .bind(persona.to_string())
+        .bind(agent.to_string())
         .bind(pattern)
         .fetch_all(&*self.pool)
         .await?;
@@ -1070,7 +1070,7 @@ impl Store for SqliteStore {
 
     async fn similar_active_tasks(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         needle: &str,
     ) -> StoreResult<Vec<ScheduledTaskRecord>> {
         let trimmed = needle.trim();
@@ -1080,11 +1080,11 @@ impl Store for SqliteStore {
         let pattern = format!("%{}%", trimmed.to_lowercase());
         let ids: Vec<(i64,)> = sqlx::query_as(
             r"SELECT id FROM scheduled_tasks
-               WHERE persona_id = ? AND status = 'active'
+               WHERE agent_id = ? AND status = 'active'
                  AND LOWER(task) LIKE ?
                ORDER BY created_at",
         )
-        .bind(persona.to_string())
+        .bind(agent.to_string())
         .bind(pattern)
         .fetch_all(&*self.pool)
         .await?;
@@ -1152,14 +1152,14 @@ impl Store for SqliteStore {
 
     async fn list_active_tasks(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
     ) -> StoreResult<Vec<(ScheduledTaskRecord, Option<DateTime<Utc>>)>> {
         let rows: Vec<(i64,)> = sqlx::query_as(
             r"SELECT id FROM scheduled_tasks
-               WHERE persona_id = ? AND status = 'active'
+               WHERE agent_id = ? AND status = 'active'
                ORDER BY created_at",
         )
-        .bind(persona.to_string())
+        .bind(agent.to_string())
         .fetch_all(&*self.pool)
         .await?;
 
@@ -1186,17 +1186,17 @@ impl Store for SqliteStore {
 
     async fn create_goal(&self, new: NewGoal) -> StoreResult<i64> {
         if let Some(conv) = &new.origin_conv {
-            self.ensure_thread(conv, new.persona).await?;
+            self.ensure_thread(conv, new.agent).await?;
         }
         let now = Utc::now().to_rfc3339();
         let row: (i64,) = sqlx::query_as(
             r"INSERT INTO goals
-               (persona_id, title, detail, parent, status, priority, origin,
+               (agent_id, title, detail, parent, status, priority, origin,
                 origin_conv, next_review_at, created_at, updated_at)
                VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
                RETURNING id",
         )
-        .bind(new.persona.to_string())
+        .bind(new.agent.to_string())
         .bind(&new.title)
         .bind(new.detail)
         .bind(new.parent)
@@ -1241,13 +1241,13 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    async fn active_goals(&self, persona: ProfileId) -> StoreResult<Vec<GoalRecord>> {
+    async fn active_goals(&self, agent: AgentId) -> StoreResult<Vec<GoalRecord>> {
         let ids: Vec<(i64,)> = sqlx::query_as(
             r"SELECT id FROM goals
-               WHERE persona_id = ? AND status = 'active'
+               WHERE agent_id = ? AND status = 'active'
                ORDER BY priority ASC, id ASC",
         )
-        .bind(persona.to_string())
+        .bind(agent.to_string())
         .fetch_all(&*self.pool)
         .await?;
         let mut out = Vec::with_capacity(ids.len());
@@ -1288,16 +1288,16 @@ impl Store for SqliteStore {
 
     async fn integration_state(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         integration: &str,
         account: &str,
         stream: &str,
     ) -> StoreResult<Option<String>> {
         let row: Option<(String,)> = sqlx::query_as(
             r"SELECT state FROM integration_state
-               WHERE persona_id = ? AND integration = ? AND account = ? AND stream = ?",
+               WHERE agent_id = ? AND integration = ? AND account = ? AND stream = ?",
         )
-        .bind(persona.to_string())
+        .bind(agent.to_string())
         .bind(integration)
         .bind(account)
         .bind(stream)
@@ -1308,7 +1308,7 @@ impl Store for SqliteStore {
 
     async fn set_integration_state(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         integration: &str,
         account: &str,
         stream: &str,
@@ -1316,12 +1316,12 @@ impl Store for SqliteStore {
     ) -> StoreResult<()> {
         sqlx::query(
             r"INSERT INTO integration_state
-               (persona_id, integration, account, stream, state, updated_at)
+               (agent_id, integration, account, stream, state, updated_at)
                VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(persona_id, integration, account, stream)
+               ON CONFLICT(agent_id, integration, account, stream)
                DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
         )
-        .bind(persona.to_string())
+        .bind(agent.to_string())
         .bind(integration)
         .bind(account)
         .bind(stream)
@@ -1335,11 +1335,11 @@ impl Store for SqliteStore {
     async fn record_observation(&self, new: NewObservation) -> StoreResult<i64> {
         let row: (i64,) = sqlx::query_as(
             r"INSERT INTO integration_observations
-               (persona_id, integration, account, external_ref, kind, payload, observed_at)
+               (agent_id, integration, account, external_ref, kind, payload, observed_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)
                RETURNING id",
         )
-        .bind(new.persona.to_string())
+        .bind(new.agent.to_string())
         .bind(&new.integration)
         .bind(&new.account)
         .bind(&new.external_ref)
@@ -1354,7 +1354,7 @@ impl Store for SqliteStore {
     async fn get_observation(&self, id: i64) -> StoreResult<Option<ObservationRecord>> {
         let row: Option<(i64, String, String, String, String, String, String, String)> =
             sqlx::query_as(
-                r"SELECT id, persona_id, integration, account, external_ref, kind,
+                r"SELECT id, agent_id, integration, account, external_ref, kind,
                           payload, observed_at
                    FROM integration_observations WHERE id = ?",
             )
@@ -1366,7 +1366,7 @@ impl Store for SqliteStore {
         };
         Ok(Some(ObservationRecord {
             id: row.0,
-            persona: ProfileId(Uuid::parse_str(&row.1)?),
+            agent: AgentId(Uuid::parse_str(&row.1)?),
             integration: row.2,
             account: row.3,
             external_ref: row.4,
@@ -1378,21 +1378,21 @@ impl Store for SqliteStore {
 
     async fn observations_by_ref(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         integration: &str,
         external_ref: &str,
         limit: i64,
     ) -> StoreResult<Vec<ObservationRecord>> {
         let rows: Vec<(i64, String, String, String, String, String, String, String)> =
             sqlx::query_as(
-                r"SELECT id, persona_id, integration, account, external_ref, kind,
+                r"SELECT id, agent_id, integration, account, external_ref, kind,
                           payload, observed_at
                    FROM integration_observations
-                   WHERE persona_id = ? AND integration = ? AND external_ref = ?
+                   WHERE agent_id = ? AND integration = ? AND external_ref = ?
                    ORDER BY id DESC
                    LIMIT ?",
             )
-            .bind(persona.to_string())
+            .bind(agent.to_string())
             .bind(integration)
             .bind(external_ref)
             .bind(limit.max(1))
@@ -1402,7 +1402,7 @@ impl Store for SqliteStore {
             .map(|row| {
                 Ok(ObservationRecord {
                     id: row.0,
-                    persona: ProfileId(Uuid::parse_str(&row.1)?),
+                    agent: AgentId(Uuid::parse_str(&row.1)?),
                     integration: row.2,
                     account: row.3,
                     external_ref: row.4,
@@ -1433,7 +1433,7 @@ async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<Schedule
         String,
         String,
     ) = sqlx::query_as(
-        r"SELECT s.id, s.persona_id, s.task, s.tools, s.origin_conv,
+        r"SELECT s.id, s.agent_id, s.task, s.tools, s.origin_conv,
                   s.schedule_kind, s.once_at, s.cron, s.status, s.created_at,
                   s.created_by_msg_id, c.channel, c.instance, c.external
            FROM scheduled_tasks s
@@ -1445,7 +1445,7 @@ async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<Schedule
     .await?;
 
     let tools: Vec<String> = serde_json::from_str(&row.3)?;
-    let persona = ProfileId(Uuid::parse_str(&row.1)?);
+    let agent = AgentId(Uuid::parse_str(&row.1)?);
     let instance = InstanceId(Uuid::parse_str(&row.12)?);
     let origin_conv = ThreadId::new(ChannelId::new(row.11.clone()), instance, row.13.clone());
     let schedule = match row.5.as_str() {
@@ -1473,7 +1473,7 @@ async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<Schedule
 
     Ok(ScheduledTaskRecord {
         id: row.0,
-        persona,
+        agent,
         task: row.2,
         tools,
         origin_conv,
@@ -1509,7 +1509,7 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
         Option<String>,
         Option<String>,
     ) = sqlx::query_as(
-        r"SELECT g.id, g.persona_id, g.title, g.detail, g.parent, g.status,
+        r"SELECT g.id, g.agent_id, g.title, g.detail, g.parent, g.status,
                   g.priority, g.origin, g.next_review_at,
                   g.last_reviewed_at, g.created_at, g.updated_at,
                   c.channel, c.instance, c.external
@@ -1521,7 +1521,7 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
     .fetch_one(pool)
     .await?;
 
-    let persona = ProfileId(Uuid::parse_str(&row.1)?);
+    let agent = AgentId(Uuid::parse_str(&row.1)?);
     let origin_conv = match (&row.12, &row.13, &row.14) {
         (Some(channel), Some(instance), Some(external)) => Some(ThreadId::new(
             ChannelId::new(channel.clone()),
@@ -1535,7 +1535,7 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
 
     Ok(GoalRecord {
         id: row.0,
-        persona,
+        agent,
         title: row.2,
         detail: row.3,
         parent: row.4,
@@ -1567,20 +1567,20 @@ mod tests {
         ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1")
     }
 
-    async fn fixture_persona(store: &SqliteStore) -> ProfileId {
-        let p = ProfileId::new();
-        store.ensure_persona(p, "dev", "dev").await.unwrap();
+    async fn fixture_agent(store: &SqliteStore) -> AgentId {
+        let p = AgentId::new();
+        store.ensure_agent(p, "dev", "dev").await.unwrap();
         p
     }
 
     #[tokio::test]
     async fn ensures_and_appends() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
         let conv = fixture_conv();
         let msg = IncomingMessage {
             id: MessageId("m1".into()),
-            profile: p,
+            agent: p,
             thread: conv.clone(),
             from: UserHandle {
                 external: "u".into(),
@@ -1608,7 +1608,7 @@ mod tests {
     #[tokio::test]
     async fn has_agent_activity_flips_after_outgoing() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
         let conv = fixture_conv();
 
         s.append_incoming_text(p, &conv, "seed only").await.unwrap();
@@ -1629,12 +1629,12 @@ mod tests {
     #[tokio::test]
     async fn message_count_range_and_summary_round_trip() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
         let conv = fixture_conv();
         for i in 0..5 {
             let msg = IncomingMessage {
                 id: MessageId(format!("m{i}")),
-                profile: p,
+                agent: p,
                 thread: conv.clone(),
                 from: UserHandle {
                     external: "u".into(),
@@ -1678,13 +1678,13 @@ mod tests {
     #[tokio::test]
     async fn schedule_once_insert_and_list() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
         let conv = fixture_conv();
         s.ensure_thread(&conv, p).await.unwrap();
         let due = Utc::now() + Duration::minutes(5);
         let task_id = s
             .insert_scheduled_task(NewScheduledTask {
-                persona: p,
+                agent: p,
                 task: "ping example.com".into(),
                 tools: vec!["shell".into()],
                 origin_conv: conv.clone(),
@@ -1709,13 +1709,13 @@ mod tests {
     #[tokio::test]
     async fn claim_due_run_is_atomic() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
         let conv = fixture_conv();
         s.ensure_thread(&conv, p).await.unwrap();
         let past = Utc::now() - Duration::minutes(1);
         let task_id = s
             .insert_scheduled_task(NewScheduledTask {
-                persona: p,
+                agent: p,
                 task: "old task".into(),
                 tools: vec![],
                 origin_conv: conv,
@@ -1749,13 +1749,13 @@ mod tests {
     #[tokio::test]
     async fn cancel_by_match_purges_pending() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
         let conv = fixture_conv();
         s.ensure_thread(&conv, p).await.unwrap();
         let due = Utc::now() + Duration::minutes(1);
         let task_id = s
             .insert_scheduled_task(NewScheduledTask {
-                persona: p,
+                agent: p,
                 task: "run loadtest in staging".into(),
                 tools: vec![],
                 origin_conv: conv,
@@ -1784,13 +1784,13 @@ mod tests {
     #[tokio::test]
     async fn reclaim_stale_runs_marks_failed_only_past_threshold() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
         let conv = fixture_conv();
         s.ensure_thread(&conv, p).await.unwrap();
         let past = Utc::now() - Duration::minutes(30);
         let task_id = s
             .insert_scheduled_task(NewScheduledTask {
-                persona: p,
+                agent: p,
                 task: "x".into(),
                 tools: vec![],
                 origin_conv: conv,
@@ -1818,13 +1818,13 @@ mod tests {
     #[tokio::test]
     async fn cron_tasks_missing_next_run_finds_them() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
         let conv = fixture_conv();
         s.ensure_thread(&conv, p).await.unwrap();
 
         let task_id = s
             .insert_scheduled_task(NewScheduledTask {
-                persona: p,
+                agent: p,
                 task: "weekly".into(),
                 tools: vec![],
                 origin_conv: conv,
@@ -1848,12 +1848,12 @@ mod tests {
     #[tokio::test]
     async fn cron_task_round_trip() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
         let conv = fixture_conv();
         s.ensure_thread(&conv, p).await.unwrap();
         let task_id = s
             .insert_scheduled_task(NewScheduledTask {
-                persona: p,
+                agent: p,
                 task: "weekly summary".into(),
                 tools: vec!["read".into(), "grep".into()],
                 origin_conv: conv,
@@ -1875,7 +1875,7 @@ mod tests {
     #[tokio::test]
     async fn latest_thread_returns_most_recent() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
 
         assert!(s.latest_thread(p).await.unwrap().is_none());
 
@@ -1887,7 +1887,7 @@ mod tests {
 
         s.append_incoming(&IncomingMessage {
             id: MessageId("m-old".into()),
-            profile: p,
+            agent: p,
             thread: conv_old.clone(),
             from: UserHandle {
                 external: "u".into(),
@@ -1907,7 +1907,7 @@ mod tests {
 
         s.append_incoming(&IncomingMessage {
             id: MessageId("m-new".into()),
-            profile: p,
+            agent: p,
             thread: conv_new.clone(),
             from: UserHandle {
                 external: "u".into(),
@@ -1940,9 +1940,9 @@ mod tests {
         assert!(v.0.starts_with('v'), "unexpected vec_version: {}", v.0);
     }
 
-    fn new_goal(p: ProfileId) -> NewGoal {
+    fn new_goal(p: AgentId) -> NewGoal {
         NewGoal {
-            persona: p,
+            agent: p,
             title: "ship goals".into(),
             detail: Some("acceptance criteria".into()),
             parent: None,
@@ -1956,7 +1956,7 @@ mod tests {
     #[tokio::test]
     async fn create_goal_and_active_goals_round_trip() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
         let conv = fixture_conv();
         s.ensure_thread(&conv, p).await.unwrap();
 
@@ -1992,7 +1992,7 @@ mod tests {
     #[tokio::test]
     async fn update_goal_status_removes_from_active() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
 
         let id = s.create_goal(new_goal(p)).await.unwrap();
         assert_eq!(s.active_goals(p).await.unwrap().len(), 1);
@@ -2007,7 +2007,7 @@ mod tests {
     #[tokio::test]
     async fn goals_due_for_review_returns_only_due_active() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
         let now = Utc::now();
 
         let due_past = s
@@ -2046,7 +2046,7 @@ mod tests {
     #[tokio::test]
     async fn set_goal_review_updates_next_review_at() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
 
         let id = s.create_goal(new_goal(p)).await.unwrap();
         let before = s.get_goal(id).await.unwrap().unwrap();
@@ -2065,10 +2065,10 @@ mod tests {
     #[tokio::test]
     async fn observation_round_trip() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
         let id = s
             .record_observation(NewObservation {
-                persona: p,
+                agent: p,
                 integration: "linear".into(),
                 account: "default".into(),
                 external_ref: "linear/default:issue:US-1".into(),
@@ -2079,7 +2079,7 @@ mod tests {
             .unwrap();
 
         let record = s.get_observation(id).await.unwrap().unwrap();
-        assert_eq!(record.persona, p);
+        assert_eq!(record.agent, p);
         assert_eq!(record.integration, "linear");
         assert_eq!(record.external_ref, "linear/default:issue:US-1");
         assert_eq!(record.payload["title"], "t");
@@ -2089,13 +2089,13 @@ mod tests {
     #[tokio::test]
     async fn observations_by_ref_returns_the_history_newest_first() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
-        let other = ProfileId::from_slug("other");
-        s.ensure_persona(other, "other", "other").await.unwrap();
+        let p = fixture_agent(&s).await;
+        let other = AgentId::from_slug("other");
+        s.ensure_agent(other, "other", "other").await.unwrap();
 
         for n in 0..3 {
             s.record_observation(NewObservation {
-                persona: p,
+                agent: p,
                 integration: "sentry".into(),
                 account: "default".into(),
                 external_ref: "sentry/default:issue:E-1".into(),
@@ -2106,7 +2106,7 @@ mod tests {
             .unwrap();
         }
         s.record_observation(NewObservation {
-            persona: p,
+            agent: p,
             integration: "sentry".into(),
             account: "default".into(),
             external_ref: "sentry/default:issue:E-2".into(),
@@ -2116,7 +2116,7 @@ mod tests {
         .await
         .unwrap();
         s.record_observation(NewObservation {
-            persona: other,
+            agent: other,
             integration: "sentry".into(),
             account: "default".into(),
             external_ref: "sentry/default:issue:E-1".into(),
@@ -2150,7 +2150,7 @@ mod tests {
     #[tokio::test]
     async fn integration_state_round_trip() {
         let s = fresh().await;
-        let p = fixture_persona(&s).await;
+        let p = fixture_agent(&s).await;
 
         assert!(
             s.integration_state(p, "linear", "default", "assigned")

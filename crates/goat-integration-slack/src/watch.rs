@@ -7,7 +7,7 @@ use goat_integration::{
     IntegrationBinding, IntegrationError, IntegrationResult, IntegrationRuntime,
 };
 use goat_integration_mcp::{McpService, pick_tool};
-use goat_types::{IntegrationUpdateKind, ProfileId};
+use goat_types::{AgentId, IntegrationUpdateKind};
 use serde_json::json;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -26,7 +26,7 @@ const SEARCH_TOOL_CANDIDATES: &[&str] = &[
 ];
 
 pub fn spawn(
-    persona: ProfileId,
+    agent: AgentId,
     binding: &IntegrationBinding,
     runtime: &IntegrationRuntime,
     cancel: CancellationToken,
@@ -34,7 +34,7 @@ pub fn spawn(
     let settings = SlackBinding::read(&binding.config);
     let Some(user_id) = settings.user_id else {
         warn!(
-            profile = %persona,
+            agent = %agent,
             "slack watcher disabled; set `user_id` to your Slack member ID in the agent's slack binding",
         );
         return None;
@@ -59,7 +59,7 @@ pub fn spawn(
     );
     Some(tokio::spawn(run(
         watch,
-        persona,
+        agent,
         runtime.clone(),
         binding.account.clone(),
         cancel,

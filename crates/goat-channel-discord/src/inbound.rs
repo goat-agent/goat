@@ -5,8 +5,8 @@ use std::time::Duration;
 use chrono::Utc;
 use goat_agent_command::{CommandArgs, CommandSpec};
 use goat_types::{
-    Attachment, AttachmentSource, CommandCall, CommandName, IncomingMessage, InstanceId, MessageId,
-    ProfileId, Surface, ThreadId, UserHandle,
+    AgentId, Attachment, AttachmentSource, CommandCall, CommandName, IncomingMessage, InstanceId,
+    MessageId, Surface, ThreadId, UserHandle,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -26,7 +26,7 @@ use crate::ID;
 use crate::interaction::{InteractionState, PendingInteraction};
 
 pub(crate) struct GatewayConfig {
-    pub(crate) persona: ProfileId,
+    pub(crate) agent: AgentId,
     pub(crate) instance: InstanceId,
     pub(crate) commands: Vec<CommandSpec>,
     pub(crate) interactions: Arc<InteractionState>,
@@ -42,7 +42,7 @@ pub(crate) async fn gateway_loop(
     cfg: GatewayConfig,
 ) {
     let GatewayConfig {
-        persona,
+        agent,
         instance,
         commands,
         interactions,
@@ -103,7 +103,7 @@ pub(crate) async fn gateway_loop(
                         .collect();
                     let msg = IncomingMessage {
                         id: MessageId(mc.id.to_string()),
-                        profile: persona,
+                        agent,
                         thread: conv,
                         from: UserHandle {
                             external: mc.author.id.to_string(),
@@ -149,7 +149,7 @@ pub(crate) async fn gateway_loop(
                         &http,
                         &mut channel_cache,
                         &ic,
-                        persona,
+                        agent,
                         instance,
                         &commands,
                     )
@@ -206,7 +206,7 @@ async fn interaction_to_incoming(
     http: &HttpClient,
     cache: &mut ChannelMetaCache,
     interaction: &twilight_model::gateway::payload::incoming::InteractionCreate,
-    persona: ProfileId,
+    agent: AgentId,
     instance: InstanceId,
     commands: &[CommandSpec],
 ) -> Option<(IncomingMessage, PendingInteraction)> {
@@ -266,7 +266,7 @@ async fn interaction_to_incoming(
     Some((
         IncomingMessage {
             id: MessageId(interaction.id.to_string()),
-            profile: persona,
+            agent,
             thread: ThreadId::new(ID.clone(), instance, external),
             from: UserHandle {
                 external: author.id.to_string(),

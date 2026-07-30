@@ -5,7 +5,7 @@ use goat_integration::diff::RETAIN;
 use goat_integration::watch::{Observed, Watch, WatchPage, WatchSource, run};
 use goat_integration::{IntegrationBinding, IntegrationResult, IntegrationRuntime};
 use goat_integration_mcp::McpService;
-use goat_types::{IntegrationUpdateKind, ProfileId};
+use goat_types::{AgentId, IntegrationUpdateKind};
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -20,7 +20,7 @@ pub const DEFAULT_QUERY: &str = "is:unresolved is:for_review";
 pub const DEFAULT_SORT: &str = "new";
 
 pub fn spawn(
-    persona: ProfileId,
+    agent: AgentId,
     binding: &IntegrationBinding,
     runtime: &IntegrationRuntime,
     cancel: CancellationToken,
@@ -28,7 +28,7 @@ pub fn spawn(
     let settings = SentryBinding::read(&binding.config);
     let Some(organization_slug) = settings.organization_slug else {
         warn!(
-            profile = %persona,
+            agent = %agent,
             "sentry watcher disabled; set `organization_slug` in the agent's sentry binding",
         );
         return None;
@@ -53,7 +53,7 @@ pub fn spawn(
     );
     Some(tokio::spawn(run(
         watch,
-        persona,
+        agent,
         runtime.clone(),
         binding.account.clone(),
         cancel,

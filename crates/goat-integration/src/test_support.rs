@@ -6,7 +6,7 @@ use std::time::Duration;
 use goat_auth::CredentialStore;
 use goat_bus::{EventBus, EventFilter};
 use goat_store::SqliteStore;
-use goat_types::{Event, IntegrationId, IntegrationUpdateKind, ProfileId};
+use goat_types::{AgentId, Event, IntegrationId, IntegrationUpdateKind};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -26,14 +26,14 @@ pub async fn runtime_in(dir: &Path) -> IntegrationRuntime {
     }
 }
 
-pub async fn persona_in(runtime: &IntegrationRuntime) -> ProfileId {
-    let persona = ProfileId::from_slug("test");
+pub async fn agent_in(runtime: &IntegrationRuntime) -> AgentId {
+    let agent = AgentId::from_slug("test");
     runtime
         .store
-        .ensure_persona(persona, "test", "test")
+        .ensure_agent(agent, "test", "test")
         .await
         .unwrap();
-    persona
+    agent
 }
 
 pub fn observed(key: &str, stamp: &str) -> Observed {
@@ -134,8 +134,8 @@ pub async fn assert_watch_contract(contract: &WatchContract) {
 async fn cold_start_briefs_nothing(contract: &WatchContract) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_in(dir.path()).await;
-    let persona = persona_in(&runtime).await;
-    let mut sub = runtime.bus.subscribe(EventFilter::Persona(persona));
+    let agent = agent_in(&runtime).await;
+    let mut sub = runtime.bus.subscribe(EventFilter::Agent(agent));
     let cancel = CancellationToken::new();
 
     let backlog: Vec<Observed> = (0..40)
@@ -144,7 +144,7 @@ async fn cold_start_briefs_nothing(contract: &WatchContract) {
     let source = ScriptedSource::pages(vec![backlog]);
     let handle = tokio::spawn(run(
         contract.watch(source),
-        persona,
+        agent,
         runtime.clone(),
         "default".into(),
         cancel.clone(),
@@ -162,8 +162,8 @@ async fn cold_start_briefs_nothing(contract: &WatchContract) {
 async fn a_burst_is_capped_with_an_overflow_note(contract: &WatchContract) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_in(dir.path()).await;
-    let persona = persona_in(&runtime).await;
-    let mut sub = runtime.bus.subscribe(EventFilter::Persona(persona));
+    let agent = agent_in(&runtime).await;
+    let mut sub = runtime.bus.subscribe(EventFilter::Agent(agent));
     let cancel = CancellationToken::new();
 
     let burst: Vec<Observed> = (0..5)
@@ -176,7 +176,7 @@ async fn a_burst_is_capped_with_an_overflow_note(contract: &WatchContract) {
     ]);
     let handle = tokio::spawn(run(
         contract.watch(source),
-        persona,
+        agent,
         runtime.clone(),
         "default".into(),
         cancel.clone(),
@@ -210,14 +210,14 @@ async fn a_burst_is_capped_with_an_overflow_note(contract: &WatchContract) {
 async fn repeated_auth_failures_alert_exactly_once(contract: &WatchContract) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_in(dir.path()).await;
-    let persona = persona_in(&runtime).await;
-    let mut sub = runtime.bus.subscribe(EventFilter::Persona(persona));
+    let agent = agent_in(&runtime).await;
+    let mut sub = runtime.bus.subscribe(EventFilter::Agent(agent));
     let cancel = CancellationToken::new();
 
     let source = ScriptedSource::always_failing(&IntegrationError::Auth("401".into()));
     let handle = tokio::spawn(run(
         contract.watch(source),
-        persona,
+        agent,
         runtime.clone(),
         "default".into(),
         cancel.clone(),
@@ -248,8 +248,8 @@ async fn repeated_auth_failures_alert_exactly_once(contract: &WatchContract) {
 async fn an_observation_round_trips_losslessly(contract: &WatchContract) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_in(dir.path()).await;
-    let persona = persona_in(&runtime).await;
-    let mut sub = runtime.bus.subscribe(EventFilter::Persona(persona));
+    let agent = agent_in(&runtime).await;
+    let mut sub = runtime.bus.subscribe(EventFilter::Agent(agent));
     let cancel = CancellationToken::new();
 
     let source = ScriptedSource::new(vec![
@@ -258,7 +258,7 @@ async fn an_observation_round_trips_losslessly(contract: &WatchContract) {
     ]);
     let handle = tokio::spawn(run(
         contract.watch(source),
-        persona,
+        agent,
         runtime.clone(),
         "default".into(),
         cancel.clone(),
@@ -305,10 +305,10 @@ async fn an_observation_round_trips_losslessly(contract: &WatchContract) {
 async fn unreadable_state_starts_cold_instead_of_replaying(contract: &WatchContract) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_in(dir.path()).await;
-    let persona = persona_in(&runtime).await;
+    let agent = agent_in(&runtime).await;
     runtime
         .save_state(
-            persona,
+            agent,
             &contract.integration,
             "default",
             &contract.stream,
@@ -319,7 +319,7 @@ async fn unreadable_state_starts_cold_instead_of_replaying(contract: &WatchContr
 
     let loaded = crate::watch::load_state(
         &runtime,
-        persona,
+        agent,
         &contract.integration,
         "default",
         &contract.stream,

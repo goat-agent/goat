@@ -9,22 +9,22 @@ use goat_agent_command::{
     CommandProviderContext, CommandRegistry, CommandSpec,
 };
 use goat_skills::{SkillCallArgs, SkillIndex, format_activated_skill, resolve_call_args};
-use goat_types::{CommandCall, CommandName, ProfileId};
+use goat_types::{AgentId, CommandCall, CommandName};
 use tracing::warn;
 
 pub const ID: &str = "skill";
 
 fn register_from_context(registry: &mut CommandRegistry, ctx: &CommandProviderContext) {
-    register(registry, &ctx.goat_root, ctx.persona);
+    register(registry, &ctx.goat_root, ctx.agent);
 }
 
 inventory::submit! {
     CommandFactory { id: ID, register: register_from_context }
 }
 
-pub fn register(registry: &mut CommandRegistry, goat_root: &Path, persona: ProfileId) {
+pub fn register(registry: &mut CommandRegistry, goat_root: &Path, agent: AgentId) {
     let index = SkillIndex::discover_root(goat_root);
-    for entry in index.effective_entries(persona) {
+    for entry in index.effective_entries(agent) {
         let name = match CommandName::new(entry.name.clone()) {
             Ok(name) => name,
             Err(e) => {
@@ -47,7 +47,7 @@ pub fn register(registry: &mut CommandRegistry, goat_root: &Path, persona: Profi
         };
         let handler = Arc::new(SkillCommand {
             goat_root: goat_root.to_path_buf(),
-            persona,
+            agent,
             skill: entry.name.clone(),
         });
         if let Err(e) = registry.insert(spec, handler) {
@@ -58,7 +58,7 @@ pub fn register(registry: &mut CommandRegistry, goat_root: &Path, persona: Profi
 
 struct SkillCommand {
     goat_root: PathBuf,
-    persona: ProfileId,
+    agent: AgentId,
     skill: String,
 }
 
@@ -67,7 +67,7 @@ impl CommandHandler for SkillCommand {
     async fn call(&self, call: CommandCall) -> Result<CommandOutput, CommandError> {
         let index = SkillIndex::discover_root(&self.goat_root);
         let skill = index
-            .activate(self.persona, &self.skill)
+            .activate(self.agent, &self.skill)
             .map_err(|e| CommandError::Failed(e.to_string()))?;
         let call_args = named_values(&call.raw).map_or_else(
             || SkillCallArgs::Raw(call.args.clone()),
@@ -125,7 +125,7 @@ mod tests {
         .unwrap();
 
         let mut registry = CommandRegistry::new();
-        register(&mut registry, &root, ProfileId::from_slug("dev"));
+        register(&mut registry, &root, AgentId::from_slug("dev"));
         assert!(
             registry
                 .specs()
@@ -161,7 +161,7 @@ mod tests {
         .unwrap();
 
         let mut registry = CommandRegistry::new();
-        register(&mut registry, &root, ProfileId::from_slug("dev"));
+        register(&mut registry, &root, AgentId::from_slug("dev"));
         let spec = registry
             .specs()
             .into_iter()

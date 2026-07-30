@@ -177,11 +177,11 @@ async fn drain_due(
                 info!(
                     run_id = run.id,
                     task_id = run.task_id,
-                    profile = %task.persona,
+                    agent = %task.agent,
                     "scheduler dispatching schedule"
                 );
                 bus.publish(Event::Schedule {
-                    profile: task.persona,
+                    agent: task.agent,
                     run_id: run.id,
                     task_id: run.task_id,
                 });

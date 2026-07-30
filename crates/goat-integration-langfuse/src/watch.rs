@@ -5,7 +5,7 @@ use goat_integration::diff::RETAIN;
 use goat_integration::watch::{Observed, Watch, WatchPage, WatchSource, run};
 use goat_integration::{IntegrationBinding, IntegrationResult, IntegrationRuntime};
 use goat_integration_mcp::McpService;
-use goat_types::{IntegrationUpdateKind, ProfileId};
+use goat_types::{AgentId, IntegrationUpdateKind};
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -18,7 +18,7 @@ pub const TOOL_LIST_OBSERVATIONS: &str = "listObservations";
 pub const DEFAULT_LIMIT: u32 = 25;
 
 pub fn spawn(
-    persona: ProfileId,
+    agent: AgentId,
     binding: &IntegrationBinding,
     runtime: &IntegrationRuntime,
     cancel: CancellationToken,
@@ -26,7 +26,7 @@ pub fn spawn(
     let settings = LangfuseBinding::read(&binding.config);
     if settings.watch.is_empty() {
         warn!(
-            profile = %persona,
+            agent = %agent,
             "langfuse watcher disabled; declare `watch` streams in the agent's langfuse binding",
         );
         return None;
@@ -58,7 +58,7 @@ pub fn spawn(
                 );
                 tokio::spawn(run(
                     watch,
-                    persona,
+                    agent,
                     runtime.clone(),
                     binding.account.clone(),
                     cancel.clone(),

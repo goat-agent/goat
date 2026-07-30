@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use futures::{StreamExt, stream};
 use goat_agent_command::{CommandOutput, CommandRegistry};
+use goat_agent_config::AgentCard;
 use goat_agent_tool::{
     ToolCall, ToolContext, ToolOutput, ToolReadState, ToolRegistry, selector_allows,
     selector_allows_empty_denies, validate_tool_selectors,
@@ -13,7 +14,6 @@ use goat_agent_tool::{
 use goat_bus::{EventBus, EventFilter};
 use goat_channel::ChannelHandle;
 use goat_model::{Model, canonicalize_provider_id};
-use goat_profile::ProfileCard;
 use goat_provider::{
     ChunkStream, ContentBlock, Message, MessageRole, Provider, Request, StreamChunk, StreamError,
     ToolChoice, ToolDefinition,
@@ -25,7 +25,7 @@ use goat_store::{
     ToolInvocationStatus,
 };
 use goat_types::{
-    Event, IncomingMessage, IntegrationId, IntegrationUpdateKind, MessageId, ProfileId, Surface,
+    AgentId, Event, IncomingMessage, IntegrationId, IntegrationUpdateKind, MessageId, Surface,
     ThreadId,
 };
 use tokio::time::Instant;
@@ -222,8 +222,8 @@ impl ProviderRegistry {
 }
 
 pub struct BrainDeps {
-    pub persona: ProfileId,
-    pub personality: Arc<ProfileCard>,
+    pub agent: AgentId,
+    pub personality: Arc<AgentCard>,
     pub default_model: Model,
     pub history_window: usize,
     pub tool_selectors: Vec<String>,
@@ -244,8 +244,8 @@ pub struct BrainDeps {
 }
 
 pub struct Brain {
-    persona: ProfileId,
-    personality: Arc<ProfileCard>,
+    agent: AgentId,
+    personality: Arc<AgentCard>,
     default_model: Model,
     history_window: usize,
     tool_selectors: Vec<String>,
@@ -268,7 +268,7 @@ pub struct Brain {
 impl Brain {
     pub fn new(deps: BrainDeps) -> Self {
         Self {
-            persona: deps.persona,
+            agent: deps.agent,
             personality: deps.personality,
             default_model: deps.default_model,
             history_window: deps.history_window,
@@ -296,8 +296,8 @@ impl Brain {
         channels: Vec<Arc<dyn ChannelHandle>>,
         cancel: CancellationToken,
     ) -> Result<()> {
-        let mut sub = bus.subscribe(EventFilter::Persona(self.persona));
-        info!(profile = %self.persona, "brain running");
+        let mut sub = bus.subscribe(EventFilter::Agent(self.agent));
+        info!(agent = %self.agent, "brain running");
 
         let mut buffer = IntakeBuffer::new(self.intake_debounce, self.intake_ceiling);
         loop {
@@ -308,7 +308,7 @@ impl Brain {
                 () = wait_intake(deadline) => {
                     for msg in buffer.drain_due(Instant::now()) {
                         if let Err(e) = self.handle_turn(&channels, msg).await {
-                            warn!(profile = %self.persona, error = ?e, "turn failed");
+                            warn!(agent = %self.agent, error = ?e, "turn failed");
                         }
                     }
                 }
@@ -320,7 +320,7 @@ impl Brain {
                                 continue;
                             }
                             if let Err(e) = self.store.append_incoming(&msg).await {
-                                warn!(profile = %self.persona, error = ?e, "append incoming");
+                                warn!(agent = %self.agent, error = ?e, "append incoming");
                                 continue;
                             }
                             let key = (msg.thread.clone(), msg.from.external.clone());
@@ -328,10 +328,10 @@ impl Brain {
                                 if let Some(prev) = buffer.take(&key)
                                     && let Err(e) = self.handle_turn(&channels, prev.last).await
                                 {
-                                    warn!(profile = %self.persona, error = ?e, "turn failed");
+                                    warn!(agent = %self.agent, error = ?e, "turn failed");
                                 }
                                 if let Err(e) = self.handle_turn(&channels, msg).await {
-                                    warn!(profile = %self.persona, error = ?e, "turn failed");
+                                    warn!(agent = %self.agent, error = ?e, "turn failed");
                                 }
                             } else {
                                 buffer.push(key, msg, Instant::now());
@@ -342,7 +342,7 @@ impl Brain {
                         } => {
                             if let Err(e) = self.handle_schedule(&channels, run_id, task_id).await {
                                 warn!(
-                                    profile = %self.persona,
+                                    agent = %self.agent,
                                     run_id,
                                     task_id,
                                     error = ?e,
@@ -371,7 +371,7 @@ impl Brain {
                                 self.handle_integration_update(&channels, update).await
                             {
                                 warn!(
-                                    profile = %self.persona,
+                                    agent = %self.agent,
                                     error = ?e,
                                     "integration update failed",
                                 );
@@ -390,7 +390,7 @@ impl Brain {
             Engagement::Skip => Ok(false),
             Engagement::NeedsActivity => Ok(self
                 .store
-                .has_agent_activity(self.persona, &msg.thread)
+                .has_agent_activity(self.agent, &msg.thread)
                 .await?),
             Engagement::Engage => Ok(true),
         }
@@ -431,7 +431,7 @@ impl Brain {
                     if !summary.final_text.is_empty() {
                         self.store
                             .append_outgoing_text(
-                                self.persona,
+                                self.agent,
                                 &msg.thread,
                                 &summary.final_text,
                                 Some(&msg.id),
@@ -443,7 +443,7 @@ impl Brain {
                 }
                 Ok(_) => return Ok(()),
                 Err(e) => {
-                    warn!(profile = %self.persona, error = ?e, "command failed");
+                    warn!(agent = %self.agent, error = ?e, "command failed");
                     messages.push(LlmMessage {
                         role: Role::User,
                         content: vec![ContentPart::Text(format!(
@@ -476,7 +476,7 @@ impl Brain {
 
         if !summary.final_text.is_empty() {
             self.store
-                .append_outgoing_text(self.persona, &thread, &summary.final_text, Some(&msg.id))
+                .append_outgoing_text(self.agent, &thread, &summary.final_text, Some(&msg.id))
                 .await
                 .context("append outgoing")?;
         }
@@ -492,7 +492,7 @@ impl Brain {
     }
 
     async fn build_goals_section(&self) -> Option<String> {
-        let goals = self.store.active_goals(self.persona).await.ok()?;
+        let goals = self.store.active_goals(self.agent).await.ok()?;
         if goals.is_empty() {
             return None;
         }
@@ -566,7 +566,7 @@ impl Brain {
     async fn history_messages(&self, conv: &ThreadId) -> Result<Vec<LlmMessage>> {
         let history = self
             .store
-            .recent(self.persona, conv, self.history_window)
+            .recent(self.agent, conv, self.history_window)
             .await
             .context("read history")?;
         Ok(rows_to_messages(history))
@@ -577,8 +577,8 @@ impl Brain {
             return Ok((None, self.history_messages(conv).await?));
         }
 
-        let total = self.store.message_count(self.persona, conv).await?;
-        let existing = self.store.get_thread_summary(self.persona, conv).await?;
+        let total = self.store.message_count(self.agent, conv).await?;
+        let existing = self.store.get_thread_summary(self.agent, conv).await?;
         let mut summary_text = existing.as_ref().map(|s| s.summary.clone());
         let mut summarized = existing.map_or(0, |s| s.summarized_count).min(total);
 
@@ -590,17 +590,17 @@ impl Brain {
             let fold_count = remaining.min(MAX_SUMMARY_FOLD_BATCH);
             let batch = self
                 .store
-                .messages_from(self.persona, conv, summarized, fold_count)
+                .messages_from(self.agent, conv, summarized, fold_count)
                 .await?;
             match self.summarize_batch(summary_text.as_deref(), &batch).await {
                 Some(updated) => {
                     let new_count = summarized + fold_count;
                     if let Err(e) = self
                         .store
-                        .upsert_thread_summary(self.persona, conv, &updated, new_count)
+                        .upsert_thread_summary(self.agent, conv, &updated, new_count)
                         .await
                     {
-                        warn!(profile = %self.persona, error = ?e, "upsert_thread_summary failed");
+                        warn!(agent = %self.agent, error = ?e, "upsert_thread_summary failed");
                         break;
                     }
                     summary_text = Some(updated);
@@ -614,7 +614,7 @@ impl Brain {
         let raw = self
             .store
             .messages_from(
-                self.persona,
+                self.agent,
                 conv,
                 summarized,
                 total.saturating_sub(summarized),
@@ -660,7 +660,7 @@ impl Brain {
         let stream = match provider.stream(req).await {
             Ok(s) => s,
             Err(e) => {
-                warn!(profile = %self.persona, error = ?e, "summarization request failed");
+                warn!(agent = %self.agent, error = ?e, "summarization request failed");
                 return None;
             }
         };
@@ -670,7 +670,7 @@ impl Brain {
                 if text.is_empty() { None } else { Some(text) }
             }
             Err(e) => {
-                warn!(profile = %self.persona, error = ?e, "summarization stream failed");
+                warn!(agent = %self.agent, error = ?e, "summarization stream failed");
                 None
             }
         }
@@ -688,7 +688,7 @@ impl Brain {
 
         let provider = self.providers.route(&self.default_model)?;
         let skill_prompt =
-            SkillIndex::discover_root(&self.goat_root).system_prompt_block(self.persona);
+            SkillIndex::discover_root(&self.goat_root).system_prompt_block(self.agent);
         let tool_specs: Vec<ToolSpec> = self
             .llm_tool_specs(skill_prompt.is_some(), &mode)
             .into_iter()
@@ -811,7 +811,7 @@ impl Brain {
                                 Ok(new_thread) => {
                                     let _ = self
                                         .store
-                                        .append_incoming_text(self.persona, &new_thread, &seed)
+                                        .append_incoming_text(self.agent, &new_thread, &seed)
                                         .await;
                                     route.thread = new_thread;
                                     route.reply_to = None;
@@ -875,7 +875,7 @@ impl Brain {
         if let Err(e) = self.store.finish_run(run_id, status, note).await {
             tracing::error!(
                 run_id,
-                profile = %self.persona,
+                agent = %self.agent,
                 status = %label,
                 error = %e,
                 "failed to persist task run completion",
@@ -923,7 +923,7 @@ impl Brain {
                 .collect();
             warn!(
                 run_id,
-                profile = %self.persona,
+                agent = %self.agent,
                 want = %format!("{}:{}", conv.channel.as_str(), conv.instance),
                 have = ?available,
                 "no channel handle for origin_conv; marking failed"
@@ -985,7 +985,7 @@ impl Brain {
             warn!(
                 run_id,
                 task_id,
-                profile = %self.persona,
+                agent = %self.agent,
                 "schedule produced empty response; marking failed",
             );
             self.finish_run_logged(
@@ -998,7 +998,7 @@ impl Brain {
         }
 
         self.store
-            .append_outgoing_text(self.persona, &thread, &summary.final_text, None)
+            .append_outgoing_text(self.agent, &thread, &summary.final_text, None)
             .await
             .context("append outgoing text for schedule")?;
 
@@ -1013,7 +1013,7 @@ impl Brain {
         channels: &[Arc<dyn ChannelHandle>],
         update: IntegrationTurn,
     ) -> Result<()> {
-        let resolved = match self.store.latest_thread(self.persona).await? {
+        let resolved = match self.store.latest_thread(self.agent).await? {
             Some(thread) => channels
                 .iter()
                 .find(|h| h.id() == thread.channel && h.instance() == thread.instance)
@@ -1023,7 +1023,7 @@ impl Brain {
         };
         let Some((thread, handle)) = resolved else {
             warn!(
-                profile = %self.persona,
+                agent = %self.agent,
                 integration = %update.integration,
                 external_ref = %update.external_ref,
                 "no channel handle for integration update; dropping briefing",
@@ -1061,7 +1061,7 @@ impl Brain {
         let trimmed = summary.final_text.trim();
         if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("skip") {
             self.store
-                .append_outgoing_text(self.persona, &thread, &summary.final_text, None)
+                .append_outgoing_text(self.agent, &thread, &summary.final_text, None)
                 .await
                 .context("append outgoing text for integration update")?;
         }
@@ -1121,7 +1121,7 @@ impl Brain {
             return output;
         }
         let ctx = ToolContext {
-            persona: self.persona,
+            agent: self.agent,
             thread: conv.clone(),
             goat_root: self.goat_root.clone(),
             read_state,
@@ -1154,7 +1154,7 @@ impl Brain {
         };
         let output_text = output.text_for_model();
         let record = ToolInvocationRecord {
-            persona: self.persona,
+            agent: self.agent,
             thread: conv.clone(),
             call_id: call.id.clone(),
             tool_name: resolved_name,
@@ -1410,7 +1410,7 @@ impl Brain {
                     None => std::time::Duration::from_millis(500u64 << (attempt - 1).min(4)),
                 };
                 warn!(
-                    profile = %self.persona,
+                    agent = %self.agent,
                     attempt,
                     delay_ms = delay.as_millis(),
                     "retrying transient LLM error",
@@ -1434,7 +1434,7 @@ impl Brain {
                         last_rate_limit_secs = retry_after.map(|d| d.as_secs());
                     }
                     warn!(
-                        profile = %self.persona,
+                        agent = %self.agent,
                         error = ?e,
                         attempt,
                         "LLM stream error; will retry",
@@ -1505,14 +1505,14 @@ fn preview(text: &str, max_chars: usize) -> String {
 }
 
 fn compose_system_prompt(
-    persona_prompt: &str,
+    agent_prompt: &str,
     skill_prompt: Option<&str>,
     summary_prompt: Option<&str>,
     memory_prompt: Option<&str>,
 ) -> String {
     let mut parts = vec![
         GOAT_SELF.trim().to_string(),
-        persona_prompt.trim().to_string(),
+        agent_prompt.trim().to_string(),
     ];
     if let Some(skill_prompt) = skill_prompt.filter(|s| !s.trim().is_empty()) {
         parts.push(skill_prompt.trim().to_string());
@@ -1745,7 +1745,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_empty_persona_selector_denies_tools() {
+    fn explicit_empty_agent_selector_denies_tools() {
         assert!(!selector_allows("shell", &selectors(&[])));
     }
 
@@ -1815,18 +1815,18 @@ mod tests {
     fn compose_system_prompt_leads_with_goat_self() {
         let prompt = compose_system_prompt("You are dev.", None, None, None);
         let goat_self = prompt.find("<goat_self>").unwrap();
-        let persona = prompt.find("You are dev.").unwrap();
-        assert!(goat_self < persona);
+        let agent = prompt.find("You are dev.").unwrap();
+        assert!(goat_self < agent);
         assert!(prompt.contains("activate the `goat` skill"));
     }
 
     #[test]
     fn compose_system_prompt_inserts_skill_catalog_before_runtime_guard() {
         let prompt = compose_system_prompt("You are dev.", Some("<available_skills/>"), None, None);
-        let persona = prompt.find("You are dev.").unwrap();
+        let agent = prompt.find("You are dev.").unwrap();
         let skills = prompt.find("<available_skills/>").unwrap();
         let guard = prompt.find("<goat_runtime_guard>").unwrap();
-        assert!(persona < skills);
+        assert!(agent < skills);
         assert!(skills < guard);
     }
 
@@ -1836,10 +1836,10 @@ mod tests {
             "You are dev.",
             Some("<available_skills/>"),
             None,
-            Some("<persona_memory>fact</persona_memory>"),
+            Some("<agent_memory>fact</agent_memory>"),
         );
         let skills = prompt.find("<available_skills/>").unwrap();
-        let memory = prompt.find("<persona_memory>").unwrap();
+        let memory = prompt.find("<agent_memory>").unwrap();
         let guard = prompt.find("<goat_runtime_guard>").unwrap();
         assert!(skills < memory);
         assert!(memory < guard);
@@ -1851,10 +1851,10 @@ mod tests {
             "You are dev.",
             None,
             Some("they talked about cats"),
-            Some("<persona_memory>fact</persona_memory>"),
+            Some("<agent_memory>fact</agent_memory>"),
         );
         let summary = prompt.find("<conversation_summary>").unwrap();
-        let memory = prompt.find("<persona_memory>").unwrap();
+        let memory = prompt.find("<agent_memory>").unwrap();
         let guard = prompt.find("<goat_runtime_guard>").unwrap();
         assert!(prompt.contains("they talked about cats"));
         assert!(summary < memory);
@@ -1960,7 +1960,7 @@ mod tests {
     fn intake_msg(thread: ThreadId, from: &str, text: &str) -> IncomingMessage {
         IncomingMessage {
             id: MessageId(String::new()),
-            profile: ProfileId::from_slug("test"),
+            agent: AgentId::from_slug("test"),
             thread,
             from: goat_types::UserHandle {
                 external: from.to_string(),

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use goat_types::ProfileId;
+use goat_types::AgentId;
 use serde::Deserialize;
 use thiserror::Error;
 use tracing::warn;
@@ -58,7 +58,7 @@ pub enum SkillScope {
     Builtin,
     AgentsUser,
     Common,
-    Persona { persona: ProfileId, slug: String },
+    Agent { agent: AgentId, slug: String },
 }
 
 impl SkillScope {
@@ -67,7 +67,7 @@ impl SkillScope {
             SkillScope::Builtin => "builtin",
             SkillScope::AgentsUser => "~/.agents",
             SkillScope::Common => "common",
-            SkillScope::Persona { slug, .. } => slug,
+            SkillScope::Agent { slug, .. } => slug,
         }
     }
 }
@@ -116,36 +116,36 @@ pub struct SkillIndex {
     builtin: Vec<SkillEntry>,
     agents_user: Vec<SkillEntry>,
     common: Vec<SkillEntry>,
-    by_persona: HashMap<ProfileId, Vec<SkillEntry>>,
+    by_agent: HashMap<AgentId, Vec<SkillEntry>>,
     diagnostics: Vec<SkillDiagnostic>,
 }
 
 impl SkillIndex {
     pub fn discover_root(root: &Path) -> Self {
-        let personas = persona_pairs(root);
-        Self::discover_with_agents_dir(root, &personas, default_agents_skills_dir().as_deref())
+        let agents = agent_pairs(root);
+        Self::discover_with_agents_dir(root, &agents, default_agents_skills_dir().as_deref())
     }
 
-    pub fn discover(root: &Path, personas: &[(ProfileId, String)]) -> Self {
-        Self::discover_with_agents_dir(root, personas, default_agents_skills_dir().as_deref())
+    pub fn discover(root: &Path, agents: &[(AgentId, String)]) -> Self {
+        Self::discover_with_agents_dir(root, agents, default_agents_skills_dir().as_deref())
     }
 
     pub fn discover_with_agents_dir(
         root: &Path,
-        personas: &[(ProfileId, String)],
+        agents: &[(AgentId, String)],
         agents_dir: Option<&Path>,
     ) -> Self {
         let mut diagnostics = Vec::new();
-        let mut by_persona = HashMap::new();
-        for (persona, slug) in personas {
-            let scope = SkillScope::Persona {
-                persona: *persona,
+        let mut by_agent = HashMap::new();
+        for (agent, slug) in agents {
+            let scope = SkillScope::Agent {
+                agent: *agent,
                 slug: slug.clone(),
             };
-            let dir = root.join("profiles").join(slug).join("skills");
+            let dir = root.join("agents").join(slug).join("skills");
             let entries = scan_dir(&dir, scope, &mut diagnostics);
             if !entries.is_empty() {
-                by_persona.insert(*persona, entries);
+                by_agent.insert(*agent, entries);
             }
         }
         let agents_user = agents_dir
@@ -157,13 +157,13 @@ impl SkillIndex {
             builtin,
             agents_user,
             common,
-            by_persona,
+            by_agent,
             diagnostics,
         }
     }
 
-    pub fn system_prompt_block(&self, persona: ProfileId) -> Option<String> {
-        let entries = self.effective_entries(persona);
+    pub fn system_prompt_block(&self, agent: AgentId) -> Option<String> {
+        let entries = self.effective_entries(agent);
         if entries.is_empty() {
             return None;
         }
@@ -201,9 +201,9 @@ Do not load skill resources eagerly; use listed resource paths only when needed.
         Some(s)
     }
 
-    pub fn activate(&self, persona: ProfileId, name: &str) -> Result<ActivatedSkill, SkillError> {
+    pub fn activate(&self, agent: AgentId, name: &str) -> Result<ActivatedSkill, SkillError> {
         let entry = self
-            .effective_entries(persona)
+            .effective_entries(agent)
             .into_iter()
             .find(|e| e.name == name)
             .ok_or_else(|| SkillError::NotFound(name.to_string()))?;
@@ -233,8 +233,8 @@ Do not load skill resources eagerly; use listed resource paths only when needed.
         }
     }
 
-    pub fn body(&self, persona: ProfileId, name: &str) -> Option<String> {
-        self.activate(persona, name).ok().map(|skill| skill.body)
+    pub fn body(&self, agent: AgentId, name: &str) -> Option<String> {
+        self.activate(agent, name).ok().map(|skill| skill.body)
     }
 
     pub fn common(&self) -> &[SkillEntry] {
@@ -245,9 +245,9 @@ Do not load skill resources eagerly; use listed resource paths only when needed.
         &self.agents_user
     }
 
-    pub fn for_persona(&self, persona: ProfileId) -> &[SkillEntry] {
-        self.by_persona
-            .get(&persona)
+    pub fn for_agent(&self, agent: AgentId) -> &[SkillEntry] {
+        self.by_agent
+            .get(&agent)
             .map_or(&[], std::vec::Vec::as_slice)
     }
 
@@ -260,7 +260,7 @@ Do not load skill resources eagerly; use listed resource paths only when needed.
         out.extend(self.builtin.iter());
         out.extend(self.agents_user.iter());
         out.extend(self.common.iter());
-        for entries in self.by_persona.values() {
+        for entries in self.by_agent.values() {
             out.extend(entries.iter());
         }
         out.sort_by(|a, b| {
@@ -271,7 +271,7 @@ Do not load skill resources eagerly; use listed resource paths only when needed.
         out
     }
 
-    pub fn effective_entries(&self, persona: ProfileId) -> Vec<&SkillEntry> {
+    pub fn effective_entries(&self, agent: AgentId) -> Vec<&SkillEntry> {
         let mut merged: HashMap<&str, &SkillEntry> = HashMap::new();
         for e in &self.builtin {
             merged.insert(&e.name, e);
@@ -282,8 +282,8 @@ Do not load skill resources eagerly; use listed resource paths only when needed.
         for e in &self.common {
             merged.insert(&e.name, e);
         }
-        if let Some(persona_entries) = self.by_persona.get(&persona) {
-            for e in persona_entries {
+        if let Some(agent_entries) = self.by_agent.get(&agent) {
+            for e in agent_entries {
                 merged.insert(&e.name, e);
             }
         }
@@ -618,19 +618,19 @@ fn default_agents_skills_dir() -> Option<PathBuf> {
         .map(|home| home.join(".agents").join("skills"))
 }
 
-fn persona_pairs(root: &Path) -> Vec<(ProfileId, String)> {
-    let profiles_dir = root.join("profiles");
+fn agent_pairs(root: &Path) -> Vec<(AgentId, String)> {
+    let agents_dir = root.join("agents");
     let mut out = Vec::new();
-    let Ok(read) = std::fs::read_dir(profiles_dir) else {
+    let Ok(read) = std::fs::read_dir(agents_dir) else {
         return out;
     };
     for entry in read.flatten() {
         let path = entry.path();
-        if !path.is_dir() || !path.join("profile.md").exists() {
+        if !path.is_dir() || !path.join("agent.md").exists() {
             continue;
         }
         if let Some(slug) = path.file_name().and_then(|s| s.to_str()) {
-            out.push((ProfileId::from_slug(slug), slug.to_string()));
+            out.push((AgentId::from_slug(slug), slug.to_string()));
         }
     }
     out.sort_by(|a, b| a.1.cmp(&b.1));
@@ -916,11 +916,11 @@ mod tests {
     }
 
     #[test]
-    fn discovery_precedence_prefers_persona_then_common_then_agents() {
+    fn discovery_precedence_prefers_agent_then_common_then_agents() {
         let root = temp_root("precedence");
         let agents = root.join("agents-skills");
-        let persona = ProfileId::from_slug("dev");
-        let personas = vec![(persona, "dev".to_string())];
+        let agent = AgentId::from_slug("dev");
+        let pairs = vec![(agent, "dev".to_string())];
         write(
             &agents.join("plan/SKILL.md"),
             "---\nname: plan\ndescription: agents\n---\nagents",
@@ -930,16 +930,13 @@ mod tests {
             "---\nname: plan\ndescription: common\n---\ncommon",
         );
         write(
-            &root.join("profiles/dev/skills/plan/SKILL.md"),
-            "---\nname: plan\ndescription: persona\n---\npersona",
+            &root.join("agents/dev/skills/plan/SKILL.md"),
+            "---\nname: plan\ndescription: agent\n---\nagent",
         );
 
-        let idx = SkillIndex::discover_with_agents_dir(&root, &personas, Some(&agents));
-        assert_eq!(
-            idx.activate(persona, "plan").unwrap().body.trim(),
-            "persona"
-        );
-        let other = ProfileId::from_slug("other");
+        let idx = SkillIndex::discover_with_agents_dir(&root, &pairs, Some(&agents));
+        assert_eq!(idx.activate(agent, "plan").unwrap().body.trim(), "agent");
+        let other = AgentId::from_slug("other");
         assert_eq!(idx.activate(other, "plan").unwrap().body.trim(), "common");
     }
 
@@ -956,9 +953,7 @@ mod tests {
         write(&root.join("skills/analyze/references/deep/skip.md"), "skip");
 
         let idx = SkillIndex::discover_with_agents_dir(&root, &[], None);
-        let skill = idx
-            .activate(ProfileId::from_slug("dev"), "analyze")
-            .unwrap();
+        let skill = idx.activate(AgentId::from_slug("dev"), "analyze").unwrap();
         let paths: Vec<_> = skill
             .resources
             .into_iter()
@@ -997,10 +992,10 @@ mod tests {
     fn builtin_goat_skill_is_discovered() {
         let root = temp_root("builtin");
         let idx = SkillIndex::discover_with_agents_dir(&root, &[], None);
-        let persona = ProfileId::from_slug("dev");
+        let agent = AgentId::from_slug("dev");
         assert!(idx.diagnostics().is_empty());
         assert!(
-            idx.effective_entries(persona)
+            idx.effective_entries(agent)
                 .iter()
                 .any(|e| e.name == "goat")
         );
@@ -1009,7 +1004,7 @@ mod tests {
                 .iter()
                 .any(|e| e.name == "goat" && e.scope == SkillScope::Builtin)
         );
-        let skill = idx.activate(persona, "goat").unwrap();
+        let skill = idx.activate(agent, "goat").unwrap();
         assert!(skill.body.contains("# How goat works"));
         assert!(skill.skill_dir.is_none());
         assert!(skill.resources.is_empty());
@@ -1048,9 +1043,7 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(entry.arguments, declared());
-        let block = idx
-            .system_prompt_block(ProfileId::from_slug("dev"))
-            .unwrap();
+        let block = idx.system_prompt_block(AgentId::from_slug("dev")).unwrap();
         assert!(block.contains("<argument name=\"task\" required=\"true\">what to do</argument>"));
         assert!(block.contains("`arguments` object"));
     }
@@ -1140,7 +1133,7 @@ mod tests {
             "---\nname: goat\ndescription: local override\n---\nlocal body",
         );
         let idx = SkillIndex::discover_with_agents_dir(&root, &[], None);
-        let skill = idx.activate(ProfileId::from_slug("dev"), "goat").unwrap();
+        let skill = idx.activate(AgentId::from_slug("dev"), "goat").unwrap();
         assert_eq!(skill.body.trim(), "local body");
         assert!(skill.skill_dir.is_some());
     }

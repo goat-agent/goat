@@ -1,37 +1,37 @@
 use std::path::PathBuf;
 
 use goat_model::Model;
-use goat_types::ProfileId;
+use goat_types::AgentId;
 
 #[derive(Clone, Debug)]
-pub struct ProfileCard {
+pub struct AgentCard {
     pub system_prompt: String,
     pub source_path: PathBuf,
 }
 
 #[derive(Clone, Debug)]
-pub struct ProfileBinding {
+pub struct AgentBinding {
     pub name: String,
     pub config: serde_json::Value,
 }
 
 #[derive(Clone, Debug)]
-pub struct ProfileIntegration {
+pub struct AgentIntegration {
     pub name: String,
     pub config: serde_json::Value,
 }
 
 #[derive(Clone, Debug)]
-pub struct ProfileConfig {
-    pub id: ProfileId,
+pub struct AgentConfig {
+    pub id: AgentId,
     pub slug: String,
     pub display: String,
-    pub personality: ProfileCard,
+    pub personality: AgentCard,
     pub default_model: Model,
     pub history_window: usize,
     pub tool_selectors: Vec<String>,
-    pub bindings: Vec<ProfileBinding>,
-    pub integrations: Vec<ProfileIntegration>,
+    pub bindings: Vec<AgentBinding>,
+    pub integrations: Vec<AgentIntegration>,
     pub memory: MemoryConfig,
     pub autonomy: AutonomyConfig,
     pub intake_debounce: std::time::Duration,

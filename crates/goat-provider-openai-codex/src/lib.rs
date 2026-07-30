@@ -20,8 +20,7 @@ const AUTHORIZE: &str = "https://auth.openai.com/oauth/authorize";
 const TOKEN: &str = "https://auth.openai.com/oauth/token";
 const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 const CALLBACK_PORT: u16 = 1455;
-const SCOPES: &str =
-    "openid profile email offline_access api.connectors.read api.connectors.invoke";
+const SCOPES: &str = "openid agent email offline_access api.connectors.read api.connectors.invoke";
 const ORIGINATOR: &str = "codex_cli_rs";
 const CLIENT_VERSION: &str = "0.133.0";
 const BASE: &str = "https://chatgpt.com/backend-api/codex";

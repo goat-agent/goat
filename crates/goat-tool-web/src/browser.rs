@@ -44,13 +44,13 @@ pub(crate) async fn render_to_raw(url: &str) -> Result<RawFetch, WebFetchError> 
 }
 
 async fn render(url: &str) -> Result<String, WebFetchError> {
-    let profile = tempfile::Builder::new()
+    let agent = tempfile::Builder::new()
         .prefix("goat-webfetch-")
         .tempdir()
         .map_err(|err| WebFetchError::Render(err.to_string()))?;
     let config = BrowserConfig::builder()
         .new_headless_mode()
-        .user_data_dir(profile.path())
+        .user_data_dir(agent.path())
         .launch_timeout(LAUNCH_TIMEOUT)
         .request_timeout(NAV_TIMEOUT)
         .disable_default_args()

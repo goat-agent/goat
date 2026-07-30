@@ -37,7 +37,7 @@ goat-loop             = { workspace = true }
 goat-sleep            = { workspace = true }
 goat-skills           = { workspace = true }
 goat-brain            = { workspace = true }
-goat-profile          = { workspace = true }
+goat-agent-config     = { workspace = true }
 chrono                = { workspace = true }
 tokio                 = { workspace = true }
 tokio-util            = { workspace = true }

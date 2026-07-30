@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 use std::future::Future;
 use std::time::Duration;
 
-use goat_types::{Event, IntegrationId, IntegrationUpdateKind, ProfileId};
+use goat_types::{AgentId, Event, IntegrationId, IntegrationUpdateKind};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -144,14 +144,14 @@ pub fn backoff_skips(error_streak: u32) -> u32 {
 
 pub async fn run<S: WatchSource>(
     watch: Watch<S>,
-    persona: ProfileId,
+    agent: AgentId,
     runtime: IntegrationRuntime,
     account: String,
     cancel: CancellationToken,
 ) {
     let integration = watch.integration.clone();
     info!(
-        profile = %persona,
+        agent = %agent,
         account = %account,
         integration = %integration,
         stream = %watch.stream,
@@ -185,13 +185,13 @@ pub async fn run<S: WatchSource>(
                     auth_streak += 1;
                     if auth_streak >= AUTH_ALERT_STREAK && !auth_alerted {
                         auth_alerted = true;
-                        runtime.publish(auth_broken_event(persona, &integration, &account, &e));
+                        runtime.publish(auth_broken_event(agent, &integration, &account, &e));
                     }
                 } else {
                     auth_streak = 0;
                 }
                 warn!(
-                    profile = %persona,
+                    agent = %agent,
                     account = %account,
                     integration = %integration,
                     stream = %watch.stream,
@@ -203,9 +203,9 @@ pub async fn run<S: WatchSource>(
                 error_streak = 0;
                 auth_streak = 0;
                 auth_alerted = false;
-                if let Err(e) = process(&watch, persona, &runtime, &account, page).await {
+                if let Err(e) = process(&watch, agent, &runtime, &account, page).await {
                     warn!(
-                        profile = %persona,
+                        agent = %agent,
                         account = %account,
                         integration = %integration,
                         stream = %watch.stream,
@@ -217,7 +217,7 @@ pub async fn run<S: WatchSource>(
         }
     }
     info!(
-        profile = %persona,
+        agent = %agent,
         account = %account,
         integration = %integration,
         stream = %watch.stream,
@@ -226,14 +226,14 @@ pub async fn run<S: WatchSource>(
 }
 
 fn auth_broken_event(
-    persona: ProfileId,
+    agent: AgentId,
     integration: &IntegrationId,
     account: &str,
     error: &IntegrationError,
 ) -> Event {
     let name = integration.as_str();
     Event::IntegrationUpdate {
-        profile: persona,
+        agent,
         integration: integration.clone(),
         account: account.to_string(),
         kind: IntegrationUpdateKind::AuthBroken,
@@ -248,13 +248,13 @@ fn auth_broken_event(
 
 pub async fn load_state(
     runtime: &IntegrationRuntime,
-    persona: ProfileId,
+    agent: AgentId,
     integration: &IntegrationId,
     account: &str,
     stream: &str,
 ) -> IntegrationResult<Option<WatchState>> {
     let Some(raw) = runtime
-        .load_state(persona, integration, account, stream)
+        .load_state(agent, integration, account, stream)
         .await?
     else {
         return Ok(None);
@@ -263,7 +263,7 @@ pub async fn load_state(
         Ok(state) => Ok(Some(state)),
         Err(e) => {
             warn!(
-                profile = %persona,
+                agent = %agent,
                 account = %account,
                 integration = %integration,
                 stream = %stream,
@@ -277,12 +277,12 @@ pub async fn load_state(
 
 async fn process<S: WatchSource>(
     watch: &Watch<S>,
-    persona: ProfileId,
+    agent: AgentId,
     runtime: &IntegrationRuntime,
     account: &str,
     page: WatchPage,
 ) -> IntegrationResult<()> {
-    let prev = load_state(runtime, persona, &watch.integration, account, &watch.stream).await?;
+    let prev = load_state(runtime, agent, &watch.integration, account, &watch.stream).await?;
 
     let kept: Vec<Observed> = page.items.into_iter().filter(|i| (watch.keep)(i)).collect();
     let (mut next, fresh) = (watch.diff.diff)(prev.as_ref(), &kept);
@@ -291,7 +291,7 @@ async fn process<S: WatchSource>(
         && let Some(prev) = prev.as_ref()
     {
         warn!(
-            profile = %persona,
+            agent = %agent,
             account = %account,
             integration = %watch.integration,
             stream = %watch.stream,
@@ -306,11 +306,11 @@ async fn process<S: WatchSource>(
 
     let mut events = Vec::new();
     for item in &fresh {
-        match observe(watch, persona, runtime, account, item).await {
+        match observe(watch, agent, runtime, account, item).await {
             Ok(event) => events.push(event),
             Err(e) => {
                 warn!(
-                    profile = %persona,
+                    agent = %agent,
                     account = %account,
                     integration = %watch.integration,
                     key = %item.key,
@@ -324,7 +324,7 @@ async fn process<S: WatchSource>(
 
     let raw = serde_json::to_string(&next).map_err(|e| IntegrationError::Store(e.to_string()))?;
     runtime
-        .save_state(persona, &watch.integration, account, &watch.stream, &raw)
+        .save_state(agent, &watch.integration, account, &watch.stream, &raw)
         .await?;
 
     publish(watch, runtime, events);
@@ -349,7 +349,7 @@ fn publish<S: WatchSource>(watch: &Watch<S>, runtime: &IntegrationRuntime, event
 
 async fn observe<S: WatchSource>(
     watch: &Watch<S>,
-    persona: ProfileId,
+    agent: AgentId,
     runtime: &IntegrationRuntime,
     account: &str,
     item: &Observed,
@@ -362,7 +362,7 @@ async fn observe<S: WatchSource>(
     );
     let observation = runtime
         .record_observation(
-            persona,
+            agent,
             &watch.integration,
             account,
             &external_ref,
@@ -371,7 +371,7 @@ async fn observe<S: WatchSource>(
         )
         .await?;
     Ok(Event::IntegrationUpdate {
-        profile: persona,
+        agent,
         integration: watch.integration.clone(),
         account: account.to_string(),
         kind: watch.kind,
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn the_auth_alert_names_the_connect_command_not_the_bind_command() {
         let event = auth_broken_event(
-            ProfileId::from_slug("t"),
+            AgentId::from_slug("t"),
             &IntegrationId::from_static("linear"),
             "default",
             &IntegrationError::Auth("401".into()),

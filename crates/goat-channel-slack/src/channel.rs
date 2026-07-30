@@ -6,7 +6,7 @@ use goat_channel::{
     BindOutput, Channel, ChannelBinding, ChannelError, ChannelHandle, ChannelIdentity,
     ChannelResult, ChannelSecrets,
 };
-use goat_types::{ChannelId, ProfileId};
+use goat_types::{AgentId, ChannelId};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -29,7 +29,7 @@ impl Channel for SlackChannel {
 
     async fn bind(
         self: Arc<Self>,
-        persona: ProfileId,
+        agent: AgentId,
         binding: ChannelBinding,
     ) -> ChannelResult<BindOutput> {
         install_crypto_provider();
@@ -50,7 +50,7 @@ impl Channel for SlackChannel {
         let (tx, rx) = mpsc::channel(INCOMING_CAPACITY);
         tokio::spawn(socket_loop(
             SocketConfig {
-                persona,
+                agent,
                 instance: binding.instance,
                 commands: binding.commands,
                 allowed_user_ids,
@@ -62,9 +62,9 @@ impl Channel for SlackChannel {
             tx,
         ));
 
-        info!(profile = %persona, "slack bot bound: {}", identity.handle);
+        info!(agent = %agent, "slack bot bound: {}", identity.handle);
         let handle: Arc<dyn ChannelHandle> =
-            Arc::new(SlackHandle::new(binding.instance, persona, identity, api));
+            Arc::new(SlackHandle::new(binding.instance, agent, identity, api));
         Ok((handle, rx))
     }
 
@@ -93,8 +93,8 @@ async fn identity_of(whoami: &Identity, api: &SlackApi) -> ChannelIdentity {
         |team| format!("{} @ {team}", whoami.user),
     );
     let mut identity = ChannelIdentity::new(whoami.user.clone(), display);
-    if let Ok(profile) = api.user_profile(&whoami.user_id).await
-        && let Some(avatar) = profile.avatar.as_deref().and_then(|url| url.parse().ok())
+    if let Ok(user) = api.user_profile(&whoami.user_id).await
+        && let Some(avatar) = user.avatar.as_deref().and_then(|url| url.parse().ok())
     {
         identity = identity.with_avatar(avatar);
     }

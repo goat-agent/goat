@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use goat_types::{ChannelId, InstanceId, MessageId, OutgoingBody, ProfileId, ThreadId};
+use goat_types::{AgentId, ChannelId, InstanceId, MessageId, OutgoingBody, ThreadId};
 use tokio::sync::Mutex;
 
 use crate::{
@@ -32,7 +32,7 @@ pub enum MockEvent {
 
 pub struct MockChannelHandle {
     id: ChannelId,
-    persona: ProfileId,
+    agent: AgentId,
     instance: InstanceId,
     identity: ChannelIdentity,
     capabilities: ChannelCapabilities,
@@ -44,27 +44,27 @@ pub struct MockChannelHandle {
 impl MockChannelHandle {
     pub fn new(
         id: ChannelId,
-        persona: ProfileId,
+        agent: AgentId,
         instance: InstanceId,
         identity: ChannelIdentity,
         capabilities: ChannelCapabilities,
     ) -> Arc<Self> {
-        Self::build(id, persona, instance, identity, capabilities, false)
+        Self::build(id, agent, instance, identity, capabilities, false)
     }
 
     pub fn with_threads(
         id: ChannelId,
-        persona: ProfileId,
+        agent: AgentId,
         instance: InstanceId,
         identity: ChannelIdentity,
         capabilities: ChannelCapabilities,
     ) -> Arc<Self> {
-        Self::build(id, persona, instance, identity, capabilities, true)
+        Self::build(id, agent, instance, identity, capabilities, true)
     }
 
     fn build(
         id: ChannelId,
-        persona: ProfileId,
+        agent: AgentId,
         instance: InstanceId,
         identity: ChannelIdentity,
         capabilities: ChannelCapabilities,
@@ -72,7 +72,7 @@ impl MockChannelHandle {
     ) -> Arc<Self> {
         Arc::new(Self {
             id,
-            persona,
+            agent,
             instance,
             identity,
             capabilities,
@@ -92,8 +92,8 @@ impl ChannelHandle for MockChannelHandle {
     fn instance(&self) -> InstanceId {
         self.instance
     }
-    fn persona(&self) -> ProfileId {
-        self.persona
+    fn agent(&self) -> AgentId {
+        self.agent
     }
     fn id(&self) -> ChannelId {
         self.id.clone()

@@ -45,7 +45,7 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
 - **Log output goes to a rolling file, never stdout/stderr** — stdout corrupts the full-screen TUI.
   Use `tracing`; `GOAT_LOG` sets the filter and is the only environment variable the product reads.
   Deliberate CLI output on non-TUI paths goes through `goat-console`, not `tracing`.
-- `ProfileId` is explicit, constructor-injected, never ambient. `ProfileId::from_slug` must stay
+- `AgentId` is explicit, constructor-injected, never ambient. `AgentId::from_slug` must stay
   deterministic; the `GOAT_NAMESPACE` constant (a fixed `Uuid`, not an environment variable) must
   never change — it keys every stored id.
 - `goat-console` is the only styling and prompt system. Do not add a second, and do not push domain
@@ -147,11 +147,12 @@ Placements that contradict the naming:
 Everything is under `~/.goat/`, laid out by `goat-config`'s `GoatPaths`; `HOME` is the only thing
 that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The parts that mislead:
 
-- **Memory and skills are not per-agent.** `agents/<slug>/` holds only `agent.md` and `config.json`.
-  Memory is one global tree at `memory/<scope>/` keyed by `Scope` (`owner`, `self`, `domain/<name>`);
-  per-persona skills live at `profiles/<slug>/skills/`.
-- `~/.goat/agents/*.md` does double duty: `AgentRegistry::load` also scans it (plus the project-local
-  `.goat/agents/`) as the **code engine's subagent registry**.
+- **Memory is not per-agent.** `agents/<slug>/` holds `agent.md`, `config.json`, and that agent's
+  `skills/`. Memory is one global tree at `memory/<scope>/` keyed by `Scope` (`owner`, `self`,
+  `domain/<name>`).
+- Subagent definitions for the code engine live at `~/.goat/subagents/*.md` plus the project-local
+  `.goat/subagents/`, loaded by `SubagentRegistry::load`. Boot migrates the old layout (loose
+  `agents/*.md`, `profiles/<slug>/skills/`) via `goat-runtime::layout`.
 - `~/.agents/skills` is a third, separate skill scope. `<repo>/.goat/worktrees/` is created inside
   the *target* repository and is unrelated to the home tree.
 - `goat.db` is one file holding three table sets: unprefixed agent tables, `code_`, and `proxy_`.
@@ -201,7 +202,7 @@ Do not build on these, and do not describe them as features:
 - `AutonomyConfig.enabled` — parsed from `config.json` under `deny_unknown_fields`, then read by
   nothing. Setting it has no effect.
 - `MemoryConfig.episodic_k` — parsed and stored, never passed to `BrainDeps`; recall hardcodes 6.
-- Per-agent `EmbeddingSettings` — collected per profile, then `boot_inner` takes
+- Per-agent `EmbeddingSettings` — collected per agent, then `boot_inner` takes
   `embedders.values().next()` for the single global `MemoryEngine`, so with more than one configured
   agent the winner is arbitrary. Only `openai` is implemented; other values warn and are skipped.
 - Goal review — `next_review_at`, `goals_due_for_review`, and `idx_goals_review` are complete and

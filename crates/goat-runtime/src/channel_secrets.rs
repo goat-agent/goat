@@ -35,7 +35,7 @@ pub(crate) fn resolve_for_binding(
                 drained.push(*slot);
             }
             Err(e) => warn!(
-                profile = %slug,
+                agent = %slug,
                 channel = %channel,
                 slot = *slot,
                 error = ?e,
@@ -82,13 +82,13 @@ fn evict_from_disk(
     let path = agents_dir.join(slug).join("config.json");
     match strip_stored_slots(&path, binding_name, stored) {
         Ok(()) => info!(
-            profile = %slug,
+            agent = %slug,
             channel = %channel,
             slots = ?stored,
             "moved channel secrets out of config.json into the credential store",
         ),
         Err(e) => warn!(
-            profile = %slug,
+            agent = %slug,
             path = %path.display(),
             error = ?e,
             "stored the channel secrets but could not rewrite config.json; delete them by hand",

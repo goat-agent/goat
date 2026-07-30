@@ -7,7 +7,7 @@ use goat_config::{Config, GoatPaths};
 use goat_integration::{Integration, IntegrationAuth, IntegrationFactory};
 use serde_json::json;
 
-use super::agent::{remove_section_config, resolve_profile, section_contains, section_entries};
+use super::agent::{remove_section_config, resolve_agent, section_contains, section_entries};
 use super::ui::{self, Footer, Palette, Table};
 
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -212,14 +212,14 @@ pub enum Cmd {
             long = "agent",
             help = "Target agent; resolved automatically when omitted."
         )]
-        profile: Option<String>,
+        agent: Option<String>,
         #[arg(long, help = "Skip the live connection check.")]
         no_verify: bool,
     },
     #[command(visible_alias = "ls", about = "List an agent's integration bindings.")]
     List {
         #[arg(short = 'a', long = "agent")]
-        profile: Option<String>,
+        agent: Option<String>,
     },
     #[command(
         visible_alias = "rm",
@@ -229,7 +229,7 @@ pub enum Cmd {
     Remove {
         kind: String,
         #[arg(short = 'a', long = "agent")]
-        profile: Option<String>,
+        agent: Option<String>,
     },
 }
 
@@ -238,23 +238,23 @@ pub async fn run(cmd: Cmd) -> Result<()> {
     match cmd {
         Cmd::Add {
             kind,
-            profile,
+            agent,
             no_verify,
-        } => bind_add(&paths, kind, profile, no_verify).await,
-        Cmd::List { profile } => bind_list(&paths, profile.as_deref()),
-        Cmd::Remove { kind, profile } => bind_remove(&paths, &kind, profile.as_deref()),
+        } => bind_add(&paths, kind, agent, no_verify).await,
+        Cmd::List { agent } => bind_list(&paths, agent.as_deref()),
+        Cmd::Remove { kind, agent } => bind_remove(&paths, &kind, agent.as_deref()),
     }
 }
 
 async fn bind_add(
     paths: &GoatPaths,
     kind: Option<String>,
-    profile: Option<String>,
+    agent: Option<String>,
     no_verify: bool,
 ) -> Result<()> {
     ui::cell_async("Integration Add", || async move {
-        let slug = resolve_profile(paths, profile.as_deref())?;
-        ui::pair("profile", &slug);
+        let slug = resolve_agent(paths, agent.as_deref())?;
+        ui::pair("agent", &slug);
         let dir = paths.agents_dir.join(&slug);
         let kind = pick_kind(kind)?;
 
@@ -284,10 +284,10 @@ async fn bind_add(
     .await
 }
 
-fn bind_list(paths: &GoatPaths, profile: Option<&str>) -> Result<()> {
+fn bind_list(paths: &GoatPaths, agent: Option<&str>) -> Result<()> {
     ui::cell("Integrations", || {
-        let slug = resolve_profile(paths, profile)?;
-        ui::pair("profile", &slug);
+        let slug = resolve_agent(paths, agent)?;
+        ui::pair("agent", &slug);
         let dir = paths.agents_dir.join(&slug);
         let store = CredentialStore::new(paths.credentials_json.clone());
         let config = Config::load();
@@ -315,10 +315,10 @@ fn bind_list(paths: &GoatPaths, profile: Option<&str>) -> Result<()> {
     })
 }
 
-fn bind_remove(paths: &GoatPaths, kind: &str, profile: Option<&str>) -> Result<()> {
+fn bind_remove(paths: &GoatPaths, kind: &str, agent: Option<&str>) -> Result<()> {
     ui::cell("Integration Remove", || {
-        let slug = resolve_profile(paths, profile)?;
-        ui::pair("profile", &slug);
+        let slug = resolve_agent(paths, agent)?;
+        ui::pair("agent", &slug);
         let kind = kind.trim();
         let dir = paths.agents_dir.join(&slug);
         if !section_contains(&dir, SECTION, kind)? {

@@ -178,7 +178,7 @@ goat-agent-tool-code          = { path = "crates/goat-agent-tool-code" }
 goat-agent-tool-memory        = { path = "crates/goat-agent-tool-memory" }
 goat-agent-tool-pty           = { path = "crates/goat-agent-tool-pty" }
 goat-brain              = { path = "crates/goat-brain" }
-goat-profile            = { path = "crates/goat-profile" }
+goat-agent-config       = { path = "crates/goat-agent-config" }
 goat-runtime            = { path = "crates/goat-runtime" }
 goat-agent              = { path = "crates/goat-agent" }
 goat-memory             = { path = "crates/goat-memory" }

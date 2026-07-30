@@ -6,7 +6,7 @@ use goat_agent_tool::{
 };
 use goat_auth::CredentialStore;
 use goat_integration::{BindingMap, IntegrationBinding, IntegrationRuntime, drop_placeholder_args};
-use goat_types::ProfileId;
+use goat_types::AgentId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::warn;
@@ -68,11 +68,11 @@ where
     })
 }
 
-pub fn first_binding(bindings: &BindingMap) -> Option<(ProfileId, &IntegrationBinding)> {
+pub fn first_binding(bindings: &BindingMap) -> Option<(AgentId, &IntegrationBinding)> {
     bindings
         .iter()
-        .min_by_key(|(persona, _)| persona.to_string())
-        .map(|(persona, binding)| (*persona, binding))
+        .min_by_key(|(agent, _)| agent.to_string())
+        .map(|(agent, binding)| (*agent, binding))
 }
 
 pub async fn register(
@@ -81,10 +81,10 @@ pub async fn register(
     runtime: &IntegrationRuntime,
     bindings: Arc<BindingMap>,
 ) -> Vec<ToolName> {
-    let Some((persona, binding)) = first_binding(&bindings) else {
+    let Some((agent, binding)) = first_binding(&bindings) else {
         return Vec::new();
     };
-    let discovered = discover(service, runtime, persona, binding).await;
+    let discovered = discover(service, runtime, agent, binding).await;
     let deny = DenyRules::effective(&service.tools, &binding.config);
     let mut names = Vec::new();
     let mut enabled = 0usize;
@@ -273,14 +273,14 @@ fn usable_name(service: &McpService, tool: &CachedTool) -> Option<ToolName> {
 async fn discover(
     service: &Arc<McpService>,
     runtime: &IntegrationRuntime,
-    persona: ProfileId,
+    agent: AgentId,
     binding: &IntegrationBinding,
 ) -> Vec<CachedTool> {
     match fetch_live(service, &runtime.credentials, binding).await {
         Ok(tools) => {
             if let Ok(raw) = serde_json::to_string(&tools)
                 && let Err(e) = runtime
-                    .save_state(persona, &service.id, &binding.account, TOOLS_STREAM, &raw)
+                    .save_state(agent, &service.id, &binding.account, TOOLS_STREAM, &raw)
                     .await
             {
                 warn!(integration = service.id.as_str(), error = %e, "failed to cache tool list");
@@ -294,7 +294,7 @@ async fn discover(
                 "tool discovery failed; falling back to the cached list",
             );
             match runtime
-                .load_state(persona, &service.id, &binding.account, TOOLS_STREAM)
+                .load_state(agent, &service.id, &binding.account, TOOLS_STREAM)
                 .await
             {
                 Ok(Some(raw)) => serde_json::from_str(&raw).unwrap_or_default(),
@@ -330,7 +330,7 @@ struct McpPassthrough {
 impl ToolHandler for McpPassthrough {
     async fn call(&self, ctx: ToolContext, call: ToolCall) -> ToolOutput {
         let name = self.service.id.as_str();
-        let Some(binding) = self.bindings.get(&ctx.persona) else {
+        let Some(binding) = self.bindings.get(&ctx.agent) else {
             return ToolOutput::error(format!(
                 "{name} is not configured for this agent; run `goat agent integration add {name}`"
             ));
@@ -532,8 +532,8 @@ mod tests {
     #[test]
     fn first_binding_is_deterministic() {
         let mut bindings = BindingMap::new();
-        let a = ProfileId::from_slug("aaa");
-        let b = ProfileId::from_slug("bbb");
+        let a = AgentId::from_slug("aaa");
+        let b = AgentId::from_slug("bbb");
         bindings.insert(a, IntegrationBinding::from_config(json!({})));
         bindings.insert(b, IntegrationBinding::from_config(json!({})));
         let first = first_binding(&bindings).unwrap().0;
