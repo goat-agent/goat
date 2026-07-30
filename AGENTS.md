@@ -165,6 +165,12 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   marker per compaction.
 - Providers classify wire failures into `StreamError`; the engine decides — retry with jittered
   backoff, reactive compaction on `ContextOverflow`, or abort. Callers never inspect error strings.
+- The OAuth redirect is **parsed in one place and validated in another**. `goat-auth`'s loopback
+  capture returns the whole `AuthorizationResponse` (`code` plus RFC 9207 `iss`) and checks only
+  `state`, because that is the one value it issued itself; it has no metadata, so it cannot judge
+  the issuer. `goat-mcp` does the discovery, so it passes `iss` to rmcp and lets rmcp compare.
+  Do not add issuer validation to `goat-auth`, and do not let a capture helper return just a code —
+  dropping the rest of the response is what broke Sentry login.
 - Sessions are keyed by `SessionId`, with a secondary index by `thread_id`. There is no cwd map:
   `goat code` defaults to a **new** session, and only `-c` resolves cwd to the latest thread through
   a database query. Several live sessions can share a cwd.
