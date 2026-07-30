@@ -544,7 +544,7 @@ fn restrict_db_permissions(_path: &Path) {}
 impl Store for SqliteStore {
     async fn ensure_persona(&self, id: ProfileId, slug: &str, display: &str) -> StoreResult<()> {
         sqlx::query(
-            r"INSERT INTO personas (id, slug, display, created_at)
+            r"INSERT INTO agents (id, slug, display, created_at)
                VALUES (?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET slug = excluded.slug, display = excluded.display",
         )
@@ -559,7 +559,7 @@ impl Store for SqliteStore {
 
     async fn ensure_thread(&self, conv: &ThreadId, persona: ProfileId) -> StoreResult<()> {
         sqlx::query(
-            r"INSERT INTO threads (id, persona_id, channel, instance, external, created_at)
+            r"INSERT INTO threads (id, agent_id, channel, instance, external, created_at)
                VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO NOTHING",
         )
@@ -579,7 +579,7 @@ impl Store for SqliteStore {
             r"SELECT c.channel, c.instance, c.external
                FROM threads c
                JOIN messages m ON m.thread_id = c.id
-               WHERE c.persona_id = ?
+               WHERE c.agent_id = ?
                GROUP BY c.id
                ORDER BY MAX(m.ts) DESC
                LIMIT 1",
@@ -605,7 +605,7 @@ impl Store for SqliteStore {
         self.ensure_thread(&msg.thread, msg.profile).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, persona_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
+               (id, thread_id, agent_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
                VALUES (?, ?, ?, 'in', 'text', ?, NULL, NULL, ?, ?)
                ON CONFLICT(id) DO NOTHING",
         )
@@ -629,7 +629,7 @@ impl Store for SqliteStore {
         self.ensure_thread(thread, agent).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, persona_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
+               (id, thread_id, agent_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
                VALUES (?, ?, ?, 'in', 'text', ?, NULL, NULL, ?, NULL)",
         )
         .bind(Uuid::new_v4().to_string())
@@ -646,7 +646,7 @@ impl Store for SqliteStore {
         let row: (bool,) = sqlx::query_as(
             r"SELECT EXISTS(
                 SELECT 1 FROM messages
-                WHERE persona_id = ? AND thread_id = ? AND direction = 'out'
+                WHERE agent_id = ? AND thread_id = ? AND direction = 'out'
                 LIMIT 1
             )",
         )
@@ -667,7 +667,7 @@ impl Store for SqliteStore {
         self.ensure_thread(conv, persona).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, persona_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
+               (id, thread_id, agent_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
                VALUES (?, ?, ?, 'out', 'text', ?, NULL, ?, ?, NULL)",
         )
         .bind(Uuid::new_v4().to_string())
@@ -685,7 +685,7 @@ impl Store for SqliteStore {
         self.ensure_thread(&record.thread, record.persona).await?;
         sqlx::query(
             r"INSERT INTO tool_invocations
-               (id, thread_id, persona_id, call_id, tool_name, args_json, status,
+               (id, thread_id, agent_id, call_id, tool_name, args_json, status,
                 output_preview, error, started_at, finished_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
@@ -759,7 +759,7 @@ impl Store for SqliteStore {
         let rows = sqlx::query_as::<_, (String, String, String)>(
             r"SELECT direction, text, ts
                FROM messages
-               WHERE persona_id = ? AND thread_id = ? AND text IS NOT NULL
+               WHERE agent_id = ? AND thread_id = ? AND text IS NOT NULL
                ORDER BY ts DESC
                LIMIT ?",
         )
@@ -788,7 +788,7 @@ impl Store for SqliteStore {
     async fn message_count(&self, persona: ProfileId, conv: &ThreadId) -> StoreResult<usize> {
         let row: (i64,) = sqlx::query_as(
             r"SELECT COUNT(*) FROM messages
-               WHERE persona_id = ? AND thread_id = ? AND text IS NOT NULL",
+               WHERE agent_id = ? AND thread_id = ? AND text IS NOT NULL",
         )
         .bind(persona.to_string())
         .bind(conv.to_key())
@@ -810,7 +810,7 @@ impl Store for SqliteStore {
         let rows = sqlx::query_as::<_, (String, String, String)>(
             r"SELECT direction, text, ts
                FROM messages
-               WHERE persona_id = ? AND thread_id = ? AND text IS NOT NULL
+               WHERE agent_id = ? AND thread_id = ? AND text IS NOT NULL
                ORDER BY ts ASC, id ASC
                LIMIT ? OFFSET ?",
         )
@@ -841,7 +841,7 @@ impl Store for SqliteStore {
     ) -> StoreResult<Option<ThreadSummary>> {
         let row: Option<(String, i64)> = sqlx::query_as(
             r"SELECT summary, summarized_count FROM thread_summary
-               WHERE persona_id = ? AND thread_id = ?",
+               WHERE agent_id = ? AND thread_id = ?",
         )
         .bind(persona.to_string())
         .bind(conv.to_key())
@@ -863,7 +863,7 @@ impl Store for SqliteStore {
         self.ensure_thread(conv, persona).await?;
         sqlx::query(
             r"INSERT INTO thread_summary
-               (thread_id, persona_id, summary, summarized_count, updated_at)
+               (thread_id, agent_id, summary, summarized_count, updated_at)
                VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(thread_id) DO UPDATE SET
                  summary = excluded.summary,
@@ -889,7 +889,7 @@ impl Store for SqliteStore {
         let tools_json = serde_json::to_string(&new.tools)?;
         let row: (i64,) = sqlx::query_as(
             r"INSERT INTO scheduled_tasks
-               (persona_id, task, tools, origin_conv, schedule_kind, once_at,
+               (agent_id, task, tools, origin_conv, schedule_kind, once_at,
                 cron, status, created_at, created_by_msg_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
                RETURNING id",
@@ -1042,7 +1042,7 @@ impl Store for SqliteStore {
         let pattern = format!("%{match_text}%");
         let ids: Vec<(i64,)> = sqlx::query_as(
             r"SELECT id FROM scheduled_tasks
-               WHERE persona_id = ? AND status = 'active' AND task LIKE ?",
+               WHERE agent_id = ? AND status = 'active' AND task LIKE ?",
         )
         .bind(persona.to_string())
         .bind(pattern)
@@ -1080,7 +1080,7 @@ impl Store for SqliteStore {
         let pattern = format!("%{}%", trimmed.to_lowercase());
         let ids: Vec<(i64,)> = sqlx::query_as(
             r"SELECT id FROM scheduled_tasks
-               WHERE persona_id = ? AND status = 'active'
+               WHERE agent_id = ? AND status = 'active'
                  AND LOWER(task) LIKE ?
                ORDER BY created_at",
         )
@@ -1156,7 +1156,7 @@ impl Store for SqliteStore {
     ) -> StoreResult<Vec<(ScheduledTaskRecord, Option<DateTime<Utc>>)>> {
         let rows: Vec<(i64,)> = sqlx::query_as(
             r"SELECT id FROM scheduled_tasks
-               WHERE persona_id = ? AND status = 'active'
+               WHERE agent_id = ? AND status = 'active'
                ORDER BY created_at",
         )
         .bind(persona.to_string())
@@ -1191,7 +1191,7 @@ impl Store for SqliteStore {
         let now = Utc::now().to_rfc3339();
         let row: (i64,) = sqlx::query_as(
             r"INSERT INTO goals
-               (persona_id, title, detail, parent, status, priority, origin,
+               (agent_id, title, detail, parent, status, priority, origin,
                 origin_conv, next_review_at, created_at, updated_at)
                VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
                RETURNING id",
@@ -1244,7 +1244,7 @@ impl Store for SqliteStore {
     async fn active_goals(&self, persona: ProfileId) -> StoreResult<Vec<GoalRecord>> {
         let ids: Vec<(i64,)> = sqlx::query_as(
             r"SELECT id FROM goals
-               WHERE persona_id = ? AND status = 'active'
+               WHERE agent_id = ? AND status = 'active'
                ORDER BY priority ASC, id ASC",
         )
         .bind(persona.to_string())
@@ -1295,7 +1295,7 @@ impl Store for SqliteStore {
     ) -> StoreResult<Option<String>> {
         let row: Option<(String,)> = sqlx::query_as(
             r"SELECT state FROM integration_state
-               WHERE persona_id = ? AND integration = ? AND account = ? AND stream = ?",
+               WHERE agent_id = ? AND integration = ? AND account = ? AND stream = ?",
         )
         .bind(persona.to_string())
         .bind(integration)
@@ -1316,9 +1316,9 @@ impl Store for SqliteStore {
     ) -> StoreResult<()> {
         sqlx::query(
             r"INSERT INTO integration_state
-               (persona_id, integration, account, stream, state, updated_at)
+               (agent_id, integration, account, stream, state, updated_at)
                VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(persona_id, integration, account, stream)
+               ON CONFLICT(agent_id, integration, account, stream)
                DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
         )
         .bind(persona.to_string())
@@ -1335,7 +1335,7 @@ impl Store for SqliteStore {
     async fn record_observation(&self, new: NewObservation) -> StoreResult<i64> {
         let row: (i64,) = sqlx::query_as(
             r"INSERT INTO integration_observations
-               (persona_id, integration, account, external_ref, kind, payload, observed_at)
+               (agent_id, integration, account, external_ref, kind, payload, observed_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)
                RETURNING id",
         )
@@ -1354,7 +1354,7 @@ impl Store for SqliteStore {
     async fn get_observation(&self, id: i64) -> StoreResult<Option<ObservationRecord>> {
         let row: Option<(i64, String, String, String, String, String, String, String)> =
             sqlx::query_as(
-                r"SELECT id, persona_id, integration, account, external_ref, kind,
+                r"SELECT id, agent_id, integration, account, external_ref, kind,
                           payload, observed_at
                    FROM integration_observations WHERE id = ?",
             )
@@ -1385,10 +1385,10 @@ impl Store for SqliteStore {
     ) -> StoreResult<Vec<ObservationRecord>> {
         let rows: Vec<(i64, String, String, String, String, String, String, String)> =
             sqlx::query_as(
-                r"SELECT id, persona_id, integration, account, external_ref, kind,
+                r"SELECT id, agent_id, integration, account, external_ref, kind,
                           payload, observed_at
                    FROM integration_observations
-                   WHERE persona_id = ? AND integration = ? AND external_ref = ?
+                   WHERE agent_id = ? AND integration = ? AND external_ref = ?
                    ORDER BY id DESC
                    LIMIT ?",
             )
@@ -1433,7 +1433,7 @@ async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<Schedule
         String,
         String,
     ) = sqlx::query_as(
-        r"SELECT s.id, s.persona_id, s.task, s.tools, s.origin_conv,
+        r"SELECT s.id, s.agent_id, s.task, s.tools, s.origin_conv,
                   s.schedule_kind, s.once_at, s.cron, s.status, s.created_at,
                   s.created_by_msg_id, c.channel, c.instance, c.external
            FROM scheduled_tasks s
@@ -1509,7 +1509,7 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
         Option<String>,
         Option<String>,
     ) = sqlx::query_as(
-        r"SELECT g.id, g.persona_id, g.title, g.detail, g.parent, g.status,
+        r"SELECT g.id, g.agent_id, g.title, g.detail, g.parent, g.status,
                   g.priority, g.origin, g.next_review_at,
                   g.last_reviewed_at, g.created_at, g.updated_at,
                   c.channel, c.instance, c.external
