@@ -19,7 +19,7 @@ mod auth;
 mod toolset;
 
 pub use auth::{ResolvedAuth, header_value};
-pub use toolset::{CachedTool, ToolDisposition};
+pub use toolset::{CachedTool, ToolDisposition, normalized, pick_tool};
 
 pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_mins(2);
 pub const MAX_RESULT_BYTES: usize = 96 * 1024;
