@@ -27,6 +27,18 @@ impl CommandSpec {
             },
         }
     }
+
+    pub fn named(
+        name: CommandName,
+        description: impl Into<String>,
+        args: Vec<CommandArgSpec>,
+    ) -> Self {
+        Self {
+            name,
+            description: description.into(),
+            args: CommandArgs::Named(args),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -38,6 +50,25 @@ pub enum CommandArgs {
         description: String,
         required: bool,
     },
+    Named(Vec<CommandArgSpec>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CommandArgSpec {
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+}
+
+impl CommandArgSpec {
+    pub fn new(name: impl Into<String>, description: impl Into<String>, required: bool) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            required,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
