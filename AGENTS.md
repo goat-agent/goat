@@ -130,6 +130,8 @@ Placements that contradict the naming:
   result extraction, error classification, OAuth. It knows neither tool system — `goat-engine` owns
   the `goat_tool::Tool` adapter for local stdio servers, `goat-integration-mcp` owns the
   `goat_agent_tool::ToolHandler` passthrough for hosted ones. Do not put a tool adapter in it.
+  Its `handshake` module is the only place that names a protocol revision or decides which one to
+  speak; no other crate mentions an MCP version.
 - `goat-integration`'s `watch` module is the one polling driver, and it does not know rmcp — that is
   why `goat-integration-github`, which shells out to `gh`, uses it too. `diff::{REBUILD, RETAIN,
   SETTLE}` are the three re-fire policies; they encode opposite intents on purpose, so pick one
@@ -165,6 +167,13 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   marker per compaction.
 - Providers classify wire failures into `StreamError`; the engine decides — retry with jittered
   backoff, reactive compaction on `ContextOverflow`, or abort. Callers never inspect error strings.
+- The MCP handshake tries one protocol era and, only when the failure could be the era itself,
+  retries once in the other one. `PREFERRED` picks which era goes first — legacy (`2025-11-25`,
+  the `initialize` handshake) today, because every reachable server still speaks it, so the retry
+  never fires and connecting costs one round trip. `handshake::sort` is the single place that reads
+  meaning into an rmcp failure: only `-32022` and `NoCompatibleProtocolVersion` prove a modern peer
+  (no retry), transport and auth failures are era-agnostic (no retry), and everything else earns the
+  other era. A server's era is never configured — configuring it would be a per-server quirk table.
 - The OAuth redirect is **parsed in one place and validated in another**. `goat-auth`'s loopback
   capture returns the whole `AuthorizationResponse` (`code` plus RFC 9207 `iss`) and checks only
   `state`, because that is the one value it issued itself; it has no metadata, so it cannot judge
