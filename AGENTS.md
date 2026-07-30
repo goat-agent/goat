@@ -58,9 +58,13 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
 
 ## Extension boundaries
 
-- Providers live in `goat-provider-<name>`, channels in `goat-channel-<name>`, integrations in
-  `goat-integration-<name>`, search backends in `goat-search-provider-<name>`. Shared crates must
-  never know a concrete name (`openai`, `discord`, …).
+- Data-only LLM providers are `Row` consts in `goat-provider-builtin`; a `goat-provider-<name>`
+  crate exists only when the provider needs code — its own wire format (anthropic, gemini), an
+  OAuth flow or runtime headers (openai-codex, kimi-code), or credential-kind dispatch (xai).
+  Channels live in `goat-channel-<name>`, integrations in `goat-integration-<name>`, search
+  backends in `goat-search-provider-<name>`. Shared crates must never know a concrete name
+  (`openai`, `discord`, …) — the provider table and `Registry::load_metered` are the two places
+  provider names may appear.
 - Provider-specific request bodies, streaming, auth, and error mapping stay inside each provider
   crate. No shared provider "quirks" flags.
 - **Registration is not uniform — check before assuming `inventory` picks your crate up:**
@@ -76,9 +80,13 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
   - agent tools: `inventory` + `pub const NAME: ToolName` for `fs`/`shell`/`skill` only. `goal`,
     `memory`, `pty`, `code`, and `schedule` need injected runtime deps and are wired by explicit
     `register()` calls in `goat-runtime`.
-  - LLM providers and search providers: **no `inventory` at all.** `Registry::load_metered` and
-    `goat-search-providers::metadata` build hardcoded lists, and identity is a runtime
-    `ProviderId::from("…")`. Adding a provider means editing that list by hand.
+  - LLM providers and search providers: **no `inventory` at all.** `Registry::load_metered` is one
+    ordered list mixing `goat_provider_builtin::build(&rows::…)` calls (data-only providers) with
+    the five code-provider crates, and identity is a runtime `ProviderId::from("…")`. Adding a
+    data-only provider means adding a `Row` const and one registry line. The registry's observable
+    surface is frozen by `goat-providers`' fingerprint test; after a deliberate provider change,
+    regenerate with `cargo test -p goat-providers fingerprint::regenerate -- --ignored`.
+    `goat-search-providers::metadata` stays a hardcoded list.
   - code tools: `ToolRegistry::builtin()` aggregates fs, shell, search, skill, and web.
     `goat-tool-browser` and `goat-tool-computer` bypass it and are wired directly into
     `GoatAgent::new` behind `config.browser_enabled` / `config.computer_use_enabled`.
@@ -122,8 +130,9 @@ Placements that contradict the naming:
 
 - `goat-skill` (singular) is a code crate; `goat-skills` (plural) is an agent crate. Different
   scopes, different parsers.
-- `goat-provider-openai-compat` registers nothing — it is the shared base thirteen OpenAI-compatible
-  crates build on. `goat-provider-local` registers three providers (ollama, lmstudio, llama.cpp).
+- `goat-provider-openai-compat` registers nothing — it is the chat/Responses wire base.
+  `goat-provider-builtin` is the product's provider table built over it: one `Row` per data-only
+  provider, covering thirteen hosted providers plus the local trio (ollama, lmstudio, llama-cpp).
 - `goat-integration-mcp` registers nothing either — same idea, one family over. It is the shared base
   every hosted-MCP integration builds on, so a leaf is a `McpService` descriptor plus its parser.
 - `goat-mcp` is the **protocol** crate: transports (stdio and streamable HTTP), session lifecycle,

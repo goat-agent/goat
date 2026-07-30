@@ -556,8 +556,8 @@ impl Provider for CodexProvider {
         .await
     }
 
-    fn catalog(&self) -> &'static [&'static str] {
-        CATALOG
+    fn list_models(&self) -> Vec<String> {
+        CATALOG.iter().map(|id| (*id).to_owned()).collect()
     }
 
     fn efforts(&self, model: &str) -> Vec<goat_provider::Effort> {

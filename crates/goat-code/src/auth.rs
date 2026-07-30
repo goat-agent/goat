@@ -445,7 +445,7 @@ fn provider_info(store: &CredentialStore, provider: &str) -> color_eyre::Result<
         AuthMethod::ApiKey | AuthMethod::None => "-",
     });
     pair("oauth", oauth);
-    pair("models", &model_preview(target.catalog()));
+    pair("models", &model_preview(&target.list_models()));
     println!();
     println!("{}", color.paint("setup", Palette::Muted));
     for line in provider_setup_lines(&id, caps.auth, metadata) {
@@ -594,17 +594,17 @@ fn provider_setup_lines(id: &str, auth: AuthMethod, metadata: ProviderMetadata) 
     }
 }
 
-fn model_preview(catalog: &[&str]) -> String {
-    if catalog.is_empty() {
+fn model_preview(models: &[String]) -> String {
+    if models.is_empty() {
         return "discovered live".to_owned();
     }
-    let shown = catalog
+    let shown = models
         .iter()
         .take(3)
-        .copied()
+        .map(String::as_str)
         .collect::<Vec<_>>()
         .join(", ");
-    if catalog.len() > 3 {
+    if models.len() > 3 {
         format!("{shown}, …")
     } else {
         shown

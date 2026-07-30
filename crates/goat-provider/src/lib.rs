@@ -413,12 +413,9 @@ pub trait Provider: Send + Sync + 'static {
     }
     async fn stream(&self, req: Request) -> Result<ChunkStream, StreamError>;
     fn discover(&self, out: mpsc::Sender<Model>) -> JoinHandle<()>;
-    fn catalog(&self) -> &'static [&'static str] {
-        &[]
-    }
 
     fn model_list_source(&self) -> ModelListSource {
-        if self.catalog().is_empty() {
+        if self.list_models().is_empty() {
             ModelListSource::Discover
         } else {
             ModelListSource::Catalog
@@ -426,7 +423,7 @@ pub trait Provider: Send + Sync + 'static {
     }
 
     fn list_models(&self) -> Vec<String> {
-        self.catalog().iter().map(|id| (*id).to_owned()).collect()
+        Vec::new()
     }
 
     fn efforts(&self, _model: &str) -> Vec<Effort> {

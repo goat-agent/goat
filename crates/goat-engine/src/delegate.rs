@@ -74,7 +74,7 @@ fn resolve_agent_model(
             .registry
             .all()
             .iter()
-            .find(|provider| provider.catalog().contains(&model_id.as_str()))
+            .find(|provider| provider.list_models().iter().any(|id| id == model_id))
         {
             let provider_id = found.id().to_string();
             let provider = provider_for(
