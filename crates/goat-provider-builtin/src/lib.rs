@@ -178,6 +178,82 @@ fn build_chat(row: &Row, endpoint: String, bearer: Option<String>) -> OpenAiComp
     provider
 }
 
+pub const CUSTOM_VALIDATION: &str = "custom";
+
+const CUSTOM_METADATA: ProviderMetadata = ProviderMetadata {
+    env_var: None,
+    validation: CUSTOM_VALIDATION,
+    endpoint: None,
+    oauth: Some("not supported"),
+    login_endpoint: None,
+    setup: &[],
+};
+
+pub fn is_custom(provider: &dyn Provider) -> bool {
+    provider.metadata().validation == CUSTOM_VALIDATION
+}
+
+pub fn validate_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 39 {
+        return Err("provider id must be 1-39 characters".to_owned());
+    }
+    if !id
+        .bytes()
+        .next()
+        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    {
+        return Err("provider id must start with a lowercase letter or digit".to_owned());
+    }
+    if !id
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err("provider id must use lowercase letters, digits, and dashes".to_owned());
+    }
+    if goat_model::canonicalize_provider_id(id) != id {
+        return Err(format!("{id} is an alias of a built-in provider"));
+    }
+    Ok(())
+}
+
+pub fn validate_user_endpoint(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    let url = reqwest::Url::parse(trimmed).map_err(|err| err.to_string())?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err("endpoint must use http or https".to_owned());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("endpoint must not include userinfo".to_owned());
+    }
+    if url.host_str().is_none() {
+        return Err("endpoint must include a host".to_owned());
+    }
+    Ok(trimmed.to_owned())
+}
+
+pub fn user(
+    id: &str,
+    endpoint: &str,
+    store: &CredentialStore,
+    account: &str,
+) -> Option<Arc<dyn Provider>> {
+    validate_id(id).ok()?;
+    let endpoint = validate_user_endpoint(endpoint).ok()?;
+    let key = CredentialKey::model(id, account);
+    let bearer = store
+        .resolve(&key, None)
+        .map(|cred| cred.bearer().to_owned());
+    let auth = if bearer.is_some() {
+        AuthMethod::ApiKey
+    } else {
+        AuthMethod::None
+    };
+    Some(Arc::new(
+        OpenAiCompatProvider::new(ProviderId::from(id), endpoint, bearer, auth)
+            .with_metadata(CUSTOM_METADATA),
+    ))
+}
+
 fn build_responses(row: &Row, endpoint: String, bearer: Option<String>) -> ResponsesProvider {
     let mut provider = ResponsesProvider::new(ProviderId::from(row.id), endpoint, bearer, row.auth)
         .with_catalog(row.catalog)
