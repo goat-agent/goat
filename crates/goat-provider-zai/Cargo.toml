@@ -1,11 +1,12 @@
 [package]
 name = "goat-provider-zai"
 version.workspace = true
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+authors.workspace = true
+publish.workspace = true
 
 [dependencies]
 goat-auth = { workspace = true }

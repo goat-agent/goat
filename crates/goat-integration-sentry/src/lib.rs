@@ -111,7 +111,7 @@ mod tests {
         assert_eq!(meta.display, "Sentry");
         assert_eq!(meta.auth, IntegrationAuth::OAuth);
         assert_eq!(meta.env_var, Some("GOAT_SENTRY_ACCESS_TOKEN"));
-        assert!(meta.has_watcher);
+        assert!(service().watch.is_some());
         assert!(meta.setup.contains("GOAT_SENTRY_ACCESS_TOKEN"));
         assert!(meta.setup.contains("organization_slug"));
     }

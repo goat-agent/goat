@@ -380,7 +380,6 @@ impl Integration for McpIntegration {
             secret_label: self.service.secret_label,
             env_var: self.service.env_var,
             setup: self.service.setup,
-            has_watcher: self.service.watch.is_some(),
         }
     }
 
@@ -529,7 +528,6 @@ mod tests {
         assert_eq!(meta.display, "Acme");
         assert_eq!(meta.env_var, Some("GOAT_ACME_TOKEN"));
         assert_eq!(meta.setup, "how to");
-        assert!(!meta.has_watcher);
         assert_eq!(integration.id().as_str(), "acme");
     }
 
@@ -546,7 +544,7 @@ mod tests {
         let integration = McpService::new("acme", "Acme", "u", "s")
             .with_watch(never)
             .build();
-        assert!(integration.metadata().has_watcher);
+        assert!(integration.service().watch.is_some());
     }
 
     #[test]

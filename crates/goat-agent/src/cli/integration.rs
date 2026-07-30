@@ -66,8 +66,9 @@ fn connect_list(paths: &GoatPaths) -> Result<()> {
             if key.service != CredentialService::Integration {
                 continue;
             }
+            let label = display_name(&key.provider).unwrap_or_else(|| key.provider.clone());
             table.styled_row(vec![
-                (key.provider, Palette::Plain),
+                (label, Palette::Plain),
                 (format!("{cred_kind:?}").to_lowercase(), Palette::Success),
             ]);
             rows += 1;
@@ -80,7 +81,10 @@ fn connect_list(paths: &GoatPaths) -> Result<()> {
                 continue;
             }
             table.styled_row(vec![
-                (kind.to_string(), Palette::Plain),
+                (
+                    display_name(kind).unwrap_or_else(|| kind.to_string()),
+                    Palette::Plain,
+                ),
                 ("external".to_string(), Palette::Success),
             ]);
             rows += 1;
@@ -331,6 +335,11 @@ fn bind_remove(paths: &GoatPaths, kind: &str, profile: Option<&str>) -> Result<(
     })
 }
 
+fn display_name(kind: &str) -> Option<String> {
+    let factory = goat_integration::factory_for(kind)?;
+    Some((factory.ctor)().metadata().display.to_string())
+}
+
 fn pick_kind(kind: Option<String>) -> Result<String> {
     if let Some(k) = kind {
         let k = k.trim().to_string();
@@ -341,7 +350,11 @@ fn pick_kind(kind: Option<String>) -> Result<String> {
     }
     let mut items: Vec<(String, String)> = goat_integration::factories()
         .into_iter()
-        .map(|f| (f.id.to_string(), f.id.to_string()))
+        .map(|f| {
+            let id = f.id.to_string();
+            let label = display_name(&id).unwrap_or_else(|| id.clone());
+            (id, label)
+        })
         .collect();
     items.sort_by(|a, b| a.1.cmp(&b.1));
     ui::pick("integration", &items).map_err(Into::into)

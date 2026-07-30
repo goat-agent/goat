@@ -93,7 +93,7 @@ mod tests {
         assert_eq!(meta.display, "Notion");
         assert_eq!(meta.auth, IntegrationAuth::OAuth);
         assert_eq!(meta.env_var, None);
-        assert!(meta.has_watcher);
+        assert!(service().watch.is_some());
         assert!(meta.setup.contains("view_url"));
     }
 

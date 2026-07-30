@@ -112,7 +112,7 @@ mod tests {
         assert_eq!(meta.display, "Linear");
         assert_eq!(meta.auth, IntegrationAuth::OAuth);
         assert_eq!(meta.env_var, Some("LINEAR_API_KEY"));
-        assert!(meta.has_watcher);
+        assert!(service().watch.is_some());
         assert!(meta.setup.contains("LINEAR_API_KEY"));
         assert!(meta.setup.contains("assignee"));
     }

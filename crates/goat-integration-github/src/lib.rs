@@ -97,7 +97,6 @@ impl Integration for GithubIntegration {
             secret_label: "",
             env_var: None,
             setup: SETUP,
-            has_watcher: true,
         }
     }
 
