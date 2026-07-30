@@ -252,6 +252,49 @@ impl McpService {
     }
 }
 
+pub const COMMON_BINDING_KEYS: &[&str] = &["account", "client_id"];
+
+pub fn validate_binding<T>(name: &str, config: &Value) -> IntegrationResult<()>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let object = config
+        .as_object()
+        .ok_or_else(|| IntegrationError::Config(format!("{name} binding must be an object")))?;
+    let leaf: serde_json::Map<String, Value> = object
+        .iter()
+        .filter(|(key, _)| !COMMON_BINDING_KEYS.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    for key in COMMON_BINDING_KEYS {
+        if let Some(value) = object.get(*key)
+            && !value.is_string()
+        {
+            return Err(IntegrationError::Config(format!(
+                "{name} binding: `{key}` must be a string"
+            )));
+        }
+    }
+    serde_json::from_value::<T>(Value::Object(leaf))
+        .map(|_| ())
+        .map_err(|e| IntegrationError::Config(format!("{name} binding: {e}")))
+}
+
+pub fn read_binding<T>(config: &Value) -> T
+where
+    T: serde::de::DeserializeOwned + Default,
+{
+    let Some(object) = config.as_object() else {
+        return T::default();
+    };
+    let leaf: serde_json::Map<String, Value> = object
+        .iter()
+        .filter(|(key, _)| !COMMON_BINDING_KEYS.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    serde_json::from_value(Value::Object(leaf)).unwrap_or_default()
+}
+
 fn allow_every_tool(_: &CachedTool) -> ToolDisposition {
     ToolDisposition::Enabled
 }
@@ -493,6 +536,65 @@ mod tests {
         let meta = integration.metadata();
         assert_eq!(meta.auth, IntegrationAuth::Secret);
         assert_eq!(meta.secret_label, "Acme token");
+    }
+
+    #[test]
+    fn the_base_owns_the_common_keys_so_leaves_need_not_declare_them() {
+        #[derive(Debug, Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Leaf {
+            #[serde(default)]
+            project: Option<String>,
+        }
+
+        assert!(validate_binding::<Leaf>("acme", &json!({})).is_ok());
+        assert!(
+            validate_binding::<Leaf>("acme", &json!({ "account": "work", "client_id": "cid" }))
+                .is_ok()
+        );
+        assert!(validate_binding::<Leaf>("acme", &json!({ "project": "p" })).is_ok());
+        let read: Leaf = read_binding(&json!({ "account": "work", "project": "p" }));
+        assert_eq!(read.project.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn an_unknown_leaf_key_is_rejected() {
+        #[derive(Debug, Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Leaf {
+            #[serde(default)]
+            project: Option<String>,
+        }
+
+        let err = validate_binding::<Leaf>("acme", &json!({ "prject": "typo" }));
+        assert!(err.is_err());
+        assert!(validate_binding::<Leaf>("acme", &json!("nope")).is_err());
+        let read: Leaf = read_binding(&json!({ "project": "p" }));
+        assert_eq!(read.project.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn a_common_key_of_the_wrong_type_is_rejected() {
+        #[derive(Debug, Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Leaf {}
+
+        assert!(validate_binding::<Leaf>("acme", &json!({ "account": 3 })).is_err());
+        assert!(validate_binding::<Leaf>("acme", &json!({ "client_id": false })).is_err());
+    }
+
+    #[test]
+    fn reading_a_binding_ignores_the_common_keys_and_survives_junk() {
+        #[derive(Debug, Default, serde::Deserialize)]
+        struct Leaf {
+            #[serde(default)]
+            project: Option<String>,
+        }
+
+        let read: Leaf = read_binding(&json!({ "account": "work", "project": "p" }));
+        assert_eq!(read.project.as_deref(), Some("p"));
+        let read: Leaf = read_binding(&json!("not an object"));
+        assert!(read.project.is_none());
     }
 
     #[test]
