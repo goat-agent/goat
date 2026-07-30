@@ -3231,12 +3231,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "goat-provider-deepseek"
+name = "goat-provider-builtin"
 version = "0.1.27"
 dependencies = [
  "goat-auth",
  "goat-provider",
  "goat-provider-openai-compat",
+ "reqwest 0.12.28",
 ]
 
 [[package]]
@@ -3259,24 +3260,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "goat-provider-groq"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
-name = "goat-provider-kimi"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
 name = "goat-provider-kimi-code"
 version = "0.1.27"
 dependencies = [
@@ -3289,41 +3272,6 @@ dependencies = [
  "serde",
  "thiserror 2.0.19",
  "tokio",
-]
-
-[[package]]
-name = "goat-provider-local"
-version = "0.1.27"
-dependencies = [
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
-name = "goat-provider-minimax"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
-name = "goat-provider-mistral"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
-name = "goat-provider-openai"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
 ]
 
 [[package]]
@@ -3361,34 +3309,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "goat-provider-openrouter"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
-name = "goat-provider-qwen"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
- "reqwest 0.12.28",
-]
-
-[[package]]
-name = "goat-provider-vercel"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
 name = "goat-provider-xai"
 version = "0.1.27"
 dependencies = [
@@ -3404,46 +3324,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "goat-provider-zai"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
-name = "goat-provider-zai-coding"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
 name = "goat-providers"
 version = "0.1.27"
 dependencies = [
  "goat-auth",
  "goat-provider",
  "goat-provider-anthropic",
- "goat-provider-deepseek",
+ "goat-provider-builtin",
  "goat-provider-gemini",
- "goat-provider-groq",
- "goat-provider-kimi",
  "goat-provider-kimi-code",
- "goat-provider-local",
- "goat-provider-minimax",
- "goat-provider-mistral",
- "goat-provider-openai",
  "goat-provider-openai-codex",
- "goat-provider-openrouter",
- "goat-provider-qwen",
- "goat-provider-vercel",
  "goat-provider-xai",
- "goat-provider-zai",
- "goat-provider-zai-coding",
  "goat-proxy",
  "tokio",
 ]

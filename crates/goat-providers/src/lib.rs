@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use goat_auth::{CredentialStore, TokenSet};
 use goat_provider::{Provider, ProviderId};
+use goat_provider_builtin::{self as builtin, rows};
 
 pub const DEFAULT_ACCOUNT: &str = "default";
 
@@ -24,25 +25,25 @@ impl Registry {
         meter: Option<goat_proxy::Meter>,
     ) -> Self {
         let providers: Vec<Arc<dyn Provider>> = vec![
-            Arc::new(goat_provider_openai::build(store, account)),
+            builtin::build(&rows::OPENAI, store, account),
             Arc::new(goat_provider_openai_codex::build(store, account)),
             Arc::new(goat_provider_anthropic::build(store, account)),
             Arc::new(goat_provider_gemini::build(store, account)),
-            Arc::new(goat_provider_openrouter::build(store, account)),
-            Arc::new(goat_provider_groq::build(store, account)),
-            Arc::new(goat_provider_deepseek::build(store, account)),
+            builtin::build(&rows::OPENROUTER, store, account),
+            builtin::build(&rows::GROQ, store, account),
+            builtin::build(&rows::DEEPSEEK, store, account),
             Arc::new(goat_provider_xai::build(store, account)),
-            Arc::new(goat_provider_mistral::build(store, account)),
-            Arc::new(goat_provider_zai::build(store, account)),
-            Arc::new(goat_provider_zai_coding::build(store, account)),
-            Arc::new(goat_provider_kimi::build(store, account)),
+            builtin::build(&rows::MISTRAL, store, account),
+            builtin::build(&rows::ZAI, store, account),
+            builtin::build(&rows::ZAI_CODING, store, account),
+            builtin::build(&rows::KIMI, store, account),
             Arc::new(goat_provider_kimi_code::build(store, account)),
-            Arc::new(goat_provider_qwen::build(store, account)),
-            Arc::new(goat_provider_minimax::build(store, account)),
-            Arc::new(goat_provider_vercel::build(store, account)),
-            Arc::new(goat_provider_local::ollama()),
-            Arc::new(goat_provider_local::lmstudio()),
-            Arc::new(goat_provider_local::llama_cpp()),
+            builtin::build(&rows::QWEN, store, account),
+            builtin::build(&rows::MINIMAX, store, account),
+            builtin::build(&rows::VERCEL, store, account),
+            builtin::build(&rows::OLLAMA, store, account),
+            builtin::build(&rows::LMSTUDIO, store, account),
+            builtin::build(&rows::LLAMA_CPP, store, account),
         ];
         let providers = match meter {
             Some(meter) => providers
