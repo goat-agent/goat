@@ -174,23 +174,31 @@ fn command_options(args: &CommandArgs) -> Vec<CommandOption> {
             name,
             description,
             required,
-        } => vec![CommandOption {
-            autocomplete: None,
-            channel_types: None,
-            choices: None,
-            description: command_description(description),
-            description_localizations: None,
-            kind: CommandOptionType::String,
-            max_length: Some(6000),
-            max_value: None,
-            min_length: None,
-            min_value: None,
-            name: discord_option_name(name),
-            name_localizations: None,
-            options: None,
-            required: Some(*required),
-        }],
+        } => vec![string_option(name, description, *required)],
+        CommandArgs::Named(specs) => specs
+            .iter()
+            .map(|spec| string_option(&spec.name, &spec.description, spec.required))
+            .collect(),
         _ => Vec::new(),
+    }
+}
+
+fn string_option(name: &str, description: &str, required: bool) -> CommandOption {
+    CommandOption {
+        autocomplete: None,
+        channel_types: None,
+        choices: None,
+        description: command_description(description),
+        description_localizations: None,
+        kind: CommandOptionType::String,
+        max_length: Some(6000),
+        max_value: None,
+        min_length: None,
+        min_value: None,
+        name: discord_option_name(name),
+        name_localizations: None,
+        options: None,
+        required: Some(required),
     }
 }
 
@@ -222,4 +230,23 @@ fn parse_intents(names: &[String]) -> Intents {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use goat_agent_command::CommandArgSpec;
+
+    #[test]
+    fn named_arguments_become_one_string_option_each() {
+        let options = command_options(&CommandArgs::Named(vec![
+            CommandArgSpec::new("task", "what to do", true),
+            CommandArgSpec::new("when", "when to do it", false),
+        ]));
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].name, "task");
+        assert_eq!(options[0].required, Some(true));
+        assert_eq!(options[1].name, "when");
+        assert_eq!(options[1].required, Some(false));
+    }
 }

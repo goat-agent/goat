@@ -5,7 +5,7 @@ use tracing::{info, warn};
 
 pub(crate) fn migrate(paths: &GoatPaths) {
     move_loose_subagents(&paths.agents_dir, &paths.subagents_dir);
-    absorb_profile_skills(&paths.root.join("profiles"), &paths.agents_dir);
+    absorb_agent_skills(&paths.root.join("profiles"), &paths.agents_dir);
 }
 
 fn move_loose_subagents(agents: &Path, subagents: &Path) {
@@ -47,8 +47,8 @@ fn move_loose_subagents(agents: &Path, subagents: &Path) {
     }
 }
 
-fn absorb_profile_skills(profiles: &Path, agents: &Path) {
-    let Ok(read) = std::fs::read_dir(profiles) else {
+fn absorb_agent_skills(legacy: &Path, agents: &Path) {
+    let Ok(read) = std::fs::read_dir(legacy) else {
         return;
     };
     for entry in read.flatten() {
@@ -67,7 +67,7 @@ fn absorb_profile_skills(profiles: &Path, agents: &Path) {
                 warn!(
                     from = %skills.display(),
                     to = %dest.display(),
-                    "agent skills already exist; leaving the profiles copy in place",
+                    "agent skills already exist; leaving the legacy copy in place",
                 );
                 continue;
             }
@@ -78,7 +78,7 @@ fn absorb_profile_skills(profiles: &Path, agents: &Path) {
                 Ok(()) => info!(
                     from = %skills.display(),
                     to = %dest.display(),
-                    "moved agent skills out of profiles/",
+                    "moved agent skills into the agent's directory",
                 ),
                 Err(e) => {
                     warn!(
@@ -92,7 +92,7 @@ fn absorb_profile_skills(profiles: &Path, agents: &Path) {
         }
         let _ = std::fs::remove_dir(&slug_dir);
     }
-    let _ = std::fs::remove_dir(profiles);
+    let _ = std::fs::remove_dir(legacy);
 }
 
 #[cfg(test)]
@@ -109,7 +109,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = GoatPaths::from_root(dir.path().to_path_buf());
         write(&paths.agents_dir.join("helper.md"), "---\n---");
-        write(&paths.agents_dir.join("dev/agent.md"), "persona");
+        write(&paths.agents_dir.join("dev/agent.md"), "agent");
         migrate(&paths);
         assert!(paths.subagents_dir.join("helper.md").is_file());
         assert!(!paths.agents_dir.join("helper.md").exists());
@@ -117,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_skills_move_under_the_agent_dir() {
+    fn agent_skills_move_under_the_agent_dir() {
         let dir = tempfile::tempdir().unwrap();
         let paths = GoatPaths::from_root(dir.path().to_path_buf());
         let old = dir.path().join("profiles/dev/skills/plan/SKILL.md");

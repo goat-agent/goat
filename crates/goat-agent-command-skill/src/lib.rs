@@ -2,11 +2,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use std::collections::BTreeMap;
+
 use goat_agent_command::{
-    CommandError, CommandFactory, CommandHandler, CommandOutput, CommandProviderContext,
-    CommandRegistry, CommandSpec,
+    CommandArgSpec, CommandError, CommandFactory, CommandHandler, CommandOutput,
+    CommandProviderContext, CommandRegistry, CommandSpec,
 };
-use goat_skills::{SkillIndex, format_activated_skill};
+use goat_skills::{SkillCallArgs, SkillIndex, format_activated_skill, resolve_call_args};
 use goat_types::{AgentId, CommandCall, CommandName};
 use tracing::warn;
 
@@ -30,7 +32,19 @@ pub fn register(registry: &mut CommandRegistry, goat_root: &Path, agent: AgentId
                 continue;
             }
         };
-        let spec = CommandSpec::raw_string(name, entry.description.clone());
+        let spec = if entry.arguments.is_empty() {
+            CommandSpec::raw_string(name, entry.description.clone())
+        } else {
+            CommandSpec::named(
+                name,
+                entry.description.clone(),
+                entry
+                    .arguments
+                    .iter()
+                    .map(|a| CommandArgSpec::new(a.name.clone(), a.description.clone(), a.required))
+                    .collect(),
+            )
+        };
         let handler = Arc::new(SkillCommand {
             goat_root: goat_root.to_path_buf(),
             agent,
@@ -55,10 +69,30 @@ impl CommandHandler for SkillCommand {
         let skill = index
             .activate(self.agent, &self.skill)
             .map_err(|e| CommandError::Failed(e.to_string()))?;
+        let call_args = named_values(&call.raw).map_or_else(
+            || SkillCallArgs::Raw(call.args.clone()),
+            SkillCallArgs::Named,
+        );
+        let resolved = resolve_call_args(&skill.arguments, Some(&call_args))
+            .map_err(|e| CommandError::Failed(e.to_string()))?;
         Ok(CommandOutput::Query {
-            content: format_activated_skill(&skill, Some(&call.args)),
+            content: format_activated_skill(&skill, resolved.as_ref()),
         })
     }
+}
+
+fn named_values(raw: &serde_json::Value) -> Option<BTreeMap<String, String>> {
+    let object = raw.get("arguments")?.as_object()?;
+    Some(
+        object
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .as_str()
+                    .map(|value| (name.clone(), value.to_string()))
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -113,5 +147,53 @@ mod tests {
         };
         assert!(content.contains("Task: 보고서 작성"));
         assert!(content.contains("Raw: add \"보고서 작성\""));
+    }
+
+    #[tokio::test]
+    async fn declared_arguments_register_named_specs_and_resolve() {
+        let root = temp_root("named");
+        let skill = root.join("skills/remind/SKILL.md");
+        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        std::fs::write(
+            &skill,
+            "---\nname: remind\ndescription: Remind me\narguments:\n  - name: task\n    description: what to do\n    required: true\n---\nTask: $task",
+        )
+        .unwrap();
+
+        let mut registry = CommandRegistry::new();
+        register(&mut registry, &root, AgentId::from_slug("dev"));
+        let spec = registry
+            .specs()
+            .into_iter()
+            .find(|spec| spec.name.as_str() == "remind")
+            .unwrap();
+        assert!(matches!(
+            spec.args,
+            goat_agent_command::CommandArgs::Named(ref args) if args.len() == 1 && args[0].required
+        ));
+
+        let output = registry
+            .call(CommandCall::new(
+                "call_1",
+                CommandName::new("remind").unwrap(),
+                "",
+                json!({ "arguments": { "task": "ship" } }),
+            ))
+            .await
+            .unwrap();
+        let CommandOutput::Query { content } = output else {
+            panic!("expected query output");
+        };
+        assert!(content.contains("Task: ship"));
+
+        let missing = registry
+            .call(CommandCall::new(
+                "call_2",
+                CommandName::new("remind").unwrap(),
+                "",
+                json!({}),
+            ))
+            .await;
+        assert!(missing.is_err());
     }
 }

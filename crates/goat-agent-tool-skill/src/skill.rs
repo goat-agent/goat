@@ -1,10 +1,11 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use goat_agent_tool::{
     ToolCall, ToolContext, ToolFactory, ToolHandler, ToolName, ToolOutput, ToolSpec,
 };
-use goat_skills::{SkillIndex, format_activated_skill};
+use goat_skills::{SkillCallArgs, SkillIndex, format_activated_skill, resolve_call_args};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -17,6 +18,8 @@ struct SkillArgs {
     skill: String,
     #[serde(default)]
     args: Option<String>,
+    #[serde(default)]
+    arguments: Option<BTreeMap<String, String>>,
 }
 
 #[async_trait]
@@ -29,9 +32,18 @@ impl ToolHandler for SkillTool {
         if args.skill.trim().is_empty() {
             return ToolOutput::error("skill name must not be empty");
         }
+        let call_args = match (args.arguments, args.args) {
+            (Some(named), _) => Some(SkillCallArgs::Named(named)),
+            (None, Some(raw)) => Some(SkillCallArgs::Raw(raw)),
+            (None, None) => None,
+        };
         let idx = SkillIndex::discover_root(&ctx.goat_root);
-        match idx.activate(ctx.agent, &args.skill) {
-            Ok(skill) => ToolOutput::text(format_activated_skill(&skill, args.args.as_deref())),
+        let skill = match idx.activate(ctx.agent, &args.skill) {
+            Ok(skill) => skill,
+            Err(e) => return ToolOutput::error(e.to_string()),
+        };
+        match resolve_call_args(&skill.arguments, call_args.as_ref()) {
+            Ok(resolved) => ToolOutput::text(format_activated_skill(&skill, resolved.as_ref())),
             Err(e) => ToolOutput::error(e.to_string()),
         }
     }
@@ -51,6 +63,11 @@ fn spec() -> ToolSpec {
                 "args": {
                     "type": "string",
                     "description": "Optional raw argument string for the skill. Supports $ARGUMENTS, $ARGUMENTS[n], and $n placeholders in SKILL.md."
+                },
+                "arguments": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" },
+                    "description": "Named values for skills that list <argument> entries in <available_skills>. Preferred over args when arguments are declared; unknown names and missing required arguments are errors."
                 }
             },
             "required": ["skill"],
@@ -171,6 +188,44 @@ mod tests {
             text.contains("Raw: add &quot;보고서 작성&quot;")
                 || text.contains("Raw: add \"보고서 작성\"")
         );
+    }
+
+    #[tokio::test]
+    async fn named_arguments_resolve_against_declarations() {
+        let root = temp_root("named");
+        let skill = root.join("skills/remind/SKILL.md");
+        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        std::fs::write(
+            &skill,
+            "---\nname: remind\ndescription: Remind me\narguments:\n  - name: task\n    description: what to do\n    required: true\n---\nTask: $task",
+        )
+        .unwrap();
+
+        let out = SkillTool
+            .call(
+                ctx(root.clone()),
+                ToolCall {
+                    call_id: "call_1".into(),
+                    name: NAME,
+                    arguments: json!({ "skill": "remind", "arguments": { "task": "ship" } }),
+                },
+            )
+            .await;
+        assert!(!out.is_error);
+        assert!(out.text_for_model().contains("Task: ship"));
+
+        let missing = SkillTool
+            .call(
+                ctx(root),
+                ToolCall {
+                    call_id: "call_2".into(),
+                    name: NAME,
+                    arguments: json!({ "skill": "remind" }),
+                },
+            )
+            .await;
+        assert!(missing.is_error);
+        assert!(missing.text_for_model().contains("required"));
     }
 
     #[tokio::test]

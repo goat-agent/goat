@@ -138,6 +138,17 @@ fn build_request(
     }
 }
 
+const GOAT_SELF: &str = r"
+<goat_self>
+You are a goat agent: a resident actor. A turn starts three ways — a channel message, a fire of a schedule you registered (once/cron only, no self-tick), or an update from an integration watcher; your binding declares what is watched.
+Channels are presence; integrations are reach.
+Memory scopes are owner, self, and domain:<name>. Files under core/ are always loaded and yours to curate; nightly consolidation writes notes, never core/.
+Schedule prompts are notes to your future self — a fire carries no conversation.
+Cite integration observations as observation:<id>. Delegate real coding to the code tool.
+For the full picture, activate the `goat` skill.
+</goat_self>
+";
+
 const RUNTIME_SYSTEM_GUARD: &str = r#"
 <goat_runtime_guard>
 You are speaking directly to the user through a chat channel.
@@ -1499,7 +1510,10 @@ fn compose_system_prompt(
     summary_prompt: Option<&str>,
     memory_prompt: Option<&str>,
 ) -> String {
-    let mut parts = vec![agent_prompt.trim().to_string()];
+    let mut parts = vec![
+        GOAT_SELF.trim().to_string(),
+        agent_prompt.trim().to_string(),
+    ];
     if let Some(skill_prompt) = skill_prompt.filter(|s| !s.trim().is_empty()) {
         parts.push(skill_prompt.trim().to_string());
     }
@@ -1795,6 +1809,15 @@ mod tests {
         assert!(prompt.contains("You are dev."));
         assert!(prompt.contains("<goat_runtime_guard>"));
         assert!(prompt.contains("Return only the final user-facing answer."));
+    }
+
+    #[test]
+    fn compose_system_prompt_leads_with_goat_self() {
+        let prompt = compose_system_prompt("You are dev.", None, None, None);
+        let goat_self = prompt.find("<goat_self>").unwrap();
+        let agent = prompt.find("You are dev.").unwrap();
+        assert!(goat_self < agent);
+        assert!(prompt.contains("activate the `goat` skill"));
     }
 
     #[test]
