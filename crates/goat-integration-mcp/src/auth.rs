@@ -29,16 +29,16 @@ pub fn resolve(
         Some(Credential::ApiKey(secret) | Credential::ApiKeyWithEndpoint { secret, .. }) => Ok(
             ResolvedAuth::Token(header_value(service.auth_scheme, secret.expose())),
         ),
-        Some(Credential::OAuth(_)) => {
-            let client_id = client_id.ok_or_else(|| {
-                IntegrationError::Config(format!(
+        Some(Credential::OAuth(tokens)) => {
+            if tokens.client_id.is_none() && client_id.is_none() {
+                return Err(IntegrationError::Config(format!(
                     "{name} connection missing `client_id`; run `goat integration add {name}`"
-                ))
-            })?;
+                )));
+            }
             Ok(ResolvedAuth::OAuth(StoredOAuth::new(
                 credentials.clone(),
                 key,
-                client_id.to_owned(),
+                client_id.map(str::to_owned),
             )))
         }
         None => Err(IntegrationError::Auth(missing_credential(

@@ -25,7 +25,7 @@ pub fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SecretString(String);
 
@@ -119,14 +119,21 @@ impl CredentialKey {
 #[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
     ApiKey,
+    #[serde(rename = "oauth", alias = "o_auth")]
     OAuth,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenSet {
     pub access_token: SecretString,
     pub refresh_token: Option<SecretString>,
     pub expires_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
 }
 
 impl TokenSet {
@@ -143,7 +150,26 @@ impl TokenSet {
                 .map(SecretString::from)
                 .or_else(|| fallback_refresh.map(SecretString::from)),
             expires_at,
+            ..Self::default()
         }
+    }
+
+    #[must_use]
+    pub fn with_client(mut self, client_id: impl Into<String>) -> Self {
+        self.client_id = Some(client_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_scopes(mut self, scopes: Vec<String>) -> Self {
+        self.scopes = scopes;
+        self
+    }
+
+    #[must_use]
+    pub fn with_issuer(mut self, issuer: Option<String>) -> Self {
+        self.issuer = issuer;
+        self
     }
 
     pub fn is_expired(&self) -> bool {
@@ -255,6 +281,7 @@ enum StoredValue {
         secret: SecretString,
         endpoint: String,
     },
+    #[serde(rename = "oauth", alias = "o_auth")]
     OAuth {
         tokens: TokenSet,
     },
@@ -602,7 +629,7 @@ impl CredentialStore {
 mod tests {
     use super::{
         Credential, CredentialKey, CredentialKind, CredentialService, CredentialStore, Pkce,
-        SecretString, TokenSet, ensure_valid, now_secs,
+        SecretString, StoredValue, TokenSet, ensure_valid, now_secs,
     };
 
     #[tokio::test]
@@ -617,6 +644,7 @@ mod tests {
             access_token: SecretString::from("old"),
             refresh_token: Some(SecretString::from("refresh")),
             expires_at: Some(now_secs() - 100),
+            ..TokenSet::default()
         };
         let calls = Arc::new(AtomicUsize::new(0));
         let mut handles = Vec::new();
@@ -635,6 +663,7 @@ mod tests {
                             access_token: SecretString::from("new"),
                             refresh_token: Some(SecretString::from("refresh2")),
                             expires_at: Some(now_secs() + 3600),
+                            ..TokenSet::default()
                         })
                     }
                 })
@@ -747,6 +776,72 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn an_oauth_credential_is_stored_under_the_plain_spelling() {
+        let stored = StoredValue::from(Credential::OAuth(TokenSet {
+            access_token: SecretString::from("at"),
+            ..TokenSet::default()
+        }));
+        assert_eq!(serde_json::to_value(&stored).unwrap()["kind"], "oauth");
+    }
+
+    #[test]
+    fn credentials_written_before_the_rename_still_load() {
+        let legacy = serde_json::json!({
+            "kind": "o_auth",
+            "tokens": { "access_token": "at", "refresh_token": null, "expires_at": null }
+        });
+        let stored: StoredValue = serde_json::from_value(legacy).unwrap();
+        let credential = Credential::from(stored);
+        assert!(matches!(credential, Credential::OAuth(t) if t.access_token.expose() == "at"));
+    }
+
+    #[test]
+    fn the_credential_kind_uses_the_same_spelling_both_ways() {
+        assert_eq!(
+            serde_json::to_value(CredentialKind::OAuth).unwrap(),
+            serde_json::Value::String("oauth".to_owned())
+        );
+        let from_new: CredentialKind = serde_json::from_str("\"oauth\"").unwrap();
+        let from_old: CredentialKind = serde_json::from_str("\"o_auth\"").unwrap();
+        assert_eq!(from_new, CredentialKind::OAuth);
+        assert_eq!(from_old, CredentialKind::OAuth);
+    }
+
+    #[test]
+    fn the_oauth_identity_is_omitted_when_empty_and_kept_when_set() {
+        let bare = TokenSet {
+            access_token: SecretString::from("at"),
+            ..TokenSet::default()
+        };
+        let raw = serde_json::to_value(&bare).unwrap();
+        assert!(raw.get("client_id").is_none());
+        assert!(raw.get("scopes").is_none());
+        assert!(raw.get("issuer").is_none());
+
+        let full = bare
+            .with_client("cid")
+            .with_scopes(vec!["read".to_owned()])
+            .with_issuer(Some("https://as.test".to_owned()));
+        let raw = serde_json::to_value(&full).unwrap();
+        assert_eq!(raw["client_id"], "cid");
+        assert_eq!(raw["scopes"], serde_json::json!(["read"]));
+        assert_eq!(raw["issuer"], "https://as.test");
+
+        let back: TokenSet = serde_json::from_value(raw).unwrap();
+        assert_eq!(back, full);
+    }
+
+    #[test]
+    fn tokens_written_before_the_identity_fields_still_load() {
+        let legacy = serde_json::json!({ "access_token": "at" });
+        let tokens: TokenSet = serde_json::from_value(legacy).unwrap();
+        assert_eq!(tokens.access_token.expose(), "at");
+        assert!(tokens.client_id.is_none());
+        assert!(tokens.scopes.is_empty());
+        assert!(tokens.issuer.is_none());
+    }
+
+    #[test]
     fn saved_file_is_owner_only_and_atomic() {
         use std::os::unix::fs::PermissionsExt;
         let path = std::env::temp_dir().join("goat-auth-perms-test.json");
@@ -842,18 +937,21 @@ mod tests {
             access_token: SecretString::from("a"),
             refresh_token: None,
             expires_at: Some(0),
+            ..TokenSet::default()
         };
         assert!(expired.is_expired());
         let fresh = TokenSet {
             access_token: SecretString::from("a"),
             refresh_token: None,
             expires_at: Some(i64::MAX),
+            ..TokenSet::default()
         };
         assert!(!fresh.is_expired());
         let no_expiry = TokenSet {
             access_token: SecretString::from("a"),
             refresh_token: None,
             expires_at: None,
+            ..TokenSet::default()
         };
         assert!(!no_expiry.is_expired());
     }

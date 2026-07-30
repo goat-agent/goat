@@ -17,15 +17,19 @@ pub use rmcp::transport::auth::AuthClient as McpAuthClient;
 pub struct StoredOAuth {
     credentials: GoatCredentialStore,
     key: CredentialKey,
-    client_id: String,
+    fallback_client_id: Option<String>,
 }
 
 impl StoredOAuth {
-    pub fn new(credentials: GoatCredentialStore, key: CredentialKey, client_id: String) -> Self {
+    pub fn new(
+        credentials: GoatCredentialStore,
+        key: CredentialKey,
+        fallback_client_id: Option<String>,
+    ) -> Self {
         Self {
             credentials,
             key,
-            client_id,
+            fallback_client_id,
         }
     }
 }
@@ -36,26 +40,33 @@ impl CredentialStore for StoredOAuth {
         let Some(Credential::OAuth(tokens)) = self.credentials.get(&self.key) else {
             return Ok(None);
         };
+        let Some(client_id) = tokens
+            .client_id
+            .clone()
+            .or_else(|| self.fallback_client_id.clone())
+        else {
+            return Ok(None);
+        };
         let response =
             response_from_tokens(&tokens).map_err(|e| AuthError::InternalError(e.to_string()))?;
-        Ok(Some(StoredCredentials::new(
-            self.client_id.clone(),
-            Some(response),
-            Vec::new(),
-            None,
-        )))
+        Ok(Some(
+            StoredCredentials::new(client_id, Some(response), tokens.scopes.clone(), None)
+                .with_issuer(tokens.issuer.clone()),
+        ))
     }
 
     async fn save(&self, credentials: StoredCredentials) -> Result<(), AuthError> {
         let Some(response) = credentials.token_response else {
             return Ok(());
         };
-        let fresh =
-            tokens_from_response(&response).map_err(|e| AuthError::InternalError(e.to_string()))?;
+        let fresh = tokens_from_response(&response)
+            .map_err(|e| AuthError::InternalError(e.to_string()))?
+            .with_client(credentials.client_id)
+            .with_scopes(credentials.granted_scopes)
+            .with_issuer(credentials.issuer);
         let unchanged = matches!(
             self.credentials.get(&self.key),
-            Some(Credential::OAuth(old))
-                if old.access_token.expose() == fresh.access_token.expose()
+            Some(Credential::OAuth(old)) if old == fresh
         );
         if unchanged {
             return Ok(());
@@ -94,6 +105,7 @@ pub fn tokens_from_response(response: &OAuthTokenResponse) -> Result<TokenSet, M
             .get("expires_in")
             .and_then(Value::as_i64)
             .map(|secs| chrono::Utc::now().timestamp() + secs),
+        ..TokenSet::default()
     })
 }
 
@@ -136,6 +148,14 @@ pub async fn run_login(
     scopes: &[&str],
     present_url: &(dyn for<'a> Fn(&'a str) + Send + Sync),
 ) -> Result<Authorization, McpError> {
+    let issuer = AuthorizationManager::new(url)
+        .await
+        .map_err(auth_failed)?
+        .resolve_metadata()
+        .await
+        .map_err(auth_failed)?
+        .metadata
+        .issuer;
     let (listener, port) = goat_auth::bind_loopback()
         .await
         .map_err(|e| auth_failed(e.to_string()))?;
@@ -173,10 +193,25 @@ pub async fn run_login(
         server: url.to_owned(),
         message: "no tokens after authorization".to_owned(),
     })?;
+    let granted = granted_scopes(&tokens);
     Ok(Authorization {
-        client_id,
-        tokens: tokens_from_response(&tokens)?,
+        client_id: client_id.clone(),
+        tokens: tokens_from_response(&tokens)?
+            .with_client(client_id)
+            .with_scopes(granted)
+            .with_issuer(issuer),
     })
+}
+
+fn granted_scopes(response: &OAuthTokenResponse) -> Vec<String> {
+    serde_json::to_value(response)
+        .ok()
+        .and_then(|raw| {
+            raw.get("scope")
+                .and_then(Value::as_str)
+                .map(|scope| scope.split_whitespace().map(str::to_owned).collect())
+        })
+        .unwrap_or_default()
 }
 
 fn state_of(auth_url: &str) -> Option<String> {
@@ -206,6 +241,7 @@ mod tests {
             access_token: SecretString::from(access),
             refresh_token: refresh.map(SecretString::from),
             expires_at,
+            ..TokenSet::default()
         }
     }
 
@@ -251,7 +287,7 @@ mod tests {
             .store(&key, Credential::OAuth(tokens("first", Some("rt"), None)))
             .unwrap();
 
-        let store = StoredOAuth::new(credentials.clone(), key.clone(), "cid".to_owned());
+        let store = StoredOAuth::new(credentials.clone(), key.clone(), Some("cid".to_owned()));
         let loaded = store.load().await.unwrap().expect("stored credentials");
         assert_eq!(loaded.client_id, "cid");
 
@@ -274,13 +310,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_oauth_identity_survives_a_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = GoatCredentialStore::new(dir.path().join("credentials.json"));
+        let key = CredentialKey::integration("sentry", "default");
+        let store = StoredOAuth::new(credentials.clone(), key.clone(), None);
+
+        store
+            .save(
+                StoredCredentials::new(
+                    "cid".to_owned(),
+                    Some(response_from_tokens(&tokens("at", Some("rt"), None)).unwrap()),
+                    vec!["read".to_owned(), "write".to_owned()],
+                    None,
+                )
+                .with_issuer(Some("https://as.test".to_owned())),
+            )
+            .await
+            .unwrap();
+
+        let Some(Credential::OAuth(saved)) = credentials.get(&key) else {
+            panic!("expected an oauth credential");
+        };
+        assert_eq!(saved.client_id.as_deref(), Some("cid"));
+        assert_eq!(saved.scopes, ["read", "write"]);
+        assert_eq!(saved.issuer.as_deref(), Some("https://as.test"));
+
+        let reloaded = store.load().await.unwrap().expect("credentials");
+        assert_eq!(reloaded.client_id, "cid");
+        assert_eq!(reloaded.granted_scopes, ["read", "write"]);
+        assert_eq!(reloaded.issuer.as_deref(), Some("https://as.test"));
+    }
+
+    #[tokio::test]
+    async fn a_credential_stored_before_this_change_uses_the_config_client_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = GoatCredentialStore::new(dir.path().join("credentials.json"));
+        let key = CredentialKey::integration("sentry", "default");
+        credentials
+            .store(&key, Credential::OAuth(tokens("at", None, None)))
+            .unwrap();
+
+        let without = StoredOAuth::new(credentials.clone(), key.clone(), None);
+        assert!(without.load().await.unwrap().is_none());
+
+        let with = StoredOAuth::new(credentials, key, Some("from-config".to_owned()));
+        assert_eq!(
+            with.load().await.unwrap().expect("credentials").client_id,
+            "from-config"
+        );
+    }
+
+    #[test]
+    fn granted_scopes_are_read_from_the_space_separated_scope_field() {
+        let mut raw =
+            serde_json::to_value(response_from_tokens(&tokens("at", None, None)).unwrap()).unwrap();
+        raw["scope"] = serde_json::json!("read write admin");
+        let response: OAuthTokenResponse = serde_json::from_value(raw).unwrap();
+        assert_eq!(granted_scopes(&response), ["read", "write", "admin"]);
+    }
+
+    #[test]
+    fn a_response_without_scopes_grants_nothing() {
+        let response = response_from_tokens(&tokens("at", None, None)).unwrap();
+        assert!(granted_scopes(&response).is_empty());
+    }
+
+    #[tokio::test]
     async fn an_absent_credential_loads_as_none() {
         let dir = tempfile::tempdir().unwrap();
         let credentials = GoatCredentialStore::new(dir.path().join("credentials.json"));
         let store = StoredOAuth::new(
             credentials,
             CredentialKey::integration("sentry", "default"),
-            "cid".to_owned(),
+            Some("cid".to_owned()),
         );
         assert!(store.load().await.unwrap().is_none());
     }
