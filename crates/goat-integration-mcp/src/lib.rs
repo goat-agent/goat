@@ -26,6 +26,13 @@ pub const MAX_RESULT_BYTES: usize = 96 * 1024;
 
 pub type HeaderFn = fn(&Value) -> HashMap<String, String>;
 pub type ToolFilterFn = fn(&CachedTool) -> ToolDisposition;
+pub type DescribeIdentityFn = fn(&Value) -> IntegrationResult<String>;
+
+#[derive(Clone, Copy)]
+pub struct IdentityProbe {
+    pub tool: &'static str,
+    pub describe: DescribeIdentityFn,
+}
 pub type WatchFn = fn(
     ProfileId,
     &IntegrationBinding,
@@ -49,6 +56,7 @@ pub struct McpService {
     pub truncation_hint: &'static str,
     pub tool_prefix: &'static str,
     pub tool_filter: ToolFilterFn,
+    pub identity: Option<IdentityProbe>,
     pub watch: Option<WatchFn>,
 }
 
@@ -76,6 +84,7 @@ impl McpService {
             truncation_hint: "narrow the request and call again",
             tool_prefix: "",
             tool_filter: allow_every_tool,
+            identity: None,
             watch: None,
         }
     }
@@ -132,6 +141,12 @@ impl McpService {
     #[must_use]
     pub const fn with_tool_filter(mut self, filter: ToolFilterFn) -> Self {
         self.tool_filter = filter;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_identity(mut self, probe: IdentityProbe) -> Self {
+        self.identity = Some(probe);
         self
     }
 
@@ -396,12 +411,18 @@ impl Integration for McpIntegration {
     ) -> IntegrationResult<String> {
         let binding = IntegrationBinding::from_config(config.clone());
         let session = self.service.connect(credentials, &binding).await?;
-        let name = session
-            .peer_name()
-            .await
-            .unwrap_or_else(|| format!("{} mcp", self.service.id.as_str()));
+        let described = match self.service.identity {
+            Some(probe) => {
+                let value = self.service.call(&session, probe.tool, Value::Null).await;
+                value.and_then(|value| (probe.describe)(&value))
+            }
+            None => Ok(session
+                .peer_name()
+                .await
+                .unwrap_or_else(|| format!("{} mcp", self.service.id.as_str()))),
+        };
         session.close().await;
-        Ok(name)
+        described
     }
 
     async fn oauth_login(
