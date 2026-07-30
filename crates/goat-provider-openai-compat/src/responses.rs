@@ -485,9 +485,9 @@ pub struct ResponsesProvider {
     client: reqwest::Client,
     model_filter: Option<fn(&str) -> bool>,
     vision_filter: fn(&str) -> bool,
-    catalog: &'static [&'static str],
+    catalog: Vec<String>,
     rate_limits_parser: Option<fn(&reqwest::header::HeaderMap) -> Option<RateLimitSnapshot>>,
-    context_windows: &'static [(&'static str, u32)],
+    context_windows: Vec<(String, u32)>,
     search_model: Option<&'static str>,
     metadata: ProviderMetadata,
     extra_headers: Vec<(String, String)>,
@@ -508,9 +508,9 @@ impl ResponsesProvider {
             client: common::http_client(),
             model_filter: None,
             vision_filter: crate::vision::known_openai_vision_model,
-            catalog: &[],
+            catalog: Vec::new(),
             rate_limits_parser: None,
-            context_windows: &[],
+            context_windows: Vec::new(),
             search_model: None,
             metadata: ProviderMetadata::default(),
             extra_headers: Vec::new(),
@@ -549,8 +549,8 @@ impl ResponsesProvider {
     }
 
     #[must_use]
-    pub fn with_catalog(mut self, catalog: &'static [&'static str]) -> Self {
-        self.catalog = catalog;
+    pub fn with_catalog(mut self, catalog: &[&str]) -> Self {
+        self.catalog = catalog.iter().map(|id| (*id).to_owned()).collect();
         self
     }
 
@@ -569,8 +569,11 @@ impl ResponsesProvider {
     }
 
     #[must_use]
-    pub fn with_context_windows(mut self, windows: &'static [(&'static str, u32)]) -> Self {
-        self.context_windows = windows;
+    pub fn with_context_windows(mut self, windows: &[(&str, u32)]) -> Self {
+        self.context_windows = windows
+            .iter()
+            .map(|(prefix, window)| ((*prefix).to_owned(), *window))
+            .collect();
         self
     }
 
@@ -729,8 +732,8 @@ impl Provider for ResponsesProvider {
         })
     }
 
-    fn catalog(&self) -> &'static [&'static str] {
-        self.catalog
+    fn list_models(&self) -> Vec<String> {
+        self.catalog.clone()
     }
 
     fn efforts(&self, model: &str) -> Vec<Effort> {
@@ -740,7 +743,7 @@ impl Provider for ResponsesProvider {
     fn context_window(&self, model: &str) -> Option<u32> {
         self.context_windows
             .iter()
-            .find(|(prefix, _)| model.starts_with(prefix))
+            .find(|(prefix, _)| model.starts_with(prefix.as_str()))
             .map(|(_, w)| *w)
     }
 

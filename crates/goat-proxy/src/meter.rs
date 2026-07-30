@@ -165,10 +165,6 @@ impl Provider for MeteredProvider {
         self.inner.discover(out)
     }
 
-    fn catalog(&self) -> &'static [&'static str] {
-        self.inner.catalog()
-    }
-
     fn model_list_source(&self) -> ModelListSource {
         self.inner.model_list_source()
     }

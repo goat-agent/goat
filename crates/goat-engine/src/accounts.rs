@@ -616,7 +616,7 @@ mod tests {
             model_list_source_check(ollama.as_ref()),
             ModelListSource::Discover
         );
-        assert!(ollama.catalog().is_empty());
+        assert!(ollama.list_models().is_empty());
     }
 
     #[test]
@@ -630,7 +630,7 @@ mod tests {
             model_list_source_check(openai.as_ref()),
             ModelListSource::Catalog
         );
-        assert!(!openai.catalog().is_empty());
+        assert!(!openai.list_models().is_empty());
     }
 
     #[test]
