@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 goat-provider = { workspace = true }
 goat-auth = { workspace = true }
+goat-config = { workspace = true }
 goat-proxy = { workspace = true }
 tokio = { workspace = true }
 goat-provider-builtin = { workspace = true }

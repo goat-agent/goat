@@ -17,7 +17,7 @@ pub use paths::{
 };
 pub use settings::{
     Config, RemoteConfig, SearchAccountConfig, SearchConfig, SettingsError, ThemeChoice,
-    WebFetchConfig,
+    UserProviderConfig, UserProviders, WebFetchConfig,
 };
 
 use goat_agent_config::AgentConfig;

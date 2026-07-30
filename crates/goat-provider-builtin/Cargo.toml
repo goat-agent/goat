@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 goat-auth = { workspace = true }
+goat-model = { workspace = true }
 goat-provider = { workspace = true }
 goat-provider-openai-compat = { workspace = true }
 reqwest = { workspace = true }

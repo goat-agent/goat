@@ -14,6 +14,7 @@ async fn start_remote_daemon(dir: &std::path::Path, port: u16) -> PathBuf {
     let cfg = goat_daemon::DaemonConfig {
         socket_path: socket.clone(),
         auth_path: dir.join("auth.json"),
+        config_json: dir.join("config.json"),
         db_path: dir.join("store.sqlite"),
         remote: Some(goat_daemon::RemoteSettings {
             remote_dir: dir.join("remote"),

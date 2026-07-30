@@ -24,6 +24,44 @@ pub struct Config {
     pub web_fetch: WebFetchConfig,
     pub proxy: ProxyConfig,
     pub integrations: std::collections::BTreeMap<String, serde_json::Value>,
+    pub providers: std::collections::BTreeMap<String, UserProviderConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserProviderConfig {
+    pub endpoint: String,
+}
+
+#[derive(Clone)]
+pub struct UserProviders {
+    path: Option<std::path::PathBuf>,
+}
+
+impl UserProviders {
+    #[must_use]
+    pub fn detect() -> Self {
+        Self {
+            path: config_path(),
+        }
+    }
+
+    #[must_use]
+    pub fn at(path: std::path::PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    #[must_use]
+    pub fn load(&self) -> std::collections::BTreeMap<String, UserProviderConfig> {
+        let Some(path) = &self.path else {
+            return std::collections::BTreeMap::new();
+        };
+        let Ok(raw) = fs::read_to_string(path) else {
+            return std::collections::BTreeMap::new();
+        };
+        serde_json::from_str::<Config>(&raw)
+            .map(|config| config.providers)
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -97,6 +135,7 @@ impl Default for Config {
             web_fetch: WebFetchConfig::default(),
             proxy: ProxyConfig::default(),
             integrations: std::collections::BTreeMap::new(),
+            providers: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -143,7 +182,34 @@ pub enum SettingsError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, ProxyConfig, RemoteConfig, SearchConfig, ThemeChoice, WebFetchConfig};
+    use super::{
+        Config, ProxyConfig, RemoteConfig, SearchConfig, ThemeChoice, UserProviders, WebFetchConfig,
+    };
+
+    #[test]
+    fn parses_user_providers() {
+        let cfg = Config::from_json(
+            r#"{ "providers": { "my-proxy": { "endpoint": "https://llm.corp/v1" } } }"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.providers["my-proxy"].endpoint, "https://llm.corp/v1");
+    }
+
+    #[test]
+    fn user_providers_reads_fresh_from_disk() {
+        let path = std::env::temp_dir().join("goat-config-user-providers.json");
+        let _ = std::fs::remove_file(&path);
+        let user = UserProviders::at(path.clone());
+        assert!(user.load().is_empty());
+        std::fs::write(
+            &path,
+            r#"{ "providers": { "my-proxy": { "endpoint": "http://localhost:9/v1" } } }"#,
+        )
+        .unwrap();
+        assert_eq!(user.load()["my-proxy"].endpoint, "http://localhost:9/v1");
+        std::fs::write(&path, "{}").unwrap();
+        assert!(user.load().is_empty());
+    }
 
     #[test]
     fn defaults_to_dark() {
@@ -206,6 +272,7 @@ mod tests {
             web_fetch: WebFetchConfig::default(),
             proxy: ProxyConfig::default(),
             integrations: std::collections::BTreeMap::new(),
+            providers: std::collections::BTreeMap::new(),
         };
         let raw = serde_json::to_string(&cfg).unwrap();
         assert_eq!(Config::from_json(&raw).unwrap(), cfg);

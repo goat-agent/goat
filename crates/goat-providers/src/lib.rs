@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use goat_auth::{CredentialStore, TokenSet};
+use goat_config::UserProviders;
 use goat_provider::{Provider, ProviderId};
-use goat_provider_builtin::{self as builtin, rows};
+pub use goat_provider_builtin as builtin;
+use goat_provider_builtin::rows;
 
 pub const DEFAULT_ACCOUNT: &str = "default";
 
@@ -11,20 +13,21 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn new(store: &CredentialStore) -> Self {
-        Self::load(store, DEFAULT_ACCOUNT)
+    pub fn new(store: &CredentialStore, user: &UserProviders) -> Self {
+        Self::load(store, user, DEFAULT_ACCOUNT)
     }
 
-    pub fn load(store: &CredentialStore, account: &str) -> Self {
-        Self::load_metered(store, account, None)
+    pub fn load(store: &CredentialStore, user: &UserProviders, account: &str) -> Self {
+        Self::load_metered(store, user, account, None)
     }
 
     pub fn load_metered(
         store: &CredentialStore,
+        user: &UserProviders,
         account: &str,
         meter: Option<goat_proxy::Meter>,
     ) -> Self {
-        let providers: Vec<Arc<dyn Provider>> = vec![
+        let mut providers: Vec<Arc<dyn Provider>> = vec![
             builtin::build(&rows::OPENAI, store, account),
             Arc::new(goat_provider_openai_codex::build(store, account)),
             Arc::new(goat_provider_anthropic::build(store, account)),
@@ -45,6 +48,14 @@ impl Registry {
             builtin::build(&rows::LMSTUDIO, store, account),
             builtin::build(&rows::LLAMA_CPP, store, account),
         ];
+        for (id, config) in user.load() {
+            if providers.iter().any(|provider| provider.id().0 == id) {
+                continue;
+            }
+            if let Some(provider) = builtin::user(&id, &config.endpoint, store, account) {
+                providers.push(provider);
+            }
+        }
         let providers = match meter {
             Some(meter) => providers
                 .into_iter()
@@ -171,7 +182,8 @@ mod fingerprint {
     fn registry(name: &str) -> Registry {
         let path = std::env::temp_dir().join(name);
         let _ = std::fs::remove_file(&path);
-        Registry::new(&goat_auth::CredentialStore::new(path))
+        let user = goat_config::UserProviders::at(path.with_extension("config.json"));
+        Registry::new(&goat_auth::CredentialStore::new(path), &user)
     }
 
     #[test]
@@ -197,12 +209,52 @@ mod tests {
 
     use super::Registry;
 
+    fn no_user(name: &str) -> goat_config::UserProviders {
+        let path = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_file(&path);
+        goat_config::UserProviders::at(path)
+    }
+
+    #[test]
+    fn user_providers_join_the_registry() {
+        let store_path = std::env::temp_dir().join("goat-providers-user-store.json");
+        let config_path = std::env::temp_dir().join("goat-providers-user-config.json");
+        let _ = std::fs::remove_file(&store_path);
+        std::fs::write(
+            &config_path,
+            r#"{ "providers": {
+                "my-proxy": { "endpoint": "http://localhost:9/v1" },
+                "openai": { "endpoint": "http://localhost:9/v1" },
+                "Bad Name": { "endpoint": "http://localhost:9/v1" }
+            } }"#,
+        )
+        .unwrap();
+        let store = goat_auth::CredentialStore::new(store_path);
+        let user = goat_config::UserProviders::at(config_path);
+        let registry = Registry::new(&store, &user);
+        assert_eq!(registry.all().len(), 20);
+        let custom = registry
+            .get(&ProviderId::from("my-proxy"))
+            .expect("custom provider");
+        assert_eq!(custom.capabilities().auth, AuthMethod::None);
+        assert!(custom.authenticated());
+        assert_eq!(custom.metadata().validation, "custom");
+        assert_eq!(
+            registry
+                .get(&ProviderId::from("openai"))
+                .expect("openai stays builtin")
+                .metadata()
+                .validation,
+            "network"
+        );
+    }
+
     #[test]
     fn builtin_registers_known_providers() {
         let store = goat_auth::CredentialStore::new(
             std::env::temp_dir().join("goat-providers-registry-test.json"),
         );
-        let registry = Registry::new(&store);
+        let registry = Registry::new(&store, &no_user("goat-providers-registry-nouser.json"));
         assert_eq!(registry.all().len(), 19);
         assert!(registry.get(&ProviderId::from("anthropic")).is_some());
         assert!(registry.get(&ProviderId::from("openrouter")).is_some());

@@ -19,10 +19,11 @@ pub enum VerifyOutcome {
 
 pub async fn verify_credential(
     store: &CredentialStore,
+    user: &goat_config::UserProviders,
     provider: &str,
     account: &str,
 ) -> VerifyOutcome {
-    let registry = Registry::load(store, account);
+    let registry = Registry::load(store, user, account);
     let Some(handle) = registry.get(&ProviderId::from(provider)) else {
         return VerifyOutcome::Unverifiable("unknown provider".to_owned());
     };
@@ -89,8 +90,8 @@ pub fn report_outcome(outcome: &VerifyOutcome) {
     }
 }
 
-pub async fn render_all(store: &CredentialStore) {
-    let registry = Registry::new(store);
+pub async fn render_all(store: &CredentialStore, user: &goat_config::UserProviders) {
+    let registry = Registry::new(store, user);
     let mut pairs = Vec::new();
     for provider in registry.all() {
         let id = provider.id().to_string();
@@ -98,25 +99,35 @@ pub async fn render_all(store: &CredentialStore) {
             pairs.push((id.clone(), account));
         }
     }
-    render_table(store, &pairs, "no connected providers").await;
+    render_table(store, user, &pairs, "no connected providers").await;
 }
 
-pub async fn render_accounts(store: &CredentialStore, provider: &str, accounts: &[String]) {
+pub async fn render_accounts(
+    store: &CredentialStore,
+    user: &goat_config::UserProviders,
+    provider: &str,
+    accounts: &[String],
+) {
     let pairs: Vec<(String, String)> = accounts
         .iter()
         .map(|account| (provider.to_owned(), account.clone()))
         .collect();
-    render_table(store, &pairs, "no connected providers").await;
+    render_table(store, user, &pairs, "no connected providers").await;
 }
 
-async fn render_table(store: &CredentialStore, pairs: &[(String, String)], empty: &str) {
+async fn render_table(
+    store: &CredentialStore,
+    user: &goat_config::UserProviders,
+    pairs: &[(String, String)],
+    empty: &str,
+) {
     if pairs.is_empty() {
         ui::note(empty);
         return;
     }
     let mut table = Table::new(["provider", "status", "detail"]);
     for (provider, account) in pairs {
-        let outcome = verify_credential(store, provider, account).await;
+        let outcome = verify_credential(store, user, provider, account).await;
         let (status, style, detail) = outcome_row(&outcome);
         table.styled_row(vec![
             (row_label(provider, account), Palette::Plain),
@@ -150,6 +161,10 @@ mod tests {
 
     fn temp_store(name: &str) -> CredentialStore {
         CredentialStore::new(std::env::temp_dir().join(name))
+    }
+
+    fn no_user() -> goat_config::UserProviders {
+        goat_config::UserProviders::at(std::env::temp_dir().join("goat-agent-verify-no-user.json"))
     }
 
     #[test]
@@ -199,7 +214,7 @@ mod tests {
     async fn local_provider_is_unverifiable_offline() {
         let store = temp_store("goat-verify-local-test.json");
         assert_eq!(
-            verify_credential(&store, "ollama", DEFAULT_ACCOUNT).await,
+            verify_credential(&store, &no_user(), "ollama", DEFAULT_ACCOUNT).await,
             VerifyOutcome::Unverifiable("local provider".to_owned())
         );
     }
@@ -208,7 +223,7 @@ mod tests {
     async fn catalog_only_provider_is_unverifiable_offline() {
         let store = temp_store("goat-verify-catalog-test.json");
         assert_eq!(
-            verify_credential(&store, "zai", DEFAULT_ACCOUNT).await,
+            verify_credential(&store, &no_user(), "zai", DEFAULT_ACCOUNT).await,
             VerifyOutcome::Unverifiable("no live check for this provider".to_owned())
         );
     }
@@ -217,7 +232,7 @@ mod tests {
     async fn unknown_provider_is_unverifiable() {
         let store = temp_store("goat-verify-unknown-test.json");
         assert_eq!(
-            verify_credential(&store, "nope", DEFAULT_ACCOUNT).await,
+            verify_credential(&store, &no_user(), "nope", DEFAULT_ACCOUNT).await,
             VerifyOutcome::Unverifiable("unknown provider".to_owned())
         );
     }

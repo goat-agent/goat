@@ -89,7 +89,8 @@ impl Goat {
         let store: Arc<dyn Store> = Arc::new(sqlite_store);
 
         let sdk_store = goat_auth::CredentialStore::new(cfg.paths.credentials_json.clone());
-        let providers = build_provider_registry(&sdk_store, meter.as_ref());
+        let user_providers = goat_config::UserProviders::at(cfg.paths.config_json.clone());
+        let providers = build_provider_registry(&sdk_store, &user_providers, meter.as_ref());
         let embedders = build_embedders(&cfg.agents, &sdk_store).await;
         let channels = build_channel_registry();
 
@@ -328,6 +329,7 @@ async fn shutdown_signal() -> &'static str {
 
 fn build_provider_registry(
     store: &goat_auth::CredentialStore,
+    user: &goat_config::UserProviders,
     meter: Option<&goat_proxy::Meter>,
 ) -> Arc<ProviderRegistry> {
     use goat_auth::CredentialService;
@@ -346,7 +348,7 @@ fn build_provider_registry(
     let mut registry = ProviderRegistry::new();
     let mut logged = std::collections::HashSet::new();
     for account in &accounts {
-        for provider in Registry::load_metered(store, account, meter.cloned()).all() {
+        for provider in Registry::load_metered(store, user, account, meter.cloned()).all() {
             if logged.insert(provider.id().to_string()) {
                 info!(provider = %provider.id(), "loaded provider");
             }
