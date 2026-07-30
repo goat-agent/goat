@@ -33,19 +33,11 @@ impl ViewRow {
     }
 }
 
-pub struct FetchPage {
-    pub rows: Vec<ViewRow>,
-    pub truncated: bool,
-}
-
-pub fn parse_page(data: &Value) -> IntegrationResult<FetchPage> {
-    Ok(FetchPage {
-        rows: parse_rows(data)?,
-        truncated: ["has_more", "hasMore"]
-            .iter()
-            .find_map(|key| data.get(key).and_then(Value::as_bool))
-            .unwrap_or(false),
-    })
+pub fn has_more(data: &Value) -> bool {
+    ["has_more", "hasMore"]
+        .iter()
+        .find_map(|key| data.get(key).and_then(Value::as_bool))
+        .unwrap_or(false)
 }
 
 pub fn parse_rows(data: &Value) -> IntegrationResult<Vec<ViewRow>> {
@@ -182,14 +174,14 @@ mod tests {
             }],
             "has_more": false
         });
-        let page = parse_page(&data).unwrap();
-        assert!(!page.truncated);
-        assert_eq!(page.rows.len(), 1);
-        assert_eq!(page.rows[0].id, "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d");
-        assert_eq!(page.rows[0].title, "Ship the watcher");
-        assert_eq!(page.rows[0].edited_at, "2026-07-28T10:00:00.000Z");
+        assert!(!has_more(&data));
+        let rows = parse_rows(&data).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d");
+        assert_eq!(rows[0].title, "Ship the watcher");
+        assert_eq!(rows[0].edited_at, "2026-07-28T10:00:00.000Z");
         assert_eq!(
-            page.rows[0].raw["properties"]["Status"]["select"]["name"],
+            rows[0].raw["properties"]["Status"]["select"]["name"],
             "Review"
         );
     }
@@ -208,8 +200,9 @@ mod tests {
             let wrapped = json!({ key: [{ "id": "x", "title": "T" }] });
             assert_eq!(parse_rows(&wrapped).unwrap()[0].title, "T");
         }
-        let page = parse_page(&json!({ "results": [], "has_more": true })).unwrap();
-        assert!(page.truncated);
+        assert!(has_more(&json!({ "results": [], "has_more": true })));
+        assert!(has_more(&json!({ "hasMore": true })));
+        assert!(!has_more(&json!({ "results": [] })));
     }
 
     #[test]

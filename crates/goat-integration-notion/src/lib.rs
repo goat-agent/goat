@@ -1,192 +1,61 @@
-mod diff;
-mod mcp;
 mod parse;
-mod tool;
-mod watcher;
+mod watch;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
-use async_trait::async_trait;
-use goat_agent_tool::{ToolName, ToolRegistry};
-use goat_auth::CredentialStore;
-use goat_integration::{
-    BindingMap, Integration, IntegrationAuth, IntegrationBinding, IntegrationError,
-    IntegrationFactory, IntegrationMetadata, IntegrationResult, IntegrationRuntime,
-};
-use goat_types::{IntegrationId, ProfileId};
+use goat_integration::{IntegrationFactory, IntegrationResult};
+use goat_integration_mcp::McpService;
+use goat_types::IntegrationId;
+use serde::Deserialize;
 use serde_json::Value;
-use tokio_util::sync::CancellationToken;
-use tracing::warn;
 
 pub const ID: IntegrationId = IntegrationId::from_static("notion");
+pub const PREFIX: &str = "notion_";
+
+const MCP_URL: &str = "https://mcp.notion.com/mcp";
 
 const SETUP: &str = "connects to Notion's hosted MCP server; a browser window will ask you to approve access.\nto get briefed when work lands, add `view_url` (a saved Notion view URL, the one with ?v=) to the agent's notion binding — without it the tools work and the watcher stays off";
 
-pub struct NotionIntegration;
+pub fn service() -> McpService {
+    McpService::new("notion", "Notion", MCP_URL, SETUP)
+        .with_tool_prefix(PREFIX)
+        .with_truncation_hint("narrow the view, or request a smaller page")
+        .with_watch(watch::spawn)
+}
 
-#[async_trait]
-impl Integration for NotionIntegration {
-    fn id(&self) -> IntegrationId {
-        ID
-    }
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NotionBinding {
+    #[serde(default, deserialize_with = "meaningful")]
+    pub view_url: Option<String>,
+    #[serde(default, deserialize_with = "meaningful")]
+    pub query_tool: Option<String>,
+}
 
-    fn metadata(&self) -> IntegrationMetadata {
-        IntegrationMetadata {
-            id: "notion",
-            display: "Notion",
-            auth: IntegrationAuth::OAuth,
-            secret_label: "Notion integration token",
-            env_var: None,
-            setup: SETUP,
-            has_watcher: true,
-        }
-    }
-
-    async fn register_tools(
-        &self,
-        registry: &mut ToolRegistry,
-        runtime: &IntegrationRuntime,
-        bindings: Arc<BindingMap>,
-    ) -> Vec<ToolName> {
-        tool::register(registry, runtime, bindings).await
-    }
-
-    fn spawn_watcher(
-        &self,
-        persona: ProfileId,
-        binding: IntegrationBinding,
-        runtime: IntegrationRuntime,
-        cancel: CancellationToken,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        let Some(view_url) = string_setting(&binding.config, "view_url") else {
-            warn!(
-                profile = %persona,
-                "notion watcher disabled; set `view_url` to a saved Notion view in the agent's notion binding",
-            );
-            return None;
-        };
-        let fetch = watcher::McpFetch {
-            credentials: runtime.credentials.clone(),
-            account: binding.account.clone(),
-            client_id: string_setting(&binding.config, "client_id"),
-            view_url,
-            query_tool: string_setting(&binding.config, "query_tool"),
-            resolved_tool: OnceLock::new(),
-        };
-        Some(tokio::spawn(watcher::run(
-            persona,
-            runtime,
-            binding.account,
-            fetch,
-            cancel,
-        )))
-    }
-
-    async fn verify(
-        &self,
-        config: &Value,
-        credentials: &CredentialStore,
-    ) -> IntegrationResult<String> {
-        let account = config
-            .get("account")
-            .and_then(Value::as_str)
-            .unwrap_or("default");
-        let client_id = config.get("client_id").and_then(Value::as_str);
-        let auth = mcp::resolve_auth(credentials, account, client_id)?;
-        let session = mcp::connect(&auth).await?;
-        let name = session.server_name();
-        mcp::persist_tokens(credentials, account, &session).await;
-        session.close().await;
-        Ok(name)
-    }
-
-    async fn oauth_login(
-        &self,
-        credentials: &CredentialStore,
-        account: &str,
-        present_url: &(dyn for<'a> Fn(&'a str) + Send + Sync),
-    ) -> IntegrationResult<serde_json::Value> {
-        use rmcp::transport::auth::{AuthorizationRequest, OAuthState};
-
-        let (listener, port) = goat_auth::bind_loopback()
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        let redirect = format!("http://127.0.0.1:{port}/callback");
-
-        let mut oauth = OAuthState::new(mcp::MCP_URL, None)
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        oauth
-            .start_authorization(AuthorizationRequest::new(&redirect).with_client_name("goat"))
-            .await
-            .map_err(|e| IntegrationError::Auth(format!("authorization start failed: {e}")))?;
-        let auth_url = oauth
-            .get_authorization_url()
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        let state = url::Url::parse(&auth_url)
-            .ok()
-            .and_then(|u| {
-                u.query_pairs()
-                    .find(|(k, _)| k == "state")
-                    .map(|(_, v)| v.to_string())
-            })
-            .ok_or_else(|| IntegrationError::Auth("authorization url missing state".into()))?;
-
-        present_url(&auth_url);
-        let code = goat_auth::capture_on(listener, &state)
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        oauth
-            .handle_callback(&code, &state)
-            .await
-            .map_err(|e| IntegrationError::Auth(format!("token exchange failed: {e}")))?;
-
-        let (client_id, tokens) = oauth
-            .get_credentials()
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        let tokens =
-            tokens.ok_or_else(|| IntegrationError::Auth("no tokens after authorization".into()))?;
-        credentials
-            .store(
-                &goat_auth::CredentialKey::integration("notion", account),
-                goat_auth::Credential::OAuth(mcp::token_set_from_response(&tokens)?),
-            )
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        Ok(serde_json::json!({ "client_id": client_id }))
+impl NotionBinding {
+    pub(crate) fn read(config: &Value) -> Self {
+        goat_integration_mcp::read_binding(config)
     }
 }
 
-fn string_setting(config: &Value, key: &str) -> Option<String> {
-    config
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+fn meaningful<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<String> = Option::deserialize(deserializer)?;
+    Ok(raw
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty()))
 }
 
 fn validate_config(config: &Value) -> IntegrationResult<()> {
-    let obj = config
-        .as_object()
-        .ok_or_else(|| IntegrationError::Config("notion binding must be an object".into()))?;
-    for key in ["account", "client_id", "view_url", "query_tool"] {
-        if let Some(value) = obj.get(key)
-            && !value.is_string()
-        {
-            return Err(IntegrationError::Config(format!(
-                "`{key}` must be a string"
-            )));
-        }
-    }
-    Ok(())
+    goat_integration_mcp::validate_binding::<NotionBinding>("notion", config)
 }
 
 inventory::submit! {
     IntegrationFactory {
         id: ID,
-        ctor: || Arc::new(NotionIntegration),
+        ctor: || Arc::new(service().build()),
         validate_config,
     }
 }
@@ -194,42 +63,20 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goat_integration::{Integration, IntegrationAuth};
     use serde_json::json;
 
     #[test]
-    fn validate_config_accepts_valid_and_rejects_invalid() {
+    fn the_binding_is_typo_checked() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "account": "work" })).is_ok());
+        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
         assert!(
-            validate_config(&json!({
-                "view_url": "https://notion.so/w/db?v=abc",
-                "query_tool": "notion-query-data-sources",
-                "client_id": "cid"
-            }))
-            .is_ok()
+            validate_config(&json!({ "view_url": "https://notion.so/x?v=1", "query_tool": "t" }))
+                .is_ok()
         );
         assert!(validate_config(&json!("nope")).is_err());
-        assert!(validate_config(&json!({ "account": 3 })).is_err());
-        assert!(validate_config(&json!({ "view_url": true })).is_err());
-    }
-
-    #[test]
-    fn string_setting_treats_blank_as_absent() {
-        let config = json!({ "view_url": "  ", "query_tool": " tool ", "account": "a" });
-        assert_eq!(string_setting(&config, "view_url"), None);
-        assert_eq!(
-            string_setting(&config, "query_tool").as_deref(),
-            Some("tool")
-        );
-        assert_eq!(string_setting(&config, "missing"), None);
-    }
-
-    #[test]
-    fn metadata_matches_the_registered_id() {
-        let integration = NotionIntegration;
-        assert_eq!(integration.id().as_str(), "notion");
-        assert_eq!(integration.metadata().id, "notion");
-        assert!(integration.metadata().has_watcher);
+        assert!(validate_config(&json!({ "view_url": 3 })).is_err());
+        assert!(validate_config(&json!({ "viewurl": "x" })).is_err());
     }
 
     #[test]
@@ -237,5 +84,56 @@ mod tests {
         let registry = goat_integration::registry_from_inventory();
         assert!(registry.contains_key("notion"));
         assert!(goat_integration::factory_for("notion").is_some());
+    }
+
+    #[test]
+    fn metadata_has_no_environment_override_because_notion_offers_none() {
+        let meta = service().build().metadata();
+        assert_eq!(meta.id, "notion");
+        assert_eq!(meta.display, "Notion");
+        assert_eq!(meta.auth, IntegrationAuth::OAuth);
+        assert_eq!(meta.env_var, None);
+        assert!(meta.has_watcher);
+        assert!(meta.setup.contains("view_url"));
+    }
+
+    #[test]
+    fn the_watcher_stays_off_until_a_view_is_named() {
+        assert_eq!(NotionBinding::read(&json!({})).view_url, None);
+        assert_eq!(
+            NotionBinding::read(&json!({ "view_url": "  " })).view_url,
+            None
+        );
+        assert_eq!(
+            NotionBinding::read(&json!({ "view_url": " https://notion.so/x?v=1 " })).view_url,
+            Some("https://notion.so/x?v=1".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_client_id_is_read_the_same_way_everywhere() {
+        let binding =
+            goat_integration::IntegrationBinding::from_config(json!({ "client_id": " cid " }));
+        assert_eq!(
+            goat_integration_mcp::client_id_of(&binding).as_deref(),
+            Some("cid")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_watcher_honours_the_shared_contract() {
+        use goat_integration::diff::REBUILD;
+        use goat_integration::test_support::{WatchContract, assert_watch_contract};
+        use goat_types::IntegrationUpdateKind;
+
+        assert_watch_contract(&WatchContract {
+            integration: ID,
+            stream: watch::STREAM.to_owned(),
+            kind: IntegrationUpdateKind::Assigned,
+            entity: "page",
+            overflow_tail: "in the view",
+            diff: REBUILD,
+        })
+        .await;
     }
 }
