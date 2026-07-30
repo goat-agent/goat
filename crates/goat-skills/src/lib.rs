@@ -42,6 +42,7 @@ struct SkillFrontMatter {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SkillScope {
+    Builtin,
     AgentsUser,
     Common,
     Persona { persona: ProfileId, slug: String },
@@ -50,6 +51,7 @@ pub enum SkillScope {
 impl SkillScope {
     pub fn label(&self) -> &str {
         match self {
+            SkillScope::Builtin => "builtin",
             SkillScope::AgentsUser => "~/.agents",
             SkillScope::Common => "common",
             SkillScope::Persona { slug, .. } => slug,
@@ -58,10 +60,16 @@ impl SkillScope {
 }
 
 #[derive(Clone, Debug)]
+pub enum SkillSource {
+    File(PathBuf),
+    Builtin(&'static str),
+}
+
+#[derive(Clone, Debug)]
 pub struct SkillEntry {
     pub name: String,
     pub description: String,
-    pub path: PathBuf,
+    pub source: SkillSource,
     pub scope: SkillScope,
 }
 
@@ -82,12 +90,15 @@ pub struct SkillResource {
 pub struct ActivatedSkill {
     pub name: String,
     pub body: String,
-    pub skill_dir: PathBuf,
+    pub skill_dir: Option<PathBuf>,
     pub resources: Vec<SkillResource>,
 }
 
+const BUILTIN_SKILLS: &[(&str, &str)] = &[("goat", include_str!("../builtin/goat/SKILL.md"))];
+
 #[derive(Clone, Debug, Default)]
 pub struct SkillIndex {
+    builtin: Vec<SkillEntry>,
     agents_user: Vec<SkillEntry>,
     common: Vec<SkillEntry>,
     by_persona: HashMap<ProfileId, Vec<SkillEntry>>,
@@ -126,7 +137,9 @@ impl SkillIndex {
             .map(|dir| scan_dir(dir, SkillScope::AgentsUser, &mut diagnostics))
             .unwrap_or_default();
         let common = scan_dir(&root.join("skills"), SkillScope::Common, &mut diagnostics);
+        let builtin = builtin_entries(&mut diagnostics);
         Self {
+            builtin,
             agents_user,
             common,
             by_persona,
@@ -165,19 +178,28 @@ Do not load skill resources eagerly; use listed resource paths only when needed.
             .into_iter()
             .find(|e| e.name == name)
             .ok_or_else(|| SkillError::NotFound(name.to_string()))?;
-        let raw = std::fs::read_to_string(&entry.path)?;
-        let body = strip_front_matter(&raw);
-        let skill_dir = entry
-            .path
-            .parent()
-            .map_or_else(|| entry.path.clone(), Path::to_path_buf);
-        let resources = list_resources(&skill_dir);
-        Ok(ActivatedSkill {
-            name: entry.name.clone(),
-            body,
-            skill_dir,
-            resources,
-        })
+        match &entry.source {
+            SkillSource::File(path) => {
+                let raw = std::fs::read_to_string(path)?;
+                let body = strip_front_matter(&raw);
+                let skill_dir = path
+                    .parent()
+                    .map_or_else(|| path.clone(), Path::to_path_buf);
+                let resources = list_resources(&skill_dir);
+                Ok(ActivatedSkill {
+                    name: entry.name.clone(),
+                    body,
+                    skill_dir: Some(skill_dir),
+                    resources,
+                })
+            }
+            SkillSource::Builtin(raw) => Ok(ActivatedSkill {
+                name: entry.name.clone(),
+                body: strip_front_matter(raw),
+                skill_dir: None,
+                resources: Vec::new(),
+            }),
+        }
     }
 
     pub fn body(&self, persona: ProfileId, name: &str) -> Option<String> {
@@ -204,6 +226,7 @@ Do not load skill resources eagerly; use listed resource paths only when needed.
 
     pub fn all_entries(&self) -> Vec<&SkillEntry> {
         let mut out: Vec<&SkillEntry> = Vec::new();
+        out.extend(self.builtin.iter());
         out.extend(self.agents_user.iter());
         out.extend(self.common.iter());
         for entries in self.by_persona.values() {
@@ -219,6 +242,9 @@ Do not load skill resources eagerly; use listed resource paths only when needed.
 
     pub fn effective_entries(&self, persona: ProfileId) -> Vec<&SkillEntry> {
         let mut merged: HashMap<&str, &SkillEntry> = HashMap::new();
+        for e in &self.builtin {
+            merged.insert(&e.name, e);
+        }
         for e in &self.agents_user {
             merged.insert(&e.name, e);
         }
@@ -241,9 +267,12 @@ pub fn format_activated_skill(skill: &ActivatedSkill, args: Option<&str>) -> Str
     let _ = writeln!(out, "<skill_content name=\"{}\">", escape_attr(&skill.name));
     let body = substitute_arguments(skill.body.trim(), args);
     out.push_str(&body);
-    out.push_str("\n\nSkill directory: ");
-    out.push_str(&skill.skill_dir.display().to_string());
-    out.push_str("\nRelative paths in this skill are relative to the skill directory.\n");
+    out.push('\n');
+    if let Some(skill_dir) = &skill.skill_dir {
+        out.push_str("\nSkill directory: ");
+        out.push_str(&skill_dir.display().to_string());
+        out.push_str("\nRelative paths in this skill are relative to the skill directory.\n");
+    }
     if !skill.resources.is_empty() {
         out.push_str("<skill_resources>\n");
         for resource in &skill.resources {
@@ -463,7 +492,39 @@ fn scan_dir(
 
 fn load_skill(path: &Path, dir_name: &str, scope: SkillScope) -> Result<SkillEntry, SkillError> {
     let raw = std::fs::read_to_string(path)?;
-    let (front, _body) = split_front_matter(&raw)
+    let source = SkillSource::File(path.to_path_buf());
+    parse_skill(&raw, path, dir_name, scope, source)
+}
+
+fn builtin_entries(diagnostics: &mut Vec<SkillDiagnostic>) -> Vec<SkillEntry> {
+    let mut out = Vec::new();
+    for &(dir_name, raw) in BUILTIN_SKILLS {
+        let path = PathBuf::from("builtin").join(dir_name).join("SKILL.md");
+        let source = SkillSource::Builtin(raw);
+        match parse_skill(raw, &path, dir_name, SkillScope::Builtin, source) {
+            Ok(e) => out.push(e),
+            Err(e) => {
+                warn!(skill = %dir_name, error = ?e, "skipping builtin skill");
+                diagnostics.push(SkillDiagnostic {
+                    path,
+                    scope: SkillScope::Builtin,
+                    message: e.to_string(),
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+fn parse_skill(
+    raw: &str,
+    path: &Path,
+    dir_name: &str,
+    scope: SkillScope,
+    source: SkillSource,
+) -> Result<SkillEntry, SkillError> {
+    let (front, _body) = split_front_matter(raw)
         .ok_or_else(|| SkillError::MissingFrontMatter(path.to_path_buf()))?;
     let fm: SkillFrontMatter = serde_yaml::from_str(front).map_err(|source| SkillError::Yaml {
         path: path.to_path_buf(),
@@ -486,7 +547,7 @@ fn load_skill(path: &Path, dir_name: &str, scope: SkillScope) -> Result<SkillEnt
     Ok(SkillEntry {
         name: fm.name,
         description: fm.description,
-        path: path.to_path_buf(),
+        source,
         scope,
     })
 }
@@ -691,5 +752,43 @@ mod tests {
         let idx = SkillIndex::discover_with_agents_dir(&root, &[], None);
         assert!(idx.common().is_empty());
         assert_eq!(idx.diagnostics().len(), 1);
+    }
+
+    #[test]
+    fn builtin_goat_skill_is_discovered() {
+        let root = temp_root("builtin");
+        let idx = SkillIndex::discover_with_agents_dir(&root, &[], None);
+        let persona = ProfileId::from_slug("dev");
+        assert!(idx.diagnostics().is_empty());
+        assert!(
+            idx.effective_entries(persona)
+                .iter()
+                .any(|e| e.name == "goat")
+        );
+        assert!(
+            idx.all_entries()
+                .iter()
+                .any(|e| e.name == "goat" && e.scope == SkillScope::Builtin)
+        );
+        let skill = idx.activate(persona, "goat").unwrap();
+        assert!(skill.body.contains("# How goat works"));
+        assert!(skill.skill_dir.is_none());
+        assert!(skill.resources.is_empty());
+        let formatted = format_activated_skill(&skill, None);
+        assert!(!formatted.contains("Skill directory:"));
+        assert!(formatted.contains("<skill_content name=\"goat\">"));
+    }
+
+    #[test]
+    fn user_skill_shadows_builtin_goat() {
+        let root = temp_root("shadow");
+        write(
+            &root.join("skills/goat/SKILL.md"),
+            "---\nname: goat\ndescription: local override\n---\nlocal body",
+        );
+        let idx = SkillIndex::discover_with_agents_dir(&root, &[], None);
+        let skill = idx.activate(ProfileId::from_slug("dev"), "goat").unwrap();
+        assert_eq!(skill.body.trim(), "local body");
+        assert!(skill.skill_dir.is_some());
     }
 }
