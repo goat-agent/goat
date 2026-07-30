@@ -148,12 +148,7 @@ mod tests {
     use serde_json::Value;
 
     fn item(key: &str, stamp: &str) -> Observed {
-        Observed {
-            key: key.to_owned(),
-            stamp: stamp.to_owned(),
-            summary: format!("{key} summary"),
-            payload: Value::Null,
-        }
+        Observed::new(key, stamp, format!("{key} summary"), Value::Null)
     }
 
     fn keys(items: &[Observed]) -> Vec<&str> {
