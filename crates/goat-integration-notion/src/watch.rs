@@ -7,7 +7,7 @@ use goat_integration::{
     IntegrationBinding, IntegrationError, IntegrationResult, IntegrationRuntime,
 };
 use goat_integration_mcp::{McpService, pick_tool};
-use goat_types::{IntegrationUpdateKind, ProfileId};
+use goat_types::{AgentId, IntegrationUpdateKind};
 use serde_json::json;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -22,7 +22,7 @@ const FETCH_LIMIT: usize = 50;
 const VIEW_TOOL_CANDIDATES: &[&str] = &["query_data_sources", "query_database_view"];
 
 pub fn spawn(
-    persona: ProfileId,
+    agent: AgentId,
     binding: &IntegrationBinding,
     runtime: &IntegrationRuntime,
     cancel: CancellationToken,
@@ -30,7 +30,7 @@ pub fn spawn(
     let settings = NotionBinding::read(&binding.config);
     let Some(view_url) = settings.view_url else {
         warn!(
-            profile = %persona,
+            agent = %agent,
             "notion watcher disabled; set `view_url` to a saved Notion view in the agent's notion binding",
         );
         return None;
@@ -54,7 +54,7 @@ pub fn spawn(
     );
     Some(tokio::spawn(run(
         watch,
-        persona,
+        agent,
         runtime.clone(),
         binding.account.clone(),
         cancel,

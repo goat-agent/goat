@@ -44,7 +44,7 @@ pub async fn run(args: Args) -> Result<()> {
         ui::blank();
 
         ui::section("Agents");
-        render_profiles(&paths, &cfg, &store, &mut warnings, &mut hint)?;
+        render_agents(&paths, &cfg, &store, &mut warnings, &mut hint)?;
         ui::blank();
 
         ui::section("Skills");
@@ -157,7 +157,7 @@ fn known_models(store: &CredentialStore) -> HashSet<(String, String)> {
         .collect()
 }
 
-fn render_profiles(
+fn render_agents(
     paths: &GoatPaths,
     cfg: &LoadedConfig,
     store: &CredentialStore,

@@ -204,12 +204,12 @@ mod tests {
     use goat_channel::test_support::{MockChannelHandle, MockEvent};
     use goat_channel::{ChannelCapabilities, ChannelIdentity};
     use goat_provider::{StreamChunk, StreamError};
-    use goat_types::{ChannelId, InstanceId, ProfileId, ThreadId};
+    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
 
     fn mock_handle(caps: ChannelCapabilities) -> Arc<MockChannelHandle> {
         MockChannelHandle::new(
             ChannelId::new("discord"),
-            ProfileId::new(),
+            AgentId::new(),
             InstanceId::new(),
             ChannelIdentity::new("goatbot", "Goat"),
             caps,

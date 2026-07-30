@@ -420,7 +420,7 @@ mod tests {
     use super::*;
     use goat_agent_tool::ToolReadState;
     use goat_store::SqliteStore;
-    use goat_types::{ChannelId, InstanceId, ProfileId, ThreadId};
+    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
     use std::path::PathBuf;
 
     async fn setup() -> (Arc<MemoryEngine>, ToolContext, tempfile::TempDir) {
@@ -433,7 +433,7 @@ mod tests {
                 .unwrap(),
         );
         let ctx = ToolContext {
-            persona: ProfileId::new(),
+            agent: AgentId::new(),
             thread: ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1"),
             goat_root: PathBuf::from("/tmp"),
             read_state: ToolReadState::default(),

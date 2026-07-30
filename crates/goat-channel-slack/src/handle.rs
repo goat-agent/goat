@@ -6,7 +6,7 @@ use goat_channel::{
     SentRef, TypingGuard,
 };
 use goat_types::{
-    ChannelId, IncomingMessage, InstanceId, MessageId, OutgoingBody, ProfileId, ThreadId,
+    AgentId, ChannelId, IncomingMessage, InstanceId, MessageId, OutgoingBody, ThreadId,
 };
 
 use crate::api::SlackApi;
@@ -14,7 +14,7 @@ use crate::{CAPABILITIES, ID, mrkdwn, thread};
 
 pub(crate) struct SlackHandle {
     instance: InstanceId,
-    persona: ProfileId,
+    agent: AgentId,
     identity: ChannelIdentity,
     api: Arc<SlackApi>,
 }
@@ -22,13 +22,13 @@ pub(crate) struct SlackHandle {
 impl SlackHandle {
     pub(crate) fn new(
         instance: InstanceId,
-        persona: ProfileId,
+        agent: AgentId,
         identity: ChannelIdentity,
         api: Arc<SlackApi>,
     ) -> Self {
         Self {
             instance,
-            persona,
+            agent,
             identity,
             api,
         }
@@ -41,8 +41,8 @@ impl ChannelHandle for SlackHandle {
         self.instance
     }
 
-    fn persona(&self) -> ProfileId {
-        self.persona
+    fn agent(&self) -> AgentId {
+        self.agent
     }
 
     fn id(&self) -> ChannelId {

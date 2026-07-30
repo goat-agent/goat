@@ -3,7 +3,7 @@ use goat_integration::watch::{Observed, Watch, WatchPage, WatchSource, run};
 use goat_integration::{
     IntegrationBinding, IntegrationError, IntegrationResult, IntegrationRuntime,
 };
-use goat_types::{IntegrationUpdateKind, ProfileId};
+use goat_types::{AgentId, IntegrationUpdateKind};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -14,14 +14,14 @@ use crate::parse::{parse_items, truncated};
 pub const DEFAULT_LIMIT: usize = 50;
 
 pub fn spawn_all(
-    persona: ProfileId,
+    agent: AgentId,
     binding: &IntegrationBinding,
     runtime: &IntegrationRuntime,
     cancel: &CancellationToken,
 ) -> Vec<JoinHandle<()>> {
     if !goat_github::gh_available() {
         warn!(
-            profile = %persona,
+            agent = %agent,
             "github watcher disabled; the `gh` cli is not on PATH",
         );
         return Vec::new();
@@ -30,7 +30,7 @@ pub fn spawn_all(
     let queries = settings.streams();
     if queries.is_empty() {
         warn!(
-            profile = %persona,
+            agent = %agent,
             "github watcher disabled; the agent's github binding declares no `watch` entries",
         );
         return Vec::new();
@@ -53,7 +53,7 @@ pub fn spawn_all(
             );
             tokio::spawn(run(
                 watch,
-                persona,
+                agent,
                 runtime.clone(),
                 binding.account.clone(),
                 cancel.clone(),

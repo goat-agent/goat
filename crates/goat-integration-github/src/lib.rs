@@ -10,7 +10,7 @@ use goat_integration::{
     BindingMap, Integration, IntegrationAuth, IntegrationBinding, IntegrationError,
     IntegrationFactory, IntegrationMetadata, IntegrationResult, IntegrationRuntime,
 };
-use goat_types::{IntegrationId, ProfileId};
+use goat_types::{AgentId, IntegrationId};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -111,12 +111,12 @@ impl Integration for GithubIntegration {
 
     fn spawn_watcher(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         binding: IntegrationBinding,
         runtime: IntegrationRuntime,
         cancel: CancellationToken,
     ) -> Option<tokio::task::JoinHandle<()>> {
-        let handles = watch::spawn_all(persona, &binding, &runtime, &cancel);
+        let handles = watch::spawn_all(agent, &binding, &runtime, &cancel);
         if handles.is_empty() {
             return None;
         }

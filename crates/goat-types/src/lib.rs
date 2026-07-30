@@ -9,9 +9,9 @@ use uuid::Uuid;
 pub const GOAT_NAMESPACE: Uuid = Uuid::from_u128(0x6f61_745f_7065_7273_6f6e_615f_6e73_3031);
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
-pub struct ProfileId(pub Uuid);
+pub struct AgentId(pub Uuid);
 
-impl ProfileId {
+impl AgentId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -21,13 +21,13 @@ impl ProfileId {
     }
 }
 
-impl Default for ProfileId {
+impl Default for AgentId {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl fmt::Display for ProfileId {
+impl fmt::Display for AgentId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -238,7 +238,7 @@ pub enum Surface {
 #[derive(Clone, Debug)]
 pub struct IncomingMessage {
     pub id: MessageId,
-    pub profile: ProfileId,
+    pub agent: AgentId,
     pub thread: ThreadId,
     pub from: UserHandle,
     pub text: String,
@@ -265,12 +265,12 @@ pub enum OutgoingBody {
 pub enum Event {
     Incoming(IncomingMessage),
     Schedule {
-        profile: ProfileId,
+        agent: AgentId,
         run_id: i64,
         task_id: i64,
     },
     IntegrationUpdate {
-        profile: ProfileId,
+        agent: AgentId,
         integration: IntegrationId,
         account: String,
         kind: IntegrationUpdateKind,
@@ -298,10 +298,10 @@ impl IntegrationUpdateKind {
 }
 
 impl Event {
-    pub fn profile(&self) -> ProfileId {
+    pub fn agent(&self) -> AgentId {
         match self {
-            Event::Incoming(m) => m.profile,
-            Event::Schedule { profile, .. } | Event::IntegrationUpdate { profile, .. } => *profile,
+            Event::Incoming(m) => m.agent,
+            Event::Schedule { agent, .. } | Event::IntegrationUpdate { agent, .. } => *agent,
         }
     }
 }
@@ -337,10 +337,10 @@ mod tests {
     }
 
     #[test]
-    fn integration_update_carries_profile() {
-        let p = ProfileId::new();
+    fn integration_update_carries_agent() {
+        let p = AgentId::new();
         let ev = Event::IntegrationUpdate {
-            profile: p,
+            agent: p,
             integration: IntegrationId::from_static("linear"),
             account: "default".into(),
             kind: IntegrationUpdateKind::Assigned,
@@ -348,15 +348,15 @@ mod tests {
             summary: "GOA-1".into(),
             observation: None,
         };
-        assert_eq!(ev.profile(), p);
+        assert_eq!(ev.agent(), p);
     }
 
     #[test]
-    fn event_persona_matches_message() {
-        let p = ProfileId::new();
+    fn event_agent_matches_message() {
+        let p = AgentId::new();
         let msg = IncomingMessage {
             id: MessageId("m1".into()),
-            profile: p,
+            agent: p,
             thread: ThreadId::new(ChannelId::new("test"), InstanceId::new(), "x"),
             from: UserHandle {
                 external: "u".into(),
@@ -371,6 +371,6 @@ mod tests {
             ts: Utc::now(),
             raw: serde_json::Value::Null,
         };
-        assert_eq!(Event::Incoming(msg).profile(), p);
+        assert_eq!(Event::Incoming(msg).agent(), p);
     }
 }

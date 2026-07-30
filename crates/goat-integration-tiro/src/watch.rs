@@ -5,7 +5,7 @@ use goat_integration::diff::SETTLE;
 use goat_integration::watch::{Observed, Watch, WatchPage, WatchSource, run};
 use goat_integration::{IntegrationBinding, IntegrationResult, IntegrationRuntime};
 use goat_integration_mcp::McpService;
-use goat_types::{IntegrationUpdateKind, ProfileId};
+use goat_types::{AgentId, IntegrationUpdateKind};
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -19,7 +19,7 @@ pub const TOOL_LIST_NOTES: &str = "list_notes";
 const PAGE_SIZE: u64 = 50;
 
 pub fn spawn(
-    persona: ProfileId,
+    agent: AgentId,
     binding: &IntegrationBinding,
     runtime: &IntegrationRuntime,
     cancel: CancellationToken,
@@ -27,7 +27,7 @@ pub fn spawn(
     let settings = TiroBinding::read(&binding.config);
     if settings.workspace.is_none() && settings.folder_id.is_none() {
         warn!(
-            profile = %persona,
+            agent = %agent,
             "tiro watcher disabled; set `workspace` or `folder_id` in the agent's tiro binding",
         );
         return None;
@@ -50,7 +50,7 @@ pub fn spawn(
     );
     Some(tokio::spawn(run(
         watch,
-        persona,
+        agent,
         runtime.clone(),
         binding.account.clone(),
         cancel,

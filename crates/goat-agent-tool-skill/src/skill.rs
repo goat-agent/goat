@@ -30,7 +30,7 @@ impl ToolHandler for SkillTool {
             return ToolOutput::error("skill name must not be empty");
         }
         let idx = SkillIndex::discover_root(&ctx.goat_root);
-        match idx.activate(ctx.persona, &args.skill) {
+        match idx.activate(ctx.agent, &args.skill) {
             Ok(skill) => ToolOutput::text(format_activated_skill(&skill, args.args.as_deref())),
             Err(e) => ToolOutput::error(e.to_string()),
         }
@@ -80,7 +80,7 @@ inventory::submit! {
 mod tests {
     use super::*;
     use goat_agent_tool::{ToolCall, ToolContext};
-    use goat_types::{ChannelId, InstanceId, ProfileId, ThreadId};
+    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
 
     fn temp_root(name: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -97,7 +97,7 @@ mod tests {
 
     fn ctx(root: std::path::PathBuf) -> ToolContext {
         ToolContext {
-            persona: ProfileId::from_slug("dev"),
+            agent: AgentId::from_slug("dev"),
             thread: ThreadId {
                 channel: ChannelId::from_static("test"),
                 instance: InstanceId::new(),

@@ -1,4 +1,4 @@
-use goat_types::{Event, ProfileId};
+use goat_types::{AgentId, Event};
 use tokio::sync::broadcast;
 use tracing::warn;
 
@@ -35,8 +35,8 @@ impl Default for EventBus {
 
 #[derive(Clone, Debug)]
 pub enum EventFilter {
-    Persona(ProfileId),
-    IncomingFor(ProfileId),
+    Persona(AgentId),
+    IncomingFor(AgentId),
 }
 
 pub struct EventSubscription {
@@ -64,9 +64,9 @@ impl EventSubscription {
 
     fn matches(&self, ev: &Event) -> bool {
         match &self.filter {
-            EventFilter::Persona(p) => ev.profile() == *p,
+            EventFilter::Persona(p) => ev.agent() == *p,
             EventFilter::IncomingFor(p) => {
-                matches!(ev, Event::Incoming(m) if m.profile == *p)
+                matches!(ev, Event::Incoming(m) if m.agent == *p)
             }
         }
     }
@@ -80,10 +80,10 @@ mod tests {
         ChannelId, IncomingMessage, InstanceId, MessageId, Surface, ThreadId, UserHandle,
     };
 
-    fn mk_in(persona: ProfileId) -> Event {
+    fn mk_in(agent: AgentId) -> Event {
         Event::Incoming(IncomingMessage {
             id: MessageId("m".into()),
-            profile: persona,
+            agent,
             thread: ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "x"),
             from: UserHandle {
                 external: "u".into(),
@@ -101,14 +101,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn filter_persona_passes_only_matching() {
+    async fn filter_agent_passes_only_matching() {
         let bus = EventBus::new();
-        let p = ProfileId::new();
-        let other = ProfileId::new();
+        let p = AgentId::new();
+        let other = AgentId::new();
         let mut sub = bus.subscribe(EventFilter::Persona(p));
         bus.publish(mk_in(other));
         bus.publish(mk_in(p));
         let got = sub.recv().await.expect("at least one event");
-        assert_eq!(got.profile(), p);
+        assert_eq!(got.agent(), p);
     }
 }

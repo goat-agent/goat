@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use goat_agent_tool::{ToolHandler, ToolSpec};
-use goat_types::ProfileId;
+use goat_types::AgentId;
 use serde::de::DeserializeOwned;
 
 #[async_trait]
@@ -12,7 +12,7 @@ pub trait Plugin: Send + Sync + 'static {
 }
 
 pub trait ToolSink: Send + Sync + 'static {
-    fn expose(&self, persona: ProfileId, spec: ToolSpec, handler: Arc<dyn ToolHandler>);
+    fn expose(&self, agent: AgentId, spec: ToolSpec, handler: Arc<dyn ToolHandler>);
 }
 
 #[derive(Clone)]
@@ -21,24 +21,24 @@ pub struct Ctx {
 }
 
 struct CtxInner {
-    persona: ProfileId,
+    agent: AgentId,
     config: serde_json::Value,
     sink: Arc<dyn ToolSink>,
 }
 
 impl Ctx {
-    pub fn new(persona: ProfileId, config: serde_json::Value, sink: Arc<dyn ToolSink>) -> Self {
+    pub fn new(agent: AgentId, config: serde_json::Value, sink: Arc<dyn ToolSink>) -> Self {
         Self {
             inner: Arc::new(CtxInner {
-                persona,
+                agent,
                 config,
                 sink,
             }),
         }
     }
 
-    pub fn persona(&self) -> ProfileId {
-        self.inner.persona
+    pub fn agent(&self) -> AgentId {
+        self.inner.agent
     }
 
     pub fn config<T: DeserializeOwned>(&self) -> anyhow::Result<T> {
@@ -46,7 +46,7 @@ impl Ctx {
     }
 
     pub fn expose(&self, spec: ToolSpec, handler: Arc<dyn ToolHandler>) {
-        self.inner.sink.expose(self.inner.persona, spec, handler);
+        self.inner.sink.expose(self.inner.agent, spec, handler);
     }
 }
 

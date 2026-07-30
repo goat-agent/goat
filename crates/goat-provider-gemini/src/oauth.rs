@@ -9,7 +9,7 @@ const CLIENT_ID: &str = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.goog
 const CLIENT_SECRET: &str = "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";
 const AUTHORIZE: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN: &str = "https://oauth2.googleapis.com/token";
-const SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile";
+const SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.agent";
 
 #[derive(Debug, thiserror::Error)]
 pub enum GeminiAuthError {

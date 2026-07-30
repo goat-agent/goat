@@ -6,7 +6,7 @@ use chrono::Utc;
 use futures::{SinkExt, StreamExt};
 use goat_agent_command::CommandSpec;
 use goat_types::{
-    CommandCall, CommandName, IncomingMessage, InstanceId, MessageId, ProfileId, Surface, ThreadId,
+    AgentId, CommandCall, CommandName, IncomingMessage, InstanceId, MessageId, Surface, ThreadId,
     UserHandle,
 };
 use serde::Deserialize;
@@ -22,7 +22,7 @@ use crate::{mrkdwn, thread};
 const MAX_BACKOFF_SECS: u64 = 60;
 
 pub(crate) struct SocketConfig {
-    pub(crate) persona: ProfileId,
+    pub(crate) agent: AgentId,
     pub(crate) instance: InstanceId,
     pub(crate) commands: Vec<CommandSpec>,
     pub(crate) allowed_user_ids: HashSet<String>,
@@ -58,7 +58,7 @@ pub(crate) struct MessageEvent {
 
 pub(crate) async fn socket_loop(cfg: SocketConfig, tx: mpsc::Sender<IncomingMessage>) {
     let SocketConfig {
-        persona,
+        agent,
         instance,
         commands,
         allowed_user_ids,
@@ -77,7 +77,7 @@ pub(crate) async fn socket_loop(cfg: SocketConfig, tx: mpsc::Sender<IncomingMess
         let url = match crate::api::open_connection(&app_token).await {
             Ok(url) => url,
             Err(e) => {
-                warn!(profile = %persona, error = ?e, "slack: could not open a socket mode connection");
+                warn!(agent = %agent, error = ?e, "slack: could not open a socket mode connection");
                 tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                 continue;
@@ -86,13 +86,13 @@ pub(crate) async fn socket_loop(cfg: SocketConfig, tx: mpsc::Sender<IncomingMess
         let mut stream = match tokio_tungstenite::connect_async(&url).await {
             Ok((stream, _)) => stream,
             Err(e) => {
-                warn!(profile = %persona, error = ?e, "slack: socket mode handshake failed");
+                warn!(agent = %agent, error = ?e, "slack: socket mode handshake failed");
                 tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                 continue;
             }
         };
-        info!(profile = %persona, "slack: socket mode connected");
+        info!(agent = %agent, "slack: socket mode connected");
 
         while let Some(frame) = stream.next().await {
             let raw = match frame {
@@ -100,7 +100,7 @@ pub(crate) async fn socket_loop(cfg: SocketConfig, tx: mpsc::Sender<IncomingMess
                 Ok(WsMessage::Close(_)) => break,
                 Ok(_) => continue,
                 Err(e) => {
-                    warn!(profile = %persona, error = ?e, "slack: socket read failed");
+                    warn!(agent = %agent, error = ?e, "slack: socket read failed");
                     break;
                 }
             };
@@ -110,25 +110,25 @@ pub(crate) async fn socket_loop(cfg: SocketConfig, tx: mpsc::Sender<IncomingMess
             if let Some(envelope_id) = envelope_of(&classified)
                 && let Err(e) = stream.send(WsMessage::text(socket::ack(envelope_id))).await
             {
-                warn!(profile = %persona, error = ?e, "slack: ack failed");
+                warn!(agent = %agent, error = ?e, "slack: ack failed");
                 break;
             }
 
             match classified {
-                Incoming::Hello => debug!(profile = %persona, "slack: hello"),
+                Incoming::Hello => debug!(agent = %agent, "slack: hello"),
                 Incoming::Disconnect { reason } => {
-                    debug!(profile = %persona, %reason, "slack: server asked us to reconnect");
+                    debug!(agent = %agent, %reason, "slack: server asked us to reconnect");
                     break;
                 }
                 Incoming::Ignored { kind, .. } => {
-                    debug!(profile = %persona, %kind, "slack: ignoring frame");
+                    debug!(agent = %agent, %kind, "slack: ignoring frame");
                 }
                 Incoming::Unparsable => {
-                    warn!(profile = %persona, "slack: could not parse a socket frame");
+                    warn!(agent = %agent, "slack: could not parse a socket frame");
                 }
                 Incoming::Event { event, .. } => {
                     let Ok(event) = serde_json::from_value::<MessageEvent>(event) else {
-                        debug!(profile = %persona, "slack: ignoring an event with an unexpected shape");
+                        debug!(agent = %agent, "slack: ignoring an event with an unexpected shape");
                         continue;
                     };
                     if !should_handle(&event, &bot_user_id, bot_id.as_deref(), &allowed_user_ids) {
@@ -136,7 +136,7 @@ pub(crate) async fn socket_loop(cfg: SocketConfig, tx: mpsc::Sender<IncomingMess
                     }
                     let display = resolve_display(&api, &mut names, event.user.as_deref()).await;
                     let Some(message) =
-                        to_incoming(&event, persona, instance, &bot_user_id, &commands, display)
+                        to_incoming(&event, agent, instance, &bot_user_id, &commands, display)
                     else {
                         continue;
                     };
@@ -150,11 +150,11 @@ pub(crate) async fn socket_loop(cfg: SocketConfig, tx: mpsc::Sender<IncomingMess
         if tx.is_closed() {
             break;
         }
-        warn!(profile = %persona, backoff_secs, "slack: socket closed; reconnecting");
+        warn!(agent = %agent, backoff_secs, "slack: socket closed; reconnecting");
         tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
         backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
     }
-    info!(profile = %persona, "slack: socket mode loop stopped");
+    info!(agent = %agent, "slack: socket mode loop stopped");
 }
 
 fn envelope_of(incoming: &Incoming) -> Option<&str> {
@@ -175,9 +175,9 @@ async fn resolve_display(
         return Some(known.clone());
     }
     match api.user_profile(user).await {
-        Ok(profile) => {
-            names.insert(user.to_string(), profile.display.clone());
-            Some(profile.display)
+        Ok(agent) => {
+            names.insert(user.to_string(), agent.display.clone());
+            Some(agent.display)
         }
         Err(e) => {
             debug!(user, error = ?e, "slack: could not resolve a display name");
@@ -215,7 +215,7 @@ fn should_handle(
 
 fn to_incoming(
     event: &MessageEvent,
-    persona: ProfileId,
+    agent: AgentId,
     instance: InstanceId,
     bot_user_id: &str,
     commands: &[CommandSpec],
@@ -247,7 +247,7 @@ fn to_incoming(
 
     Some(IncomingMessage {
         id: MessageId(event.ts.clone()),
-        profile: persona,
+        agent,
         thread: ThreadId::new(ID.clone(), instance, external),
         from: UserHandle {
             external: user,
@@ -332,7 +332,7 @@ mod tests {
     fn convert(event: &MessageEvent) -> IncomingMessage {
         to_incoming(
             event,
-            ProfileId::from_slug("main"),
+            AgentId::from_slug("main"),
             InstanceId::from_slug("main/slack/slack"),
             BOT_USER,
             &specs(),

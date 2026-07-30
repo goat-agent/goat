@@ -111,7 +111,7 @@ async fn setup_agent(paths: &goat_config::GoatPaths) -> color_eyre::Result<Optio
     if ui::confirm(&format!("Bind a chat channel to {slug} now?"), true)? {
         goat_agent::cli::channel::run(goat_agent::cli::channel::Cmd::Add {
             kind: None,
-            profile: Some(slug.clone()),
+            agent: Some(slug.clone()),
             no_verify: false,
         })
         .await

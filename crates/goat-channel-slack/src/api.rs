@@ -96,7 +96,7 @@ impl SlackApi {
                 .unwrap_or_else(|| user_id.to_string()),
             avatar: user
                 .get("profile")
-                .and_then(|profile| string_field(profile, "image_192")),
+                .and_then(|agent| string_field(agent, "image_192")),
         })
     }
 

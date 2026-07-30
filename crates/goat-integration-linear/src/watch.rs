@@ -5,7 +5,7 @@ use goat_integration::diff::REBUILD;
 use goat_integration::watch::{Observed, Watch, WatchPage, WatchSource, run};
 use goat_integration::{IntegrationBinding, IntegrationResult, IntegrationRuntime};
 use goat_integration_mcp::McpService;
-use goat_types::{IntegrationUpdateKind, ProfileId};
+use goat_types::{AgentId, IntegrationUpdateKind};
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -25,7 +25,7 @@ const SUMMARY_LIMIT: usize = 160;
     reason = "WatchFn may decline; linear always opts in"
 )]
 pub fn spawn(
-    persona: ProfileId,
+    agent: AgentId,
     binding: &IntegrationBinding,
     runtime: &IntegrationRuntime,
     cancel: CancellationToken,
@@ -53,7 +53,7 @@ pub fn spawn(
     );
     Some(tokio::spawn(run(
         watch,
-        persona,
+        agent,
         runtime.clone(),
         binding.account.clone(),
         cancel,

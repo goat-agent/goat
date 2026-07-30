@@ -171,7 +171,7 @@ fn browser_launch_args() -> [&'static str; 22] {
         "disable-prompt-on-repost",
         "disable-renderer-backgrounding",
         "disable-sync",
-        "force-color-profile=srgb",
+        "force-color-agent=srgb",
         "metrics-recording-only",
         "no-first-run",
         "no-default-browser-check",
@@ -183,13 +183,13 @@ fn browser_launch_args() -> [&'static str; 22] {
 async fn fetch_duckduckgo_with_ephemeral_browser(
     query: &str,
 ) -> Result<String, goat_search_provider::SearchError> {
-    let profile = tempfile::Builder::new()
+    let agent = tempfile::Builder::new()
         .prefix("goat-websearch-")
         .tempdir()
         .map_err(|err| goat_search_provider::SearchError::Browser(err.to_string()))?;
     let config = BrowserConfig::builder()
         .new_headless_mode()
-        .user_data_dir(profile.path())
+        .user_data_dir(agent.path())
         .viewport(None::<Viewport>)
         .launch_timeout(BROWSER_SEARCH_TIMEOUT)
         .request_timeout(BROWSER_SEARCH_TIMEOUT)

@@ -8,6 +8,7 @@ use embed::OpenAiEmbedderAdapter;
 
 use anyhow::{Context, Result};
 use goat_agent_command::{CommandFactory, CommandProviderContext, CommandRegistry};
+use goat_agent_config::AgentConfig;
 use goat_agent_tool::ToolRegistry;
 use goat_brain::{Brain, BrainDeps, ProviderRegistry};
 use goat_bus::EventBus;
@@ -15,10 +16,9 @@ use goat_channel::{Channel, ChannelBinding, ChannelFactory, ChannelHandle};
 use goat_config::{GoatPaths, LoadedConfig};
 use goat_integration::{Integration, IntegrationBinding, IntegrationRuntime};
 use goat_memory::Embedder;
-use goat_agent_config::ProfileConfig;
 use goat_render::{DefaultStreamRenderer, StreamRenderer};
 use goat_store::{SqliteStore, Store};
-use goat_types::{Event, InstanceId, ProfileId};
+use goat_types::{AgentId, Event, InstanceId};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -175,10 +175,10 @@ impl Goat {
             cancel: cancel.clone(),
         };
 
-        for raw_profile in &cfg.agents {
-            match spawn_profile(raw_profile, &shared).await {
+        for raw_agent in &cfg.agents {
+            match spawn_agent(raw_agent, &shared).await {
                 Ok(handles) => join_handles.extend(handles),
-                Err(e) => warn!(profile = %raw_profile.slug, error = ?e, "skipping profile"),
+                Err(e) => warn!(agent = %raw_agent.slug, error = ?e, "skipping agent"),
             }
         }
 
@@ -189,7 +189,7 @@ impl Goat {
             let engine = shared.memory_engine.clone();
             let providers = shared.providers.clone();
             let store = shared.store.clone();
-            let profile_models: Vec<(ProfileId, goat_model::Model)> = cfg
+            let agent_models: Vec<(AgentId, goat_model::Model)> = cfg
                 .agents
                 .iter()
                 .map(|p| (p.id, p.default_model.clone()))
@@ -201,12 +201,12 @@ impl Goat {
                     let engine = engine.clone();
                     let providers = providers.clone();
                     let store = store.clone();
-                    let profile_models = profile_models.clone();
+                    let agent_models = agent_models.clone();
                     async move {
                         if store.is_paused().await.unwrap_or(false) {
                             return;
                         }
-                        run_consolidation(&engine, &providers, &store, &profile_models).await;
+                        run_consolidation(&engine, &providers, &store, &agent_models).await;
                     }
                 },
             ));
@@ -254,29 +254,29 @@ async fn run_consolidation(
     engine: &Arc<goat_memory::MemoryEngine>,
     providers: &Arc<ProviderRegistry>,
     store: &Arc<dyn Store>,
-    profile_models: &[(ProfileId, goat_model::Model)],
+    agent_models: &[(AgentId, goat_model::Model)],
 ) {
     use goat_memory::Scope;
-    for (persona, model) in profile_models {
+    for (agent, model) in agent_models {
         let provider = match providers.route(model) {
             Ok(p) => p,
             Err(e) => {
-                warn!(profile = %persona, error = ?e, "sleep: no provider for model");
+                warn!(agent = %agent, error = ?e, "sleep: no provider for model");
                 continue;
             }
         };
-        let conv = match store.latest_thread(*persona).await {
+        let conv = match store.latest_thread(*agent).await {
             Ok(Some(c)) => c,
             Ok(None) => continue,
             Err(e) => {
-                warn!(profile = %persona, error = ?e, "sleep: latest_thread failed");
+                warn!(agent = %agent, error = ?e, "sleep: latest_thread failed");
                 continue;
             }
         };
-        let rows = match store.recent(*persona, &conv, 200).await {
+        let rows = match store.recent(*agent, &conv, 200).await {
             Ok(r) => r,
             Err(e) => {
-                warn!(profile = %persona, error = ?e, "sleep: recent failed");
+                warn!(agent = %agent, error = ?e, "sleep: recent failed");
                 continue;
             }
         };
@@ -293,7 +293,7 @@ async fn run_consolidation(
         if let Err(e) =
             goat_sleep::run_once(engine, &provider, model, &Scope::Owner, &transcript).await
         {
-            warn!(profile = %persona, error = ?e, "sleep: consolidation failed");
+            warn!(agent = %agent, error = ?e, "sleep: consolidation failed");
         }
     }
 }
@@ -354,42 +354,42 @@ fn build_provider_registry(
 }
 
 async fn build_embedders(
-    agents: &[ProfileConfig],
+    agents: &[AgentConfig],
     store: &goat_auth::CredentialStore,
-) -> Arc<HashMap<ProfileId, Arc<dyn Embedder>>> {
-    let mut map: HashMap<ProfileId, Arc<dyn Embedder>> = HashMap::new();
-    for profile in agents {
-        if !profile.memory.enabled {
+) -> Arc<HashMap<AgentId, Arc<dyn Embedder>>> {
+    let mut map: HashMap<AgentId, Arc<dyn Embedder>> = HashMap::new();
+    for agent in agents {
+        if !agent.memory.enabled {
             continue;
         }
-        let Some(settings) = profile.memory.embedding.as_ref() else {
+        let Some(settings) = agent.memory.embedding.as_ref() else {
             continue;
         };
         if settings.provider != "openai" {
             warn!(
-                profile = %profile.slug,
+                agent = %agent.slug,
                 provider = %settings.provider,
-                "memory: unsupported embedding provider; episodic memory disabled for this profile",
+                "memory: unsupported embedding provider; episodic memory disabled for this agent",
             );
             continue;
         }
         match OpenAiEmbedderAdapter::new(store.clone(), settings.model.clone()).await {
             Ok(embedder) => {
                 info!(
-                    profile = %profile.slug,
+                    agent = %agent.slug,
                     provider = %settings.provider,
                     model = %settings.model,
                     dim = embedder.dim(),
                     "memory: embedder ready",
                 );
-                map.insert(profile.id, Arc::new(embedder));
+                map.insert(agent.id, Arc::new(embedder));
             }
             Err(e) => warn!(
-                profile = %profile.slug,
+                agent = %agent.slug,
                 provider = %settings.provider,
                 model = %settings.model,
                 error = ?e,
-                "memory: embedding probe failed; episodic memory disabled for this profile",
+                "memory: embedding probe failed; episodic memory disabled for this agent",
             ),
         }
     }
@@ -441,17 +441,17 @@ fn merge_binding_config(
 }
 
 fn build_integration_bindings(
-    agents: &[ProfileConfig],
+    agents: &[AgentConfig],
     integrations: &HashMap<String, Arc<dyn Integration>>,
     connections: &std::collections::BTreeMap<String, serde_json::Value>,
 ) -> HashMap<String, Arc<goat_integration::BindingMap>> {
     let mut maps: HashMap<String, goat_integration::BindingMap> = HashMap::new();
     for agent in agents {
-        for profile_integration in &agent.integrations {
-            let name = profile_integration.name.as_str();
+        for agent_integration in &agent.integrations {
+            let name = agent_integration.name.as_str();
             if !integrations.contains_key(name) {
                 warn!(
-                    profile = %agent.slug,
+                    agent = %agent.slug,
                     integration = %name,
                     "unknown integration in agent config",
                 );
@@ -460,16 +460,16 @@ fn build_integration_bindings(
             let Some(factory) = goat_integration::factory_for(name) else {
                 continue;
             };
-            if let Err(e) = (factory.validate_config)(&profile_integration.config) {
+            if let Err(e) = (factory.validate_config)(&agent_integration.config) {
                 warn!(
-                    profile = %agent.slug,
+                    agent = %agent.slug,
                     integration = %name,
                     error = %e,
                     "skipping integration binding: invalid config",
                 );
                 continue;
             }
-            let merged = merge_binding_config(connections.get(name), &profile_integration.config);
+            let merged = merge_binding_config(connections.get(name), &agent_integration.config);
             maps.entry(name.to_string())
                 .or_default()
                 .insert(agent.id, IntegrationBinding::from_config(merged));
@@ -496,8 +496,8 @@ struct RuntimeShared<'a> {
     cancel: CancellationToken,
 }
 
-async fn spawn_profile(
-    raw: &ProfileConfig,
+async fn spawn_agent(
+    raw: &AgentConfig,
     shared: &RuntimeShared<'_>,
 ) -> Result<Vec<tokio::task::JoinHandle<()>>> {
     shared
@@ -507,11 +507,11 @@ async fn spawn_profile(
     shared
         .tools
         .validate_default_selectors(&raw.tool_selectors)
-        .with_context(|| format!("invalid tools for persona {}", raw.slug))?;
+        .with_context(|| format!("invalid tools for agent {}", raw.slug))?;
 
     shared
         .store
-        .ensure_persona(raw.id, &raw.slug, &raw.display)
+        .ensure_agent(raw.id, &raw.slug, &raw.display)
         .await?;
 
     let mut handles: Vec<Arc<dyn ChannelHandle>> = Vec::new();
@@ -522,7 +522,7 @@ async fn spawn_profile(
     for binding in &raw.bindings {
         let Some(channel) = shared.channels.get(binding.name.as_str()) else {
             warn!(
-                profile = %raw.slug,
+                agent = %raw.slug,
                 binding = %binding.name,
                 "skipping binding: no compiled-in channel/plugin with this name",
             );
@@ -565,7 +565,7 @@ async fn spawn_profile(
                 handles.push(handle);
             }
             Err(e) => warn!(
-                profile = %raw.slug,
+                agent = %raw.slug,
                 binding = %binding.name,
                 error = ?e,
                 "skipping binding: bind failed",
@@ -577,18 +577,18 @@ async fn spawn_profile(
         anyhow::bail!("no successful channel bindings");
     }
 
-    for profile_integration in &raw.integrations {
-        let Some(integration) = shared.integrations.get(profile_integration.name.as_str()) else {
+    for agent_integration in &raw.integrations {
+        let Some(integration) = shared.integrations.get(agent_integration.name.as_str()) else {
             warn!(
-                profile = %raw.slug,
-                integration = %profile_integration.name,
+                agent = %raw.slug,
+                integration = %agent_integration.name,
                 "skipping integration: no compiled-in integration with this name",
             );
             continue;
         };
         let Some(binding) = shared
             .integration_bindings
-            .get(profile_integration.name.as_str())
+            .get(agent_integration.name.as_str())
             .and_then(|map| map.get(&raw.id))
         else {
             continue;
@@ -604,7 +604,7 @@ async fn spawn_profile(
     }
 
     let brain = Arc::new(Brain::new(BrainDeps {
-        persona: raw.id,
+        agent: raw.id,
         personality: Arc::new(raw.personality.clone()),
         default_model: raw.default_model.clone(),
         history_window: raw.history_window,
@@ -643,10 +643,10 @@ async fn spawn_profile(
 
 fn build_command_registry(
     goat_root: &std::path::Path,
-    persona: goat_types::ProfileId,
+    agent: goat_types::AgentId,
 ) -> CommandRegistry {
     let mut registry = CommandRegistry::new();
-    let ctx = CommandProviderContext::new(goat_root.to_path_buf(), persona);
+    let ctx = CommandProviderContext::new(goat_root.to_path_buf(), agent);
     for factory in inventory::iter::<CommandFactory>() {
         (factory.register)(&mut registry, &ctx);
         info!(
@@ -661,22 +661,22 @@ fn build_command_registry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goat_model::{Model, ProviderId};
     use goat_agent_config::{
-        AutonomyConfig, EmbeddingSettings, MemoryConfig, ProfileCard, ProfileConfig,
+        AgentCard, AgentConfig, AutonomyConfig, EmbeddingSettings, MemoryConfig,
     };
+    use goat_model::{Model, ProviderId};
 
     fn paths_in(dir: &Path) -> GoatPaths {
         GoatPaths::from_root(dir.to_path_buf())
     }
 
-    fn persona(slug: &str, model: &str) -> ProfileConfig {
-        ProfileConfig {
-            id: ProfileId::from_slug(slug),
+    fn agent(slug: &str, model: &str) -> AgentConfig {
+        AgentConfig {
+            id: AgentId::from_slug(slug),
             slug: slug.into(),
             display: slug.into(),
-            personality: ProfileCard {
-                system_prompt: "you are a test persona".into(),
+            personality: AgentCard {
+                system_prompt: "you are a test agent".into(),
                 source_path: std::path::PathBuf::new(),
             },
             default_model: Model::new(ProviderId::from("openai"), model),
@@ -743,22 +743,22 @@ mod tests {
     }
 
     #[test]
-    fn integration_bindings_validate_and_group_by_persona() {
+    fn integration_bindings_validate_and_group_by_agent() {
         let integrations = goat_integration::registry_from_inventory();
         assert!(integrations.contains_key("fake"));
 
-        let mut good = persona("good", "gpt-x");
-        good.integrations = vec![goat_agent_config::ProfileIntegration {
+        let mut good = agent("good", "gpt-x");
+        good.integrations = vec![goat_agent_config::AgentIntegration {
             name: "fake".into(),
             config: serde_json::json!({ "account": "work" }),
         }];
-        let mut bad = persona("bad", "gpt-x");
+        let mut bad = agent("bad", "gpt-x");
         bad.integrations = vec![
-            goat_agent_config::ProfileIntegration {
+            goat_agent_config::AgentIntegration {
                 name: "fake".into(),
                 config: serde_json::json!({ "bad": true }),
             },
-            goat_agent_config::ProfileIntegration {
+            goat_agent_config::AgentIntegration {
                 name: "unknown".into(),
                 config: serde_json::json!({}),
             },
@@ -778,7 +778,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn boots_with_no_personas_and_spawns_only_scheduler() {
+    async fn boots_with_no_agents_and_spawns_only_scheduler() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = LoadedConfig {
             paths: paths_in(dir.path()),
@@ -793,11 +793,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persona_with_unresolvable_provider_is_skipped_not_fatal() {
+    async fn agent_with_unresolvable_provider_is_skipped_not_fatal() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = LoadedConfig {
             paths: paths_in(dir.path()),
-            agents: vec![persona("alice", "openai/gpt-5.1")],
+            agents: vec![agent("alice", "openai/gpt-5.1")],
         };
         let goat = Goat::boot_inner(cfg, None, None, None).await.expect("boot");
         assert_eq!(goat.join_handles.len(), 2);
@@ -806,7 +806,7 @@ mod tests {
     #[tokio::test]
     async fn embedder_probe_failure_degrades_to_core_only() {
         let dir = tempfile::tempdir().unwrap();
-        let mut p = persona("bob", "openai/gpt-5.1");
+        let mut p = agent("bob", "openai/gpt-5.1");
         p.memory = MemoryConfig {
             enabled: true,
             embedding: Some(EmbeddingSettings {

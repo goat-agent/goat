@@ -3,12 +3,12 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
-use goat_model::Model;
 use goat_agent_config::{
-    AutonomyConfig, EmbeddingSettings, MemoryConfig, ProfileBinding, ProfileCard, ProfileConfig,
-    ProfileIntegration,
+    AgentBinding, AgentCard, AgentConfig, AgentIntegration, AutonomyConfig, EmbeddingSettings,
+    MemoryConfig,
 };
-use goat_types::ProfileId;
+use goat_model::Model;
+use goat_types::AgentId;
 use serde::Deserialize;
 use tracing::warn;
 
@@ -21,7 +21,7 @@ const DEFAULT_INTAKE_CEILING_MS: u64 = 5000;
 
 pub const AGENT_DEFINITION_FILE: &str = "agent.md";
 
-pub(crate) fn scan_agents(dir: &Path) -> Result<Vec<ProfileConfig>> {
+pub(crate) fn scan_agents(dir: &Path) -> Result<Vec<AgentConfig>> {
     if !dir.exists() {
         return Err(ConfigError::MissingAgentsDir(dir.to_path_buf()).into());
     }
@@ -44,7 +44,7 @@ pub(crate) fn scan_agents(dir: &Path) -> Result<Vec<ProfileConfig>> {
     Ok(agents)
 }
 
-fn load_agent(dir: &Path, slug: &str) -> Result<ProfileConfig> {
+fn load_agent(dir: &Path, slug: &str) -> Result<AgentConfig> {
     let definition = dir.join(AGENT_DEFINITION_FILE);
     if !definition.exists() {
         return Err(ConfigError::MissingDefinition {
@@ -64,7 +64,7 @@ fn load_agent(dir: &Path, slug: &str) -> Result<ProfileConfig> {
         source,
     })?;
 
-    let personality = ProfileCard {
+    let personality = AgentCard {
         system_prompt: raw.trim().to_string(),
         source_path: definition,
     };
@@ -80,8 +80,8 @@ fn load_agent(dir: &Path, slug: &str) -> Result<ProfileConfig> {
         .map(|a| AutonomyConfig { enabled: a.enabled })
         .unwrap_or_default();
 
-    Ok(ProfileConfig {
-        id: ProfileId::from_slug(slug),
+    Ok(AgentConfig {
+        id: AgentId::from_slug(slug),
         slug: slug.to_string(),
         display: runtime.display.unwrap_or_else(|| slug.to_string()),
         personality,
@@ -114,21 +114,21 @@ fn load_runtime_config(dir: &Path) -> Result<AgentRuntimeConfig> {
     serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
 }
 
-fn bindings_from_config(configured: &BTreeMap<String, serde_json::Value>) -> Vec<ProfileBinding> {
+fn bindings_from_config(configured: &BTreeMap<String, serde_json::Value>) -> Vec<AgentBinding> {
     configured
         .clone()
         .into_iter()
-        .map(|(name, config)| ProfileBinding { name, config })
+        .map(|(name, config)| AgentBinding { name, config })
         .collect()
 }
 
 fn integrations_from_config(
     configured: &BTreeMap<String, serde_json::Value>,
-) -> Vec<ProfileIntegration> {
+) -> Vec<AgentIntegration> {
     configured
         .clone()
         .into_iter()
-        .map(|(name, config)| ProfileIntegration { name, config })
+        .map(|(name, config)| AgentIntegration { name, config })
         .collect()
 }
 

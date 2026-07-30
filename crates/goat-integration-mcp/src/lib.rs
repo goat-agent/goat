@@ -10,7 +10,7 @@ use goat_integration::{
     IntegrationMetadata, IntegrationResult, IntegrationRuntime,
 };
 use goat_mcp::{HttpEndpoint, McpError, McpSession};
-use goat_types::{IntegrationId, ProfileId};
+use goat_types::{AgentId, IntegrationId};
 use serde_json::Value;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -33,7 +33,7 @@ pub struct IdentityProbe {
     pub describe: DescribeIdentityFn,
 }
 pub type WatchFn = fn(
-    ProfileId,
+    AgentId,
     &IntegrationBinding,
     &IntegrationRuntime,
     CancellationToken,
@@ -497,13 +497,13 @@ impl Integration for McpIntegration {
 
     fn spawn_watcher(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         binding: IntegrationBinding,
         runtime: IntegrationRuntime,
         cancel: CancellationToken,
     ) -> Option<JoinHandle<()>> {
         let watch = self.service.watch?;
-        watch(persona, &binding, &runtime, cancel)
+        watch(agent, &binding, &runtime, cancel)
     }
 
     async fn verify(
@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn declaring_a_watcher_shows_up_on_the_descriptor() {
         fn never(
-            _: ProfileId,
+            _: AgentId,
             _: &IntegrationBinding,
             _: &IntegrationRuntime,
             _: CancellationToken,
