@@ -67,51 +67,35 @@ impl fmt::Display for MessageId {
     }
 }
 
-#[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
-pub struct ChannelId(Cow<'static, str>);
+macro_rules! slug_id {
+    ($name:ident) => {
+        #[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
+        pub struct $name(Cow<'static, str>);
 
-impl ChannelId {
-    pub const fn from_static(slug: &'static str) -> Self {
-        Self(Cow::Borrowed(slug))
-    }
+        impl $name {
+            pub const fn from_static(slug: &'static str) -> Self {
+                Self(Cow::Borrowed(slug))
+            }
 
-    pub fn new(slug: impl Into<String>) -> Self {
-        Self(Cow::Owned(slug.into()))
-    }
+            pub fn new(slug: impl Into<String>) -> Self {
+                Self(Cow::Owned(slug.into()))
+            }
 
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+    };
 }
 
-impl fmt::Display for ChannelId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-#[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
-pub struct IntegrationId(Cow<'static, str>);
-
-impl IntegrationId {
-    pub const fn from_static(slug: &'static str) -> Self {
-        Self(Cow::Borrowed(slug))
-    }
-
-    pub fn new(slug: impl Into<String>) -> Self {
-        Self(Cow::Owned(slug.into()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for IntegrationId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
+slug_id!(ChannelId);
+slug_id!(IntegrationId);
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
 pub struct ThreadId {
