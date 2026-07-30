@@ -20,7 +20,6 @@ use tokio::{
 };
 
 mod accounts;
-mod agent;
 mod ask;
 mod compaction;
 mod conversation;
@@ -35,13 +34,14 @@ mod rate_limit_cache;
 mod retry;
 mod rounds;
 mod shell;
+mod subagent;
 mod threads;
 mod tool_recovery;
 mod tools_exec;
 mod turn;
 mod websearch;
 
-pub use agent::{AgentRegistry, AgentSpec, ToolSelection};
+pub use subagent::{SubagentRegistry, SubagentSpec, ToolSelection};
 
 pub async fn model_list_entries(credentials: &CredentialStore) -> Vec<goat_protocol::ModelEntry> {
     let registry = Registry::new(credentials);
@@ -112,7 +112,7 @@ pub(crate) struct Ctx<'a> {
     pub(crate) account_registries: &'a std::sync::Mutex<HashMap<String, Arc<Registry>>>,
     pub(crate) credentials: &'a CredentialStore,
     pub(crate) tools: &'a ToolRegistry,
-    pub(crate) agents: &'a AgentRegistry,
+    pub(crate) subagents: &'a SubagentRegistry,
     pub(crate) store: &'a Store,
     pub(crate) events: &'a mpsc::Sender<Event>,
     pub(crate) skills: &'a [SkillInfo],
@@ -247,7 +247,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     accounts::announce_startup(&events, &registry, &credentials, state.target.as_ref()).await;
 
     let skills = prompt::load_skill_infos(&cwd);
-    let agents = AgentRegistry::load(&cwd);
+    let subagents = SubagentRegistry::load(&cwd);
     let project_instructions = instructions::load_project_instructions(&cwd);
     let session_date = prompt::current_utc_date();
     let semaphore = Arc::new(Semaphore::new(delegate::MAX_CONCURRENT_AGENTS));
@@ -292,7 +292,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                 account_registries: &account_registries,
                 credentials: &credentials,
                 tools: &tools,
-                agents: &agents,
+                subagents: &subagents,
                 store: &store,
                 events: &events,
                 skills: &skills,

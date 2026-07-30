@@ -27,7 +27,7 @@ impl ToolSelection {
     }
 }
 
-pub struct AgentSpec {
+pub struct SubagentSpec {
     pub name: String,
     pub description: String,
     pub tools: ToolSelection,
@@ -37,15 +37,15 @@ pub struct AgentSpec {
     pub exec_policy: SandboxPolicy,
 }
 
-pub struct AgentRegistry {
-    agents: BTreeMap<String, AgentSpec>,
+pub struct SubagentRegistry {
+    subagents: BTreeMap<String, SubagentSpec>,
 }
 
-impl AgentRegistry {
+impl SubagentRegistry {
     pub fn load(cwd: &Path) -> Self {
-        let mut agents: BTreeMap<String, AgentSpec> = BTreeMap::new();
+        let mut subagents: BTreeMap<String, SubagentSpec> = BTreeMap::new();
         for spec in builtin_agents() {
-            agents.insert(spec.name.clone(), spec);
+            subagents.insert(spec.name.clone(), spec);
         }
         let mut dirs: Vec<PathBuf> = Vec::new();
         if let Some(global) = goat_config::agents_dir() {
@@ -53,25 +53,25 @@ impl AgentRegistry {
         }
         dirs.push(cwd.join(goat_config::PROJECT_AGENTS_SUBDIR));
         for dir in &dirs {
-            load_dir(dir, &mut agents);
+            load_dir(dir, &mut subagents);
         }
-        Self { agents }
+        Self { subagents }
     }
 
-    pub fn get(&self, name: &str) -> Option<&AgentSpec> {
-        self.agents.get(name)
+    pub fn get(&self, name: &str) -> Option<&SubagentSpec> {
+        self.subagents.get(name)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &AgentSpec> {
-        self.agents.values()
+    pub fn iter(&self) -> impl Iterator<Item = &SubagentSpec> {
+        self.subagents.values()
     }
 
     pub fn names(&self) -> Vec<String> {
-        self.agents.keys().cloned().collect()
+        self.subagents.keys().cloned().collect()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.agents.is_empty()
+        self.subagents.is_empty()
     }
 }
 
@@ -83,9 +83,9 @@ const GENERAL_PROMPT: &str = "You are a general-purpose agent handling a delegat
 
 const CRITIC_PROMPT: &str = "You are a read-only plan reviewer. You are given a plan and a perspective to review it from (for code work: architecture, quality, or security; for a new project: product or problem framing; for design work: trade-offs or alternatives). Read the relevant code to ground your review, then critique the plan only from your assigned perspective. Flag concrete problems: wrong or risky decisions, missed edge cases, unconsidered alternatives, gaps between the plan and reality, and unstated assumptions that would bite during implementation. You only FLAG — you never edit the plan and never modify any file; the author resolves your findings with the user. Return a short list of findings, each with why it matters and how severe it is, and say plainly if you found nothing material. Do not restate the plan, do not nitpick style, and do not flag what you cannot ground in evidence.";
 
-fn builtin_agents() -> Vec<AgentSpec> {
+fn builtin_agents() -> Vec<SubagentSpec> {
     vec![
-        AgentSpec {
+        SubagentSpec {
             name: "explore".to_owned(),
             description: "Fast read-only agent for locating code and answering \"where/how\" questions: greps and reads files, runs read-only shell, and reports findings without making changes. Launch several in parallel for independent areas. Do not use it for code review or open-ended analysis.".to_owned(),
             tools: ToolSelection::Only(vec![
@@ -100,7 +100,7 @@ fn builtin_agents() -> Vec<AgentSpec> {
             prompt: EXPLORE_PROMPT.to_owned(),
             exec_policy: SandboxPolicy::ReadOnly { network: false },
         },
-        AgentSpec {
+        SubagentSpec {
             name: "architect".to_owned(),
             description: "Read-only agent that designs an implementation approach from requirements and exploration findings, weighing trade-offs and returning a step-by-step plan plus the critical files. Give it the context it needs; pass a perspective to run several in parallel.".to_owned(),
             tools: ToolSelection::Only(vec![
@@ -115,7 +115,7 @@ fn builtin_agents() -> Vec<AgentSpec> {
             prompt: ARCHITECT_PROMPT.to_owned(),
             exec_policy: SandboxPolicy::ReadOnly { network: false },
         },
-        AgentSpec {
+        SubagentSpec {
             name: "general".to_owned(),
             description: "General-purpose agent with full tools for a multi-step task that needs both exploration and changes, or a search you are not confident will land in a few tries.".to_owned(),
             tools: ToolSelection::All,
@@ -124,7 +124,7 @@ fn builtin_agents() -> Vec<AgentSpec> {
             prompt: GENERAL_PROMPT.to_owned(),
             exec_policy: SandboxPolicy::Full,
         },
-        AgentSpec {
+        SubagentSpec {
             name: "critic".to_owned(),
             description: "Read-only agent that reviews a plan from one perspective (architecture/quality/security for code, product/problem-framing for new projects, trade-offs/alternatives for design) and flags concrete problems without editing anything. Give it the plan plus a perspective; run several in parallel for independent perspectives.".to_owned(),
             tools: ToolSelection::Only(vec![
@@ -142,7 +142,7 @@ fn builtin_agents() -> Vec<AgentSpec> {
     ]
 }
 
-fn load_dir(dir: &Path, out: &mut BTreeMap<String, AgentSpec>) {
+fn load_dir(dir: &Path, out: &mut BTreeMap<String, SubagentSpec>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -173,7 +173,7 @@ fn load_dir(dir: &Path, out: &mut BTreeMap<String, AgentSpec>) {
     }
 }
 
-fn parse(content: &str, stem: &str) -> Result<AgentSpec, &'static str> {
+fn parse(content: &str, stem: &str) -> Result<SubagentSpec, &'static str> {
     let content = content.trim_start_matches('\u{feff}');
     let mut lines = content.lines();
     if lines.next().map(str::trim_end) != Some("---") {
@@ -227,7 +227,7 @@ fn parse(content: &str, stem: &str) -> Result<AgentSpec, &'static str> {
     };
     let model = model.filter(|model| !model.is_empty());
     let prompt = body_lines.join("\n").trim().to_owned();
-    Ok(AgentSpec {
+    Ok(SubagentSpec {
         name,
         description,
         tools,
@@ -253,11 +253,11 @@ fn unquote(value: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentRegistry, ToolSelection, parse};
+    use super::{SubagentRegistry, ToolSelection, parse};
 
     #[test]
     fn builtins_present() {
-        let registry = AgentRegistry::load(std::path::Path::new("/nonexistent-agents-dir"));
+        let registry = SubagentRegistry::load(std::path::Path::new("/nonexistent-agents-dir"));
         let explore = registry.get("explore").expect("explore builtin");
         assert!(explore.tools.allows("Read"));
         assert!(explore.tools.allows("Grep"));
@@ -309,7 +309,7 @@ mod tests {
             "---\nname: explore\ndescription: custom\ntools: Read\n---\nCustom explore.\n",
         )
         .unwrap();
-        let registry = AgentRegistry::load(dir.path());
+        let registry = SubagentRegistry::load(dir.path());
         let explore = registry.get("explore").unwrap();
         assert_eq!(explore.description, "custom");
         assert!(!explore.tools.allows("Grep"));

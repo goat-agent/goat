@@ -7,11 +7,11 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     Ctx, LoopEnv, Run,
     accounts::provider_for,
-    agent::AgentSpec,
     compaction::ContextTracker,
     conversation::Conversation,
     prompt::compose_child_system,
     rounds::{LoopOutcome, core_loop},
+    subagent::SubagentSpec,
     tools_exec::build_tool_defs,
 };
 
@@ -19,11 +19,11 @@ pub(crate) const MAX_CONCURRENT_AGENTS: usize = 8;
 pub(crate) const AGENT_TOOL_NAME: &str = "Agent";
 
 pub(crate) fn agent_tool_def(ctx: &Ctx<'_>) -> ToolDefinition {
-    let names: Vec<String> = ctx.agents.names();
+    let names: Vec<String> = ctx.subagents.names();
     let mut description = String::from(
         "Delegate a self-contained task to a sub-agent that runs in its own context with a restricted tool set and returns only its final report. Prefer this for focused investigation or work that would otherwise flood the main context. Issue several Agent calls in one response to run them in parallel. Available agent_type values:",
     );
-    for spec in ctx.agents.iter() {
+    for spec in ctx.subagents.iter() {
         let _ = write!(description, "\n- {}: {}", spec.name, spec.description);
     }
     ToolDefinition {
@@ -67,7 +67,7 @@ pub(crate) fn agent_call_display(input: &str) -> ToolDisplay {
 fn resolve_agent_model(
     ctx: &Ctx<'_>,
     parent: &ModelTarget,
-    spec: &AgentSpec,
+    spec: &SubagentSpec,
 ) -> Option<(Arc<dyn Provider>, String, Option<Effort>)> {
     if let Some(model_id) = &spec.model {
         if let Some(found) = ctx
@@ -112,7 +112,7 @@ pub(crate) async fn run_delegation(
     }
     let args: Input =
         serde_json::from_str(input_json).map_err(|err| format!("invalid Agent input: {err}"))?;
-    let Some(spec) = ctx.agents.get(&args.agent_type) else {
+    let Some(spec) = ctx.subagents.get(&args.agent_type) else {
         return Err(format!("unknown agent_type: {}", args.agent_type));
     };
     let Some((provider, model, effort)) = resolve_agent_model(ctx, env.target, spec) else {
@@ -153,7 +153,7 @@ pub(crate) async fn run_delegation(
         cwd: env.cwd,
         allow_delegate: false,
         allow_ask: false,
-        exec_policy: crate::agent::tighter(&env.exec_policy, &spec.exec_policy),
+        exec_policy: crate::subagent::tighter(&env.exec_policy, &spec.exec_policy),
     };
     let child_token = token.child_token();
     let outcome = Box::pin(core_loop(

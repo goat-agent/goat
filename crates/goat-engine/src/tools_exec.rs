@@ -6,10 +6,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     Ctx, LoopEnv, Run,
-    agent::ToolSelection,
     ask::{ASK_TOOL_NAME, ask_call_display, ask_tool_def, run_ask},
     delegate::{AGENT_TOOL_NAME, agent_call_display, agent_tool_def, run_delegation},
     persist::{create_tool_call_record, finish_tool_db},
+    subagent::ToolSelection,
     websearch::{WEB_SEARCH_TOOL_NAME, run_web_search, web_search_display, web_search_tool_def},
 };
 
@@ -294,7 +294,7 @@ pub(crate) fn build_tool_defs(
         defs.push(web_search_tool_def());
     }
     if allow_delegate {
-        if !ctx.agents.is_empty() {
+        if !ctx.subagents.is_empty() {
             defs.push(agent_tool_def(ctx));
         }
         defs.extend(crate::process_tools::tool_defs());
