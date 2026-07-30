@@ -248,7 +248,9 @@ impl ToolHandler for ListTasksTool {
 fn spec_schedule_once() -> ToolSpec {
     ToolSpec::new(
         SCHEDULE_ONCE,
-        "Schedules a one-shot task to fire once at the given time.",
+        "Schedules a one-shot task to fire once at the given time. The fire opens a fresh \
+         autonomous turn with no conversation attached, so write the task as a complete \
+         note to your future self.",
         json!({
             "type": "object",
             "additionalProperties": false,
@@ -275,7 +277,9 @@ fn spec_schedule_once() -> ToolSpec {
 fn spec_schedule_cron() -> ToolSpec {
     ToolSpec::new(
         SCHEDULE_CRON,
-        "Schedules a recurring task using a 5-field cron expression.",
+        "Schedules a recurring task using a 5-field cron expression. Each fire opens a \
+         fresh autonomous turn with no conversation attached, so write the task as a \
+         complete note to your future self.",
         json!({
             "type": "object",
             "additionalProperties": false,
