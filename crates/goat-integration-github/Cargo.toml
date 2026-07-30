@@ -7,11 +7,12 @@ publish.workspace = true
 authors.workspace = true
 
 [dependencies]
-goat-agent-tool  = { workspace = true }
-goat-auth        = { workspace = true }
-goat-github      = { workspace = true }
-goat-integration = { workspace = true }
-goat-types       = { workspace = true }
+goat-agent-tool      = { workspace = true }
+goat-auth            = { workspace = true }
+goat-github          = { workspace = true }
+goat-integration     = { workspace = true }
+goat-integration-mcp = { workspace = true }
+goat-types           = { workspace = true }
 async-trait = { workspace = true }
 inventory   = { workspace = true }
 serde       = { workspace = true }
@@ -21,10 +22,8 @@ tokio-util  = { workspace = true }
 tracing     = { workspace = true }
 
 [dev-dependencies]
-goat-bus   = { workspace = true }
-goat-store = { workspace = true }
-tempfile   = "3"
-tokio      = { workspace = true, features = ["test-util"] }
+goat-integration = { workspace = true, features = ["test-support"] }
+tokio            = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
