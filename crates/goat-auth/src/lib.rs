@@ -119,6 +119,7 @@ impl CredentialKey {
 #[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
     ApiKey,
+    #[serde(rename = "oauth", alias = "o_auth")]
     OAuth,
 }
 
@@ -255,6 +256,7 @@ enum StoredValue {
         secret: SecretString,
         endpoint: String,
     },
+    #[serde(rename = "oauth", alias = "o_auth")]
     OAuth {
         tokens: TokenSet,
     },
@@ -602,7 +604,7 @@ impl CredentialStore {
 mod tests {
     use super::{
         Credential, CredentialKey, CredentialKind, CredentialService, CredentialStore, Pkce,
-        SecretString, TokenSet, ensure_valid, now_secs,
+        SecretString, StoredValue, TokenSet, ensure_valid, now_secs,
     };
 
     #[tokio::test]
@@ -746,6 +748,39 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn an_oauth_credential_is_stored_under_the_plain_spelling() {
+        let stored = StoredValue::from(Credential::OAuth(TokenSet {
+            access_token: SecretString::from("at"),
+            refresh_token: None,
+            expires_at: None,
+        }));
+        assert_eq!(serde_json::to_value(&stored).unwrap()["kind"], "oauth");
+    }
+
+    #[test]
+    fn credentials_written_before_the_rename_still_load() {
+        let legacy = serde_json::json!({
+            "kind": "o_auth",
+            "tokens": { "access_token": "at", "refresh_token": null, "expires_at": null }
+        });
+        let stored: StoredValue = serde_json::from_value(legacy).unwrap();
+        let credential = Credential::from(stored);
+        assert!(matches!(credential, Credential::OAuth(t) if t.access_token.expose() == "at"));
+    }
+
+    #[test]
+    fn the_credential_kind_uses_the_same_spelling_both_ways() {
+        assert_eq!(
+            serde_json::to_value(CredentialKind::OAuth).unwrap(),
+            serde_json::Value::String("oauth".to_owned())
+        );
+        let from_new: CredentialKind = serde_json::from_str("\"oauth\"").unwrap();
+        let from_old: CredentialKind = serde_json::from_str("\"o_auth\"").unwrap();
+        assert_eq!(from_new, CredentialKind::OAuth);
+        assert_eq!(from_old, CredentialKind::OAuth);
+    }
+
     #[test]
     fn saved_file_is_owner_only_and_atomic() {
         use std::os::unix::fs::PermissionsExt;
