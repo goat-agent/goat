@@ -703,7 +703,7 @@ impl Brain {
         mode: TurnMode,
         summary: Option<String>,
     ) -> Result<(RenderSummary, ThreadId)> {
-        const MAX_TOOL_ROUNDS: usize = 8;
+        const MAX_TOOL_ROUNDS: usize = 1000;
 
         let provider = self.providers.route(&self.default_model)?;
         let skill_prompt =
