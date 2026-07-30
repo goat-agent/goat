@@ -60,7 +60,7 @@ pub(crate) async fn do_login(
         ))
         .await;
     let _ = open::that(&url);
-    let code = goat_auth::capture_on(listener, &state).await?;
+    let code = goat_auth::capture_on(listener, &state).await?.code;
     exchange_code(&code, &pkce.verifier, &state, &redirect).await
 }
 

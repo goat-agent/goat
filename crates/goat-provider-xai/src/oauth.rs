@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use goat_auth::{
-    Credential, CredentialKey, CredentialStore, Pkce, TokenSet, capture_loopback_code,
-    ensure_valid, now_secs, random_state,
+    Credential, CredentialKey, CredentialStore, Pkce, TokenSet, capture_loopback, ensure_valid,
+    now_secs, random_state,
 };
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use serde::Deserialize;
@@ -313,7 +313,7 @@ async fn login_browser(status: &mpsc::Sender<String>) -> Result<TokenSet, XaiOAu
     if open::that(&url).is_err() {
         return Err(XaiOAuthError::NoBrowser);
     }
-    let code = capture_loopback_code(CALLBACK_PORT, &state).await?;
+    let code = capture_loopback(CALLBACK_PORT, &state).await?.code;
     exchange_authorization_code(&discovery.token_endpoint, &code, &pkce).await
 }
 

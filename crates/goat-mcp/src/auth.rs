@@ -182,7 +182,8 @@ pub async fn run_login(
     present_url(&auth_url);
     let code = goat_auth::capture_on(listener, &state)
         .await
-        .map_err(|e| auth_failed(e.to_string()))?;
+        .map_err(|e| auth_failed(e.to_string()))?
+        .code;
     oauth
         .handle_callback(&code, &state)
         .await
