@@ -91,7 +91,7 @@ pub async fn register(
     let mut skipped = 0usize;
 
     for tool in discovered {
-        let disposition = (service.tool_filter)(&tool);
+        let disposition = (service.tool_filter)(&tool, &binding.config);
         if disposition == ToolDisposition::Skip {
             skipped += 1;
             continue;

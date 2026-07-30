@@ -25,7 +25,7 @@ pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_mins(2);
 pub const MAX_RESULT_BYTES: usize = 96 * 1024;
 
 pub type HeaderFn = fn(&Value) -> HashMap<String, String>;
-pub type ToolFilterFn = fn(&CachedTool) -> ToolDisposition;
+pub type ToolFilterFn = fn(&CachedTool, &Value) -> ToolDisposition;
 pub type DescribeIdentityFn = fn(&Value) -> IntegrationResult<String>;
 
 #[derive(Clone, Copy)]
@@ -310,7 +310,7 @@ where
     serde_json::from_value(Value::Object(leaf)).unwrap_or_default()
 }
 
-fn allow_every_tool(_: &CachedTool) -> ToolDisposition {
+fn allow_every_tool(_: &CachedTool, _: &Value) -> ToolDisposition {
     ToolDisposition::Enabled
 }
 

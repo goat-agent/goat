@@ -2910,6 +2910,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]
@@ -2940,15 +2942,13 @@ dependencies = [
  "async-trait",
  "goat-agent-tool",
  "goat-auth",
- "goat-bus",
  "goat-github",
  "goat-integration",
- "goat-store",
+ "goat-integration-mcp",
  "goat-types",
  "inventory",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
@@ -3010,22 +3010,17 @@ dependencies = [
 name = "goat-integration-posthog"
 version = "0.1.27"
 dependencies = [
- "async-trait",
- "chrono",
- "goat-agent-tool",
  "goat-auth",
  "goat-integration",
+ "goat-integration-mcp",
+ "goat-mcp",
  "goat-types",
  "inventory",
- "reqwest 0.13.4",
- "rmcp",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
- "url",
 ]
 
 [[package]]
