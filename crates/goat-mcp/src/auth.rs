@@ -127,6 +127,7 @@ pub async fn authorized_client(
     url: &str,
     store: StoredOAuth,
 ) -> Result<AuthClient<rmcp_reqwest::Client>, McpError> {
+    crate::session::ensure_crypto_provider();
     let mut manager = AuthorizationManager::new(url).await.map_err(auth_failed)?;
     manager.set_credential_store(store);
     if !manager.initialize_from_store().await.map_err(auth_failed)? {

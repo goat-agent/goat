@@ -61,7 +61,7 @@ pub fn http_client() -> Result<rmcp_reqwest::Client, McpError> {
         })
 }
 
-fn ensure_crypto_provider() {
+pub(crate) fn ensure_crypto_provider() {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
     INSTALLED.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
