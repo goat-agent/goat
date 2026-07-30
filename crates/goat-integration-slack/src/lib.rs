@@ -4,7 +4,7 @@ mod watch;
 use std::sync::Arc;
 
 use goat_integration::{IntegrationFactory, IntegrationResult};
-use goat_integration_mcp::McpService;
+use goat_integration_mcp::{AuthScheme, McpService, ServiceUrl, ToolPolicy};
 use goat_types::IntegrationId;
 use serde::Deserialize;
 use serde_json::Value;
@@ -18,12 +18,12 @@ const ENV_VAR: &str = "SLACK_USER_TOKEN";
 const SETUP: &str = "1. create the goat app in your workspace: https://api.slack.com/apps?new_app=1&manifest_yaml=display_information%3A%0A%20%20name%3A%20goat%0A%20%20description%3A%20Personal%20AI%20agent%20access%20to%20Slack%0Aoauth_config%3A%0A%20%20scopes%3A%0A%20%20%20%20user%3A%0A%20%20%20%20%20%20-%20search%3Aread.public%0A%20%20%20%20%20%20-%20search%3Aread.private%0A%20%20%20%20%20%20-%20search%3Aread.im%0A%20%20%20%20%20%20-%20search%3Aread.mpim%0A%20%20%20%20%20%20-%20search%3Aread.users%0A%20%20%20%20%20%20-%20channels%3Ahistory%0A%20%20%20%20%20%20-%20groups%3Ahistory%0A%20%20%20%20%20%20-%20im%3Ahistory%0A%20%20%20%20%20%20-%20mpim%3Ahistory%0A%20%20%20%20%20%20-%20users%3Aread%0A%20%20%20%20%20%20-%20emoji%3Aread%0A%20%20%20%20%20%20-%20chat%3Awrite%0A%20%20%20%20%20%20-%20reactions%3Awrite%0A%20%20%20%20%20%20-%20canvases%3Aread%0A%20%20%20%20%20%20-%20canvases%3Awrite%0Asettings%3A%0A%20%20org_deploy_enabled%3A%20false%0A%20%20socket_mode_enabled%3A%20false%0A%20%20token_rotation_enabled%3A%20false%0A\n2. in that app, open Agents & AI Apps and turn on the Slack MCP Server — scopes alone are not enough\n3. Install to Workspace, then copy the User OAuth Token (xoxp-…) from OAuth & Permissions";
 
 pub fn service() -> McpService {
-    McpService::new("slack", "Slack", MCP_URL, SETUP)
-        .with_secret("Slack user OAuth token (xoxp-…)")
-        .with_env_var(ENV_VAR)
-        .with_tool_prefix(PREFIX)
-        .with_truncation_hint("narrow the query, or search a single channel instead")
-        .with_watch(watch::spawn)
+    McpService::new("slack", "Slack", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .secret("Slack user OAuth token (xoxp-…)", AuthScheme::Raw)
+        .env_var(ENV_VAR)
+        .tools(ToolPolicy::all(PREFIX))
+        .truncation_hint("narrow the query, or search a single channel instead")
+        .watch(watch::spawn)
 }
 
 #[derive(Debug, Default, Deserialize)]

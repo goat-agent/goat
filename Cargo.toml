@@ -160,6 +160,7 @@ goat-plugin             = { path = "crates/goat-plugin" }
 goat-integration        = { path = "crates/goat-integration" }
 goat-integration-mcp    = { path = "crates/goat-integration-mcp" }
 goat-integration-github = { path = "crates/goat-integration-github" }
+goat-integration-langfuse = { path = "crates/goat-integration-langfuse" }
 goat-integration-linear = { path = "crates/goat-integration-linear" }
 goat-integration-notion = { path = "crates/goat-integration-notion" }
 goat-integration-posthog = { path = "crates/goat-integration-posthog" }

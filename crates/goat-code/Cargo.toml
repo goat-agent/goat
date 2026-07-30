@@ -36,6 +36,7 @@ goat-agent-tool-skill = { workspace = true }
 goat-channel-discord = { workspace = true }
 goat-channel-slack   = { workspace = true }
 goat-integration-github = { workspace = true }
+goat-integration-langfuse = { workspace = true }
 goat-integration-linear = { workspace = true }
 goat-integration-notion = { workspace = true }
 goat-integration-posthog = { workspace = true }

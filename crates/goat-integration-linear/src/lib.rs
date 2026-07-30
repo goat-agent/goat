@@ -4,7 +4,7 @@ mod watch;
 use std::sync::Arc;
 
 use goat_integration::{IntegrationFactory, IntegrationResult};
-use goat_integration_mcp::McpService;
+use goat_integration_mcp::{McpService, ServiceUrl, ToolPolicy};
 use goat_types::IntegrationId;
 use serde::Deserialize;
 use serde_json::Value;
@@ -20,13 +20,11 @@ const SETUP: &str = "connects to Linear's hosted MCP server; a browser window wi
      to run headless, set LINEAR_API_KEY to a Linear personal API key.";
 
 pub fn service() -> McpService {
-    McpService::new("linear", "Linear", MCP_URL, SETUP)
-        .with_env_var(ENV_VAR)
-        .with_tool_prefix(PREFIX)
-        .with_truncation_hint(
-            "narrow the filter, request fewer issues, or fetch a single issue instead",
-        )
-        .with_watch(watch::spawn)
+    McpService::new("linear", "Linear", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .env_var(ENV_VAR)
+        .tools(ToolPolicy::all(PREFIX))
+        .truncation_hint("narrow the filter, request fewer issues, or fetch a single issue instead")
+        .watch(watch::spawn)
 }
 
 #[derive(Debug, Default, Deserialize)]

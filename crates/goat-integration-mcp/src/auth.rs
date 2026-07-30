@@ -1,9 +1,11 @@
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use goat_auth::{Credential, CredentialKey, CredentialStore};
 use goat_integration::{IntegrationError, IntegrationResult};
 use goat_mcp::auth::StoredOAuth;
 use tracing::info;
 
-use crate::McpService;
+use crate::{AuthScheme, CredentialSpec};
 
 pub enum ResolvedAuth {
     Token(String),
@@ -11,23 +13,23 @@ pub enum ResolvedAuth {
 }
 
 pub fn resolve(
-    service: &McpService,
+    name: &str,
+    spec: &CredentialSpec,
     credentials: &CredentialStore,
     account: &str,
     client_id: Option<&str>,
 ) -> IntegrationResult<ResolvedAuth> {
-    let name = service.id.as_str();
     let key = CredentialKey::integration(name, account);
-    if env_overrides_stored_oauth(service.env_var, credentials, &key) {
+    if env_overrides_stored_oauth(spec.env_var, credentials, &key) {
         info!(
             integration = name,
-            env_var = service.env_var,
+            env_var = spec.env_var,
             "token from the environment overrides the stored oauth credential",
         );
     }
-    match credentials.resolve(&key, service.env_var) {
+    match credentials.resolve(&key, spec.env_var) {
         Some(Credential::ApiKey(secret) | Credential::ApiKeyWithEndpoint { secret, .. }) => Ok(
-            ResolvedAuth::Token(header_value(service.auth_scheme, secret.expose())),
+            ResolvedAuth::Token(header_value(spec.scheme, secret.expose())),
         ),
         Some(Credential::OAuth(tokens)) => {
             if tokens.client_id.is_none() && client_id.is_none() {
@@ -44,7 +46,7 @@ pub fn resolve(
         None => Err(IntegrationError::Auth(missing_credential(
             name,
             account,
-            service.env_var,
+            spec.env_var,
         ))),
     }
 }
@@ -58,11 +60,24 @@ fn missing_credential(name: &str, account: &str, env_var: Option<&str>) -> Strin
     }
 }
 
-pub fn header_value(scheme: Option<&str>, token: &str) -> String {
+pub fn header_value(scheme: AuthScheme, token: &str) -> String {
     let trimmed = token.trim();
+    if trimmed.contains(char::is_whitespace) {
+        return trimmed.to_owned();
+    }
     match scheme {
-        Some(scheme) if !trimmed.contains(char::is_whitespace) => format!("{scheme} {trimmed}"),
-        _ => trimmed.to_owned(),
+        AuthScheme::Raw => trimmed.to_owned(),
+        AuthScheme::Bearer => format!("Bearer {trimmed}"),
+        AuthScheme::Custom(scheme) => format!("{scheme} {trimmed}"),
+        AuthScheme::Basic => format!("Basic {}", basic_token(trimmed)),
+    }
+}
+
+fn basic_token(trimmed: &str) -> String {
+    if trimmed.contains(':') {
+        STANDARD.encode(trimmed)
+    } else {
+        trimmed.to_owned()
     }
 }
 
@@ -81,27 +96,45 @@ mod tests {
 
     #[test]
     fn a_scheme_is_prefixed_and_the_token_is_trimmed() {
-        assert_eq!(header_value(Some("Bearer"), "  abc  "), "Bearer abc");
+        assert_eq!(header_value(AuthScheme::Bearer, "  abc  "), "Bearer abc");
         assert_eq!(
-            header_value(Some("Sentry-Bearer"), "abc"),
+            header_value(AuthScheme::Custom("Sentry-Bearer"), "abc"),
             "Sentry-Bearer abc"
         );
     }
 
     #[test]
     fn a_newline_pasted_into_a_token_never_reaches_the_wire() {
-        assert_eq!(header_value(Some("Bearer"), "abc\n"), "Bearer abc");
-        assert_eq!(header_value(None, "abc\n"), "abc");
+        assert_eq!(header_value(AuthScheme::Bearer, "abc\n"), "Bearer abc");
+        assert_eq!(header_value(AuthScheme::Raw, "abc\n"), "abc");
     }
 
     #[test]
     fn a_preformed_header_passes_through_untouched() {
-        assert_eq!(header_value(Some("Bearer"), "Bearer abc"), "Bearer abc");
+        assert_eq!(header_value(AuthScheme::Bearer, "Bearer abc"), "Bearer abc");
+        assert_eq!(header_value(AuthScheme::Basic, "Basic abc"), "Basic abc");
     }
 
     #[test]
-    fn a_service_without_a_scheme_sends_the_raw_token() {
-        assert_eq!(header_value(None, "abc"), "abc");
+    fn a_raw_service_sends_the_raw_token() {
+        assert_eq!(header_value(AuthScheme::Raw, "abc"), "abc");
+    }
+
+    #[test]
+    fn a_colon_joined_pair_is_base64_encoded_for_basic() {
+        assert_eq!(
+            header_value(AuthScheme::Basic, "pk-lf-1:sk-lf-2"),
+            format!("Basic {}", STANDARD.encode("pk-lf-1:sk-lf-2"))
+        );
+    }
+
+    #[test]
+    fn an_already_encoded_basic_token_is_not_encoded_twice() {
+        let encoded = STANDARD.encode("pk:sk");
+        assert_eq!(
+            header_value(AuthScheme::Basic, &encoded),
+            format!("Basic {encoded}")
+        );
     }
 
     #[test]
