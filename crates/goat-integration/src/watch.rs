@@ -18,9 +18,37 @@ const AUTH_ALERT_STREAK: u32 = 5;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Observed {
     pub key: String,
+    pub reference: Option<String>,
     pub stamp: String,
     pub summary: String,
     pub payload: Value,
+}
+
+impl Observed {
+    pub fn new(
+        key: impl Into<String>,
+        stamp: impl Into<String>,
+        summary: impl Into<String>,
+        payload: Value,
+    ) -> Self {
+        Self {
+            key: key.into(),
+            reference: None,
+            stamp: stamp.into(),
+            summary: summary.into(),
+            payload,
+        }
+    }
+
+    #[must_use]
+    pub fn with_reference(mut self, reference: impl Into<String>) -> Self {
+        self.reference = Some(reference.into());
+        self
+    }
+
+    pub fn reference(&self) -> &str {
+        self.reference.as_deref().unwrap_or(&self.key)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -330,7 +358,7 @@ async fn observe<S: WatchSource>(
         "{}/{account}:{}:{}",
         watch.integration.as_str(),
         watch.entity,
-        item.key
+        item.reference()
     );
     let observation = runtime
         .record_observation(
@@ -364,6 +392,15 @@ mod tests {
         assert_eq!(backoff_skips(2), 3);
         assert_eq!(backoff_skips(3), 7);
         assert_eq!(backoff_skips(9), 7);
+    }
+
+    #[test]
+    fn an_item_references_its_own_key_unless_told_otherwise() {
+        let plain = Observed::new("uuid-9", "1", "s", Value::Null);
+        assert_eq!(plain.reference(), "uuid-9");
+        let aliased = plain.with_reference("US-1");
+        assert_eq!(aliased.key, "uuid-9");
+        assert_eq!(aliased.reference(), "US-1");
     }
 
     #[test]

@@ -37,12 +37,12 @@ pub async fn persona_in(runtime: &IntegrationRuntime) -> ProfileId {
 }
 
 pub fn observed(key: &str, stamp: &str) -> Observed {
-    Observed {
-        key: key.to_owned(),
-        stamp: stamp.to_owned(),
-        summary: format!("{key} needs you"),
-        payload: json!({ "key": key, "stamp": stamp }),
-    }
+    Observed::new(
+        key,
+        stamp,
+        format!("{key} needs you"),
+        json!({ "key": key, "stamp": stamp }),
+    )
 }
 
 pub struct ScriptedSource {

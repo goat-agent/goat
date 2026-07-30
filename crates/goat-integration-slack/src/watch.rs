@@ -133,11 +133,13 @@ impl WatchSource for MentionSearch {
             mentions
                 .into_iter()
                 .filter(|mention| !mention.is_authored_by(&self.self_id))
-                .map(|mention| Observed {
-                    key: mention.key.clone(),
-                    stamp: mention.ts.clone(),
-                    summary: mention.summary(),
-                    payload: mention.raw,
+                .map(|mention| {
+                    Observed::new(
+                        mention.key.clone(),
+                        mention.ts.clone(),
+                        mention.summary(),
+                        mention.raw,
+                    )
                 })
                 .collect(),
         ))
