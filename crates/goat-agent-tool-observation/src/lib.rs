@@ -20,10 +20,11 @@ pub fn register(registry: &mut ToolRegistry, store: Arc<dyn Store>) {
 fn spec() -> ToolSpec {
     ToolSpec::new(
         OBSERVATION,
-        "Read what an integration watcher actually saw. Integration briefings cite an \
-         observation reference such as `observation:42`; pass that id here to get the raw \
-         payload back. Pass an external_ref instead to get the recorded history for one \
-         item, newest first.",
+        "Read what an integration watcher actually saw. A watcher polls an integration \
+         bound to this agent and records each sighting losslessly as an observation. \
+         Integration briefings cite an observation reference such as `observation:42`; \
+         pass that id here to get the raw payload back. Pass an external_ref instead to \
+         get the recorded history for one item, newest first.",
         json!({
             "type": "object",
             "properties": {
