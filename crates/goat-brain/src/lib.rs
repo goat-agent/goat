@@ -26,7 +26,7 @@ use goat_store::{
 };
 use goat_types::{
     AgentId, Event, IncomingMessage, IntegrationId, IntegrationUpdateKind, MessageId, Surface,
-    ThreadId,
+    ThreadId, WorkflowItem,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -140,7 +140,7 @@ fn build_request(
 
 const GOAT_SELF: &str = r"
 <goat_self>
-You are a goat agent: a resident actor. A turn starts three ways — a channel message, a fire of a schedule you registered (once/cron only, no self-tick), or an update from an integration watcher; your binding declares what is watched.
+You are a goat agent: a resident actor. A turn starts three ways — a channel message, a fire of a schedule you registered (once/cron only, no self-tick), or an update from a watch workflow; the agent's `watch` section declares what is watched as named workflows of query-filtered sources.
 Channels are presence; integrations are reach.
 Memory scopes are owner, self, and domain:<name>. Files under core/ are always loaded and yours to curate; nightly consolidation writes notes, never core/.
 Schedule prompts are notes to your future self — a fire carries no conversation.
@@ -374,6 +374,25 @@ impl Brain {
                                     agent = %self.agent,
                                     error = ?e,
                                     "integration update failed",
+                                );
+                            }
+                        }
+                        Event::WorkflowUpdate {
+                            workflow,
+                            items,
+                            overflow,
+                            ..
+                        } => {
+                            let update = WorkflowTurn {
+                                workflow,
+                                items,
+                                overflow,
+                            };
+                            if let Err(e) = self.handle_workflow_update(&channels, update).await {
+                                warn!(
+                                    agent = %self.agent,
+                                    error = ?e,
+                                    "workflow update failed",
                                 );
                             }
                         }
@@ -1068,6 +1087,66 @@ impl Brain {
         Ok(())
     }
 
+    async fn handle_workflow_update(
+        &self,
+        channels: &[Arc<dyn ChannelHandle>],
+        update: WorkflowTurn,
+    ) -> Result<()> {
+        let resolved = match self.store.latest_thread(self.agent).await? {
+            Some(thread) => channels
+                .iter()
+                .find(|h| h.id() == thread.channel && h.instance() == thread.instance)
+                .cloned()
+                .map(|handle| (thread, handle)),
+            None => None,
+        };
+        let Some((thread, handle)) = resolved else {
+            warn!(
+                agent = %self.agent,
+                workflow = %update.workflow,
+                "no channel handle for workflow update; dropping briefing",
+            );
+            return Ok(());
+        };
+
+        let prompt = workflow_prompt(&update, &self.integration_tools);
+        let mut messages = vec![LlmMessage {
+            role: Role::User,
+            content: vec![ContentPart::Text(prompt)],
+        }];
+
+        let mut tools = self.integration_tools.clone();
+        tools.extend(
+            ["memory_search", "fact", "observation"]
+                .iter()
+                .map(std::string::ToString::to_string),
+        );
+
+        let (summary, thread) = self
+            .complete_with_tools(
+                handle,
+                TurnRoute {
+                    thread: thread.clone(),
+                    reply_to: None,
+                    surface: surface_of_external(&thread.external),
+                    thread_open: None,
+                },
+                &mut messages,
+                TurnMode::Integration { tools },
+                None,
+            )
+            .await?;
+
+        let trimmed = summary.final_text.trim();
+        if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("skip") {
+            self.store
+                .append_outgoing_text(self.agent, &thread, &summary.final_text, None)
+                .await
+                .context("append outgoing text for workflow update")?;
+        }
+        Ok(())
+    }
+
     fn llm_tool_specs(&self, has_skills: bool, mode: &TurnMode) -> Vec<ToolSpec> {
         self.tools
             .default_specs()
@@ -1638,6 +1717,75 @@ fn integration_prompt(update: &IntegrationTurn) -> String {
     )
 }
 
+struct WorkflowTurn {
+    workflow: String,
+    items: Vec<WorkflowItem>,
+    overflow: usize,
+}
+
+fn workflow_prompt(update: &WorkflowTurn, registered_tools: &[String]) -> String {
+    let mut body = format!("<workflow_update workflow=\"{}\">", update.workflow);
+    for item in &update.items {
+        let _ = write!(
+            body,
+            "\n<item integration=\"{}\" account=\"{}\" kind=\"{}\">\n{}\nexternal_ref: {}",
+            item.integration,
+            item.account,
+            item.kind.as_str(),
+            item.summary,
+            item.external_ref,
+        );
+        if let Some(observation) = item.observation {
+            let _ = write!(
+                body,
+                "\nobservation recorded (raw payload kept losslessly): observation:{observation}",
+            );
+        }
+        body.push_str("\n</item>");
+    }
+    if update.overflow > 0 {
+        let _ = write!(body, "\n(+{} more items waiting)", update.overflow);
+    }
+    body.push_str("\n</workflow_update>\n");
+
+    let mut integrations: Vec<&str> = update
+        .items
+        .iter()
+        .map(|item| item.integration.as_str())
+        .collect();
+    integrations.sort_unstable();
+    integrations.dedup();
+    let hints: Vec<String> = integrations
+        .iter()
+        .filter(|name| {
+            let prefix = format!("{name}_");
+            registered_tools
+                .iter()
+                .any(|tool| tool.starts_with(&prefix))
+        })
+        .map(|name| format!("`{name}_*`"))
+        .collect();
+    let live = if hints.is_empty() {
+        String::new()
+    } else {
+        format!("pull live data with the {} tools, ", hints.join(", "))
+    };
+    let domains: Vec<String> = integrations
+        .iter()
+        .map(|name| format!("domain:{name}"))
+        .collect();
+    let _ = write!(
+        body,
+        "Gather context now: {live}read what the watcher actually saw with `observation`, \
+         and search prior knowledge with `memory_search`. Record durable claims with `fact` \
+         in each item's integration scope ({}), using its observation reference as source_ref. \
+         Then brief me once, covering these items together: what happened, the key context \
+         you found, and a suggested first step. Do not start the work itself.",
+        domains.join(", "),
+    );
+    body
+}
+
 fn is_schedule_tool(name: &str) -> bool {
     matches!(
         name,
@@ -1728,6 +1876,54 @@ mod tests {
             ..integration_turn()
         });
         assert!(!prompt.contains("observation recorded"));
+    }
+
+    fn workflow_item(integration: &'static str, reference: &str) -> WorkflowItem {
+        WorkflowItem {
+            integration: IntegrationId::from_static(integration),
+            account: "default".into(),
+            stream: "inbox".into(),
+            kind: IntegrationUpdateKind::Assigned,
+            external_ref: format!("{integration}/default:issue:{reference}"),
+            summary: format!("{reference} — Fix retry storm"),
+            observation: Some(12),
+        }
+    }
+
+    #[test]
+    fn workflow_prompt_bundles_items_and_hints_only_registered_tools() {
+        let update = WorkflowTurn {
+            workflow: "inbox".into(),
+            items: vec![
+                workflow_item("linear", "GOA-1"),
+                workflow_item("github", "#42"),
+            ],
+            overflow: 2,
+        };
+        let prompt = workflow_prompt(&update, &["linear_list_issues".to_string()]);
+        assert!(prompt.starts_with("<workflow_update workflow=\"inbox\">"));
+        assert!(prompt.contains("<item integration=\"linear\""));
+        assert!(prompt.contains("<item integration=\"github\""));
+        assert!(prompt.contains("observation:12"));
+        assert!(prompt.contains("(+2 more items waiting)"));
+        assert!(prompt.contains("`linear_*`"));
+        assert!(!prompt.contains("`github_*`"));
+        assert!(prompt.contains("domain:github, domain:linear"));
+        assert!(prompt.contains("brief me once"));
+        assert!(prompt.contains("Do not start the work itself"));
+    }
+
+    #[test]
+    fn workflow_prompt_without_registered_tools_skips_the_live_hint() {
+        let update = WorkflowTurn {
+            workflow: "errors".into(),
+            items: vec![workflow_item("github", "#7")],
+            overflow: 0,
+        };
+        let prompt = workflow_prompt(&update, &[]);
+        assert!(!prompt.contains("pull live data"));
+        assert!(!prompt.contains("more items waiting"));
+        assert!(prompt.contains("read what the watcher actually saw"));
     }
 
     #[test]

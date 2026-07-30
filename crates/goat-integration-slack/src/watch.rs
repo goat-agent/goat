@@ -2,22 +2,21 @@ use std::sync::{Arc, OnceLock};
 
 use goat_auth::CredentialStore;
 use goat_integration::diff::RETAIN;
-use goat_integration::watch::{Observed, Watch, WatchPage, WatchSource, run};
+use goat_integration::query::{self, SelfRefStyle};
+use goat_integration::watch::{CompiledWatch, Observed, WatchPage, WatchSource, WatchSpec};
 use goat_integration::{
     IntegrationBinding, IntegrationError, IntegrationResult, IntegrationRuntime,
 };
 use goat_integration_mcp::{McpService, pick_tool};
-use goat_types::{AgentId, IntegrationUpdateKind};
-use serde_json::json;
-use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
+use goat_types::IntegrationUpdateKind;
+use serde_json::{Value, json};
 use tracing::warn;
 
 use crate::parse::parse_mentions;
-use crate::{PREFIX, SlackBinding, service};
+use crate::{PREFIX, SlackBinding, VOCABULARY, service};
 
 pub const STREAM: &str = "mentions";
-const FETCH_LIMIT: usize = 50;
+pub const DEFAULT_QUERY: &str = "@me";
 
 const SEARCH_TOOL_CANDIDATES: &[&str] = &[
     "search_public_and_private",
@@ -25,52 +24,74 @@ const SEARCH_TOOL_CANDIDATES: &[&str] = &[
     "search_public",
 ];
 
-pub fn spawn(
-    agent: AgentId,
-    binding: &IntegrationBinding,
-    runtime: &IntegrationRuntime,
-    cancel: CancellationToken,
-) -> Option<JoinHandle<()>> {
-    let settings = SlackBinding::read(&binding.config);
-    let Some(user_id) = settings.user_id else {
+pub fn defaults(binding: &IntegrationBinding) -> Vec<WatchSpec> {
+    if SlackBinding::read(&binding.config).user_id.is_none() {
         warn!(
-            agent = %agent,
             "slack watcher disabled; set `user_id` to your Slack member ID in the agent's slack binding",
         );
-        return None;
+        return Vec::new();
+    }
+    vec![WatchSpec {
+        stream: STREAM.to_owned(),
+        query: DEFAULT_QUERY.to_owned(),
+    }]
+}
+
+pub fn compile(
+    binding: &IntegrationBinding,
+    runtime: &IntegrationRuntime,
+    spec: &WatchSpec,
+) -> IntegrationResult<CompiledWatch> {
+    let settings = SlackBinding::read(&binding.config);
+    let plan = plan(&spec.query, settings.user_id.as_deref())?;
+    Ok(CompiledWatch {
+        kind: IntegrationUpdateKind::Updated,
+        entity: "message",
+        diff: RETAIN,
+        source: Box::new(MentionSearch {
+            service: Arc::new(service()),
+            credentials: runtime.credentials.clone(),
+            binding: binding.clone(),
+            arguments: plan.arguments,
+            configured_tool: settings.search_tool,
+            resolved_tool: OnceLock::new(),
+            self_id: plan.self_id,
+        }),
+    })
+}
+
+#[derive(Debug)]
+struct Plan {
+    arguments: Value,
+    self_id: String,
+}
+
+fn plan(raw: &str, user_id: Option<&str>) -> IntegrationResult<Plan> {
+    let Some(user_id) = user_id else {
+        return Err(IntegrationError::Config(
+            "slack watch needs `user_id`; set it to your Slack member ID in the agent's slack binding"
+                .into(),
+        ));
     };
-    let source = MentionSearch {
-        service: Arc::new(service()),
-        credentials: runtime.credentials.clone(),
-        binding: binding.clone(),
-        query: settings.query.unwrap_or_else(|| format!("<@{user_id}>")),
-        configured_tool: settings.search_tool,
-        resolved_tool: OnceLock::new(),
-        self_id: user_id,
-    };
-    let watch = Watch::new(
-        crate::ID,
-        STREAM,
-        IntegrationUpdateKind::Updated,
-        "message",
-        "waiting on you",
-        RETAIN,
-        source,
-    );
-    Some(tokio::spawn(run(
-        watch,
-        agent,
-        runtime.clone(),
-        binding.account.clone(),
-        cancel,
-    )))
+    let resolved = query::resolve(&VOCABULARY, query::parse(raw)?)?;
+    let mention = format!("<@{user_id}>");
+    let mut arguments = json!({
+        "query": query::render(&resolved.residue, SelfRefStyle::Replace(&mention)),
+    });
+    if let Some(limit) = resolved.limit {
+        arguments["limit"] = json!(limit);
+    }
+    Ok(Plan {
+        arguments,
+        self_id: user_id.to_owned(),
+    })
 }
 
 struct MentionSearch {
     service: Arc<McpService>,
     credentials: CredentialStore,
     binding: IntegrationBinding,
-    query: String,
+    arguments: Value,
     configured_tool: Option<String>,
     resolved_tool: OnceLock<String>,
     self_id: String,
@@ -121,11 +142,7 @@ impl WatchSource for MentionSearch {
         };
         let result = self
             .service
-            .call(
-                &session,
-                &tool,
-                json!({ "query": self.query, "limit": FETCH_LIMIT }),
-            )
+            .call(&session, &tool, self.arguments.clone())
             .await;
         session.close().await;
         let mentions = parse_mentions(&result?)?;
@@ -149,6 +166,61 @@ impl WatchSource for MentionSearch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_query_matches_what_was_hardcoded_before() {
+        let plan = plan(DEFAULT_QUERY, Some("U0OWNER")).unwrap();
+        assert_eq!(plan.arguments["query"], "<@U0OWNER>");
+        assert_eq!(
+            plan.arguments,
+            json!({ "query": "<@U0OWNER>", "limit": 50 })
+        );
+        assert_eq!(plan.self_id, "U0OWNER");
+    }
+
+    #[test]
+    fn slack_modifiers_pass_through_verbatim() {
+        let plan = plan(
+            r#"@me in:#eng from:@alice has:link before:2026-01-01 "deploy failed" limit:25"#,
+            Some("U1"),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.arguments,
+            json!({
+                "query": r#"<@U1> in:#eng from:@alice has:link before:2026-01-01 "deploy failed""#,
+                "limit": 25,
+            })
+        );
+    }
+
+    #[test]
+    fn compiling_without_a_member_id_points_at_the_binding() {
+        let err = plan(DEFAULT_QUERY, None).unwrap_err();
+        assert!(err.to_string().contains("`user_id`"));
+        assert!(err.to_string().contains("slack binding"));
+    }
+
+    #[test]
+    fn a_broken_query_surfaces_the_dsl_error() {
+        assert!(plan(r#"in:"eng"#, Some("U1")).is_err());
+        assert!(plan("limit:0", Some("U1")).is_err());
+        assert!(plan("limit:9999", Some("U1")).is_err());
+    }
+
+    #[test]
+    fn defaults_decline_without_a_member_id() {
+        let empty = IntegrationBinding::from_config(json!({}));
+        assert!(defaults(&empty).is_empty());
+        let bound = IntegrationBinding::from_config(json!({ "user_id": "U1" }));
+        assert_eq!(
+            defaults(&bound),
+            vec![WatchSpec {
+                stream: STREAM.to_owned(),
+                query: DEFAULT_QUERY.to_owned(),
+            }]
+        );
+    }
 
     #[test]
     fn the_search_tool_is_picked_from_what_the_server_exposes() {

@@ -1,4 +1,5 @@
 pub mod diff;
+pub mod query;
 pub mod schema;
 pub mod watch;
 
@@ -6,6 +7,7 @@ pub mod watch;
 pub mod test_support;
 
 pub use schema::drop_placeholder_args;
+pub use watch::{CompiledWatch, WatchSpec};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,7 +19,6 @@ use goat_bus::EventBus;
 use goat_store::{NewObservation, Store, StoreError};
 use goat_types::{AgentId, Event, IntegrationId};
 use thiserror::Error;
-use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 #[derive(Debug, Error)]
@@ -154,15 +155,22 @@ pub trait Integration: Send + Sync + 'static {
         bindings: Arc<BindingMap>,
     ) -> Vec<ToolName>;
 
-    fn spawn_watcher(
+    fn default_watch(&self, binding: &IntegrationBinding) -> Vec<WatchSpec> {
+        let _ = binding;
+        Vec::new()
+    }
+
+    fn compile_watch(
         &self,
-        agent: AgentId,
-        binding: IntegrationBinding,
-        runtime: IntegrationRuntime,
-        cancel: CancellationToken,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        let _ = (agent, binding, runtime, cancel);
-        None
+        binding: &IntegrationBinding,
+        runtime: &IntegrationRuntime,
+        spec: &WatchSpec,
+    ) -> IntegrationResult<CompiledWatch> {
+        let _ = (binding, runtime, spec);
+        Err(IntegrationError::Config(format!(
+            "{} does not support watch queries",
+            self.id()
+        )))
     }
 
     async fn verify(

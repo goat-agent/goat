@@ -3,7 +3,8 @@ mod watch;
 
 use std::sync::Arc;
 
-use goat_integration::{IntegrationFactory, IntegrationResult};
+use goat_integration::query::{KeySpec, Residue, TermPolicy, WatchVocabulary};
+use goat_integration::{IntegrationError, IntegrationFactory, IntegrationResult};
 use goat_integration_mcp::{AuthScheme, McpService, ServiceUrl, ToolPolicy};
 use goat_types::IntegrationId;
 use serde::Deserialize;
@@ -18,7 +19,19 @@ const ENV_VAR: &str = "GOAT_SENTRY_ACCESS_TOKEN";
 const SETUP: &str = "connects to Sentry's hosted MCP server; a browser window will ask you to approve access.\n\
      the approval screen lists skills — uncheck anything you do not want; `Manage Projects & Teams` grants project and team writes.\n\
      the watcher stays off until you set `organization_slug` in the agent's sentry binding.\n\
+     by default it briefs you on fresh unresolved issues awaiting review (`is:unresolved is:for_review sort:new`).\n\
+     declare workflows in the agent's `watch` section to change that, e.g.\n\
+     { \"source\": \"sentry\", \"query\": \"is:unresolved level:error project:backend sort:freq\" } —\n\
+     known keys: project, sort; every other token passes through to Sentry's issue search verbatim (`@me` becomes `me`).\n\
      to run headless, or to recover if the browser flow fails, set GOAT_SENTRY_ACCESS_TOKEN to a Sentry user auth token.";
+
+pub const VOCABULARY: WatchVocabulary = WatchVocabulary {
+    integration: "sentry",
+    residue: Residue::Keep,
+    terms: TermPolicy::Reject,
+    limit: None,
+    keys: &[KeySpec::new("project"), KeySpec::new("sort")],
+};
 
 pub fn service() -> McpService {
     McpService::new("sentry", "Sentry", ServiceUrl::Fixed(MCP_URL), SETUP)
@@ -28,7 +41,8 @@ pub fn service() -> McpService {
         .truncation_hint(
             "narrow the time range, request fewer fields, or fetch a single issue instead",
         )
-        .watch(watch::spawn)
+        .defaults(watch::defaults)
+        .compile(watch::compile)
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -36,12 +50,6 @@ pub fn service() -> McpService {
 pub(crate) struct SentryBinding {
     #[serde(default, deserialize_with = "meaningful")]
     pub organization_slug: Option<String>,
-    #[serde(default, deserialize_with = "meaningful")]
-    pub project: Option<String>,
-    #[serde(default, deserialize_with = "meaningful")]
-    pub query: Option<String>,
-    #[serde(default, deserialize_with = "meaningful")]
-    pub sort: Option<String>,
 }
 
 impl SentryBinding {
@@ -60,7 +68,19 @@ where
         .filter(|value| !value.is_empty()))
 }
 
+const MOVED_KEYS: &[&str] = &["project", "query", "sort"];
+
 fn validate_config(config: &Value) -> IntegrationResult<()> {
+    if let Some(object) = config.as_object() {
+        for key in MOVED_KEYS {
+            if object.contains_key(*key) {
+                return Err(IntegrationError::Config(format!(
+                    "sentry binding: `{key}` moved to the agent-level `watch` section; \
+                     write {{ \"source\": \"sentry\", \"query\": \"...\" }} there instead"
+                )));
+            }
+        }
+    }
     goat_integration_mcp::validate_binding::<SentryBinding>("sentry", config)
 }
 
@@ -75,26 +95,32 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goat_integration::query::assert_vocabulary;
     use goat_integration::{Integration, IntegrationAuth};
     use serde_json::json;
 
     #[test]
-    fn the_binding_is_typo_checked() {
+    fn the_vocabulary_holds_its_invariants() {
+        assert_vocabulary(&VOCABULARY);
+    }
+
+    #[test]
+    fn the_binding_keeps_only_connection_keys() {
         assert!(validate_config(&json!({})).is_ok());
         assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
-        assert!(
-            validate_config(&json!({
-                "organization_slug": "acme",
-                "project": "backend",
-                "query": "is:unresolved",
-                "sort": "new"
-            }))
-            .is_ok()
-        );
+        assert!(validate_config(&json!({ "organization_slug": "acme" })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());
         assert!(validate_config(&json!({ "organization_slug": 3 })).is_err());
-        assert!(validate_config(&json!({ "project": ["backend"] })).is_err());
         assert!(validate_config(&json!({ "org_slug": "acme" })).is_err());
+    }
+
+    #[test]
+    fn an_old_policy_key_points_at_the_watch_section() {
+        for key in ["project", "query", "sort"] {
+            let err = validate_config(&json!({ key: "value" })).unwrap_err();
+            assert!(err.to_string().contains("agent-level `watch` section"));
+            assert!(err.to_string().contains(key));
+        }
     }
 
     #[test]
@@ -111,16 +137,19 @@ mod tests {
         assert_eq!(meta.display, "Sentry");
         assert_eq!(meta.auth, IntegrationAuth::OAuth);
         assert_eq!(meta.env_var, Some("GOAT_SENTRY_ACCESS_TOKEN"));
-        assert!(service().watch.is_some());
+        assert!(service().compile.is_some());
+        assert!(service().defaults.is_some());
         assert!(meta.setup.contains("GOAT_SENTRY_ACCESS_TOKEN"));
         assert!(meta.setup.contains("organization_slug"));
+        assert!(meta.setup.contains("is:unresolved is:for_review sort:new"));
     }
 
     #[test]
     fn settings_are_trimmed_and_blank_values_ignored() {
-        let read = SentryBinding::read(&json!({ "organization_slug": "  ", "project": " api " }));
+        let read = SentryBinding::read(&json!({ "organization_slug": "  " }));
         assert_eq!(read.organization_slug, None);
-        assert_eq!(read.project, Some("api".to_owned()));
+        let read = SentryBinding::read(&json!({ "organization_slug": " acme " }));
+        assert_eq!(read.organization_slug, Some("acme".to_owned()));
     }
 
     #[test]
@@ -147,7 +176,6 @@ mod tests {
             stream: watch::STREAM.to_owned(),
             kind: IntegrationUpdateKind::Updated,
             entity: "issue",
-            overflow_tail: "issues waiting",
             diff: RETAIN,
         })
         .await;

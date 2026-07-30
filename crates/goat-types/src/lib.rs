@@ -278,6 +278,23 @@ pub enum Event {
         summary: String,
         observation: Option<i64>,
     },
+    WorkflowUpdate {
+        agent: AgentId,
+        workflow: String,
+        items: Vec<WorkflowItem>,
+        overflow: usize,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkflowItem {
+    pub integration: IntegrationId,
+    pub account: String,
+    pub stream: String,
+    pub kind: IntegrationUpdateKind,
+    pub external_ref: String,
+    pub summary: String,
+    pub observation: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -301,7 +318,9 @@ impl Event {
     pub fn agent(&self) -> AgentId {
         match self {
             Event::Incoming(m) => m.agent,
-            Event::Schedule { agent, .. } | Event::IntegrationUpdate { agent, .. } => *agent,
+            Event::Schedule { agent, .. }
+            | Event::IntegrationUpdate { agent, .. }
+            | Event::WorkflowUpdate { agent, .. } => *agent,
         }
     }
 }

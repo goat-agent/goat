@@ -6,14 +6,12 @@ use async_trait::async_trait;
 use goat_agent_tool::{ToolName, ToolRegistry};
 use goat_auth::{Credential, CredentialStore};
 use goat_integration::{
-    BindingMap, Integration, IntegrationAuth, IntegrationBinding, IntegrationError,
-    IntegrationMetadata, IntegrationResult, IntegrationRuntime,
+    BindingMap, CompiledWatch, Integration, IntegrationAuth, IntegrationBinding, IntegrationError,
+    IntegrationMetadata, IntegrationResult, IntegrationRuntime, WatchSpec,
 };
 use goat_mcp::{HttpEndpoint, McpError, McpSession};
-use goat_types::{AgentId, IntegrationId};
+use goat_types::IntegrationId;
 use serde_json::Value;
-use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 
 mod auth;
 mod toolset;
@@ -32,12 +30,9 @@ pub struct IdentityProbe {
     pub tool: &'static str,
     pub describe: DescribeIdentityFn,
 }
-pub type WatchFn = fn(
-    AgentId,
-    &IntegrationBinding,
-    &IntegrationRuntime,
-    CancellationToken,
-) -> Option<JoinHandle<()>>;
+pub type CompileWatchFn =
+    fn(&IntegrationBinding, &IntegrationRuntime, &WatchSpec) -> IntegrationResult<CompiledWatch>;
+pub type DefaultWatchFn = fn(&IntegrationBinding) -> Vec<WatchSpec>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServiceUrl {
@@ -147,7 +142,8 @@ pub struct McpService {
     pub truncation_hint: &'static str,
     pub tools: ToolPolicy,
     pub identity: Option<IdentityProbe>,
-    pub watch: Option<WatchFn>,
+    pub compile: Option<CompileWatchFn>,
+    pub defaults: Option<DefaultWatchFn>,
 }
 
 impl McpService {
@@ -176,7 +172,8 @@ impl McpService {
             truncation_hint: "narrow the request and call again",
             tools: ToolPolicy::all(""),
             identity: None,
-            watch: None,
+            compile: None,
+            defaults: None,
         }
     }
 
@@ -238,8 +235,14 @@ impl McpService {
     }
 
     #[must_use]
-    pub const fn watch(mut self, watch: WatchFn) -> Self {
-        self.watch = Some(watch);
+    pub const fn compile(mut self, compile: CompileWatchFn) -> Self {
+        self.compile = Some(compile);
+        self
+    }
+
+    #[must_use]
+    pub const fn defaults(mut self, defaults: DefaultWatchFn) -> Self {
+        self.defaults = Some(defaults);
         self
     }
 
@@ -495,15 +498,26 @@ impl Integration for McpIntegration {
         toolset::register(&self.service, registry, runtime, bindings).await
     }
 
-    fn spawn_watcher(
+    fn default_watch(&self, binding: &IntegrationBinding) -> Vec<WatchSpec> {
+        match self.service.defaults {
+            Some(defaults) => defaults(binding),
+            None => Vec::new(),
+        }
+    }
+
+    fn compile_watch(
         &self,
-        agent: AgentId,
-        binding: IntegrationBinding,
-        runtime: IntegrationRuntime,
-        cancel: CancellationToken,
-    ) -> Option<JoinHandle<()>> {
-        let watch = self.service.watch?;
-        watch(agent, &binding, &runtime, cancel)
+        binding: &IntegrationBinding,
+        runtime: &IntegrationRuntime,
+        spec: &WatchSpec,
+    ) -> IntegrationResult<CompiledWatch> {
+        match self.service.compile {
+            Some(compile) => compile(binding, runtime, spec),
+            None => Err(IntegrationError::Config(format!(
+                "{} does not support watch queries",
+                self.service.id.as_str()
+            ))),
+        }
     }
 
     async fn verify(
@@ -702,19 +716,23 @@ mod tests {
     }
 
     #[test]
-    fn declaring_a_watcher_shows_up_on_the_descriptor() {
-        fn never(
-            _: AgentId,
+    fn declaring_watch_hooks_shows_up_on_the_descriptor() {
+        fn no_defaults(_: &IntegrationBinding) -> Vec<WatchSpec> {
+            Vec::new()
+        }
+        fn no_compile(
             _: &IntegrationBinding,
             _: &IntegrationRuntime,
-            _: CancellationToken,
-        ) -> Option<JoinHandle<()>> {
-            None
+            _: &WatchSpec,
+        ) -> IntegrationResult<CompiledWatch> {
+            Err(IntegrationError::Config("no".into()))
         }
         let integration = McpService::new("acme", "Acme", ServiceUrl::Fixed("u"), "s")
-            .watch(never)
+            .defaults(no_defaults)
+            .compile(no_compile)
             .build();
-        assert!(integration.service().watch.is_some());
+        assert!(integration.service().compile.is_some());
+        assert!(integration.service().defaults.is_some());
     }
 
     #[test]

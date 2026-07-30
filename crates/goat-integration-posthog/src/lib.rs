@@ -165,7 +165,8 @@ mod tests {
         assert_eq!(meta.display, "PostHog");
         assert_eq!(meta.auth, IntegrationAuth::OAuth);
         assert_eq!(meta.env_var, Some("GOAT_POSTHOG_API_KEY"));
-        assert!(service().watch.is_none());
+        assert!(service().compile.is_none());
+        assert!(service().defaults.is_none());
         assert!(meta.setup.contains("does not watch PostHog"));
     }
 

@@ -1,9 +1,9 @@
 mod parse;
 mod watch;
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use goat_integration::query::{LimitSpec, Residue, TermPolicy, WatchVocabulary};
 use goat_integration::{IntegrationError, IntegrationFactory, IntegrationResult};
 use goat_integration_mcp::{
     AuthScheme, IdentityProbe, McpService, NameRule, ServiceUrl, ToolPolicy,
@@ -23,8 +23,21 @@ const TOOL_HEALTH: &str = "getHealth";
 const SETUP: &str = "connects to your Langfuse deployment's MCP server.\n\
      paste the project's public and secret key joined by a colon: pk-lf-…:sk-lf-…\n\
      for the us/jp/hipaa cloud regions or a self-hosted instance, add `\"host\": \"https://us.cloud.langfuse.com\"` to the langfuse entry in ~/.goat/config.json — a self-hosted instance must be recent enough to serve the full MCP tool catalogue\n\
-     the watcher stays off until the agent's langfuse binding declares `watch` streams; each entry's `filter` is passed to listObservations as-is\n\
+     the watcher stays off until the agent's `watch` section declares a langfuse stream, e.g.\n\
+     { \"source\": \"langfuse\", \"query\": \"level:ERROR limit:25\" } —\n\
+     each key:value pair becomes a listObservations filter column, a value may carry a comparison (timestamp:>2026-01-01), a leading `-` negates an equality (-level:DEBUG), and limit:N caps each poll.\n\
      to run headless, set GOAT_LANGFUSE_API_KEY to the same colon-joined pair";
+
+pub const VOCABULARY: WatchVocabulary = WatchVocabulary {
+    integration: "langfuse",
+    residue: Residue::Keep,
+    terms: TermPolicy::Reject,
+    limit: Some(LimitSpec {
+        default: 25,
+        max: 250,
+    }),
+    keys: &[],
+};
 
 pub const ENABLED_TOOLS: &[&str] = &[
     "listObservations",
@@ -72,7 +85,8 @@ pub fn service() -> McpService {
         tool: TOOL_HEALTH,
         describe: parse::version,
     })
-    .watch(watch::spawn)
+    .defaults(watch::defaults)
+    .compile(watch::compile)
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -80,18 +94,6 @@ pub fn service() -> McpService {
 pub(crate) struct LangfuseBinding {
     #[serde(default, deserialize_with = "meaningful")]
     pub host: Option<String>,
-    #[serde(default)]
-    pub watch: Vec<WatchEntry>,
-    #[serde(default)]
-    pub limit: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct WatchEntry {
-    pub stream: String,
-    #[serde(default)]
-    pub filter: Vec<Value>,
 }
 
 impl LangfuseBinding {
@@ -110,7 +112,19 @@ where
         .filter(|value| !value.is_empty()))
 }
 
+const MOVED_KEYS: &[&str] = &["watch", "limit"];
+
 fn validate_config(config: &Value) -> IntegrationResult<()> {
+    if let Some(object) = config.as_object() {
+        for key in MOVED_KEYS {
+            if object.contains_key(*key) {
+                return Err(IntegrationError::Config(format!(
+                    "langfuse binding: `{key}` moved to the agent-level `watch` section; \
+                     write {{ \"source\": \"langfuse\", \"query\": \"level:ERROR limit:25\" }} there instead"
+                )));
+            }
+        }
+    }
     goat_integration_mcp::validate_binding::<LangfuseBinding>("langfuse", config)?;
     let binding = LangfuseBinding::read(config);
     if let Some(host) = &binding.host
@@ -120,25 +134,6 @@ fn validate_config(config: &Value) -> IntegrationResult<()> {
         return Err(IntegrationError::Config(
             "langfuse binding: `host` must start with http:// or https://".into(),
         ));
-    }
-    if binding.limit == Some(0) {
-        return Err(IntegrationError::Config(
-            "langfuse binding: `limit` must be a positive integer".into(),
-        ));
-    }
-    let mut streams = BTreeSet::new();
-    for entry in &binding.watch {
-        let stream = entry.stream.trim();
-        if stream.is_empty() {
-            return Err(IntegrationError::Config(
-                "langfuse binding: each `watch` entry needs a non-empty `stream`".into(),
-            ));
-        }
-        if !streams.insert(stream.to_owned()) {
-            return Err(IntegrationError::Config(format!(
-                "langfuse binding: `watch` reuses the stream name `{stream}`; stream names key stored state and must be unique"
-            )));
-        }
     }
     Ok(())
 }
@@ -154,9 +149,15 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goat_integration::{Integration, IntegrationAuth};
+    use goat_integration::query::assert_vocabulary;
+    use goat_integration::{Integration, IntegrationAuth, IntegrationBinding};
     use goat_integration_mcp::Enable;
     use serde_json::json;
+
+    #[test]
+    fn the_vocabulary_holds_its_invariants() {
+        assert_vocabulary(&VOCABULARY);
+    }
 
     #[test]
     fn the_binding_is_typo_checked() {
@@ -164,16 +165,6 @@ mod tests {
         assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
         assert!(validate_config(&json!({ "host": "https://us.cloud.langfuse.com" })).is_ok());
         assert!(validate_config(&json!({ "deny_prefixes": ["delete"] })).is_ok());
-        assert!(
-            validate_config(&json!({
-                "watch": [
-                    { "stream": "errors",
-                      "filter": [{ "column": "level", "operator": "=", "value": "ERROR" }] }
-                ],
-                "limit": 25
-            }))
-            .is_ok()
-        );
         assert!(validate_config(&json!("nope")).is_err());
         assert!(validate_config(&json!({ "host": 3 })).is_err());
         assert!(validate_config(&json!({ "host ": "x" })).is_err());
@@ -187,17 +178,15 @@ mod tests {
     }
 
     #[test]
-    fn watch_streams_must_be_unique_and_named() {
-        assert!(validate_config(&json!({ "watch": [{ "stream": "  " }] })).is_err());
-        assert!(
-            validate_config(&json!({ "watch": [
-                { "stream": "errors" },
-                { "stream": "errors" }
-            ] }))
-            .is_err()
-        );
-        assert!(validate_config(&json!({ "watch": [{ "filter": [] }] })).is_err());
-        assert!(validate_config(&json!({ "limit": 0 })).is_err());
+    fn an_old_policy_key_points_at_the_watch_section() {
+        let err = validate_config(&json!({
+            "watch": [{ "stream": "errors", "filter": [] }]
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("agent-level `watch` section"));
+        assert!(err.to_string().contains("level:ERROR limit:25"));
+        let err = validate_config(&json!({ "limit": 25 })).unwrap_err();
+        assert!(err.to_string().contains("agent-level `watch` section"));
     }
 
     #[test]
@@ -215,8 +204,10 @@ mod tests {
         assert_eq!(meta.auth, IntegrationAuth::Secret);
         assert!(meta.secret_label.contains("pk-lf-…:sk-lf-…"));
         assert_eq!(meta.env_var, Some("GOAT_LANGFUSE_API_KEY"));
-        assert!(service().watch.is_some());
+        assert!(service().compile.is_some());
+        assert!(service().defaults.is_some());
         assert!(meta.setup.contains("host"));
+        assert!(meta.setup.contains("level:ERROR limit:25"));
         assert_eq!(service().credential.scheme, AuthScheme::Basic);
     }
 
@@ -250,13 +241,9 @@ mod tests {
     }
 
     #[test]
-    fn the_watcher_stays_off_until_streams_are_declared() {
-        assert!(LangfuseBinding::read(&json!({})).watch.is_empty());
-        let read = LangfuseBinding::read(&json!({
-            "watch": [{ "stream": "errors", "filter": [] }]
-        }));
-        assert_eq!(read.watch.len(), 1);
-        assert_eq!(read.watch[0].stream, "errors");
+    fn there_is_no_self_sufficient_default_watch() {
+        let binding = IntegrationBinding::from_config(json!({}));
+        assert!(service().build().default_watch(&binding).is_empty());
     }
 
     #[tokio::test]
@@ -270,7 +257,6 @@ mod tests {
             stream: "errors".to_owned(),
             kind: IntegrationUpdateKind::Updated,
             entity: "trace",
-            overflow_tail: "flagged",
             diff: RETAIN,
         })
         .await;

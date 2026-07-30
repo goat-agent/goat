@@ -3,7 +3,8 @@ mod watch;
 
 use std::sync::Arc;
 
-use goat_integration::{IntegrationFactory, IntegrationResult};
+use goat_integration::query::{KeySpec, LimitSpec, Residue, TermPolicy, WatchVocabulary};
+use goat_integration::{IntegrationError, IntegrationFactory, IntegrationResult};
 use goat_integration_mcp::{AuthScheme, IdentityProbe, McpService, ServiceUrl, ToolPolicy};
 use goat_types::IntegrationId;
 use serde::Deserialize;
@@ -18,8 +19,22 @@ const TOOL_AUTH_STATUS: &str = "auth_status";
 
 const SETUP: &str = "connects to Tiro's hosted MCP server; a browser window will ask you to approve access.\n\
      the scopes you were actually granted are printed on connect — an oauth session can be read-only, and folder or share-link writes then need an api key instead.\n\
-     the watcher stays off until you set `workspace` or `folder_id` in the agent's tiro binding; find them with `tiro_list_workspaces` and `tiro_search_private_folders`.\n\
+     the watcher stays off until you declare a workflow in the agent's `watch` section, e.g.\n\
+     { \"source\": \"tiro\", \"query\": \"workspace:<name>\" } or { \"source\": \"tiro\", \"query\": \"folder:<id>\" } —\n\
+     known keys: workspace, folder, limit; at least one of workspace/folder is required;\n\
+     find values with `tiro_list_workspaces` and `tiro_search_private_folders`.\n\
      to run headless, or to recover if the browser flow fails, set GOAT_TIRO_API_KEY to a Tiro api key.";
+
+pub const VOCABULARY: WatchVocabulary = WatchVocabulary {
+    integration: "tiro",
+    residue: Residue::Reject,
+    terms: TermPolicy::Reject,
+    limit: Some(LimitSpec {
+        default: 50,
+        max: 250,
+    }),
+    keys: &[KeySpec::new("workspace"), KeySpec::new("folder")],
+};
 
 pub fn service() -> McpService {
     McpService::new("tiro", "Tiro", ServiceUrl::Fixed(MCP_URL), SETUP)
@@ -33,35 +48,30 @@ pub fn service() -> McpService {
             tool: TOOL_AUTH_STATUS,
             describe: parse::describe_identity,
         })
-        .watch(watch::spawn)
+        .defaults(watch::defaults)
+        .compile(watch::compile)
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct TiroBinding {
-    #[serde(default, deserialize_with = "meaningful")]
-    pub workspace: Option<String>,
-    #[serde(default, deserialize_with = "meaningful")]
-    pub folder_id: Option<String>,
-}
+pub(crate) struct TiroBinding {}
 
-impl TiroBinding {
-    pub(crate) fn read(config: &Value) -> Self {
-        goat_integration_mcp::read_binding(config)
-    }
-}
-
-fn meaningful<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let raw: Option<String> = Option::deserialize(deserializer)?;
-    Ok(raw
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty()))
-}
+const MOVED_KEYS: &[(&str, &str)] = &[
+    ("workspace", "workspace:<name>"),
+    ("folder_id", "folder:<id>"),
+];
 
 fn validate_config(config: &Value) -> IntegrationResult<()> {
+    if let Some(object) = config.as_object() {
+        for (key, query) in MOVED_KEYS {
+            if object.contains_key(*key) {
+                return Err(IntegrationError::Config(format!(
+                    "tiro binding: `{key}` moved to the agent-level `watch` section; \
+                     write {{ \"source\": \"tiro\", \"query\": \"{query}\" }} there instead"
+                )));
+            }
+        }
+    }
     goat_integration_mcp::validate_binding::<TiroBinding>("tiro", config)
 }
 
@@ -76,17 +86,41 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goat_integration::{Integration, IntegrationAuth, IntegrationError};
+    use goat_integration::query::assert_vocabulary;
+    use goat_integration::{Integration, IntegrationAuth};
     use serde_json::json;
 
     #[test]
-    fn the_binding_is_typo_checked() {
+    fn the_vocabulary_holds_its_invariants() {
+        assert_vocabulary(&VOCABULARY);
+    }
+
+    #[test]
+    fn the_binding_keeps_only_connection_keys() {
         assert!(validate_config(&json!({})).is_ok());
         assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
-        assert!(validate_config(&json!({ "workspace": "W1", "folder_id": "F2" })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());
-        assert!(validate_config(&json!({ "workspace": 3 })).is_err());
         assert!(validate_config(&json!({ "folderid": "F2" })).is_err());
+    }
+
+    #[test]
+    fn an_old_workspace_key_points_at_the_watch_section() {
+        let err = validate_config(&json!({ "workspace": "W1" })).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "config: tiro binding: `workspace` moved to the agent-level `watch` section; \
+             write { \"source\": \"tiro\", \"query\": \"workspace:<name>\" } there instead"
+        );
+    }
+
+    #[test]
+    fn an_old_folder_id_key_points_at_the_watch_section() {
+        let err = validate_config(&json!({ "folder_id": "F2" })).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "config: tiro binding: `folder_id` moved to the agent-level `watch` section; \
+             write { \"source\": \"tiro\", \"query\": \"folder:<id>\" } there instead"
+        );
     }
 
     #[test]
@@ -103,8 +137,11 @@ mod tests {
         assert_eq!(meta.display, "Tiro");
         assert_eq!(meta.auth, IntegrationAuth::OAuth);
         assert_eq!(meta.env_var, Some("GOAT_TIRO_API_KEY"));
-        assert!(service().watch.is_some());
+        assert!(service().compile.is_some());
+        assert!(service().defaults.is_some());
         assert!(meta.setup.contains("GOAT_TIRO_API_KEY"));
+        assert!(meta.setup.contains("workspace:<name>"));
+        assert!(meta.setup.contains("folder:<id>"));
     }
 
     #[test]
@@ -128,16 +165,6 @@ mod tests {
         assert!(matches!(err, IntegrationError::Auth(_)));
     }
 
-    #[test]
-    fn the_watcher_stays_off_until_a_workspace_or_folder_is_named() {
-        let empty = TiroBinding::read(&json!({}));
-        assert!(empty.workspace.is_none() && empty.folder_id.is_none());
-        let blank = TiroBinding::read(&json!({ "workspace": "  " }));
-        assert!(blank.workspace.is_none());
-        let set = TiroBinding::read(&json!({ "folder_id": " F2 " }));
-        assert_eq!(set.folder_id, Some("F2".to_owned()));
-    }
-
     #[tokio::test]
     async fn the_watcher_honours_the_shared_contract() {
         use goat_integration::diff::SETTLE;
@@ -146,10 +173,9 @@ mod tests {
 
         assert_watch_contract(&WatchContract {
             integration: ID,
-            stream: watch::STREAM.to_owned(),
+            stream: "notes".to_owned(),
             kind: IntegrationUpdateKind::Updated,
             entity: "note",
-            overflow_tail: "notes waiting",
             diff: SETTLE,
         })
         .await;

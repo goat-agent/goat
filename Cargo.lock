@@ -2960,8 +2960,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tokio-util",
- "tracing",
 ]
 
 [[package]]
@@ -3028,6 +3026,7 @@ dependencies = [
  "inventory",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",

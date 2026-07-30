@@ -32,10 +32,24 @@ pub struct AgentConfig {
     pub tool_selectors: Vec<String>,
     pub bindings: Vec<AgentBinding>,
     pub integrations: Vec<AgentIntegration>,
+    pub watch: Option<Vec<WatchWorkflow>>,
     pub memory: MemoryConfig,
     pub autonomy: AutonomyConfig,
     pub intake_debounce: std::time::Duration,
     pub intake_ceiling: std::time::Duration,
+}
+
+#[derive(Clone, Debug)]
+pub struct WatchWorkflow {
+    pub name: String,
+    pub sources: Vec<WatchSourceEntry>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WatchSourceEntry {
+    pub source: String,
+    pub query: String,
+    pub stream: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]

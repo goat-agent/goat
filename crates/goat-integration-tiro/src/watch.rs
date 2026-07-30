@@ -2,80 +2,70 @@ use std::sync::Arc;
 
 use goat_auth::CredentialStore;
 use goat_integration::diff::SETTLE;
-use goat_integration::watch::{Observed, Watch, WatchPage, WatchSource, run};
+use goat_integration::query::{self, QueryError, TokenValue};
+use goat_integration::watch::{CompiledWatch, Observed, WatchPage, WatchSource, WatchSpec};
 use goat_integration::{IntegrationBinding, IntegrationResult, IntegrationRuntime};
 use goat_integration_mcp::McpService;
-use goat_types::{AgentId, IntegrationUpdateKind};
+use goat_types::IntegrationUpdateKind;
 use serde_json::{Value, json};
-use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
-use tracing::warn;
 
 use crate::parse::parse_notes;
-use crate::{TiroBinding, service};
+use crate::{VOCABULARY, service};
 
-pub const STREAM: &str = "notes";
 pub const TOOL_LIST_NOTES: &str = "list_notes";
-const PAGE_SIZE: u64 = 50;
 
-pub fn spawn(
-    agent: AgentId,
+pub fn defaults(_: &IntegrationBinding) -> Vec<WatchSpec> {
+    Vec::new()
+}
+
+pub fn compile(
     binding: &IntegrationBinding,
     runtime: &IntegrationRuntime,
-    cancel: CancellationToken,
-) -> Option<JoinHandle<()>> {
-    let settings = TiroBinding::read(&binding.config);
-    if settings.workspace.is_none() && settings.folder_id.is_none() {
-        warn!(
-            agent = %agent,
-            "tiro watcher disabled; set `workspace` or `folder_id` in the agent's tiro binding",
-        );
-        return None;
+    spec: &WatchSpec,
+) -> IntegrationResult<CompiledWatch> {
+    let arguments = plan(&spec.query)?;
+    Ok(CompiledWatch {
+        kind: IntegrationUpdateKind::Updated,
+        entity: "note",
+        diff: SETTLE,
+        source: Box::new(Notes {
+            service: Arc::new(service()),
+            credentials: runtime.credentials.clone(),
+            binding: binding.clone(),
+            arguments,
+        }),
+    })
+}
+
+fn plan(raw: &str) -> Result<Value, QueryError> {
+    let resolved = query::resolve(&VOCABULARY, query::parse(raw)?)?;
+    if resolved.single("workspace").is_none() && resolved.single("folder").is_none() {
+        return Err(QueryError::Invalid(
+            "tiro watches nothing without `workspace:<name>` or `folder:<id>`".to_owned(),
+        ));
     }
-    let source = Notes {
-        service: Arc::new(service()),
-        credentials: runtime.credentials.clone(),
-        binding: binding.clone(),
-        workspace: settings.workspace,
-        folder_id: settings.folder_id,
-    };
-    let watch = Watch::new(
-        crate::ID,
-        STREAM,
-        IntegrationUpdateKind::Updated,
-        "note",
-        "notes waiting",
-        SETTLE,
-        source,
-    );
-    Some(tokio::spawn(run(
-        watch,
-        agent,
-        runtime.clone(),
-        binding.account.clone(),
-        cancel,
-    )))
+    let mut arguments = json!({});
+    if let Some(limit) = resolved.limit {
+        arguments["pagination"] = json!({ "size": limit });
+    }
+    if let Some(workspace) = resolved.single("workspace")
+        && let TokenValue::Text(text) = &workspace.value
+    {
+        arguments["workspaceGuid"] = json!(text);
+    }
+    if let Some(folder) = resolved.single("folder")
+        && let TokenValue::Text(text) = &folder.value
+    {
+        arguments["filter"] = json!({ "folderId": text });
+    }
+    Ok(arguments)
 }
 
 struct Notes {
     service: Arc<McpService>,
     credentials: CredentialStore,
     binding: IntegrationBinding,
-    workspace: Option<String>,
-    folder_id: Option<String>,
-}
-
-impl Notes {
-    fn arguments(&self) -> Value {
-        let mut arguments = json!({ "pagination": { "size": PAGE_SIZE } });
-        if let Some(workspace) = &self.workspace {
-            arguments["workspaceGuid"] = json!(workspace);
-        }
-        if let Some(folder_id) = &self.folder_id {
-            arguments["filter"] = json!({ "folderId": folder_id });
-        }
-        arguments
-    }
+    arguments: Value,
 }
 
 impl WatchSource for Notes {
@@ -86,7 +76,7 @@ impl WatchSource for Notes {
             .await?;
         let result = self
             .service
-            .call(&session, TOOL_LIST_NOTES, self.arguments())
+            .call(&session, TOOL_LIST_NOTES, self.arguments.clone())
             .await;
         session.close().await;
         let notes = parse_notes(&result?)?;
@@ -110,28 +100,70 @@ impl WatchSource for Notes {
 mod tests {
     use super::*;
 
-    fn source(workspace: Option<&str>, folder: Option<&str>) -> Notes {
-        Notes {
-            service: Arc::new(service()),
-            credentials: CredentialStore::new(std::path::PathBuf::from("/tmp/unused.json")),
-            binding: IntegrationBinding::from_config(json!({})),
-            workspace: workspace.map(str::to_owned),
-            folder_id: folder.map(str::to_owned),
-        }
+    #[test]
+    fn there_is_no_default_watch() {
+        assert!(defaults(&IntegrationBinding::from_config(json!({}))).is_empty());
     }
 
     #[test]
-    fn a_bare_page_request_carries_only_the_page_size() {
-        let arguments = source(None, None).arguments();
-        assert_eq!(arguments["pagination"]["size"], 50);
-        assert!(arguments.get("workspaceGuid").is_none());
-        assert!(arguments.get("filter").is_none());
+    fn a_workspace_query_compiles_to_the_old_request_shape() {
+        let arguments = plan("workspace:W1").unwrap();
+        assert_eq!(
+            arguments,
+            json!({ "pagination": { "size": 50 }, "workspaceGuid": "W1" })
+        );
     }
 
     #[test]
-    fn a_workspace_and_folder_both_narrow_the_listing() {
-        let arguments = source(Some("W1"), Some("F2")).arguments();
-        assert_eq!(arguments["workspaceGuid"], "W1");
-        assert_eq!(arguments["filter"]["folderId"], "F2");
+    fn a_folder_query_narrows_by_folder_filter() {
+        let arguments = plan("folder:F2").unwrap();
+        assert_eq!(
+            arguments,
+            json!({ "pagination": { "size": 50 }, "filter": { "folderId": "F2" } })
+        );
+    }
+
+    #[test]
+    fn workspace_folder_and_limit_narrow_together() {
+        let arguments = plan("workspace:W1 folder:F2 limit:25").unwrap();
+        assert_eq!(
+            arguments,
+            json!({
+                "pagination": { "size": 25 },
+                "workspaceGuid": "W1",
+                "filter": { "folderId": "F2" },
+            })
+        );
+    }
+
+    #[test]
+    fn a_query_naming_neither_workspace_nor_folder_refuses_to_compile() {
+        assert!(matches!(plan(""), Err(QueryError::Invalid(_))));
+        assert!(matches!(plan("limit:10"), Err(QueryError::Invalid(_))));
+    }
+
+    #[test]
+    fn free_text_is_rejected() {
+        assert!(matches!(
+            plan("workspace:W1 stray"),
+            Err(QueryError::FreeText { .. })
+        ));
+    }
+
+    #[test]
+    fn a_typo_names_the_known_keys() {
+        let err = plan("workspce:W1").unwrap_err();
+        let QueryError::UnknownKey { known, .. } = err else {
+            panic!("expected UnknownKey");
+        };
+        assert_eq!(known, "folder, limit, workspace");
+    }
+
+    #[test]
+    fn each_key_may_appear_only_once() {
+        assert!(matches!(
+            plan("workspace:W1 workspace:W2"),
+            Err(QueryError::Repeated(_))
+        ));
     }
 }

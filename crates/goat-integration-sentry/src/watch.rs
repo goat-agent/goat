@@ -2,86 +2,83 @@ use std::sync::Arc;
 
 use goat_auth::CredentialStore;
 use goat_integration::diff::RETAIN;
-use goat_integration::watch::{Observed, Watch, WatchPage, WatchSource, run};
-use goat_integration::{IntegrationBinding, IntegrationResult, IntegrationRuntime};
+use goat_integration::query::{self, SelfRefStyle, TokenValue};
+use goat_integration::watch::{CompiledWatch, Observed, WatchPage, WatchSource, WatchSpec};
+use goat_integration::{
+    IntegrationBinding, IntegrationError, IntegrationResult, IntegrationRuntime,
+};
 use goat_integration_mcp::McpService;
-use goat_types::{AgentId, IntegrationUpdateKind};
+use goat_types::IntegrationUpdateKind;
 use serde_json::{Value, json};
-use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
-use tracing::warn;
 
 use crate::parse::parse_issues;
-use crate::{SentryBinding, service};
+use crate::{SentryBinding, VOCABULARY, service};
 
 pub const STREAM: &str = "issues";
 pub const TOOL_SEARCH_ISSUES: &str = "search_issues";
-pub const DEFAULT_QUERY: &str = "is:unresolved is:for_review";
-pub const DEFAULT_SORT: &str = "new";
+pub const DEFAULT_QUERY: &str = "is:unresolved is:for_review sort:new";
 
-pub fn spawn(
-    agent: AgentId,
+pub fn defaults(binding: &IntegrationBinding) -> Vec<WatchSpec> {
+    if SentryBinding::read(&binding.config)
+        .organization_slug
+        .is_none()
+    {
+        return Vec::new();
+    }
+    vec![WatchSpec {
+        stream: STREAM.to_owned(),
+        query: DEFAULT_QUERY.to_owned(),
+    }]
+}
+
+pub fn compile(
     binding: &IntegrationBinding,
     runtime: &IntegrationRuntime,
-    cancel: CancellationToken,
-) -> Option<JoinHandle<()>> {
-    let settings = SentryBinding::read(&binding.config);
-    let Some(organization_slug) = settings.organization_slug else {
-        warn!(
-            agent = %agent,
-            "sentry watcher disabled; set `organization_slug` in the agent's sentry binding",
-        );
-        return None;
+    spec: &WatchSpec,
+) -> IntegrationResult<CompiledWatch> {
+    let arguments = plan(&binding.config, &spec.query)?;
+    Ok(CompiledWatch {
+        kind: IntegrationUpdateKind::Updated,
+        entity: "issue",
+        diff: RETAIN,
+        source: Box::new(IssueSearch {
+            service: Arc::new(service()),
+            credentials: runtime.credentials.clone(),
+            binding: binding.clone(),
+            arguments,
+        }),
+    })
+}
+
+fn plan(config: &Value, raw: &str) -> IntegrationResult<Value> {
+    let Some(organization_slug) = SentryBinding::read(config).organization_slug else {
+        return Err(IntegrationError::Config(
+            "sentry watch needs `organization_slug` in the agent's sentry binding".into(),
+        ));
     };
-    let source = IssueSearch {
-        service: Arc::new(service()),
-        credentials: runtime.credentials.clone(),
-        binding: binding.clone(),
-        organization_slug,
-        project: settings.project,
-        query: settings.query.unwrap_or_else(|| DEFAULT_QUERY.to_owned()),
-        sort: settings.sort.unwrap_or_else(|| DEFAULT_SORT.to_owned()),
-    };
-    let watch = Watch::new(
-        crate::ID,
-        STREAM,
-        IntegrationUpdateKind::Updated,
-        "issue",
-        "issues waiting",
-        RETAIN,
-        source,
-    );
-    Some(tokio::spawn(run(
-        watch,
-        agent,
-        runtime.clone(),
-        binding.account.clone(),
-        cancel,
-    )))
+    let resolved = query::resolve(&VOCABULARY, query::parse(raw)?)?;
+    let mut arguments = json!({
+        "organizationSlug": organization_slug,
+        "query": query::render(&resolved.residue, SelfRefStyle::Replace("me")),
+    });
+    if let Some(sort) = resolved.single("sort")
+        && let TokenValue::Text(sort) = &sort.value
+    {
+        arguments["sort"] = json!(sort);
+    }
+    if let Some(project) = resolved.single("project")
+        && let TokenValue::Text(project) = &project.value
+    {
+        arguments["projectSlugOrId"] = json!(project);
+    }
+    Ok(arguments)
 }
 
 struct IssueSearch {
     service: Arc<McpService>,
     credentials: CredentialStore,
     binding: IntegrationBinding,
-    organization_slug: String,
-    project: Option<String>,
-    query: String,
-    sort: String,
-}
-
-impl IssueSearch {
-    fn arguments(&self) -> Value {
-        let mut arguments = json!({
-            "organizationSlug": self.organization_slug,
-            "query": self.query,
-            "sort": self.sort,
-        });
-        if let Some(project) = &self.project {
-            arguments["projectSlugOrId"] = json!(project);
-        }
-        arguments
-    }
+    arguments: Value,
 }
 
 impl WatchSource for IssueSearch {
@@ -92,7 +89,7 @@ impl WatchSource for IssueSearch {
             .await?;
         let result = self
             .service
-            .call(&session, TOOL_SEARCH_ISSUES, self.arguments())
+            .call(&session, TOOL_SEARCH_ISSUES, self.arguments.clone())
             .await;
         session.close().await;
         let issues = parse_issues(&result?)?;
@@ -115,43 +112,94 @@ impl WatchSource for IssueSearch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goat_integration::query::QueryError;
 
-    fn source(settings: SentryBinding) -> IssueSearch {
-        IssueSearch {
-            service: Arc::new(service()),
-            credentials: CredentialStore::new(std::path::PathBuf::from("/tmp/unused.json")),
-            binding: IntegrationBinding::from_config(json!({})),
-            organization_slug: settings.organization_slug.unwrap_or_default(),
-            project: settings.project,
-            query: settings.query.unwrap_or_else(|| DEFAULT_QUERY.to_owned()),
-            sort: settings.sort.unwrap_or_else(|| DEFAULT_SORT.to_owned()),
-        }
+    #[test]
+    fn the_default_stream_compiles_to_the_request_the_watcher_sent_before() {
+        let arguments = plan(&json!({ "organization_slug": "acme" }), DEFAULT_QUERY).unwrap();
+        assert_eq!(
+            arguments,
+            json!({
+                "organizationSlug": "acme",
+                "query": "is:unresolved is:for_review",
+                "sort": "new",
+            })
+        );
     }
 
     #[test]
-    fn the_defaults_match_what_the_watcher_used_before() {
-        let arguments = source(SentryBinding {
-            organization_slug: Some("acme".to_owned()),
-            ..SentryBinding::default()
-        })
-        .arguments();
-        assert_eq!(arguments["organizationSlug"], "acme");
-        assert_eq!(arguments["query"], "is:unresolved is:for_review");
-        assert_eq!(arguments["sort"], "new");
+    fn defaults_decline_until_the_organization_is_bound() {
+        let bare = IntegrationBinding::from_config(json!({}));
+        assert!(defaults(&bare).is_empty());
+        let bound = IntegrationBinding::from_config(json!({ "organization_slug": "acme" }));
+        assert_eq!(
+            defaults(&bound),
+            vec![WatchSpec {
+                stream: STREAM.to_owned(),
+                query: DEFAULT_QUERY.to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_missing_organization_fails_the_compile_loudly() {
+        let err = plan(&json!({}), DEFAULT_QUERY).unwrap_err();
+        assert!(matches!(err, IntegrationError::Config(_)));
+        assert!(err.to_string().contains("organization_slug"));
+    }
+
+    #[test]
+    fn project_and_sort_map_to_their_request_arguments() {
+        let arguments = plan(
+            &json!({ "organization_slug": "acme" }),
+            "is:unresolved project:backend sort:freq",
+        )
+        .unwrap();
+        assert_eq!(
+            arguments,
+            json!({
+                "organizationSlug": "acme",
+                "query": "is:unresolved",
+                "sort": "freq",
+                "projectSlugOrId": "backend",
+            })
+        );
+    }
+
+    #[test]
+    fn native_tokens_pass_through_verbatim_and_selfrefs_become_me() {
+        let arguments = plan(
+            &json!({ "organization_slug": "acme" }),
+            "assigned:@me is:unresolved level:error \"payment failed\"",
+        )
+        .unwrap();
+        assert_eq!(
+            arguments["query"],
+            "assigned:me is:unresolved level:error \"payment failed\""
+        );
+        assert!(arguments.get("sort").is_none());
         assert!(arguments.get("projectSlugOrId").is_none());
     }
 
     #[test]
-    fn a_project_narrows_the_search_when_given() {
-        let arguments = source(SentryBinding {
-            organization_slug: Some("acme".to_owned()),
-            project: Some("backend".to_owned()),
-            query: Some("is:unresolved".to_owned()),
-            sort: Some("freq".to_owned()),
-        })
-        .arguments();
-        assert_eq!(arguments["projectSlugOrId"], "backend");
-        assert_eq!(arguments["query"], "is:unresolved");
-        assert_eq!(arguments["sort"], "freq");
+    fn repeated_dsl_keys_error_at_compile() {
+        let err = plan(
+            &json!({ "organization_slug": "acme" }),
+            "sort:new sort:freq",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("once"));
+        let err = plan(&json!({ "organization_slug": "acme" }), "limit:5").unwrap_err();
+        assert!(err.to_string().contains("limit"));
+    }
+
+    #[test]
+    fn broken_queries_surface_as_config_errors() {
+        let err = plan(&json!({ "organization_slug": "acme" }), "sort:").unwrap_err();
+        assert!(matches!(err, IntegrationError::Config(_)));
+        assert_eq!(
+            query::parse("sort:").unwrap_err(),
+            QueryError::DanglingKey("sort".to_owned())
+        );
     }
 }

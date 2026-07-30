@@ -2,70 +2,73 @@ use std::sync::{Arc, OnceLock};
 
 use goat_auth::CredentialStore;
 use goat_integration::diff::REBUILD;
-use goat_integration::watch::{Observed, Watch, WatchPage, WatchSource, run};
+use goat_integration::query::{self, QueryError, TokenValue};
+use goat_integration::watch::{CompiledWatch, Observed, WatchPage, WatchSource, WatchSpec};
 use goat_integration::{
     IntegrationBinding, IntegrationError, IntegrationResult, IntegrationRuntime,
 };
 use goat_integration_mcp::{McpService, pick_tool};
-use goat_types::{AgentId, IntegrationUpdateKind};
-use serde_json::json;
-use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use goat_types::IntegrationUpdateKind;
+use serde_json::{Value, json};
 
 use crate::parse::{has_more, parse_rows};
-use crate::{NotionBinding, PREFIX, service};
+use crate::{NotionBinding, PREFIX, VOCABULARY, service};
 
-pub const STREAM: &str = "view";
-const FETCH_LIMIT: usize = 50;
+pub const FETCH_LIMIT: usize = 50;
 
 const VIEW_TOOL_CANDIDATES: &[&str] = &["query_data_sources", "query_database_view"];
 
-pub fn spawn(
-    agent: AgentId,
+pub fn compile(
     binding: &IntegrationBinding,
     runtime: &IntegrationRuntime,
-    cancel: CancellationToken,
-) -> Option<JoinHandle<()>> {
+    spec: &WatchSpec,
+) -> IntegrationResult<CompiledWatch> {
+    let arguments = plan(&spec.query)?;
     let settings = NotionBinding::read(&binding.config);
-    let Some(view_url) = settings.view_url else {
-        warn!(
-            agent = %agent,
-            "notion watcher disabled; set `view_url` to a saved Notion view in the agent's notion binding",
-        );
-        return None;
-    };
-    let source = ViewRows {
-        service: Arc::new(service()),
-        credentials: runtime.credentials.clone(),
-        binding: binding.clone(),
-        view_url,
-        configured_tool: settings.query_tool,
-        resolved_tool: OnceLock::new(),
-    };
-    let watch = Watch::new(
-        crate::ID,
-        STREAM,
-        IntegrationUpdateKind::Assigned,
-        "page",
-        "in the view",
-        REBUILD,
-        source,
-    );
-    Some(tokio::spawn(run(
-        watch,
-        agent,
-        runtime.clone(),
-        binding.account.clone(),
-        cancel,
-    )))
+    Ok(CompiledWatch {
+        kind: IntegrationUpdateKind::Assigned,
+        entity: "page",
+        diff: REBUILD,
+        source: Box::new(ViewRows {
+            service: Arc::new(service()),
+            credentials: runtime.credentials.clone(),
+            binding: binding.clone(),
+            arguments,
+            configured_tool: settings.query_tool,
+            resolved_tool: OnceLock::new(),
+        }),
+    })
+}
+
+fn plan(raw: &str) -> Result<Value, QueryError> {
+    let resolved = query::resolve(&VOCABULARY, query::parse(raw)?)?;
+    let view = resolved
+        .single("view")
+        .and_then(|found| match &found.value {
+            TokenValue::Text(url) => Some(url.trim().to_owned()),
+            TokenValue::SelfRef => None,
+        })
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| {
+            QueryError::Invalid(
+                "notion needs exactly one `view:<url>` — a saved Notion view URL, the one with ?v="
+                    .to_owned(),
+            )
+        })?;
+    Ok(json!({
+        "data": {
+            "mode": "view",
+            "view_url": view,
+            "page_size": resolved.limit.unwrap_or(FETCH_LIMIT),
+        }
+    }))
 }
 
 struct ViewRows {
     service: Arc<McpService>,
     credentials: CredentialStore,
     binding: IntegrationBinding,
-    view_url: String,
+    arguments: Value,
     configured_tool: Option<String>,
     resolved_tool: OnceLock<String>,
 }
@@ -111,17 +114,7 @@ impl WatchSource for ViewRows {
         };
         let result = self
             .service
-            .call(
-                &session,
-                &tool,
-                json!({
-                    "data": {
-                        "mode": "view",
-                        "view_url": self.view_url,
-                        "page_size": FETCH_LIMIT,
-                    }
-                }),
-            )
+            .call(&session, &tool, self.arguments.clone())
             .await;
         session.close().await;
         let value = result?;
@@ -146,6 +139,88 @@ impl WatchSource for ViewRows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_view_url_with_colons_compiles_to_the_old_request() {
+        let arguments = plan("view:https://www.notion.so/x?v=1").unwrap();
+        assert_eq!(
+            arguments,
+            json!({
+                "data": {
+                    "mode": "view",
+                    "view_url": "https://www.notion.so/x?v=1",
+                    "page_size": 50,
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn an_explicit_limit_becomes_the_page_size() {
+        let arguments = plan("view:https://www.notion.so/x?v=1 limit:25").unwrap();
+        assert_eq!(arguments["data"]["page_size"], 25);
+    }
+
+    #[test]
+    fn a_query_without_a_view_errors_helpfully() {
+        for raw in ["", "limit:10"] {
+            let QueryError::Invalid(message) = plan(raw).unwrap_err() else {
+                panic!("expected Invalid");
+            };
+            assert!(message.contains("view:<url>"));
+        }
+    }
+
+    #[test]
+    fn an_empty_view_value_counts_as_missing() {
+        assert!(matches!(plan(r#"view:"""#), Err(QueryError::Invalid(_))));
+    }
+
+    #[test]
+    fn a_negated_view_errors() {
+        assert!(matches!(
+            plan("-view:https://www.notion.so/x?v=1"),
+            Err(QueryError::NotNegatable(_))
+        ));
+    }
+
+    #[test]
+    fn a_repeated_view_errors() {
+        assert!(matches!(
+            plan("view:https://a view:https://b"),
+            Err(QueryError::Repeated(_))
+        ));
+    }
+
+    #[test]
+    fn free_text_is_rejected() {
+        assert!(matches!(
+            plan("view:https://www.notion.so/x?v=1 stray"),
+            Err(QueryError::FreeText { .. })
+        ));
+    }
+
+    #[test]
+    fn a_typo_names_the_known_keys() {
+        let QueryError::UnknownKey { known, .. } = plan("vieww:https://x").unwrap_err() else {
+            panic!("expected UnknownKey");
+        };
+        assert_eq!(known, "limit, view");
+    }
+
+    #[tokio::test]
+    async fn compile_builds_a_page_watch_from_a_valid_spec() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = goat_integration::test_support::runtime_in(dir.path()).await;
+        let binding = IntegrationBinding::from_config(json!({ "query_tool": "custom_query" }));
+        let spec = WatchSpec {
+            stream: crate::STREAM.to_owned(),
+            query: "view:https://www.notion.so/x?v=1".to_owned(),
+        };
+        let compiled = compile(&binding, &runtime, &spec).unwrap();
+        assert_eq!(compiled.kind, IntegrationUpdateKind::Assigned);
+        assert_eq!(compiled.entity, "page");
+    }
 
     #[test]
     fn the_query_tool_is_found_across_naming_styles() {

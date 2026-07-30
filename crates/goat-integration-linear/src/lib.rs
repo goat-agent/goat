@@ -3,7 +3,8 @@ mod watch;
 
 use std::sync::Arc;
 
-use goat_integration::{IntegrationFactory, IntegrationResult};
+use goat_integration::query::{KeySpec, LimitSpec, Residue, TermPolicy, WatchVocabulary};
+use goat_integration::{IntegrationError, IntegrationFactory, IntegrationResult};
 use goat_integration_mcp::{McpService, ServiceUrl, ToolPolicy};
 use goat_types::IntegrationId;
 use serde::Deserialize;
@@ -16,47 +17,61 @@ const MCP_URL: &str = "https://mcp.linear.app/mcp";
 const ENV_VAR: &str = "LINEAR_API_KEY";
 
 const SETUP: &str = "connects to Linear's hosted MCP server; a browser window will ask you to approve access.\n\
-     the watcher briefs you on issues assigned to you — set `assignee`, `team`, or `project` in the agent's linear binding to watch something else.\n\
+     by default the watcher briefs you on open issues assigned to you (`assignee:@me is:open`).\n\
+     declare workflows in the agent's `watch` section to change that, e.g.\n\
+     { \"source\": \"linear\", \"query\": \"assignee:@me is:open label:bug priority:urgent limit:25\" } —\n\
+     known keys: assignee, team, project, label, state, cycle, priority, is:open/closed, limit; free text searches title and body.\n\
      to run headless, set LINEAR_API_KEY to a Linear personal API key.";
+
+pub const VOCABULARY: WatchVocabulary = WatchVocabulary {
+    integration: "linear",
+    residue: Residue::Reject,
+    terms: TermPolicy::Collect,
+    limit: Some(LimitSpec {
+        default: 50,
+        max: 250,
+    }),
+    keys: &[
+        KeySpec::new("assignee").selfref(),
+        KeySpec::new("team"),
+        KeySpec::new("project"),
+        KeySpec::new("label"),
+        KeySpec::new("state"),
+        KeySpec::new("cycle"),
+        KeySpec::new("priority").one_of(&["urgent", "high", "medium", "low", "none"]),
+        KeySpec::new("is")
+            .many()
+            .negatable()
+            .one_of(&["open", "closed"]),
+    ],
+};
 
 pub fn service() -> McpService {
     McpService::new("linear", "Linear", ServiceUrl::Fixed(MCP_URL), SETUP)
         .env_var(ENV_VAR)
         .tools(ToolPolicy::all(PREFIX))
         .truncation_hint("narrow the filter, request fewer issues, or fetch a single issue instead")
-        .watch(watch::spawn)
+        .defaults(watch::defaults)
+        .compile(watch::compile)
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct LinearBinding {
-    #[serde(default, deserialize_with = "meaningful")]
-    pub assignee: Option<String>,
-    #[serde(default, deserialize_with = "meaningful")]
-    pub team: Option<String>,
-    #[serde(default, deserialize_with = "meaningful")]
-    pub project: Option<String>,
-    #[serde(default)]
-    pub include_closed: Option<bool>,
-}
+pub(crate) struct LinearBinding {}
 
-impl LinearBinding {
-    pub(crate) fn read(config: &Value) -> Self {
-        goat_integration_mcp::read_binding(config)
-    }
-}
-
-fn meaningful<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let raw: Option<String> = Option::deserialize(deserializer)?;
-    Ok(raw
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty()))
-}
+const MOVED_KEYS: &[&str] = &["assignee", "team", "project", "include_closed"];
 
 fn validate_config(config: &Value) -> IntegrationResult<()> {
+    if let Some(object) = config.as_object() {
+        for key in MOVED_KEYS {
+            if object.contains_key(*key) {
+                return Err(IntegrationError::Config(format!(
+                    "linear binding: `{key}` moved to the agent-level `watch` section; \
+                     write {{ \"source\": \"linear\", \"query\": \"...\" }} there instead"
+                )));
+            }
+        }
+    }
     goat_integration_mcp::validate_binding::<LinearBinding>("linear", config)
 }
 
@@ -71,29 +86,29 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goat_integration::query::assert_vocabulary;
     use goat_integration::{Integration, IntegrationAuth};
     use serde_json::json;
 
     #[test]
-    fn the_watch_policy_is_configurable_and_typo_checked() {
-        assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
-        assert!(
-            validate_config(&json!({ "assignee": "jmo", "team": "ENG", "include_closed": true }))
-                .is_ok()
-        );
-        assert!(validate_config(&json!("nope")).is_err());
-        assert!(validate_config(&json!({ "assignee": 3 })).is_err());
-        assert!(validate_config(&json!({ "asignee": "typo" })).is_err());
+    fn the_vocabulary_holds_its_invariants() {
+        assert_vocabulary(&VOCABULARY);
     }
 
     #[test]
-    fn settings_are_trimmed_and_blank_values_ignored() {
-        assert_eq!(LinearBinding::read(&json!({ "team": "  " })).team, None);
-        assert_eq!(
-            LinearBinding::read(&json!({ "team": " ENG " })).team,
-            Some("ENG".to_owned())
-        );
+    fn the_binding_keeps_only_connection_keys() {
+        assert!(validate_config(&json!({})).is_ok());
+        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!("nope")).is_err());
+        assert!(validate_config(&json!({ "unknown": true })).is_err());
+    }
+
+    #[test]
+    fn an_old_policy_key_points_at_the_watch_section() {
+        let err = validate_config(&json!({ "assignee": "jmo" })).unwrap_err();
+        assert!(err.to_string().contains("agent-level `watch` section"));
+        let err = validate_config(&json!({ "include_closed": true })).unwrap_err();
+        assert!(err.to_string().contains("watch"));
     }
 
     #[test]
@@ -110,9 +125,10 @@ mod tests {
         assert_eq!(meta.display, "Linear");
         assert_eq!(meta.auth, IntegrationAuth::OAuth);
         assert_eq!(meta.env_var, Some("LINEAR_API_KEY"));
-        assert!(service().watch.is_some());
+        assert!(service().compile.is_some());
+        assert!(service().defaults.is_some());
         assert!(meta.setup.contains("LINEAR_API_KEY"));
-        assert!(meta.setup.contains("assignee"));
+        assert!(meta.setup.contains("assignee:@me"));
     }
 
     #[tokio::test]
@@ -126,7 +142,6 @@ mod tests {
             stream: watch::STREAM.to_owned(),
             kind: IntegrationUpdateKind::Assigned,
             entity: "issue",
-            overflow_tail: "newly assigned",
             diff: REBUILD,
         })
         .await;

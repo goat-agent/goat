@@ -15,7 +15,8 @@ use goat_brain::{Brain, BrainDeps, ProviderRegistry};
 use goat_bus::EventBus;
 use goat_channel::{Channel, ChannelBinding, ChannelFactory, ChannelHandle};
 use goat_config::{GoatPaths, LoadedConfig};
-use goat_integration::{Integration, IntegrationBinding, IntegrationRuntime};
+use goat_integration::watch::{Workflow, WorkflowSource, run_workflow};
+use goat_integration::{Integration, IntegrationBinding, IntegrationRuntime, WatchSpec};
 use goat_memory::Embedder;
 use goat_render::{DefaultStreamRenderer, StreamRenderer};
 use goat_store::{SqliteStore, Store};
@@ -480,6 +481,117 @@ fn build_integration_bindings(
     maps.into_iter().map(|(k, v)| (k, Arc::new(v))).collect()
 }
 
+fn build_watch_plan(raw: &AgentConfig, shared: &RuntimeShared<'_>) -> Vec<Workflow> {
+    let declared: Vec<(String, Vec<(String, WatchSpec)>)> = match &raw.watch {
+        Some(workflows) => workflows
+            .iter()
+            .map(|workflow| {
+                let sources = workflow
+                    .sources
+                    .iter()
+                    .map(|entry| {
+                        let stream = entry
+                            .stream
+                            .clone()
+                            .unwrap_or_else(|| workflow.name.clone());
+                        (
+                            entry.source.clone(),
+                            WatchSpec {
+                                stream,
+                                query: entry.query.clone(),
+                            },
+                        )
+                    })
+                    .collect();
+                (workflow.name.clone(), sources)
+            })
+            .collect(),
+        None => raw
+            .integrations
+            .iter()
+            .filter_map(|agent_integration| {
+                let name = agent_integration.name.as_str();
+                let integration = shared.integrations.get(name)?;
+                let binding = shared
+                    .integration_bindings
+                    .get(name)
+                    .and_then(|map| map.get(&raw.id))?;
+                Some((name.to_string(), integration.default_watch(binding)))
+            })
+            .flat_map(|(name, specs)| {
+                specs
+                    .into_iter()
+                    .map(move |spec| (spec.stream.clone(), vec![(name.clone(), spec)]))
+            })
+            .collect(),
+    };
+
+    let mut seen: std::collections::HashSet<(String, String, String)> =
+        std::collections::HashSet::new();
+    let mut plan = Vec::new();
+    for (workflow_name, sources) in declared {
+        let mut compiled_sources = Vec::new();
+        for (source_name, spec) in sources {
+            let Some(integration) = shared.integrations.get(&source_name) else {
+                warn!(
+                    agent = %raw.slug,
+                    workflow = %workflow_name,
+                    source = %source_name,
+                    "skipping watch source: no compiled-in integration with this name",
+                );
+                continue;
+            };
+            let Some(binding) = shared
+                .integration_bindings
+                .get(&source_name)
+                .and_then(|map| map.get(&raw.id))
+            else {
+                warn!(
+                    agent = %raw.slug,
+                    workflow = %workflow_name,
+                    source = %source_name,
+                    "skipping watch source: the integration is not bound to this agent",
+                );
+                continue;
+            };
+            let key = (
+                source_name.clone(),
+                binding.account.clone(),
+                spec.stream.clone(),
+            );
+            if !seen.insert(key) {
+                warn!(
+                    agent = %raw.slug,
+                    workflow = %workflow_name,
+                    source = %source_name,
+                    stream = %spec.stream,
+                    "skipping watch source: duplicate stream; name it explicitly with `stream`",
+                );
+                continue;
+            }
+            match integration.compile_watch(binding, &shared.integration_runtime, &spec) {
+                Ok(compiled) => compiled_sources.push(WorkflowSource {
+                    integration: integration.id(),
+                    account: binding.account.clone(),
+                    stream: spec.stream,
+                    compiled,
+                }),
+                Err(e) => warn!(
+                    agent = %raw.slug,
+                    workflow = %workflow_name,
+                    source = %source_name,
+                    error = %e,
+                    "skipping watch source: its query does not compile",
+                ),
+            }
+        }
+        if !compiled_sources.is_empty() {
+            plan.push(Workflow::new(workflow_name, compiled_sources));
+        }
+    }
+    plan
+}
+
 struct RuntimeShared<'a> {
     providers: Arc<ProviderRegistry>,
     channels: &'a HashMap<String, Arc<dyn Channel>>,
@@ -579,30 +691,13 @@ async fn spawn_agent(
         anyhow::bail!("no successful channel bindings");
     }
 
-    for agent_integration in &raw.integrations {
-        let Some(integration) = shared.integrations.get(agent_integration.name.as_str()) else {
-            warn!(
-                agent = %raw.slug,
-                integration = %agent_integration.name,
-                "skipping integration: no compiled-in integration with this name",
-            );
-            continue;
-        };
-        let Some(binding) = shared
-            .integration_bindings
-            .get(agent_integration.name.as_str())
-            .and_then(|map| map.get(&raw.id))
-        else {
-            continue;
-        };
-        if let Some(handle) = integration.spawn_watcher(
+    for workflow in build_watch_plan(raw, shared) {
+        joins.push(tokio::spawn(run_workflow(
+            workflow,
             raw.id,
-            binding.clone(),
             shared.integration_runtime.clone(),
             shared.cancel.clone(),
-        ) {
-            joins.push(handle);
-        }
+        )));
     }
 
     let brain = Arc::new(Brain::new(BrainDeps {
@@ -686,6 +781,7 @@ mod tests {
             tool_selectors: vec![],
             bindings: vec![],
             integrations: vec![],
+            watch: None,
             memory: MemoryConfig::default(),
             autonomy: AutonomyConfig::default(),
             intake_debounce: std::time::Duration::from_secs(1),
