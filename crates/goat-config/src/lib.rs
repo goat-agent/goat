@@ -20,7 +20,7 @@ pub use settings::{
     WebFetchConfig,
 };
 
-use goat_profile::ProfileConfig;
+use goat_agent_config::ProfileConfig;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {

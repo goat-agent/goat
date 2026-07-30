@@ -13,7 +13,7 @@ use goat_agent_tool::{
 use goat_bus::{EventBus, EventFilter};
 use goat_channel::ChannelHandle;
 use goat_model::{Model, canonicalize_provider_id};
-use goat_profile::ProfileCard;
+use goat_agent_config::ProfileCard;
 use goat_provider::{
     ChunkStream, ContentBlock, Message, MessageRole, Provider, Request, StreamChunk, StreamError,
     ToolChoice, ToolDefinition,

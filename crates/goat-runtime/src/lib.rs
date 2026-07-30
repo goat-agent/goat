@@ -15,7 +15,7 @@ use goat_channel::{Channel, ChannelBinding, ChannelFactory, ChannelHandle};
 use goat_config::{GoatPaths, LoadedConfig};
 use goat_integration::{Integration, IntegrationBinding, IntegrationRuntime};
 use goat_memory::Embedder;
-use goat_profile::ProfileConfig;
+use goat_agent_config::ProfileConfig;
 use goat_render::{DefaultStreamRenderer, StreamRenderer};
 use goat_store::{SqliteStore, Store};
 use goat_types::{Event, InstanceId, ProfileId};
@@ -662,7 +662,7 @@ fn build_command_registry(
 mod tests {
     use super::*;
     use goat_model::{Model, ProviderId};
-    use goat_profile::{
+    use goat_agent_config::{
         AutonomyConfig, EmbeddingSettings, MemoryConfig, ProfileCard, ProfileConfig,
     };
 
@@ -748,17 +748,17 @@ mod tests {
         assert!(integrations.contains_key("fake"));
 
         let mut good = persona("good", "gpt-x");
-        good.integrations = vec![goat_profile::ProfileIntegration {
+        good.integrations = vec![goat_agent_config::ProfileIntegration {
             name: "fake".into(),
             config: serde_json::json!({ "account": "work" }),
         }];
         let mut bad = persona("bad", "gpt-x");
         bad.integrations = vec![
-            goat_profile::ProfileIntegration {
+            goat_agent_config::ProfileIntegration {
                 name: "fake".into(),
                 config: serde_json::json!({ "bad": true }),
             },
-            goat_profile::ProfileIntegration {
+            goat_agent_config::ProfileIntegration {
                 name: "unknown".into(),
                 config: serde_json::json!({}),
             },

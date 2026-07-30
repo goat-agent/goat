@@ -2398,6 +2398,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-agent-config"
+version = "0.1.27"
+dependencies = [
+ "goat-model",
+ "goat-types",
+ "serde_json",
+]
+
+[[package]]
 name = "goat-agent-tool"
 version = "0.1.27"
 dependencies = [
@@ -2579,13 +2588,13 @@ dependencies = [
  "chrono",
  "futures",
  "goat-agent-command",
+ "goat-agent-config",
  "goat-agent-tool",
  "goat-auth",
  "goat-bus",
  "goat-channel",
  "goat-memory",
  "goat-model",
- "goat-profile",
  "goat-provider",
  "goat-providers",
  "goat-render",
@@ -2796,9 +2805,9 @@ name = "goat-config"
 version = "0.1.27"
 dependencies = [
  "anyhow",
+ "goat-agent-config",
  "goat-channel",
  "goat-model",
- "goat-profile",
  "goat-search-provider",
  "goat-types",
  "serde",
@@ -3179,15 +3188,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "goat-profile"
-version = "0.1.27"
-dependencies = [
- "goat-model",
- "goat-types",
- "serde_json",
-]
-
-[[package]]
 name = "goat-protocol"
 version = "0.1.27"
 dependencies = [
@@ -3516,6 +3516,7 @@ dependencies = [
  "chrono",
  "futures",
  "goat-agent-command",
+ "goat-agent-config",
  "goat-agent-tool",
  "goat-agent-tool-code",
  "goat-agent-tool-goal",
@@ -3535,7 +3536,6 @@ dependencies = [
  "goat-memory",
  "goat-model",
  "goat-plugin",
- "goat-profile",
  "goat-provider",
  "goat-providers",
  "goat-proxy",

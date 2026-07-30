@@ -4,7 +4,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 use goat_model::Model;
-use goat_profile::{
+use goat_agent_config::{
     AutonomyConfig, EmbeddingSettings, MemoryConfig, ProfileBinding, ProfileCard, ProfileConfig,
     ProfileIntegration,
 };

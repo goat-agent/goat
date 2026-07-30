@@ -20,7 +20,7 @@ goat-render  = { workspace = true }
 goat-store   = { workspace = true }
 goat-memory  = { workspace = true }
 goat-bus     = { workspace = true }
-goat-profile = { workspace = true }
+goat-agent-config = { workspace = true }
 goat-agent-tool    = { workspace = true }
 goat-skills  = { workspace = true }
 tokio        = { workspace = true }
