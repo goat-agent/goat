@@ -86,6 +86,11 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
     data-only provider means adding a `Row` const and one registry line. The registry's observable
     surface is frozen by `goat-providers`' fingerprint test; after a deliberate provider change,
     regenerate with `cargo test -p goat-providers fingerprint::regenerate -- --ignored`.
+    User-declared providers — the `providers` map in `config.json`, written by
+    `goat provider add`/`remove`, never by hand — join the same pipeline at load time as
+    OpenAI-compatible chat providers with live `/models` discovery; their keys stay in
+    `credentials.json`. `Registry` reads them through the `UserProviders` handle
+    (constructor-injected like `CredentialStore`, re-read on every registry build).
     `goat-search-providers::metadata` stays a hardcoded list.
   - code tools: `ToolRegistry::builtin()` aggregates fs, shell, search, skill, and web.
     `goat-tool-browser` and `goat-tool-computer` bypass it and are wired directly into

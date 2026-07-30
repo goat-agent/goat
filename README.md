@@ -52,6 +52,9 @@ Provider ids, as typed into `goat provider login`: `anthropic`, `openai`, `opena
 `openrouter`, `vercel`, and the local trio `ollama`, `lmstudio`, `llama-cpp`. `openai-codex`,
 `kimi-code` and `zai-coding` are the subscription/coding-plan surfaces; `openrouter` and `vercel`
 are aggregators.
+Any other OpenAI-compatible endpoint (LiteLLM, vLLM, a corporate gateway) becomes a first-class
+provider with `goat provider add <name> --endpoint <url> [--key <key>]`; its models are discovered
+live and addressed as `<name>/<model>`. Remove it with `goat provider remove <name>`.
 Channels: Discord, Slack — bind with `goat agent channel add`. A channel is where the agent *is*:
 it holds a resident connection under its own bot identity, and people talk to it there. Slack needs
 two tokens (a `xoxb-` bot token to speak, a `xapp-` app-level token to open the socket); the setup
