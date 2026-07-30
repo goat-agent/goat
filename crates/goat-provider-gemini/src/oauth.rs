@@ -142,7 +142,7 @@ pub async fn do_login(status: &mpsc::Sender<String>) -> Result<TokenSet, GeminiA
         ))
         .await;
     let _ = open::that(&url);
-    let code = capture_on(listener, &state).await?;
+    let code = capture_on(listener, &state).await?.code;
     exchange_code(&code, &pkce.verifier, &redirect).await
 }
 

@@ -3,7 +3,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use base64::Engine;
 use goat_auth::{
-    BASE64URL, Credential, CredentialKey, CredentialStore, Pkce, TokenSet, capture_loopback_code,
+    BASE64URL, Credential, CredentialKey, CredentialStore, Pkce, TokenSet, capture_loopback,
     ensure_valid, random_state,
 };
 use goat_provider::{
@@ -162,7 +162,7 @@ async fn login_browser() -> Result<TokenSet, CodexError> {
     if open::that(&url).is_err() {
         return Err(CodexError::NoBrowser);
     }
-    let code = capture_loopback_code(CALLBACK_PORT, &state).await?;
+    let code = capture_loopback(CALLBACK_PORT, &state).await?.code;
     exchange_code(&code, &pkce.verifier).await
 }
 

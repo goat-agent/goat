@@ -372,20 +372,34 @@ pub async fn bind_loopback() -> Result<(TcpListener, u16), AuthError> {
     Ok((listener, port))
 }
 
-pub async fn capture_loopback_code(port: u16, expected_state: &str) -> Result<String, AuthError> {
+pub struct AuthorizationResponse {
+    pub code: String,
+    pub issuer: Option<String>,
+}
+
+pub async fn capture_loopback(
+    port: u16,
+    expected_state: &str,
+) -> Result<AuthorizationResponse, AuthError> {
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     capture_on(listener, expected_state).await
 }
 
 const LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
 
-pub async fn capture_on(listener: TcpListener, expected_state: &str) -> Result<String, AuthError> {
+pub async fn capture_on(
+    listener: TcpListener,
+    expected_state: &str,
+) -> Result<AuthorizationResponse, AuthError> {
     tokio::time::timeout(LOGIN_TIMEOUT, capture_loop(listener, expected_state))
         .await
         .map_err(|_| AuthError::OAuth("login timed out".to_owned()))?
 }
 
-async fn capture_loop(listener: TcpListener, expected_state: &str) -> Result<String, AuthError> {
+async fn capture_loop(
+    listener: TcpListener,
+    expected_state: &str,
+) -> Result<AuthorizationResponse, AuthError> {
     loop {
         let (mut stream, _) = listener.accept().await?;
         let mut buf = vec![0u8; 8192];
@@ -403,29 +417,61 @@ async fn capture_loop(listener: TcpListener, expected_state: &str) -> Result<Str
                 .await;
             continue;
         };
-        let mut code = None;
-        let mut state = None;
-        for pair in query.split('&') {
-            if let Some((key, value)) = pair.split_once('=') {
-                match form_urldecode(key).as_str() {
-                    "code" => code = Some(form_urldecode(value)),
-                    "state" => state = Some(form_urldecode(value)),
-                    _ => {}
-                }
+        let outcome = read_response(query, expected_state);
+        respond(&mut stream, outcome.is_ok()).await;
+        return outcome;
+    }
+}
+
+fn read_response(query: &str, expected_state: &str) -> Result<AuthorizationResponse, AuthError> {
+    let mut code = None;
+    let mut state = None;
+    let mut issuer = None;
+    let mut error = None;
+    let mut description = None;
+    for pair in query.split('&') {
+        if let Some((key, value)) = pair.split_once('=') {
+            match form_urldecode(key).as_str() {
+                "code" => code = Some(form_urldecode(value)),
+                "state" => state = Some(form_urldecode(value)),
+                "iss" => issuer = Some(form_urldecode(value)),
+                "error" => error = Some(form_urldecode(value)),
+                "error_description" => description = Some(form_urldecode(value)),
+                _ => {}
             }
         }
-        let body = "<html><body>goat-code login complete. You can close this tab.</body></html>";
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        let _ = stream.write_all(response.as_bytes()).await;
-        let _ = stream.flush().await;
-        if state.as_deref() != Some(expected_state) {
-            return Err(AuthError::OAuth("state mismatch".to_owned()));
-        }
-        return code.ok_or_else(|| AuthError::OAuth("missing authorization code".to_owned()));
     }
+    tracing::debug!(
+        has_code = code.is_some(),
+        issuer = ?issuer,
+        error = ?error,
+        "captured oauth authorization response"
+    );
+    if state.as_deref() != Some(expected_state) {
+        return Err(AuthError::OAuth("state mismatch".to_owned()));
+    }
+    if let Some(error) = error {
+        return Err(AuthError::OAuth(match description {
+            Some(description) => format!("authorization denied: {error} ({description})"),
+            None => format!("authorization denied: {error}"),
+        }));
+    }
+    let code = code.ok_or_else(|| AuthError::OAuth("missing authorization code".to_owned()))?;
+    Ok(AuthorizationResponse { code, issuer })
+}
+
+async fn respond(stream: &mut tokio::net::TcpStream, granted: bool) {
+    let body = if granted {
+        "<html><body>goat login complete. You can close this tab.</body></html>"
+    } else {
+        "<html><body>goat login failed. Check the terminal for details.</body></html>"
+    };
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.flush().await;
 }
 
 #[derive(Clone)]
@@ -1028,5 +1074,112 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(super::lock_path_for(&path));
+    }
+
+    fn granted(query: &str) -> super::AuthorizationResponse {
+        match super::read_response(query, "s") {
+            Ok(response) => response,
+            Err(error) => panic!("expected a success for {query}, got {error}"),
+        }
+    }
+
+    fn denial(query: &str) -> String {
+        match super::read_response(query, "s") {
+            Err(super::AuthError::OAuth(message)) => message,
+            Err(other) => panic!("expected an oauth error, got {other}"),
+            Ok(_) => panic!("expected a failure for {query}"),
+        }
+    }
+
+    #[test]
+    fn the_rfc_9207_issuer_is_kept_and_percent_decoded() {
+        let response = granted("code=abc&state=s&iss=https%3A%2F%2Fmcp.sentry.dev");
+        assert_eq!(response.code, "abc");
+        assert_eq!(response.issuer.as_deref(), Some("https://mcp.sentry.dev"));
+    }
+
+    #[test]
+    fn a_callback_without_an_issuer_still_succeeds() {
+        let response = granted("code=abc&state=s");
+        assert_eq!(response.code, "abc");
+        assert_eq!(response.issuer, None);
+    }
+
+    #[test]
+    fn a_denial_reports_the_reason_the_server_gave() {
+        let message = denial("error=access_denied&error_description=User+denied&state=s");
+        assert!(message.contains("access_denied"), "{message}");
+        assert!(message.contains("User denied"), "{message}");
+
+        let bare = denial("error=access_denied&state=s");
+        assert!(bare.contains("access_denied"), "{bare}");
+    }
+
+    #[test]
+    fn a_response_carrying_neither_code_nor_error_is_named_as_such() {
+        assert_eq!(denial("state=s"), "missing authorization code");
+    }
+
+    #[test]
+    fn the_state_is_checked_before_anything_the_server_said() {
+        assert_eq!(
+            denial("code=abc&state=other&iss=https%3A%2F%2Fevil.test"),
+            "state mismatch"
+        );
+        assert_eq!(
+            denial("error=access_denied&error_description=User+denied&state=other"),
+            "state mismatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_loopback_server_reads_the_query_off_the_request_line() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (listener, port) = super::bind_loopback().await.unwrap();
+        let captured = tokio::spawn(async move { super::capture_on(listener, "s").await });
+
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        client
+            .write_all(
+                b"GET /callback?code=abc&state=s&iss=https%3A%2F%2Fmcp.sentry.dev HTTP/1.1\r\n\
+                  Host: 127.0.0.1\r\n\r\n",
+            )
+            .await
+            .unwrap();
+
+        let mut page = String::new();
+        client.read_to_string(&mut page).await.unwrap();
+        assert!(page.contains("login complete"), "{page}");
+
+        let response = match captured.await.unwrap() {
+            Ok(response) => response,
+            Err(error) => panic!("capture failed: {error}"),
+        };
+        assert_eq!(response.code, "abc");
+        assert_eq!(response.issuer.as_deref(), Some("https://mcp.sentry.dev"));
+    }
+
+    #[tokio::test]
+    async fn a_rejected_login_tells_the_browser_it_failed() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (listener, port) = super::bind_loopback().await.unwrap();
+        let captured = tokio::spawn(async move { super::capture_on(listener, "s").await });
+
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        client
+            .write_all(b"GET /callback?error=access_denied&state=s HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+
+        let mut page = String::new();
+        client.read_to_string(&mut page).await.unwrap();
+        assert!(page.contains("login failed"), "{page}");
+        assert!(captured.await.unwrap().is_err());
     }
 }
