@@ -17,6 +17,10 @@ use crate::{LangfuseBinding, service};
 pub const TOOL_LIST_OBSERVATIONS: &str = "listObservations";
 pub const DEFAULT_LIMIT: u32 = 25;
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "WatchFn passes the token by value; every stream clones it"
+)]
 pub fn spawn(
     persona: ProfileId,
     binding: &IntegrationBinding,
