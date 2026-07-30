@@ -81,6 +81,116 @@ impl Registry {
 }
 
 #[cfg(test)]
+mod fingerprint {
+    use std::fmt::Write as _;
+
+    use goat_provider::{AuthMethod, ModelListSource};
+
+    use super::Registry;
+
+    const FIXTURE: &str = include_str!("registry_fingerprint.txt");
+
+    fn auth_label(auth: AuthMethod) -> &'static str {
+        match auth {
+            AuthMethod::None => "none",
+            AuthMethod::ApiKey => "api_key",
+            AuthMethod::OAuth => "oauth",
+            AuthMethod::ApiKeyOrOAuth => "api_key_or_oauth",
+        }
+    }
+
+    fn source_label(source: ModelListSource) -> &'static str {
+        match source {
+            ModelListSource::Catalog => "catalog",
+            ModelListSource::Discover => "discover",
+        }
+    }
+
+    fn render(registry: &Registry) -> String {
+        let mut out = String::new();
+        for provider in registry.all() {
+            let caps = provider.capabilities();
+            let metadata = provider.metadata();
+            writeln!(out, "provider {}", provider.id()).unwrap();
+            writeln!(
+                out,
+                "  auth {} tools {} images {} web_search {} verifies {} source {}",
+                auth_label(caps.auth),
+                caps.tools,
+                caps.images,
+                provider.supports_web_search(),
+                provider.verifies_credentials(),
+                source_label(provider.model_list_source()),
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "  env {:?} validation {:?} endpoint {:?} oauth {:?}",
+                metadata.env_var, metadata.validation, metadata.endpoint, metadata.oauth
+            )
+            .unwrap();
+            match metadata.login_endpoint {
+                Some(login) => writeln!(
+                    out,
+                    "  login_endpoint env {:?} default {:?} validate {}",
+                    login.env_var,
+                    login.default,
+                    login.validate.is_some()
+                )
+                .unwrap(),
+                None => writeln!(out, "  login_endpoint none").unwrap(),
+            }
+            for line in metadata.setup {
+                writeln!(out, "  setup {line}").unwrap();
+            }
+            for model in provider.list_models() {
+                let efforts = provider
+                    .efforts(&model)
+                    .iter()
+                    .map(|effort| effort.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let efforts = if efforts.is_empty() {
+                    "-".to_owned()
+                } else {
+                    efforts
+                };
+                writeln!(
+                    out,
+                    "  model {model} ctx {:?} images {} efforts {efforts}",
+                    provider.context_window(&model),
+                    provider.supports_images(&model),
+                )
+                .unwrap();
+            }
+        }
+        out
+    }
+
+    fn registry(name: &str) -> Registry {
+        let path = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_file(&path);
+        Registry::new(&goat_auth::CredentialStore::new(path))
+    }
+
+    #[test]
+    fn matches_fixture() {
+        assert_eq!(
+            render(&registry("goat-providers-fingerprint.json")),
+            FIXTURE
+        );
+    }
+
+    #[test]
+    #[ignore = "rewrites registry_fingerprint.txt; run after a deliberate provider change"]
+    fn regenerate() {
+        let rendered = render(&registry("goat-providers-fingerprint-regen.json"));
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/registry_fingerprint.txt");
+        std::fs::write(path, rendered).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use goat_provider::{AuthMethod, ProviderId};
 
