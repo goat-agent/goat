@@ -66,6 +66,7 @@ pub enum Command {
   goat provider list
   goat provider info <provider>
   goat provider login <provider> --key <key>
+  goat provider add <name> --endpoint <url> [--key <key>]
   goat provider logout <provider> <account>"
     )]
     Provider(ProviderCommand),
@@ -128,6 +129,28 @@ pub enum ProviderCommand {
         key: Option<String>,
         #[arg(long, value_name = "URL", help = "Provider endpoint override")]
         endpoint: Option<String>,
+    },
+    #[command(
+        about = "Add a custom OpenAI-compatible provider",
+        after_help = "Examples:
+  goat provider add my-proxy --endpoint https://llm.corp/v1 --key sk-...
+  goat provider add my-vllm --endpoint http://192.168.1.5:8000/v1
+  goat provider add"
+    )]
+    Add {
+        #[arg(help = "Provider name")]
+        name: Option<String>,
+        #[arg(long, value_name = "URL", help = "OpenAI-compatible base URL")]
+        endpoint: Option<String>,
+        #[arg(long, help = "API key; omit for keyless endpoints")]
+        key: Option<String>,
+        #[arg(long, short, help = "Account name to store, default: default")]
+        account: Option<String>,
+    },
+    #[command(about = "Remove a custom provider and its credentials")]
+    Remove {
+        #[arg(help = "Custom provider name")]
+        name: String,
     },
     #[command(about = "Show setup details for one provider")]
     Info { provider: String },

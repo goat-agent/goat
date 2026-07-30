@@ -207,7 +207,11 @@ async fn run_unified_daemon(socket_path: std::path::PathBuf) -> color_eyre::Resu
         });
     }
 
-    let manager = goat_daemon::Manager::new(auth_path, db_path.clone());
+    let manager = goat_daemon::Manager::new(
+        auth_path,
+        goat_config::UserProviders::at(paths.config_json.clone()),
+        db_path.clone(),
+    );
 
     let proxy_config = goat_config::Config::load().proxy;
     let mut agent_meter = None;
@@ -222,7 +226,10 @@ async fn run_unified_daemon(socket_path: std::path::PathBuf) -> color_eyre::Resu
                 ));
                 agent_meter = Some(goat_proxy::Meter::new(goat_proxy::SOURCE_AGENT, recorder));
                 let creds = goat_auth::CredentialStore::new(paths.credentials_json.clone());
-                let ops = proxy_ops::RegistryAccountOps::new(creds.clone());
+                let ops = proxy_ops::RegistryAccountOps::new(
+                    creds.clone(),
+                    goat_config::UserProviders::at(paths.config_json.clone()),
+                );
                 proxy_http = Some((proxy_store, proxy_config.bind, creds, ops));
             }
             Err(err) => tracing::warn!(%err, "proxy store unavailable; usage metering disabled"),
@@ -261,6 +268,7 @@ async fn run_unified_daemon(socket_path: std::path::PathBuf) -> color_eyre::Resu
     let config = goat_daemon::DaemonConfig {
         socket_path,
         auth_path: goat_config::auth_path().ok_or_else(home_err)?,
+        config_json: goat_config::config_path().ok_or_else(home_err)?,
         db_path,
         remote,
     };

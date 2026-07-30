@@ -23,6 +23,7 @@ pub struct Manager {
 
 struct ManagerInner {
     auth_path: PathBuf,
+    user_providers: goat_config::UserProviders,
     db_path: PathBuf,
     sessions: Mutex<SessionTable>,
     threads: Mutex<HashMap<i64, SessionId>>,
@@ -40,10 +41,15 @@ struct RemoteControls {
 }
 
 impl Manager {
-    pub fn new(auth_path: PathBuf, db_path: PathBuf) -> Self {
+    pub fn new(
+        auth_path: PathBuf,
+        user_providers: goat_config::UserProviders,
+        db_path: PathBuf,
+    ) -> Self {
         Self {
             inner: Arc::new(ManagerInner {
                 auth_path,
+                user_providers,
                 db_path,
                 sessions: Mutex::new(HashMap::new()),
                 threads: Mutex::new(HashMap::new()),
@@ -191,6 +197,7 @@ impl Manager {
         let store_for_pump = store.clone();
         let registry = goat_providers::Registry::load_metered(
             &credentials,
+            &self.inner.user_providers,
             goat_providers::DEFAULT_ACCOUNT,
             self.inner.meter.get().cloned(),
         );
@@ -198,6 +205,7 @@ impl Manager {
             registry,
             store,
             credentials,
+            self.inner.user_providers.clone(),
             None,
             cwd.clone(),
             self.inner.meter.get().cloned(),

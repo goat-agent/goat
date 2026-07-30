@@ -3234,6 +3234,7 @@ name = "goat-provider-builtin"
 version = "0.1.27"
 dependencies = [
  "goat-auth",
+ "goat-model",
  "goat-provider",
  "goat-provider-openai-compat",
  "reqwest 0.12.28",
@@ -3327,6 +3328,7 @@ name = "goat-providers"
 version = "0.1.27"
 dependencies = [
  "goat-auth",
+ "goat-config",
  "goat-provider",
  "goat-provider-anthropic",
  "goat-provider-builtin",

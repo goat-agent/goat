@@ -11,6 +11,7 @@ async fn start_daemon(dir: &std::path::Path) -> PathBuf {
     let cfg = goat_daemon::DaemonConfig {
         socket_path: socket.clone(),
         auth_path: auth,
+        config_json: dir.join("config.json"),
         db_path: db,
         remote: None,
     };

@@ -140,6 +140,14 @@ pub fn prompt_api_key(provider: &str) -> Result<Option<String>> {
     Ok(secret(&format!("api key for {provider}"))?)
 }
 
+pub fn prompt_optional_api_key(provider: &str) -> Result<Option<String>> {
+    Ok(secret(&format!("api key for {provider} (enter for none)"))?)
+}
+
+pub fn prompt_provider_name() -> Result<Option<String>> {
+    Ok(prompt("provider name", None)?)
+}
+
 pub fn prompt_endpoint(default: Option<&str>) -> Result<Option<String>> {
     Ok(prompt("endpoint", default)?)
 }

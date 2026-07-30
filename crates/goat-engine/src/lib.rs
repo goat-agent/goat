@@ -43,9 +43,12 @@ mod websearch;
 
 pub use subagent::{SubagentRegistry, SubagentSpec, ToolSelection};
 
-pub async fn model_list_entries(credentials: &CredentialStore) -> Vec<goat_protocol::ModelEntry> {
-    let registry = Registry::new(credentials);
-    accounts::discover_ready(&registry, credentials).await
+pub async fn model_list_entries(
+    credentials: &CredentialStore,
+    user: &goat_config::UserProviders,
+) -> Vec<goat_protocol::ModelEntry> {
+    let registry = Registry::new(credentials, user);
+    accounts::discover_ready(&registry, credentials, user).await
 }
 
 const CHILD_ID_BASE: u64 = 1 << 32;
@@ -56,6 +59,7 @@ pub struct GoatAgent {
     tools: ToolRegistry,
     store: Store,
     credentials: CredentialStore,
+    user_providers: goat_config::UserProviders,
     target: Option<ModelTarget>,
     mcp: Arc<goat_mcp::McpManager>,
     cwd: PathBuf,
@@ -67,6 +71,7 @@ impl GoatAgent {
         registry: Registry,
         store: Store,
         credentials: CredentialStore,
+        user_providers: goat_config::UserProviders,
         target: Option<ModelTarget>,
         cwd: PathBuf,
         meter: Option<goat_proxy::Meter>,
@@ -93,6 +98,7 @@ impl GoatAgent {
             tools,
             store,
             credentials,
+            user_providers,
             target,
             mcp,
             cwd,
@@ -111,6 +117,7 @@ pub(crate) struct Ctx<'a> {
     pub(crate) registry: &'a Registry,
     pub(crate) account_registries: &'a std::sync::Mutex<HashMap<String, Arc<Registry>>>,
     pub(crate) credentials: &'a CredentialStore,
+    pub(crate) user: &'a goat_config::UserProviders,
     pub(crate) tools: &'a ToolRegistry,
     pub(crate) subagents: &'a SubagentRegistry,
     pub(crate) store: &'a Store,
@@ -229,6 +236,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
         tools,
         store,
         credentials,
+        user_providers,
         target,
         mcp,
         cwd,
@@ -242,9 +250,16 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     };
 
     if state.target.is_none() {
-        state.target = accounts::restore_target(&store, &credentials, &cwd).await;
+        state.target = accounts::restore_target(&store, &credentials, &user_providers, &cwd).await;
     }
-    accounts::announce_startup(&events, &registry, &credentials, state.target.as_ref()).await;
+    accounts::announce_startup(
+        &events,
+        &registry,
+        &credentials,
+        &user_providers,
+        state.target.as_ref(),
+    )
+    .await;
 
     let skills = prompt::load_skill_infos(&cwd);
     let subagents = SubagentRegistry::load(&cwd);
@@ -291,6 +306,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                 registry: &registry,
                 account_registries: &account_registries,
                 credentials: &credentials,
+                user: &user_providers,
                 tools: &tools,
                 subagents: &subagents,
                 store: &store,
@@ -385,6 +401,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
             } => {
                 let ctx = accounts::LoginCtx {
                     credentials: &credentials,
+                    user: &user_providers,
                     registry: &mut registry,
                     events: &events,
                 };
@@ -405,6 +422,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
             } => {
                 let ctx = accounts::LoginCtx {
                     credentials: &credentials,
+                    user: &user_providers,
                     registry: &mut registry,
                     events: &events,
                 };
@@ -416,6 +434,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                     provider,
                     name,
                     &credentials,
+                    &user_providers,
                     &mut registry,
                     &events,
                 )
@@ -437,7 +456,8 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                     &events,
                 )
                 .await;
-                accounts::refresh_model_list(&events, &registry, &credentials).await;
+                accounts::refresh_model_list(&events, &registry, &credentials, &user_providers)
+                    .await;
             }
             Op::ResumeLatest {} => {
                 threads::handle_resume_latest(
@@ -451,7 +471,8 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                     &events,
                 )
                 .await;
-                accounts::refresh_model_list(&events, &registry, &credentials).await;
+                accounts::refresh_model_list(&events, &registry, &credentials, &user_providers)
+                    .await;
             }
             Op::RenameThread { title } => {
                 threads::handle_rename(&store, state.thread_id, title, &events).await;
@@ -665,6 +686,7 @@ mod tests {
                 registry,
                 store,
                 credentials,
+                test_user_providers(),
                 Some(target("mock")),
                 std::env::temp_dir(),
                 None,
@@ -923,6 +945,7 @@ mod tests {
             registry,
             store.clone(),
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1014,6 +1037,7 @@ mod tests {
             registry,
             store.clone(),
             credentials.clone(),
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1046,6 +1070,7 @@ mod tests {
             registry2,
             store.clone(),
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1135,6 +1160,7 @@ mod tests {
                 registry,
                 store,
                 credentials,
+                test_user_providers(),
                 Some(target("mock")),
                 std::env::temp_dir(),
                 None,
@@ -1282,6 +1308,7 @@ mod tests {
             registry,
             store,
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1334,6 +1361,7 @@ mod tests {
             registry,
             store,
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1376,6 +1404,12 @@ mod tests {
         );
     }
 
+    fn test_user_providers() -> goat_config::UserProviders {
+        goat_config::UserProviders::at(
+            std::env::temp_dir().join("goat-engine-test-user-providers.json"),
+        )
+    }
+
     fn target(provider: &str) -> ModelTarget {
         ModelTarget {
             provider: provider.to_owned(),
@@ -1398,6 +1432,7 @@ mod tests {
             registry,
             store,
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1496,6 +1531,7 @@ mod tests {
             registry,
             store,
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1583,6 +1619,7 @@ mod tests {
             registry,
             store,
             credentials,
+            test_user_providers(),
             Some(target("ghost")),
             std::env::temp_dir(),
             None,
@@ -1682,6 +1719,7 @@ mod tests {
             registry,
             store.clone(),
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1743,6 +1781,7 @@ mod tests {
             registry,
             store.clone(),
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1789,6 +1828,7 @@ mod tests {
             registry,
             store.clone(),
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1838,6 +1878,7 @@ mod tests {
             registry,
             store.clone(),
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,

@@ -8,6 +8,7 @@ use goat_auth::{
     Credential, CredentialKey, CredentialKind, CredentialService, CredentialStore, SecretString,
     TokenSet,
 };
+use goat_config::UserProviders;
 use goat_protocol::{
     AccountChoice, AccountEntry, AccountInfo, AuthMethod, Effort, Event, LoginCredential,
     LoginProvider, ModelEntry, ModelTarget, NotifyKind,
@@ -24,10 +25,11 @@ const DISCOVER_TIMEOUT_SECS: u64 = 15;
 pub(crate) async fn restore_target(
     store: &Store,
     credentials: &CredentialStore,
+    user: &UserProviders,
     cwd: &std::path::Path,
 ) -> Option<ModelTarget> {
     let thread = latest_thread_or_seed(store, cwd).await?;
-    let provider = Registry::load(credentials, &thread.account)
+    let provider = Registry::load(credentials, user, &thread.account)
         .get(&goat_provider::ProviderId::from(thread.provider.as_str()))?;
     if !provider.authenticated() {
         return None;
@@ -77,6 +79,7 @@ pub(crate) async fn handle_remove_account(
     provider: String,
     name: String,
     credentials: &CredentialStore,
+    user: &UserProviders,
     registry: &mut Registry,
     events: &mpsc::Sender<Event>,
 ) {
@@ -84,8 +87,8 @@ pub(crate) async fn handle_remove_account(
     if let Err(err) = credentials.remove(&key) {
         tracing::warn!(%err, "failed to remove account");
     }
-    *registry = Registry::new(credentials);
-    let entries = discover_ready(registry, credentials).await;
+    *registry = Registry::new(credentials, user);
+    let entries = discover_ready(registry, credentials, user).await;
     let _ = events.send(Event::ModelListChanged { entries }).await;
     emit_accounts_changed(events, registry, credentials).await;
 }
@@ -130,6 +133,7 @@ pub(crate) async fn announce_startup(
     events: &mpsc::Sender<Event>,
     registry: &Registry,
     credentials: &CredentialStore,
+    user: &UserProviders,
     target: Option<&ModelTarget>,
 ) {
     let _ = events
@@ -151,7 +155,7 @@ pub(crate) async fn announce_startup(
         .await;
     let _ = events
         .send(Event::ModelListChanged {
-            entries: catalog_only(registry, credentials),
+            entries: catalog_only(registry, credentials, user),
         })
         .await;
     if let Some(selected) = target {
@@ -168,8 +172,9 @@ pub(crate) async fn announce_startup(
     {
         let bg_events = events.clone();
         let bg_credentials = credentials.clone();
+        let bg_user = user.clone();
         tokio::spawn(async move {
-            let entries = model_list_entries(&providers, &bg_credentials).await;
+            let entries = model_list_entries(&providers, &bg_credentials, &bg_user).await;
             let _ = bg_events.send(Event::ModelListChanged { entries }).await;
         });
     }
@@ -177,6 +182,7 @@ pub(crate) async fn announce_startup(
 
 pub(crate) struct LoginCtx<'a> {
     pub(crate) credentials: &'a CredentialStore,
+    pub(crate) user: &'a UserProviders,
     pub(crate) registry: &'a mut Registry,
     pub(crate) events: &'a mpsc::Sender<Event>,
 }
@@ -268,18 +274,18 @@ async fn finalize_login(
         emit_accounts_changed(ctx.events, ctx.registry, ctx.credentials).await;
         return;
     }
-    *ctx.registry = Registry::new(ctx.credentials);
-    if let Err(message) = validate_stored(ctx.credentials, &provider, &name).await {
+    *ctx.registry = Registry::new(ctx.credentials, ctx.user);
+    if let Err(message) = validate_stored(ctx.credentials, ctx.user, &provider, &name).await {
         let _ = ctx.credentials.remove(&key);
-        *ctx.registry = Registry::new(ctx.credentials);
+        *ctx.registry = Registry::new(ctx.credentials, ctx.user);
         login_failed(&provider, ctx.events, message).await;
         emit_accounts_changed(ctx.events, ctx.registry, ctx.credentials).await;
         return;
     }
-    let stored_but_unverified = Registry::load(ctx.credentials, &name)
+    let stored_but_unverified = Registry::load(ctx.credentials, ctx.user, &name)
         .get(&goat_provider::ProviderId::from(provider.as_str()))
         .is_some_and(|target| !target.verifies_credentials());
-    let entries = discover_ready(ctx.registry, ctx.credentials).await;
+    let entries = discover_ready(ctx.registry, ctx.credentials, ctx.user).await;
     let _ = ctx.events.send(Event::ModelListChanged { entries }).await;
     if stored_but_unverified {
         login_stored_unverified(&provider, ctx.events).await;
@@ -291,10 +297,11 @@ async fn finalize_login(
 
 async fn validate_stored(
     credentials: &CredentialStore,
+    user: &UserProviders,
     provider: &str,
     name: &str,
 ) -> Result<(), String> {
-    match Registry::load(credentials, name).get(&goat_provider::ProviderId::from(provider)) {
+    match Registry::load(credentials, user, name).get(&goat_provider::ProviderId::from(provider)) {
         Some(target) => match target.validate().await {
             Ok(result) => result.map(|_| ()).map_err(|err| err.to_string()),
             Err(join) => Err(join.to_string()),
@@ -402,7 +409,11 @@ fn model_entry(
     }
 }
 
-fn catalog_only(registry: &Registry, credentials: &CredentialStore) -> Vec<ModelEntry> {
+fn catalog_only(
+    registry: &Registry,
+    credentials: &CredentialStore,
+    user: &UserProviders,
+) -> Vec<ModelEntry> {
     let mut entries = Vec::new();
     for provider in registry.all() {
         if provider.model_list_source() != ModelListSource::Catalog {
@@ -411,20 +422,26 @@ fn catalog_only(registry: &Registry, credentials: &CredentialStore) -> Vec<Model
         let Some(accounts) = accounts_for_provider(credentials, provider.as_ref()) else {
             continue;
         };
-        entries.extend(catalog_entries(credentials, &provider.id(), &accounts));
+        entries.extend(catalog_entries(
+            credentials,
+            user,
+            &provider.id(),
+            &accounts,
+        ));
     }
     entries
 }
 
 fn models_for_provider(
     credentials: &CredentialStore,
+    user: &UserProviders,
     provider_id: &goat_provider::ProviderId,
     accounts: &[String],
 ) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut models = Vec::new();
     for account in accounts {
-        let registry = Registry::load(credentials, account);
+        let registry = Registry::load(credentials, user, account);
         let Some(provider) = registry.get(provider_id) else {
             continue;
         };
@@ -439,17 +456,18 @@ fn models_for_provider(
 
 fn catalog_entries(
     credentials: &CredentialStore,
+    user: &UserProviders,
     provider_id: &goat_provider::ProviderId,
     accounts: &[String],
 ) -> Vec<ModelEntry> {
     let provider_id_str = provider_id.to_string();
-    models_for_provider(credentials, provider_id, accounts)
+    models_for_provider(credentials, user, provider_id, accounts)
         .into_iter()
         .map(|id| {
             let (efforts, context_window, supports_images) = accounts
                 .iter()
                 .find_map(|account| {
-                    Registry::load(credentials, account)
+                    Registry::load(credentials, user, account)
                         .get(provider_id)
                         .filter(|provider| provider.list_models().iter().any(|m| m == &id))
                         .map(|provider| {
@@ -518,9 +536,10 @@ async fn model_list_for_provider(
     provider: Arc<dyn Provider>,
     accounts: Vec<String>,
     credentials: &CredentialStore,
+    user: &UserProviders,
 ) -> Vec<ModelEntry> {
     match provider.model_list_source() {
-        ModelListSource::Catalog => catalog_entries(credentials, &provider.id(), &accounts),
+        ModelListSource::Catalog => catalog_entries(credentials, user, &provider.id(), &accounts),
         ModelListSource::Discover => discover_entries(provider, accounts).await,
     }
 }
@@ -528,9 +547,10 @@ async fn model_list_for_provider(
 async fn model_list_entries(
     providers: &[(Arc<dyn Provider>, Vec<String>)],
     credentials: &CredentialStore,
+    user: &UserProviders,
 ) -> Vec<ModelEntry> {
     futures::future::join_all(providers.iter().map(|(provider, accounts)| {
-        model_list_for_provider(Arc::clone(provider), accounts.clone(), credentials)
+        model_list_for_provider(Arc::clone(provider), accounts.clone(), credentials, user)
     }))
     .await
     .into_iter()
@@ -541,17 +561,19 @@ async fn model_list_entries(
 pub(crate) async fn discover_ready(
     registry: &Registry,
     credentials: &CredentialStore,
+    user: &UserProviders,
 ) -> Vec<ModelEntry> {
     let providers = provider_accounts(registry, credentials);
-    model_list_entries(&providers, credentials).await
+    model_list_entries(&providers, credentials, user).await
 }
 
 pub(crate) async fn refresh_model_list(
     events: &mpsc::Sender<Event>,
     registry: &Registry,
     credentials: &CredentialStore,
+    user: &UserProviders,
 ) {
-    let entries = discover_ready(registry, credentials).await;
+    let entries = discover_ready(registry, credentials, user).await;
     let _ = events.send(Event::ModelListChanged { entries }).await;
 }
 
@@ -579,6 +601,7 @@ pub(crate) fn provider_for(
         .or_insert_with(|| {
             Arc::new(Registry::load_metered(
                 ctx.credentials,
+                ctx.user,
                 account,
                 ctx.meter.clone(),
             ))
@@ -592,6 +615,7 @@ mod tests {
     use goat_provider::{ModelListSource, Provider, ProviderId};
 
     use super::{catalog_only, latest_thread_or_seed, models_for_provider};
+    use goat_config::UserProviders;
     use goat_providers::Registry;
     use goat_store::{CodeStore as Store, NewThread};
 
@@ -601,6 +625,10 @@ mod tests {
         CredentialStore::new(path)
     }
 
+    fn no_user() -> UserProviders {
+        UserProviders::at(std::env::temp_dir().join("goat-agent-accounts-no-user.json"))
+    }
+
     fn model_list_source_check(provider: &dyn Provider) -> ModelListSource {
         provider.model_list_source()
     }
@@ -608,7 +636,7 @@ mod tests {
     #[test]
     fn local_providers_use_discover_only_lists() {
         let store = store("goat-agent-accounts-local.json");
-        let registry = Registry::new(&store);
+        let registry = Registry::new(&store, &no_user());
         let ollama = registry
             .get(&ProviderId::from("ollama"))
             .expect("ollama provider");
@@ -622,7 +650,7 @@ mod tests {
     #[test]
     fn hosted_providers_use_catalog_lists() {
         let store = store("goat-agent-accounts-hosted.json");
-        let registry = Registry::new(&store);
+        let registry = Registry::new(&store, &no_user());
         let openai = registry
             .get(&ProviderId::from("openai"))
             .expect("openai provider");
@@ -636,7 +664,7 @@ mod tests {
     #[test]
     fn openrouter_uses_live_model_discovery() {
         let store = store("goat-agent-accounts-openrouter.json");
-        let registry = Registry::new(&store);
+        let registry = Registry::new(&store, &no_user());
         let openrouter = registry
             .get(&ProviderId::from("openrouter"))
             .expect("openrouter provider");
@@ -649,8 +677,8 @@ mod tests {
     #[test]
     fn catalog_only_skips_local_providers() {
         let store = store("goat-agent-accounts-catalog-only.json");
-        let registry = Registry::new(&store);
-        let entries = catalog_only(&registry, &store);
+        let registry = Registry::new(&store, &no_user());
+        let entries = catalog_only(&registry, &store, &no_user());
         assert!(entries.iter().all(|entry| entry.provider != "ollama"));
     }
 
@@ -674,11 +702,20 @@ mod tests {
                 Credential::ApiKey(SecretString::from("xai-key".to_owned())),
             )
             .unwrap();
-        let oauth_models =
-            models_for_provider(&store, &ProviderId::from("xai"), &["oauth".to_owned()]);
+        let oauth_models = models_for_provider(
+            &store,
+            &no_user(),
+            &ProviderId::from("xai"),
+            &["oauth".to_owned()],
+        );
         assert!(oauth_models.iter().any(|id| id == "grok-4.3"));
         assert!(oauth_models.iter().any(|id| id == "grok-composer-2.5-fast"));
-        let api_models = models_for_provider(&store, &ProviderId::from("xai"), &["api".to_owned()]);
+        let api_models = models_for_provider(
+            &store,
+            &no_user(),
+            &ProviderId::from("xai"),
+            &["api".to_owned()],
+        );
         assert!(api_models.iter().any(|id| id == "grok-4.3"));
         assert!(!api_models.iter().any(|id| id == "grok-composer-2.5-fast"));
     }

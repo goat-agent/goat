@@ -81,7 +81,8 @@ fn write_agent(paths: &GoatPaths, slug: &str) -> Result<String> {
 
 fn pick_model(paths: &GoatPaths) -> Result<Model> {
     let store = CredentialStore::new(paths.credentials_json.clone());
-    let registry = Registry::new(&store);
+    let user = goat_config::UserProviders::at(paths.config_json.clone());
+    let registry = Registry::new(&store, &user);
     let mut entries: Vec<(Option<(String, String)>, String)> = registry
         .all()
         .iter()
