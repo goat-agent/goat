@@ -48,10 +48,10 @@ impl SubagentRegistry {
             subagents.insert(spec.name.clone(), spec);
         }
         let mut dirs: Vec<PathBuf> = Vec::new();
-        if let Some(global) = goat_config::agents_dir() {
+        if let Some(global) = goat_config::subagents_dir() {
             dirs.push(global);
         }
-        dirs.push(cwd.join(goat_config::PROJECT_AGENTS_SUBDIR));
+        dirs.push(cwd.join(goat_config::PROJECT_SUBAGENTS_SUBDIR));
         for dir in &dirs {
             load_dir(dir, &mut subagents);
         }
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn file_agent_overrides_builtin() {
         let dir = tempfile::tempdir().unwrap();
-        let agents = dir.path().join(".goat/agents");
+        let agents = dir.path().join(".goat/subagents");
         std::fs::create_dir_all(&agents).unwrap();
         std::fs::write(
             agents.join("explore.md"),

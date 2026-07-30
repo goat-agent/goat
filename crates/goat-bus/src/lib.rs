@@ -35,7 +35,7 @@ impl Default for EventBus {
 
 #[derive(Clone, Debug)]
 pub enum EventFilter {
-    Persona(AgentId),
+    Agent(AgentId),
     IncomingFor(AgentId),
 }
 
@@ -64,7 +64,7 @@ impl EventSubscription {
 
     fn matches(&self, ev: &Event) -> bool {
         match &self.filter {
-            EventFilter::Persona(p) => ev.agent() == *p,
+            EventFilter::Agent(p) => ev.agent() == *p,
             EventFilter::IncomingFor(p) => {
                 matches!(ev, Event::Incoming(m) if m.agent == *p)
             }
@@ -105,7 +105,7 @@ mod tests {
         let bus = EventBus::new();
         let p = AgentId::new();
         let other = AgentId::new();
-        let mut sub = bus.subscribe(EventFilter::Persona(p));
+        let mut sub = bus.subscribe(EventFilter::Agent(p));
         bus.publish(mk_in(other));
         bus.publish(mk_in(p));
         let got = sub.recv().await.expect("at least one event");

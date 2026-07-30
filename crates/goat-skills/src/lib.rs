@@ -44,7 +44,7 @@ struct SkillFrontMatter {
 pub enum SkillScope {
     AgentsUser,
     Common,
-    Persona { agent: AgentId, slug: String },
+    Agent { agent: AgentId, slug: String },
 }
 
 impl SkillScope {
@@ -52,7 +52,7 @@ impl SkillScope {
         match self {
             SkillScope::AgentsUser => "~/.agents",
             SkillScope::Common => "common",
-            SkillScope::Persona { slug, .. } => slug,
+            SkillScope::Agent { slug, .. } => slug,
         }
     }
 }
@@ -112,11 +112,11 @@ impl SkillIndex {
         let mut diagnostics = Vec::new();
         let mut by_agent = HashMap::new();
         for (agent, slug) in agents {
-            let scope = SkillScope::Persona {
+            let scope = SkillScope::Agent {
                 agent: *agent,
                 slug: slug.clone(),
             };
-            let dir = root.join("profiles").join(slug).join("skills");
+            let dir = root.join("agents").join(slug).join("skills");
             let entries = scan_dir(&dir, scope, &mut diagnostics);
             if !entries.is_empty() {
                 by_agent.insert(*agent, entries);
@@ -393,7 +393,7 @@ fn default_agents_skills_dir() -> Option<PathBuf> {
 }
 
 fn agent_pairs(root: &Path) -> Vec<(AgentId, String)> {
-    let agents_dir = root.join("profiles");
+    let agents_dir = root.join("agents");
     let mut out = Vec::new();
     let Ok(read) = std::fs::read_dir(agents_dir) else {
         return out;
@@ -630,7 +630,7 @@ mod tests {
             "---\nname: plan\ndescription: common\n---\ncommon",
         );
         write(
-            &root.join("profiles/dev/skills/plan/SKILL.md"),
+            &root.join("agents/dev/skills/plan/SKILL.md"),
             "---\nname: plan\ndescription: agent\n---\nagent",
         );
 

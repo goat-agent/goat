@@ -135,7 +135,7 @@ async fn cold_start_briefs_nothing(contract: &WatchContract) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_in(dir.path()).await;
     let agent = agent_in(&runtime).await;
-    let mut sub = runtime.bus.subscribe(EventFilter::Persona(agent));
+    let mut sub = runtime.bus.subscribe(EventFilter::Agent(agent));
     let cancel = CancellationToken::new();
 
     let backlog: Vec<Observed> = (0..40)
@@ -163,7 +163,7 @@ async fn a_burst_is_capped_with_an_overflow_note(contract: &WatchContract) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_in(dir.path()).await;
     let agent = agent_in(&runtime).await;
-    let mut sub = runtime.bus.subscribe(EventFilter::Persona(agent));
+    let mut sub = runtime.bus.subscribe(EventFilter::Agent(agent));
     let cancel = CancellationToken::new();
 
     let burst: Vec<Observed> = (0..5)
@@ -211,7 +211,7 @@ async fn repeated_auth_failures_alert_exactly_once(contract: &WatchContract) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_in(dir.path()).await;
     let agent = agent_in(&runtime).await;
-    let mut sub = runtime.bus.subscribe(EventFilter::Persona(agent));
+    let mut sub = runtime.bus.subscribe(EventFilter::Agent(agent));
     let cancel = CancellationToken::new();
 
     let source = ScriptedSource::always_failing(&IntegrationError::Auth("401".into()));
@@ -249,7 +249,7 @@ async fn an_observation_round_trips_losslessly(contract: &WatchContract) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_in(dir.path()).await;
     let agent = agent_in(&runtime).await;
-    let mut sub = runtime.bus.subscribe(EventFilter::Persona(agent));
+    let mut sub = runtime.bus.subscribe(EventFilter::Agent(agent));
     let cancel = CancellationToken::new();
 
     let source = ScriptedSource::new(vec![

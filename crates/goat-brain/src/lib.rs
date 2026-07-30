@@ -285,7 +285,7 @@ impl Brain {
         channels: Vec<Arc<dyn ChannelHandle>>,
         cancel: CancellationToken,
     ) -> Result<()> {
-        let mut sub = bus.subscribe(EventFilter::Persona(self.agent));
+        let mut sub = bus.subscribe(EventFilter::Agent(self.agent));
         info!(agent = %self.agent, "brain running");
 
         let mut buffer = IntakeBuffer::new(self.intake_debounce, self.intake_ceiling);

@@ -147,11 +147,12 @@ Placements that contradict the naming:
 Everything is under `~/.goat/`, laid out by `goat-config`'s `GoatPaths`; `HOME` is the only thing
 that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The parts that mislead:
 
-- **Memory and skills are not per-agent.** `agents/<slug>/` holds only `agent.md` and `config.json`.
-  Memory is one global tree at `memory/<scope>/` keyed by `Scope` (`owner`, `self`, `domain/<name>`);
-  per-persona skills live at `profiles/<slug>/skills/`.
-- `~/.goat/agents/*.md` does double duty: `AgentRegistry::load` also scans it (plus the project-local
-  `.goat/agents/`) as the **code engine's subagent registry**.
+- **Memory is not per-agent.** `agents/<slug>/` holds `agent.md`, `config.json`, and that agent's
+  `skills/`. Memory is one global tree at `memory/<scope>/` keyed by `Scope` (`owner`, `self`,
+  `domain/<name>`).
+- Subagent definitions for the code engine live at `~/.goat/subagents/*.md` plus the project-local
+  `.goat/subagents/`, loaded by `SubagentRegistry::load`. Boot migrates the old layout (loose
+  `agents/*.md`, `profiles/<slug>/skills/`) via `goat-runtime::layout`.
 - `~/.agents/skills` is a third, separate skill scope. `<repo>/.goat/worktrees/` is created inside
   the *target* repository and is unrelated to the home tree.
 - `goat.db` is one file holding three table sets: unprefixed agent tables, `code_`, and `proxy_`.

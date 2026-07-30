@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 mod channel_secrets;
 mod embed;
+mod layout;
 use embed::OpenAiEmbedderAdapter;
 
 use anyhow::{Context, Result};
@@ -78,6 +79,7 @@ impl Goat {
         log_guard: Option<WorkerGuard>,
     ) -> Result<Self> {
         info!(root = %cfg.paths.root.display(), "booting goat");
+        layout::migrate(&cfg.paths);
 
         let sqlite_store = SqliteStore::open(&cfg.paths.state_db)
             .await
