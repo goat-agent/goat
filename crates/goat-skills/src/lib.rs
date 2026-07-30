@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -9,6 +9,7 @@ use tracing::warn;
 
 const MAX_NAME_LEN: usize = 64;
 const MAX_DESCRIPTION_LEN: usize = 1024;
+const MAX_ARGUMENT_NAME_LEN: usize = 32;
 const RESOURCE_DIRS: [&str; 3] = ["scripts", "references", "assets"];
 
 #[derive(Debug, Error)]
@@ -32,12 +33,24 @@ pub enum SkillError {
     },
     #[error("skill not found: {0}")]
     NotFound(String),
+    #[error("skill arguments: {0}")]
+    InvalidArguments(String),
 }
 
 #[derive(Debug, Deserialize)]
 struct SkillFrontMatter {
     name: String,
     description: String,
+    #[serde(default)]
+    arguments: Vec<SkillArgument>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct SkillArgument {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub required: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,6 +82,7 @@ pub enum SkillSource {
 pub struct SkillEntry {
     pub name: String,
     pub description: String,
+    pub arguments: Vec<SkillArgument>,
     pub source: SkillSource,
     pub scope: SkillScope,
 }
@@ -90,6 +104,7 @@ pub struct SkillResource {
 pub struct ActivatedSkill {
     pub name: String,
     pub body: String,
+    pub arguments: Vec<SkillArgument>,
     pub skill_dir: Option<PathBuf>,
     pub resources: Vec<SkillResource>,
 }
@@ -158,7 +173,7 @@ When a task matches a skill's description, call the `skill` tool with the skill 
 Do not load skill resources eagerly; use listed resource paths only when needed.\n\
 <available_skills>\n",
         );
-        for e in entries {
+        for e in &entries {
             s.push_str("  <skill>\n");
             let _ = writeln!(s, "    <name>{}</name>", xml_escape(&e.name));
             let _ = writeln!(
@@ -166,9 +181,23 @@ Do not load skill resources eagerly; use listed resource paths only when needed.
                 "    <description>{}</description>",
                 xml_escape(&e.description)
             );
+            for a in &e.arguments {
+                let _ = writeln!(
+                    s,
+                    "    <argument name=\"{}\" required=\"{}\">{}</argument>",
+                    xml_escape(&a.name),
+                    a.required,
+                    xml_escape(&a.description)
+                );
+            }
             s.push_str("  </skill>\n");
         }
         s.push_str("</available_skills>");
+        if entries.iter().any(|e| !e.arguments.is_empty()) {
+            s.push_str(
+                "\nWhen a skill lists <argument> entries, pass values by name via the `skill` tool's `arguments` object.",
+            );
+        }
         Some(s)
     }
 
@@ -189,6 +218,7 @@ Do not load skill resources eagerly; use listed resource paths only when needed.
                 Ok(ActivatedSkill {
                     name: entry.name.clone(),
                     body,
+                    arguments: entry.arguments.clone(),
                     skill_dir: Some(skill_dir),
                     resources,
                 })
@@ -196,6 +226,7 @@ Do not load skill resources eagerly; use listed resource paths only when needed.
             SkillSource::Builtin(raw) => Ok(ActivatedSkill {
                 name: entry.name.clone(),
                 body: strip_front_matter(raw),
+                arguments: entry.arguments.clone(),
                 skill_dir: None,
                 resources: Vec::new(),
             }),
@@ -262,10 +293,13 @@ Do not load skill resources eagerly; use listed resource paths only when needed.
     }
 }
 
-pub fn format_activated_skill(skill: &ActivatedSkill, args: Option<&str>) -> String {
+pub fn format_activated_skill(skill: &ActivatedSkill, resolved: Option<&ResolvedArgs>) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "<skill_content name=\"{}\">", escape_attr(&skill.name));
-    let body = substitute_arguments(skill.body.trim(), args);
+    let body = match resolved {
+        Some(resolved) => substitute_resolved(skill.body.trim(), resolved),
+        None => skill.body.trim().to_string(),
+    };
     out.push_str(&body);
     out.push('\n');
     if let Some(skill_dir) = &skill.skill_dir {
@@ -289,14 +323,177 @@ pub fn format_activated_skill(skill: &ActivatedSkill, args: Option<&str>) -> Str
     out
 }
 
+#[derive(Clone, Debug)]
+pub enum SkillCallArgs {
+    Raw(String),
+    Named(BTreeMap<String, String>),
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ResolvedArgs {
+    raw: String,
+    positional: Vec<String>,
+    named: Vec<(String, String)>,
+}
+
+pub fn resolve_call_args(
+    declared: &[SkillArgument],
+    call: Option<&SkillCallArgs>,
+) -> Result<Option<ResolvedArgs>, SkillError> {
+    match call {
+        None => {
+            if declared.is_empty() {
+                return Ok(None);
+            }
+            require_positional(declared, &[])?;
+            Ok(Some(from_positional(declared, Vec::new(), String::new())))
+        }
+        Some(SkillCallArgs::Raw(raw)) => {
+            let positional = parse_arguments(raw);
+            if declared.is_empty() {
+                return Ok(Some(ResolvedArgs {
+                    raw: raw.clone(),
+                    positional,
+                    named: Vec::new(),
+                }));
+            }
+            require_positional(declared, &positional)?;
+            Ok(Some(from_positional(declared, positional, raw.clone())))
+        }
+        Some(SkillCallArgs::Named(map)) => {
+            let declared_names = || {
+                declared
+                    .iter()
+                    .map(|a| a.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            if let Some(unknown) = map.keys().find(|k| !declared.iter().any(|a| &a.name == *k)) {
+                if declared.is_empty() {
+                    return Err(SkillError::InvalidArguments(format!(
+                        "`{unknown}` passed but this skill declares no arguments"
+                    )));
+                }
+                return Err(SkillError::InvalidArguments(format!(
+                    "unknown argument `{unknown}`; declared: {}",
+                    declared_names()
+                )));
+            }
+            for a in declared {
+                let missing = map.get(&a.name).is_none_or(|v| v.trim().is_empty());
+                if a.required && missing {
+                    return Err(SkillError::InvalidArguments(format!(
+                        "missing required argument `{}`; declared: {}",
+                        a.name,
+                        declared_names()
+                    )));
+                }
+            }
+            let positional: Vec<String> = declared
+                .iter()
+                .map(|a| map.get(&a.name).cloned().unwrap_or_default())
+                .collect();
+            let raw = join_values(&positional);
+            Ok(Some(from_positional(declared, positional, raw)))
+        }
+    }
+}
+
+fn from_positional(
+    declared: &[SkillArgument],
+    positional: Vec<String>,
+    raw: String,
+) -> ResolvedArgs {
+    let named = declared
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            (
+                a.name.clone(),
+                positional.get(i).cloned().unwrap_or_default(),
+            )
+        })
+        .collect();
+    ResolvedArgs {
+        raw,
+        positional,
+        named,
+    }
+}
+
+fn require_positional(declared: &[SkillArgument], positional: &[String]) -> Result<(), SkillError> {
+    for (i, a) in declared.iter().enumerate() {
+        let missing = positional.get(i).is_none_or(|v| v.trim().is_empty());
+        if a.required && missing {
+            return Err(SkillError::InvalidArguments(format!(
+                "missing required argument `{}` (position {i})",
+                a.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn join_values(values: &[String]) -> String {
+    values
+        .iter()
+        .filter(|v| !v.is_empty())
+        .map(|v| quote_value(v))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn quote_value(value: &str) -> String {
+    if value.chars().any(char::is_whitespace) {
+        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        value.to_string()
+    }
+}
+
+pub fn substitute_resolved(content: &str, resolved: &ResolvedArgs) -> String {
+    let content = replace_argument_indexes(content, &resolved.positional);
+    let content = replace_named_arguments(&content, &resolved.named);
+    let content = replace_shorthand_indexes(&content, &resolved.positional);
+    content.replace("$ARGUMENTS", &resolved.raw)
+}
+
 pub fn substitute_arguments(content: &str, args: Option<&str>) -> String {
     let Some(args) = args else {
         return content.to_string();
     };
-    let parsed = parse_arguments(args);
-    let content = replace_argument_indexes(content, &parsed);
-    let content = replace_shorthand_indexes(&content, &parsed);
-    content.replace("$ARGUMENTS", args)
+    let resolved = ResolvedArgs {
+        raw: args.to_string(),
+        positional: parse_arguments(args),
+        named: Vec::new(),
+    };
+    substitute_resolved(content, &resolved)
+}
+
+fn replace_named_arguments(content: &str, named: &[(String, String)]) -> String {
+    if named.is_empty() {
+        return content.to_string();
+    }
+    let chars: Vec<char> = content.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '$' && i + 1 < chars.len() && chars[i + 1].is_ascii_lowercase() {
+            let mut j = i + 1;
+            while j < chars.len() && is_word_char(chars[j]) {
+                j += 1;
+            }
+            let word: String = chars[i + 1..j].iter().collect();
+            if let Some((_, value)) = named.iter().find(|(name, _)| *name == word) {
+                out.push_str(value);
+                i = j;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
 }
 
 fn parse_arguments(args: &str) -> Vec<String> {
@@ -544,12 +741,54 @@ fn parse_skill(
             reason: format!("must be 1..={MAX_DESCRIPTION_LEN}"),
         });
     }
+    validate_arguments(path, &fm.arguments)?;
     Ok(SkillEntry {
         name: fm.name,
         description: fm.description,
+        arguments: fm.arguments,
         source,
         scope,
     })
+}
+
+fn validate_arguments(path: &Path, arguments: &[SkillArgument]) -> Result<(), SkillError> {
+    let mut seen = HashSet::new();
+    for a in arguments {
+        let starts_lower = a
+            .name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase());
+        let chars_ok = a
+            .name
+            .chars()
+            .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_'));
+        if a.name.len() > MAX_ARGUMENT_NAME_LEN || !starts_lower || !chars_ok {
+            return Err(SkillError::Validation {
+                path: path.to_path_buf(),
+                kind: "argument name",
+                reason: format!(
+                    "`{}` must match [a-z][a-z0-9_]* and be 1..={MAX_ARGUMENT_NAME_LEN}",
+                    a.name
+                ),
+            });
+        }
+        if !seen.insert(a.name.as_str()) {
+            return Err(SkillError::Validation {
+                path: path.to_path_buf(),
+                kind: "argument name",
+                reason: format!("`{}` is declared twice", a.name),
+            });
+        }
+        if a.description.is_empty() || a.description.len() > MAX_DESCRIPTION_LEN {
+            return Err(SkillError::Validation {
+                path: path.to_path_buf(),
+                kind: "argument description",
+                reason: format!("must be 1..={MAX_DESCRIPTION_LEN}"),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_name(path: &Path, name: &str) -> Result<(), SkillError> {
@@ -777,6 +1016,120 @@ mod tests {
         let formatted = format_activated_skill(&skill, None);
         assert!(!formatted.contains("Skill directory:"));
         assert!(formatted.contains("<skill_content name=\"goat\">"));
+    }
+
+    fn declared() -> Vec<SkillArgument> {
+        vec![
+            SkillArgument {
+                name: "task".into(),
+                description: "what to do".into(),
+                required: true,
+            },
+            SkillArgument {
+                name: "when".into(),
+                description: "when to do it".into(),
+                required: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn arguments_parse_from_front_matter() {
+        let root = temp_root("arguments");
+        write(
+            &root.join("skills/remind/SKILL.md"),
+            "---\nname: remind\ndescription: Remind me\narguments:\n  - name: task\n    description: what to do\n    required: true\n  - name: when\n    description: when to do it\n---\nTask $task at $when",
+        );
+        let idx = SkillIndex::discover_with_agents_dir(&root, &[], None);
+        let entry = idx
+            .common()
+            .iter()
+            .find(|e| e.name == "remind")
+            .unwrap()
+            .clone();
+        assert_eq!(entry.arguments, declared());
+        let block = idx
+            .system_prompt_block(ProfileId::from_slug("dev"))
+            .unwrap();
+        assert!(block.contains("<argument name=\"task\" required=\"true\">what to do</argument>"));
+        assert!(block.contains("`arguments` object"));
+    }
+
+    #[test]
+    fn invalid_argument_names_are_diagnostics() {
+        let root = temp_root("bad-arguments");
+        write(
+            &root.join("skills/bad/SKILL.md"),
+            "---\nname: bad\ndescription: Bad args\narguments:\n  - name: Task-Name\n    description: x\n---\nbody",
+        );
+        let idx = SkillIndex::discover_with_agents_dir(&root, &[], None);
+        assert!(idx.common().is_empty());
+        assert_eq!(idx.diagnostics().len(), 1);
+    }
+
+    #[test]
+    fn named_and_raw_calls_resolve_equivalently() {
+        let named = BTreeMap::from([
+            ("task".to_string(), "보고서 작성".to_string()),
+            ("when".to_string(), "tomorrow".to_string()),
+        ]);
+        let by_name = resolve_call_args(&declared(), Some(&SkillCallArgs::Named(named)))
+            .unwrap()
+            .unwrap();
+        let by_position = resolve_call_args(
+            &declared(),
+            Some(&SkillCallArgs::Raw("\"보고서 작성\" tomorrow".to_string())),
+        )
+        .unwrap()
+        .unwrap();
+        let content = "task=$task when=$when first=$0 raw=$ARGUMENTS";
+        assert_eq!(
+            substitute_resolved(content, &by_name),
+            "task=보고서 작성 when=tomorrow first=보고서 작성 raw=\"보고서 작성\" tomorrow"
+        );
+        assert_eq!(
+            substitute_resolved(content, &by_position),
+            substitute_resolved(content, &by_name)
+        );
+    }
+
+    #[test]
+    fn missing_required_and_unknown_arguments_error() {
+        let named_missing = BTreeMap::from([("when".to_string(), "tomorrow".to_string())]);
+        assert!(matches!(
+            resolve_call_args(&declared(), Some(&SkillCallArgs::Named(named_missing))),
+            Err(SkillError::InvalidArguments(_))
+        ));
+        assert!(matches!(
+            resolve_call_args(&declared(), None),
+            Err(SkillError::InvalidArguments(_))
+        ));
+        let unknown = BTreeMap::from([
+            ("task".to_string(), "x".to_string()),
+            ("bogus".to_string(), "y".to_string()),
+        ]);
+        assert!(matches!(
+            resolve_call_args(&declared(), Some(&SkillCallArgs::Named(unknown))),
+            Err(SkillError::InvalidArguments(_))
+        ));
+        let undeclared = BTreeMap::from([("task".to_string(), "x".to_string())]);
+        assert!(matches!(
+            resolve_call_args(&[], Some(&SkillCallArgs::Named(undeclared))),
+            Err(SkillError::InvalidArguments(_))
+        ));
+    }
+
+    #[test]
+    fn optional_arguments_default_to_empty() {
+        let named = BTreeMap::from([("task".to_string(), "x".to_string())]);
+        let resolved = resolve_call_args(&declared(), Some(&SkillCallArgs::Named(named)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(substitute_resolved("[$task][$when]", &resolved), "[x][]");
+        assert!(
+            resolve_call_args(&[], None).unwrap().is_none(),
+            "undeclared skill with no input keeps its body verbatim"
+        );
     }
 
     #[test]
