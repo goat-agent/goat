@@ -33,36 +33,38 @@ pub fn spawn(
     }
     let limit = settings.limit.unwrap_or(DEFAULT_LIMIT);
     let shared = Arc::new(service());
-    let runs: Vec<JoinHandle<()>> = settings
-        .watch
-        .into_iter()
-        .map(|entry| {
-            let source = ObservationSearch {
-                service: shared.clone(),
-                credentials: runtime.credentials.clone(),
-                binding: binding.clone(),
-                filter: entry.filter,
-                limit,
-            };
-            let watch = Watch::new(
-                crate::ID,
-                entry.stream,
-                IntegrationUpdateKind::Updated,
-                "trace",
-                "flagged",
-                RETAIN,
-                source,
-            );
-            tokio::spawn(run(
-                watch,
-                persona,
-                runtime.clone(),
-                binding.account.clone(),
-                cancel.clone(),
-            ))
-        })
-        .collect();
+    let binding = binding.clone();
+    let runtime = runtime.clone();
     Some(tokio::spawn(async move {
+        let runs: Vec<JoinHandle<()>> = settings
+            .watch
+            .into_iter()
+            .map(|entry| {
+                let source = ObservationSearch {
+                    service: shared.clone(),
+                    credentials: runtime.credentials.clone(),
+                    binding: binding.clone(),
+                    filter: entry.filter,
+                    limit,
+                };
+                let watch = Watch::new(
+                    crate::ID,
+                    entry.stream,
+                    IntegrationUpdateKind::Updated,
+                    "trace",
+                    "flagged",
+                    RETAIN,
+                    source,
+                );
+                tokio::spawn(run(
+                    watch,
+                    persona,
+                    runtime.clone(),
+                    binding.account.clone(),
+                    cancel.clone(),
+                ))
+            })
+            .collect();
         for handle in runs {
             let _ = handle.await;
         }
