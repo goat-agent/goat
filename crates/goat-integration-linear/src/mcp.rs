@@ -239,6 +239,7 @@ pub fn token_set_from_response(response: &OAuthTokenResponse) -> IntegrationResu
             .get("expires_in")
             .and_then(Value::as_i64)
             .map(|secs| chrono::Utc::now().timestamp() + secs),
+        ..TokenSet::default()
     })
 }
 
@@ -271,6 +272,7 @@ mod tests {
             access_token: SecretString::from("access-1"),
             refresh_token: Some(SecretString::from("refresh-1")),
             expires_at: Some(chrono::Utc::now().timestamp() + 3600),
+            ..TokenSet::default()
         };
         let response = response_from_token_set(&tokens).unwrap();
         let back = token_set_from_response(&response).unwrap();
@@ -289,6 +291,7 @@ mod tests {
             access_token: SecretString::from("access-1"),
             refresh_token: None,
             expires_at: Some(chrono::Utc::now().timestamp() - 100),
+            ..TokenSet::default()
         };
         let response = response_from_token_set(&tokens).unwrap();
         let back = token_set_from_response(&response).unwrap();
@@ -311,6 +314,7 @@ mod tests {
                     access_token: SecretString::from("tok"),
                     refresh_token: None,
                     expires_at: None,
+                    ..TokenSet::default()
                 }),
             )
             .unwrap();

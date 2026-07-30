@@ -194,6 +194,7 @@ mod tests {
                     access_token: SecretString::from("xoxp-2"),
                     refresh_token: None,
                     expires_at: None,
+                    ..TokenSet::default()
                 }),
             )
             .unwrap();
