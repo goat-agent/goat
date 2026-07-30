@@ -17,19 +17,10 @@ impl AssignedIssue {
     }
 }
 
-pub struct FetchPage {
-    pub issues: Vec<AssignedIssue>,
-    pub truncated: bool,
-}
-
-pub fn parse_page(data: &Value) -> IntegrationResult<FetchPage> {
-    Ok(FetchPage {
-        issues: parse_assigned_issues(data)?,
-        truncated: data
-            .get("hasNextPage")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-    })
+pub fn has_next_page(data: &Value) -> bool {
+    data.get("hasNextPage")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 pub fn parse_assigned_issues(data: &Value) -> IntegrationResult<Vec<AssignedIssue>> {
@@ -100,12 +91,10 @@ mod tests {
     }
 
     #[test]
-    fn page_carries_truncation_flag() {
-        let page =
-            parse_page(&json!({ "issues": [node("US-1", "t1")], "hasNextPage": true })).unwrap();
-        assert!(page.truncated);
-        let page = parse_page(&json!([node("US-1", "t1")])).unwrap();
-        assert!(!page.truncated);
+    fn truncation_is_read_from_the_servers_own_flag() {
+        assert!(has_next_page(&json!({ "hasNextPage": true })));
+        assert!(!has_next_page(&json!({ "hasNextPage": false })));
+        assert!(!has_next_page(&json!([node("US-1", "t1")])));
     }
 
     #[test]
