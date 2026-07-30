@@ -88,20 +88,32 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
   `goat-channel-slack` is the bot people address (`xoxb-` + `xapp-`, Socket Mode) and
   `goat-integration-slack` reaches in as the owner (`xoxp-`, hosted MCP). Their token capabilities
   are disjoint, so the two cannot be merged and neither is redundant.
-- **An integration owes neither tools nor a watcher.** Tools are usually discovered from a hosted
-  MCP server's `list_tools`, and a watcher polls and publishes `Event::IntegrationUpdate` on
-  deterministic diffs — but a connection plus a watcher is already a complete integration
-  (`goat-integration-github` registers no tools; the agent reaches GitHub through `shell` and `gh`),
-  and so is a connection plus tools (`goat-integration-posthog` has no watcher). Watchers own
-  polling and diffing, never the policy of what is worth watching — that is declared per-agent in
-  the binding config, and several watchers decline to spawn until it is. `goat-integration-linear`
-  is the one that spawns unconditionally, because its defaults alone are a working query.
+- **An integration owes neither tools nor a watch capability.** Tools are usually discovered from a
+  hosted MCP server's `list_tools` — but a connection plus watch hooks is already a complete
+  integration (`goat-integration-github` registers no tools; the agent reaches GitHub through
+  `shell` and `gh`), and so is a connection plus tools (`goat-integration-posthog` has no watch
+  hooks).
+- **Watch policy is a query DSL, declared per-agent in the top-level `watch` section** of the
+  agent's `config.json` — named workflows, each a list of `{source, query, stream?}` entries; one
+  driver task per workflow polls every source per tick and publishes one merged
+  `Event::WorkflowUpdate` (capped at 3 items, overflow counted). The section absent means every
+  bound integration's `default_watch` runs as its own single-source workflow (linear:
+  `assigned` → `assignee:@me is:open`; github: `review`/`assigned`); `"watch": {}` disables
+  everything; a present section replaces defaults, never merges. The grammar lives in
+  `goat-integration::query` and is closed — leaves own only a static `WatchVocabulary` (which keys
+  they understand) and a `compile_watch` hook that turns a resolved query into a `CompiledWatch`.
+  `Residue::Keep` leaves (github, sentry, slack, langfuse) forward unrecognized tokens verbatim to
+  the service's native search language; `Residue::Reject` leaves (linear, notion, tiro) hard-error
+  on unknown keys at boot. `limit:` is resolver-reserved, `@me` is the one self-reference, and
+  stream names key persisted `WatchState`, so default stream names never change.
 - Connections are global; `IntegrationAuth` decides how one is established — a pasted `Secret`, an
   `OAuth` round trip, or `External`, meaning a host tool such as `gh` owns the credential and the
   `config.json` entry is itself the connection marker. Per-agent binding lives in the agent's
-  `integrations` config map. Raw observations persist losslessly in `integration_observations`, and
-  the `observation` agent tool reads them back — a briefing cites `observation:<id>`, and that
-  reference resolves.
+  `integrations` config map and now carries only connection-scoped keys (`account`,
+  `organization_slug`, `user_id`, `host`, …) — watch policy keys moved to the `watch` section, and
+  a stale one fails validation with a pointer there. Raw observations persist losslessly in
+  `integration_observations`, and the `observation` agent tool reads them back — a briefing cites
+  `observation:<id>`, and that reference resolves.
 - Channel bindings are per-agent, and **no secret ever lives in `config.json`.** The `channels.<kind>`
   map records *that* an agent uses a channel — an empty object is a complete binding, so never delete
   one for looking empty — while every secret sits in `credentials.json` under
@@ -132,10 +144,11 @@ Placements that contradict the naming:
   `goat_agent_tool::ToolHandler` passthrough for hosted ones. Do not put a tool adapter in it.
   Its `handshake` module is the only place that names a protocol revision or decides which one to
   speak; no other crate mentions an MCP version.
-- `goat-integration`'s `watch` module is the one polling driver, and it does not know rmcp — that is
-  why `goat-integration-github`, which shells out to `gh`, uses it too. `diff::{REBUILD, RETAIN,
-  SETTLE}` are the three re-fire policies; they encode opposite intents on purpose, so pick one
-  rather than unifying them.
+- `goat-integration`'s `watch` module is the one polling driver (`run_workflow`), and it does not
+  know rmcp — that is why `goat-integration-github`, which shells out to `gh`, uses it too. Diff
+  state stays per source under the unchanged `(agent, integration, account, stream)` key even
+  inside a multi-source workflow. `diff::{REBUILD, RETAIN, SETTLE}` are the three re-fire policies;
+  they encode opposite intents on purpose, so pick one rather than unifying them.
 - `goat-embedding` is agent-side and reaches memory only through `goat-runtime`'s adapter;
   `goat-memory` defines its own `Embedder` trait and does not depend on it.
 - `goat-command-*` is the **TUI** slash-command family. Channel slash commands are

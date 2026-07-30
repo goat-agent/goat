@@ -1,8 +1,8 @@
-use std::fmt::Write as _;
 use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
-use goat_types::{AgentId, Event, IntegrationId, IntegrationUpdateKind};
+use goat_types::{AgentId, Event, IntegrationId, IntegrationUpdateKind, WorkflowItem};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -76,40 +76,50 @@ pub trait WatchSource: Send + Sync + 'static {
     fn fetch(&self) -> impl Future<Output = IntegrationResult<WatchPage>> + Send;
 }
 
-pub struct Watch<S> {
-    pub integration: IntegrationId,
-    pub stream: String,
-    pub kind: IntegrationUpdateKind,
-    pub entity: &'static str,
-    pub overflow_tail: &'static str,
-    pub poll: Duration,
-    pub event_cap: usize,
-    pub diff: DiffOps,
-    pub keep: fn(&Observed) -> bool,
-    pub source: S,
+pub trait DynWatchSource: Send + Sync + 'static {
+    fn fetch_dyn(&self) -> Pin<Box<dyn Future<Output = IntegrationResult<WatchPage>> + Send + '_>>;
 }
 
-impl<S> Watch<S> {
-    pub fn new(
-        integration: IntegrationId,
-        stream: impl Into<String>,
-        kind: IntegrationUpdateKind,
-        entity: &'static str,
-        overflow_tail: &'static str,
-        diff: DiffOps,
-        source: S,
-    ) -> Self {
+impl<S: WatchSource> DynWatchSource for S {
+    fn fetch_dyn(&self) -> Pin<Box<dyn Future<Output = IntegrationResult<WatchPage>> + Send + '_>> {
+        Box::pin(WatchSource::fetch(self))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WatchSpec {
+    pub stream: String,
+    pub query: String,
+}
+
+pub struct CompiledWatch {
+    pub kind: IntegrationUpdateKind,
+    pub entity: &'static str,
+    pub diff: DiffOps,
+    pub source: Box<dyn DynWatchSource>,
+}
+
+pub struct WorkflowSource {
+    pub integration: IntegrationId,
+    pub account: String,
+    pub stream: String,
+    pub compiled: CompiledWatch,
+}
+
+pub struct Workflow {
+    pub name: String,
+    pub poll: Duration,
+    pub event_cap: usize,
+    pub sources: Vec<WorkflowSource>,
+}
+
+impl Workflow {
+    pub fn new(name: impl Into<String>, sources: Vec<WorkflowSource>) -> Self {
         Self {
-            integration,
-            stream: stream.into(),
-            kind,
-            entity,
-            overflow_tail,
+            name: name.into(),
             poll: POLL,
             event_cap: EVENT_CAP_PER_POLL,
-            diff,
-            keep: keep_all,
-            source,
+            sources,
         }
     }
 
@@ -124,16 +134,6 @@ impl<S> Watch<S> {
         self.event_cap = cap;
         self
     }
-
-    #[must_use]
-    pub fn with_keep(mut self, keep: fn(&Observed) -> bool) -> Self {
-        self.keep = keep;
-        self
-    }
-}
-
-fn keep_all(_: &Observed) -> bool {
-    true
 }
 
 pub fn backoff_skips(error_streak: u32) -> u32 {
@@ -142,27 +142,33 @@ pub fn backoff_skips(error_streak: u32) -> u32 {
         .saturating_sub(1)
 }
 
-pub async fn run<S: WatchSource>(
-    watch: Watch<S>,
+#[derive(Default)]
+struct SourceHealth {
+    error_streak: u32,
+    auth_streak: u32,
+    auth_alerted: bool,
+    skip_ticks: u32,
+}
+
+pub async fn run_workflow(
+    workflow: Workflow,
     agent: AgentId,
     runtime: IntegrationRuntime,
-    account: String,
     cancel: CancellationToken,
 ) {
-    let integration = watch.integration.clone();
     info!(
         agent = %agent,
-        account = %account,
-        integration = %integration,
-        stream = %watch.stream,
-        "watcher running",
+        workflow = %workflow.name,
+        sources = workflow.sources.len(),
+        "workflow running",
     );
-    let mut interval = tokio::time::interval(watch.poll);
+    let mut interval = tokio::time::interval(workflow.poll);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut error_streak: u32 = 0;
-    let mut auth_streak: u32 = 0;
-    let mut auth_alerted = false;
-    let mut skip_ticks: u32 = 0;
+    let mut health: Vec<SourceHealth> = workflow
+        .sources
+        .iter()
+        .map(|_| SourceHealth::default())
+        .collect();
 
     loop {
         tokio::select! {
@@ -170,58 +176,68 @@ pub async fn run<S: WatchSource>(
             () = cancel.cancelled() => break,
             _ = interval.tick() => {}
         }
-        if skip_ticks > 0 {
-            skip_ticks -= 1;
-            continue;
-        }
         if runtime.paused().await {
             continue;
         }
-        match watch.source.fetch().await {
-            Err(e) => {
-                error_streak += 1;
-                skip_ticks = backoff_skips(error_streak);
-                if matches!(e, IntegrationError::Auth(_)) {
-                    auth_streak += 1;
-                    if auth_streak >= AUTH_ALERT_STREAK && !auth_alerted {
-                        auth_alerted = true;
-                        runtime.publish(auth_broken_event(agent, &integration, &account, &e));
-                    }
-                } else {
-                    auth_streak = 0;
-                }
-                warn!(
-                    agent = %agent,
-                    account = %account,
-                    integration = %integration,
-                    stream = %watch.stream,
-                    error = %e,
-                    "poll failed; backing off",
-                );
+        let mut items: Vec<WorkflowItem> = Vec::new();
+        for (source, health) in workflow.sources.iter().zip(health.iter_mut()) {
+            if health.skip_ticks > 0 {
+                health.skip_ticks -= 1;
+                continue;
             }
-            Ok(page) => {
-                error_streak = 0;
-                auth_streak = 0;
-                auth_alerted = false;
-                if let Err(e) = process(&watch, agent, &runtime, &account, page).await {
+            match source.compiled.source.fetch_dyn().await {
+                Err(e) => {
+                    health.error_streak += 1;
+                    health.skip_ticks = backoff_skips(health.error_streak);
+                    if matches!(e, IntegrationError::Auth(_)) {
+                        health.auth_streak += 1;
+                        if health.auth_streak >= AUTH_ALERT_STREAK && !health.auth_alerted {
+                            health.auth_alerted = true;
+                            runtime.publish(auth_broken_event(
+                                agent,
+                                &source.integration,
+                                &source.account,
+                                &e,
+                            ));
+                        }
+                    } else {
+                        health.auth_streak = 0;
+                    }
                     warn!(
                         agent = %agent,
-                        account = %account,
-                        integration = %integration,
-                        stream = %watch.stream,
+                        workflow = %workflow.name,
+                        integration = %source.integration,
+                        account = %source.account,
+                        stream = %source.stream,
                         error = %e,
-                        "poll processing failed",
+                        "poll failed; backing off",
                     );
+                }
+                Ok(page) => {
+                    health.error_streak = 0;
+                    health.auth_streak = 0;
+                    health.auth_alerted = false;
+                    match process_source(source, agent, &runtime, page).await {
+                        Ok(mut fresh) => items.append(&mut fresh),
+                        Err(e) => warn!(
+                            agent = %agent,
+                            workflow = %workflow.name,
+                            integration = %source.integration,
+                            account = %source.account,
+                            stream = %source.stream,
+                            error = %e,
+                            "poll processing failed",
+                        ),
+                    }
                 }
             }
         }
+        publish(&workflow, &runtime, agent, items);
     }
     info!(
         agent = %agent,
-        account = %account,
-        integration = %integration,
-        stream = %watch.stream,
-        "watcher stopped",
+        workflow = %workflow.name,
+        "workflow stopped",
     );
 }
 
@@ -275,26 +291,31 @@ pub async fn load_state(
     }
 }
 
-async fn process<S: WatchSource>(
-    watch: &Watch<S>,
+async fn process_source(
+    source: &WorkflowSource,
     agent: AgentId,
     runtime: &IntegrationRuntime,
-    account: &str,
     page: WatchPage,
-) -> IntegrationResult<()> {
-    let prev = load_state(runtime, agent, &watch.integration, account, &watch.stream).await?;
+) -> IntegrationResult<Vec<WorkflowItem>> {
+    let prev = load_state(
+        runtime,
+        agent,
+        &source.integration,
+        &source.account,
+        &source.stream,
+    )
+    .await?;
 
-    let kept: Vec<Observed> = page.items.into_iter().filter(|i| (watch.keep)(i)).collect();
-    let (mut next, fresh) = (watch.diff.diff)(prev.as_ref(), &kept);
+    let (mut next, fresh) = (source.compiled.diff.diff)(prev.as_ref(), &page.items);
 
     if page.truncated == Some(true)
         && let Some(prev) = prev.as_ref()
     {
         warn!(
             agent = %agent,
-            account = %account,
-            integration = %watch.integration,
-            stream = %watch.stream,
+            account = %source.account,
+            integration = %source.integration,
+            stream = %source.stream,
             "page was truncated; carrying prior state forward",
         );
         for (key, stamp) in &prev.seen {
@@ -304,81 +325,89 @@ async fn process<S: WatchSource>(
         }
     }
 
-    let mut events = Vec::new();
+    let mut items = Vec::new();
     for item in &fresh {
-        match observe(watch, agent, runtime, account, item).await {
-            Ok(event) => events.push(event),
+        match observe(source, agent, runtime, item).await {
+            Ok(observed) => items.push(observed),
             Err(e) => {
                 warn!(
                     agent = %agent,
-                    account = %account,
-                    integration = %watch.integration,
+                    account = %source.account,
+                    integration = %source.integration,
                     key = %item.key,
                     error = %e,
                     "failed to record observation; retrying next poll",
                 );
-                (watch.diff.hold_back)(&mut next, prev.as_ref(), item);
+                (source.compiled.diff.hold_back)(&mut next, prev.as_ref(), item);
             }
         }
     }
 
     let raw = serde_json::to_string(&next).map_err(|e| IntegrationError::Store(e.to_string()))?;
     runtime
-        .save_state(agent, &watch.integration, account, &watch.stream, &raw)
+        .save_state(
+            agent,
+            &source.integration,
+            &source.account,
+            &source.stream,
+            &raw,
+        )
         .await?;
 
-    publish(watch, runtime, events);
-    Ok(())
+    Ok(items)
 }
 
-fn publish<S: WatchSource>(watch: &Watch<S>, runtime: &IntegrationRuntime, events: Vec<Event>) {
-    let overflow = events.len().saturating_sub(watch.event_cap);
-    for (index, mut event) in events.into_iter().enumerate() {
-        if index >= watch.event_cap {
-            break;
-        }
-        if overflow > 0
-            && index == watch.event_cap - 1
-            && let Event::IntegrationUpdate { summary, .. } = &mut event
-        {
-            let _ = write!(summary, " (+{overflow} more {})", watch.overflow_tail);
-        }
-        runtime.publish(event);
-    }
-}
-
-async fn observe<S: WatchSource>(
-    watch: &Watch<S>,
+async fn observe(
+    source: &WorkflowSource,
     agent: AgentId,
     runtime: &IntegrationRuntime,
-    account: &str,
     item: &Observed,
-) -> IntegrationResult<Event> {
+) -> IntegrationResult<WorkflowItem> {
     let external_ref = format!(
-        "{}/{account}:{}:{}",
-        watch.integration.as_str(),
-        watch.entity,
+        "{}/{}:{}:{}",
+        source.integration.as_str(),
+        source.account,
+        source.compiled.entity,
         item.reference()
     );
     let observation = runtime
         .record_observation(
             agent,
-            &watch.integration,
-            account,
+            &source.integration,
+            &source.account,
             &external_ref,
-            watch.kind.as_str(),
+            source.compiled.kind.as_str(),
             item.payload.clone(),
         )
         .await?;
-    Ok(Event::IntegrationUpdate {
-        agent,
-        integration: watch.integration.clone(),
-        account: account.to_string(),
-        kind: watch.kind,
+    Ok(WorkflowItem {
+        integration: source.integration.clone(),
+        account: source.account.clone(),
+        stream: source.stream.clone(),
+        kind: source.compiled.kind,
         external_ref,
         summary: item.summary.clone(),
         observation: Some(observation),
     })
+}
+
+fn publish(
+    workflow: &Workflow,
+    runtime: &IntegrationRuntime,
+    agent: AgentId,
+    mut items: Vec<WorkflowItem>,
+) {
+    if items.is_empty() {
+        return;
+    }
+    let overflow = items.len().saturating_sub(workflow.event_cap);
+    items.truncate(workflow.event_cap);
+    runtime.publish(Event::WorkflowUpdate {
+        agent,
+        workflow: workflow.name.clone(),
+        items,
+        overflow,
+    });
 }
 
 #[cfg(test)]
@@ -430,7 +459,7 @@ mod tests {
 #[cfg(all(test, feature = "test-support"))]
 mod contract_tests {
     use crate::diff::{REBUILD, RETAIN, SETTLE};
-    use crate::test_support::{WatchContract, assert_watch_contract};
+    use crate::test_support::{WatchContract, assert_bundle_contract, assert_watch_contract};
     use goat_types::{IntegrationId, IntegrationUpdateKind};
 
     fn contract(name: &'static str, diff: crate::diff::DiffOps) -> WatchContract {
@@ -439,7 +468,6 @@ mod contract_tests {
             stream: "items".to_owned(),
             kind: IntegrationUpdateKind::Assigned,
             entity: "issue",
-            overflow_tail: "issues waiting",
             diff,
         }
     }
@@ -457,5 +485,10 @@ mod contract_tests {
     #[tokio::test]
     async fn the_settle_policy_honours_the_watch_contract() {
         assert_watch_contract(&contract("settler", SETTLE)).await;
+    }
+
+    #[tokio::test]
+    async fn a_two_source_workflow_honours_the_bundle_contract() {
+        assert_bundle_contract().await;
     }
 }

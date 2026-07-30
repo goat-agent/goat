@@ -6,80 +6,45 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use goat_agent_tool::{ToolName, ToolRegistry};
 use goat_auth::CredentialStore;
+use goat_integration::query::{LimitSpec, Residue, TermPolicy, WatchVocabulary};
 use goat_integration::{
-    BindingMap, Integration, IntegrationAuth, IntegrationBinding, IntegrationError,
-    IntegrationFactory, IntegrationMetadata, IntegrationResult, IntegrationRuntime,
+    BindingMap, CompiledWatch, Integration, IntegrationAuth, IntegrationBinding, IntegrationError,
+    IntegrationFactory, IntegrationMetadata, IntegrationResult, IntegrationRuntime, WatchSpec,
 };
-use goat_types::{AgentId, IntegrationId};
+use goat_types::IntegrationId;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio_util::sync::CancellationToken;
 
 pub const ID: IntegrationId = IntegrationId::from_static("github");
 
-const SETUP: &str = "goat reaches github through the `gh` cli — it holds the credential, goat never stores one.\ninstall gh, then run `gh auth login`.";
-const MISSING_GH: &str = "the `gh` cli is not on PATH; install it and run `gh auth login`";
+const SETUP: &str = "goat reaches github through the `gh` cli — it holds the credential, goat never stores one.\n\
+     install gh, then run `gh auth login`.\n\
+     by default the watcher briefs you on review requests (`is:open is:pr review-requested:@me`)\n\
+     and assigned items (`is:open assignee:@me`).\n\
+     declare workflows in the agent's `watch` section to change that, e.g.\n\
+     { \"source\": \"github\", \"query\": \"is:open author:@me label:bug limit:25\" } —\n\
+     the query is github's native search syntax and passes through unchanged;\n\
+     only `limit:N` is read out to cap the page size (default 50, max 100).";
+pub(crate) const MISSING_GH: &str =
+    "the `gh` cli is not on PATH; install it and run `gh auth login`";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WatchStream {
-    pub stream: String,
-    pub query: String,
-}
+pub const DEFAULT_LIMIT: usize = 50;
+const MAX_LIMIT: usize = 100;
+
+pub const VOCABULARY: WatchVocabulary = WatchVocabulary {
+    integration: "github",
+    residue: Residue::Keep,
+    terms: TermPolicy::Reject,
+    limit: Some(LimitSpec {
+        default: DEFAULT_LIMIT,
+        max: MAX_LIMIT,
+    }),
+    keys: &[],
+};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct GithubBinding {
-    #[serde(default)]
-    watch: Option<Vec<WatchEntry>>,
-    #[serde(default)]
-    limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WatchEntry {
-    stream: String,
-    query: String,
-}
-
-impl GithubBinding {
-    pub(crate) fn read(config: &Value) -> Self {
-        goat_integration_mcp::read_binding(config)
-    }
-
-    pub(crate) fn streams(&self) -> Vec<WatchStream> {
-        let Some(entries) = &self.watch else {
-            return default_streams();
-        };
-        entries
-            .iter()
-            .filter(|entry| !entry.stream.trim().is_empty() && !entry.query.trim().is_empty())
-            .map(|entry| WatchStream {
-                stream: entry.stream.trim().to_owned(),
-                query: entry.query.trim().to_owned(),
-            })
-            .collect()
-    }
-
-    pub(crate) fn limit(&self) -> usize {
-        self.limit
-            .filter(|limit| *limit > 0)
-            .unwrap_or(watch::DEFAULT_LIMIT)
-    }
-}
-
-pub fn default_streams() -> Vec<WatchStream> {
-    vec![
-        WatchStream {
-            stream: "review".to_owned(),
-            query: "is:open is:pr review-requested:@me".to_owned(),
-        },
-        WatchStream {
-            stream: "assigned".to_owned(),
-            query: "is:open assignee:@me".to_owned(),
-        },
-    ]
-}
+pub(crate) struct GithubBinding {}
 
 pub struct GithubIntegration;
 
@@ -109,22 +74,17 @@ impl Integration for GithubIntegration {
         Vec::new()
     }
 
-    fn spawn_watcher(
+    fn default_watch(&self, _binding: &IntegrationBinding) -> Vec<WatchSpec> {
+        watch::defaults()
+    }
+
+    fn compile_watch(
         &self,
-        agent: AgentId,
-        binding: IntegrationBinding,
-        runtime: IntegrationRuntime,
-        cancel: CancellationToken,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        let handles = watch::spawn_all(agent, &binding, &runtime, &cancel);
-        if handles.is_empty() {
-            return None;
-        }
-        Some(tokio::spawn(async move {
-            for handle in handles {
-                let _ = handle.await;
-            }
-        }))
+        _binding: &IntegrationBinding,
+        _runtime: &IntegrationRuntime,
+        spec: &WatchSpec,
+    ) -> IntegrationResult<CompiledWatch> {
+        watch::compile(spec)
     }
 
     async fn verify(
@@ -142,20 +102,20 @@ impl Integration for GithubIntegration {
     }
 }
 
+const MOVED_KEYS: &[&str] = &["watch", "limit"];
+
 fn validate_config(config: &Value) -> IntegrationResult<()> {
-    goat_integration_mcp::validate_binding::<GithubBinding>("github", config)?;
-    let settings = GithubBinding::read(config);
-    let streams = settings.streams();
-    let mut seen = std::collections::BTreeSet::new();
-    for entry in &streams {
-        if !seen.insert(entry.stream.clone()) {
-            return Err(IntegrationError::Config(format!(
-                "github binding: `watch` repeats the stream `{}`; stream names key stored state and must be unique",
-                entry.stream
-            )));
+    if let Some(object) = config.as_object() {
+        for key in MOVED_KEYS {
+            if object.contains_key(*key) {
+                return Err(IntegrationError::Config(format!(
+                    "github binding: `{key}` moved to the agent-level `watch` section; \
+                     write {{ \"source\": \"github\", \"query\": \"...\" }} there instead"
+                )));
+            }
         }
     }
-    Ok(())
+    goat_integration_mcp::validate_binding::<GithubBinding>("github", config)
 }
 
 inventory::submit! {
@@ -169,69 +129,47 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goat_integration::query::assert_vocabulary;
     use serde_json::json;
 
     #[test]
-    fn an_absent_watch_key_means_the_two_default_streams() {
-        assert_eq!(GithubBinding::read(&json!({})).streams(), default_streams());
+    fn the_vocabulary_holds_its_invariants() {
+        assert_vocabulary(&VOCABULARY);
     }
 
     #[test]
-    fn an_explicit_empty_watch_list_turns_the_watcher_off() {
-        assert!(
-            GithubBinding::read(&json!({ "watch": [] }))
-                .streams()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn declared_streams_replace_the_defaults() {
-        let read = GithubBinding::read(&json!({
-            "watch": [{ "stream": "mine", "query": "is:open author:@me" }]
-        }));
+    fn default_watch_declares_the_two_historical_streams() {
+        let binding = IntegrationBinding::from_config(json!({}));
         assert_eq!(
-            read.streams(),
-            vec![WatchStream {
-                stream: "mine".to_owned(),
-                query: "is:open author:@me".to_owned()
-            }]
+            GithubIntegration.default_watch(&binding),
+            vec![
+                WatchSpec {
+                    stream: "review".to_owned(),
+                    query: "is:open is:pr review-requested:@me".to_owned(),
+                },
+                WatchSpec {
+                    stream: "assigned".to_owned(),
+                    query: "is:open assignee:@me".to_owned(),
+                },
+            ]
         );
     }
 
     #[test]
-    fn a_repeated_stream_name_is_rejected_because_it_keys_stored_state() {
-        let config = json!({
-            "watch": [
-                { "stream": "mine", "query": "a" },
-                { "stream": "mine", "query": "b" }
-            ]
-        });
-        assert!(validate_config(&config).is_err());
-    }
-
-    #[test]
-    fn the_binding_is_typo_checked() {
+    fn the_binding_keeps_only_connection_keys() {
         assert!(validate_config(&json!({})).is_ok());
         assert!(validate_config(&json!({ "account": "work" })).is_ok());
-        assert!(validate_config(&json!({ "limit": 10 })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());
-        assert!(validate_config(&json!({ "limit": "ten" })).is_err());
-        assert!(validate_config(&json!({ "watch": [{ "stream": "s" }] })).is_err());
+        assert!(validate_config(&json!({ "unknown": true })).is_err());
         assert!(validate_config(&json!({ "wach": [] })).is_err());
     }
 
     #[test]
-    fn a_zero_or_absent_limit_falls_back_to_the_default() {
-        assert_eq!(
-            GithubBinding::read(&json!({})).limit(),
-            watch::DEFAULT_LIMIT
-        );
-        assert_eq!(
-            GithubBinding::read(&json!({ "limit": 0 })).limit(),
-            watch::DEFAULT_LIMIT
-        );
-        assert_eq!(GithubBinding::read(&json!({ "limit": 10 })).limit(), 10);
+    fn an_old_policy_key_points_at_the_watch_section() {
+        let err = validate_config(&json!({ "watch": [] })).unwrap_err();
+        assert!(err.to_string().contains("agent-level `watch` section"));
+        let err = validate_config(&json!({ "limit": 10 })).unwrap_err();
+        assert!(err.to_string().contains("watch"));
     }
 
     #[test]
@@ -247,5 +185,23 @@ mod tests {
         assert_eq!(meta.auth, IntegrationAuth::External);
         assert_eq!(meta.env_var, None);
         assert!(meta.setup.contains("gh auth login"));
+        assert!(meta.setup.contains("review-requested:@me"));
+        assert!(meta.setup.contains("limit:"));
+    }
+
+    #[tokio::test]
+    async fn the_watcher_honours_the_shared_contract() {
+        use goat_integration::diff::REBUILD;
+        use goat_integration::test_support::{WatchContract, assert_watch_contract};
+        use goat_types::IntegrationUpdateKind;
+
+        assert_watch_contract(&WatchContract {
+            integration: ID,
+            stream: "review".to_owned(),
+            kind: IntegrationUpdateKind::Assigned,
+            entity: "item",
+            diff: REBUILD,
+        })
+        .await;
     }
 }

@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow};
 use goat_agent_config::{
     AgentBinding, AgentCard, AgentConfig, AgentIntegration, AutonomyConfig, EmbeddingSettings,
-    MemoryConfig,
+    MemoryConfig, WatchSourceEntry, WatchWorkflow,
 };
 use goat_model::Model;
 use goat_types::AgentId;
@@ -71,6 +71,7 @@ fn load_agent(dir: &Path, slug: &str) -> Result<AgentConfig> {
 
     let bindings = bindings_from_config(&runtime.channels);
     let integrations = integrations_from_config(&runtime.integrations);
+    let watch = runtime.watch.map(watch_from_config);
     let memory = runtime
         .memory
         .map(MemoryRuntimeConfig::into_config)
@@ -90,6 +91,7 @@ fn load_agent(dir: &Path, slug: &str) -> Result<AgentConfig> {
         tool_selectors: runtime.tools.unwrap_or_else(|| vec!["*".to_string()]),
         bindings,
         integrations,
+        watch,
         memory,
         autonomy,
         intake_debounce: std::time::Duration::from_millis(
@@ -132,6 +134,34 @@ fn integrations_from_config(
         .collect()
 }
 
+fn watch_from_config(
+    configured: BTreeMap<String, Vec<WatchEntryRuntimeConfig>>,
+) -> Vec<WatchWorkflow> {
+    configured
+        .into_iter()
+        .map(|(name, sources)| WatchWorkflow {
+            name,
+            sources: sources
+                .into_iter()
+                .map(|entry| WatchSourceEntry {
+                    source: entry.source,
+                    query: entry.query,
+                    stream: entry.stream,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WatchEntryRuntimeConfig {
+    source: String,
+    query: String,
+    #[serde(default)]
+    stream: Option<String>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentRuntimeConfig {
@@ -145,6 +175,8 @@ struct AgentRuntimeConfig {
     channels: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     integrations: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    watch: Option<BTreeMap<String, Vec<WatchEntryRuntimeConfig>>>,
     #[serde(default)]
     history_window: Option<usize>,
     #[serde(default)]
@@ -248,7 +280,7 @@ mod tests {
         fs::write(
             dir.join("config.json"),
             r#"{ "model": "anthropic/claude-x", "channels": {},
-                 "integrations": { "linear": { "account": "default", "poll_seconds": 60 } } }"#,
+                 "integrations": { "linear": { "account": "default" } } }"#,
         )
         .unwrap();
 
@@ -256,5 +288,55 @@ mod tests {
         assert_eq!(agents[0].integrations.len(), 1);
         assert_eq!(agents[0].integrations[0].name, "linear");
         assert_eq!(agents[0].integrations[0].config["account"], "default");
+        assert!(agents[0].watch.is_none());
+    }
+
+    #[test]
+    fn loads_the_watch_section_as_named_workflows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("agents").join("main");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("agent.md"), "You are main.").unwrap();
+        fs::write(
+            dir.join("config.json"),
+            r#"{ "model": "anthropic/claude-x",
+                 "watch": { "inbox": [
+                   { "source": "linear", "query": "assignee:@me is:open" },
+                   { "source": "github", "query": "is:open assignee:@me", "stream": "assigned" }
+                 ] } }"#,
+        )
+        .unwrap();
+
+        let agents = scan_agents(&tmp.path().join("agents")).unwrap();
+        let watch = agents[0].watch.as_ref().unwrap();
+        assert_eq!(watch.len(), 1);
+        assert_eq!(watch[0].name, "inbox");
+        assert_eq!(watch[0].sources.len(), 2);
+        assert_eq!(watch[0].sources[0].source, "linear");
+        assert_eq!(watch[0].sources[0].stream, None);
+        assert_eq!(watch[0].sources[1].stream.as_deref(), Some("assigned"));
+    }
+
+    #[test]
+    fn an_empty_watch_section_disables_defaults_and_typos_are_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("agents").join("main");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("agent.md"), "You are main.").unwrap();
+        fs::write(
+            dir.join("config.json"),
+            r#"{ "model": "anthropic/claude-x", "watch": {} }"#,
+        )
+        .unwrap();
+        let agents = scan_agents(&tmp.path().join("agents")).unwrap();
+        assert_eq!(agents[0].watch.as_ref().unwrap().len(), 0);
+
+        fs::write(
+            dir.join("config.json"),
+            r#"{ "model": "anthropic/claude-x",
+                 "watch": { "inbox": [ { "source": "linear", "querry": "x" } ] } }"#,
+        )
+        .unwrap();
+        assert!(scan_agents(&tmp.path().join("agents")).unwrap().is_empty());
     }
 }

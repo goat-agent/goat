@@ -1,65 +1,53 @@
 use goat_integration::diff::REBUILD;
-use goat_integration::watch::{Observed, Watch, WatchPage, WatchSource, run};
-use goat_integration::{
-    IntegrationBinding, IntegrationError, IntegrationResult, IntegrationRuntime,
-};
-use goat_types::{AgentId, IntegrationUpdateKind};
-use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use goat_integration::query::{self, QueryError, SelfRefStyle};
+use goat_integration::watch::{CompiledWatch, Observed, WatchPage, WatchSource, WatchSpec};
+use goat_integration::{IntegrationError, IntegrationResult};
+use goat_types::IntegrationUpdateKind;
 
-use crate::GithubBinding;
 use crate::parse::{parse_items, truncated};
+use crate::{DEFAULT_LIMIT, MISSING_GH, VOCABULARY};
 
-pub const DEFAULT_LIMIT: usize = 50;
+pub fn defaults() -> Vec<WatchSpec> {
+    vec![
+        WatchSpec {
+            stream: "review".to_owned(),
+            query: "is:open is:pr review-requested:@me".to_owned(),
+        },
+        WatchSpec {
+            stream: "assigned".to_owned(),
+            query: "is:open assignee:@me".to_owned(),
+        },
+    ]
+}
 
-pub fn spawn_all(
-    agent: AgentId,
-    binding: &IntegrationBinding,
-    runtime: &IntegrationRuntime,
-    cancel: &CancellationToken,
-) -> Vec<JoinHandle<()>> {
+#[derive(Debug, PartialEq, Eq)]
+struct Plan {
+    query: String,
+    limit: usize,
+}
+
+pub fn compile(spec: &WatchSpec) -> IntegrationResult<CompiledWatch> {
     if !goat_github::gh_available() {
-        warn!(
-            agent = %agent,
-            "github watcher disabled; the `gh` cli is not on PATH",
-        );
-        return Vec::new();
+        return Err(IntegrationError::Config(MISSING_GH.to_owned()));
     }
-    let settings = GithubBinding::read(&binding.config);
-    let queries = settings.streams();
-    if queries.is_empty() {
-        warn!(
-            agent = %agent,
-            "github watcher disabled; the agent's github binding declares no `watch` entries",
-        );
-        return Vec::new();
-    }
-    let limit = settings.limit();
-    queries
-        .into_iter()
-        .map(|entry| {
-            let watch = Watch::new(
-                crate::ID,
-                entry.stream.clone(),
-                IntegrationUpdateKind::Assigned,
-                "item",
-                "waiting on you",
-                REBUILD,
-                Search {
-                    query: entry.query,
-                    limit,
-                },
-            );
-            tokio::spawn(run(
-                watch,
-                agent,
-                runtime.clone(),
-                binding.account.clone(),
-                cancel.clone(),
-            ))
-        })
-        .collect()
+    let plan = plan(&spec.query)?;
+    Ok(CompiledWatch {
+        kind: IntegrationUpdateKind::Assigned,
+        entity: "item",
+        diff: REBUILD,
+        source: Box::new(Search {
+            query: plan.query,
+            limit: plan.limit,
+        }),
+    })
+}
+
+fn plan(raw: &str) -> Result<Plan, QueryError> {
+    let resolved = query::resolve(&VOCABULARY, query::parse(raw)?)?;
+    Ok(Plan {
+        query: query::render(&resolved.residue, SelfRefStyle::Native),
+        limit: resolved.limit.unwrap_or(DEFAULT_LIMIT),
+    })
 }
 
 struct Search {
@@ -105,6 +93,53 @@ pub fn map_error(error: goat_github::cli::GhError) -> IntegrationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_default_stream_compiles_byte_identically_to_its_historical_query() {
+        let specs = defaults();
+        let streams: Vec<&str> = specs.iter().map(|spec| spec.stream.as_str()).collect();
+        assert_eq!(streams, ["review", "assigned"]);
+        assert_eq!(specs[0].query, "is:open is:pr review-requested:@me");
+        assert_eq!(specs[1].query, "is:open assignee:@me");
+        for spec in &specs {
+            let plan = plan(&spec.query).unwrap();
+            assert_eq!(plan.query, spec.query);
+            assert_eq!(plan.limit, DEFAULT_LIMIT);
+        }
+    }
+
+    #[test]
+    fn a_limit_token_is_extracted_and_the_rest_passes_through() {
+        let plan = plan("is:open assignee:@me limit:25").unwrap();
+        assert_eq!(plan.query, "is:open assignee:@me");
+        assert_eq!(plan.limit, 25);
+    }
+
+    #[test]
+    fn native_github_syntax_passes_through_untouched() {
+        let raw = r#"repo:goat-agent/goat -label:wip "exact phrase" involves:@me comments:>5"#;
+        assert_eq!(plan(raw).unwrap().query, raw);
+    }
+
+    #[test]
+    fn limit_violations_are_loud() {
+        assert!(matches!(
+            plan("limit:0"),
+            Err(QueryError::LimitRange { .. })
+        ));
+        assert!(matches!(
+            plan("limit:101"),
+            Err(QueryError::LimitRange { .. })
+        ));
+        assert!(matches!(
+            plan("limit:many"),
+            Err(QueryError::LimitRange { .. })
+        ));
+        assert!(matches!(
+            plan("limit:5 limit:6"),
+            Err(QueryError::Repeated(_))
+        ));
+    }
 
     #[test]
     fn an_auth_failure_points_at_the_gh_cli_not_a_goat_command() {
