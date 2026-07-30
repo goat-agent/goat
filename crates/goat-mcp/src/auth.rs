@@ -180,12 +180,11 @@ pub async fn run_login(
     })?;
 
     present_url(&auth_url);
-    let code = goat_auth::capture_on(listener, &state)
+    let callback = goat_auth::capture_on(listener, &state)
         .await
-        .map_err(|e| auth_failed(e.to_string()))?
-        .code;
+        .map_err(|e| auth_failed(e.to_string()))?;
     oauth
-        .handle_callback(&code, &state)
+        .handle_callback_with_issuer(&callback.code, &state, callback.issuer.as_deref())
         .await
         .map_err(auth_failed)?;
 
