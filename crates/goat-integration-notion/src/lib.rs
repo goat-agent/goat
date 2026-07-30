@@ -4,7 +4,7 @@ mod watch;
 use std::sync::Arc;
 
 use goat_integration::{IntegrationFactory, IntegrationResult};
-use goat_integration_mcp::McpService;
+use goat_integration_mcp::{McpService, ServiceUrl, ToolPolicy};
 use goat_types::IntegrationId;
 use serde::Deserialize;
 use serde_json::Value;
@@ -17,10 +17,10 @@ const MCP_URL: &str = "https://mcp.notion.com/mcp";
 const SETUP: &str = "connects to Notion's hosted MCP server; a browser window will ask you to approve access.\nto get briefed when work lands, add `view_url` (a saved Notion view URL, the one with ?v=) to the agent's notion binding — without it the tools work and the watcher stays off";
 
 pub fn service() -> McpService {
-    McpService::new("notion", "Notion", MCP_URL, SETUP)
-        .with_tool_prefix(PREFIX)
-        .with_truncation_hint("narrow the view, or request a smaller page")
-        .with_watch(watch::spawn)
+    McpService::new("notion", "Notion", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .tools(ToolPolicy::all(PREFIX))
+        .truncation_hint("narrow the view, or request a smaller page")
+        .watch(watch::spawn)
 }
 
 #[derive(Debug, Default, Deserialize)]

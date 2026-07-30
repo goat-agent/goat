@@ -4,7 +4,7 @@ mod watch;
 use std::sync::Arc;
 
 use goat_integration::{IntegrationFactory, IntegrationResult};
-use goat_integration_mcp::{IdentityProbe, McpService};
+use goat_integration_mcp::{AuthScheme, IdentityProbe, McpService, ServiceUrl, ToolPolicy};
 use goat_types::IntegrationId;
 use serde::Deserialize;
 use serde_json::Value;
@@ -22,18 +22,18 @@ const SETUP: &str = "connects to Tiro's hosted MCP server; a browser window will
      to run headless, or to recover if the browser flow fails, set GOAT_TIRO_API_KEY to a Tiro api key.";
 
 pub fn service() -> McpService {
-    McpService::new("tiro", "Tiro", MCP_URL, SETUP)
-        .with_env_var(ENV_VAR)
-        .with_auth_scheme("Bearer")
-        .with_tool_prefix(PREFIX)
-        .with_truncation_hint(
+    McpService::new("tiro", "Tiro", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .env_var(ENV_VAR)
+        .token_scheme(AuthScheme::Bearer)
+        .tools(ToolPolicy::all(PREFIX))
+        .truncation_hint(
             "narrow the date range, request a smaller page, or fetch one note at a time",
         )
-        .with_identity(IdentityProbe {
+        .identity(IdentityProbe {
             tool: TOOL_AUTH_STATUS,
             describe: parse::describe_identity,
         })
-        .with_watch(watch::spawn)
+        .watch(watch::spawn)
 }
 
 #[derive(Debug, Default, Deserialize)]

@@ -1,10 +1,8 @@
-mod tools;
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use goat_integration::{IntegrationFactory, IntegrationResult};
-use goat_integration_mcp::McpService;
+use goat_integration_mcp::{McpService, NameRule, ServiceUrl, ToolPolicy};
 use goat_types::IntegrationId;
 use serde::Deserialize;
 use serde_json::Value;
@@ -43,14 +41,45 @@ pub const SCOPES: &[&str] = &[
     "llm_analytics:read",
 ];
 
+pub const ENABLED_TOOLS: &[&str] = &[
+    "execute-sql",
+    "insight-query",
+    "docs-search",
+    "project-get",
+    "organization-get",
+    "query-error-tracking-issues-list",
+    "query-error-tracking-issue",
+    "query-error-tracking-issue-events",
+    "feature-flag-get-all",
+    "feature-flag-get-definition",
+    "feature-flag-get-definition-by-key",
+    "feature-flags-status-retrieve",
+    "create-feature-flag",
+    "update-feature-flag",
+    "query-logs",
+    "logs-count",
+    "logs-patterns",
+    "dashboards-get-all",
+    "dashboard-get",
+    "dashboard-insights-run",
+    "annotations-list",
+    "annotation-create",
+    "get-llm-total-costs-for-project",
+    "llma-personal-spend",
+    "experiment-get-all",
+    "experiment-get",
+    "experiment-results-get",
+];
+
+pub const DENY: &[NameRule] = &[NameRule::Suffix("-delete"), NameRule::Suffix("-destroy")];
+
 pub fn service() -> McpService {
-    McpService::new("posthog", "PostHog", MCP_URL, SETUP)
-        .with_env_var(ENV_VAR)
-        .with_scopes(SCOPES)
-        .with_tool_prefix(PREFIX)
-        .with_headers(scope_headers)
-        .with_tool_filter(tools::disposition)
-        .with_truncation_hint(
+    McpService::new("posthog", "PostHog", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .oauth(SCOPES)
+        .env_var(ENV_VAR)
+        .headers(scope_headers)
+        .tools(ToolPolicy::only(PREFIX, ENABLED_TOOLS).deny(DENY))
+        .truncation_hint(
             "add a LIMIT, select fewer columns, or narrow the date range and call again",
         )
 }
@@ -74,8 +103,6 @@ pub(crate) struct PosthogBinding {
     pub project_id: Option<String>,
     #[serde(default, deserialize_with = "meaningful")]
     pub organization_id: Option<String>,
-    #[serde(default)]
-    pub deny_suffixes: Option<Vec<String>>,
 }
 
 impl PosthogBinding {
@@ -110,6 +137,7 @@ inventory::submit! {
 mod tests {
     use super::*;
     use goat_integration::{Integration, IntegrationAuth};
+    use goat_integration_mcp::Enable;
     use serde_json::json;
 
     #[test]
@@ -157,7 +185,20 @@ mod tests {
 
     #[test]
     fn the_requested_scopes_are_declared_on_the_descriptor() {
-        assert!(service().scopes.contains(&"query:read"));
-        assert!(service().scopes.len() > 10);
+        assert!(service().credential.scopes.contains(&"query:read"));
+        assert!(service().credential.scopes.len() > 10);
+    }
+
+    #[test]
+    fn the_tool_policy_keeps_the_curated_allowlist_and_denies_destruction() {
+        let policy = service().tools;
+        assert_eq!(policy.prefix, PREFIX);
+        let Enable::Only(wanted) = policy.enable else {
+            panic!("posthog should enable a curated list");
+        };
+        assert!(wanted.contains(&"execute-sql"));
+        assert!(wanted.len() > 20);
+        assert!(policy.deny.contains(&NameRule::Suffix("-delete")));
+        assert!(policy.deny.contains(&NameRule::Suffix("-destroy")));
     }
 }
