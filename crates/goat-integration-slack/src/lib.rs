@@ -95,7 +95,7 @@ mod tests {
         assert_eq!(meta.display, "Slack");
         assert_eq!(meta.auth, IntegrationAuth::Secret);
         assert_eq!(meta.env_var, Some("SLACK_USER_TOKEN"));
-        assert!(meta.has_watcher);
+        assert!(service().watch.is_some());
         assert!(meta.setup.contains("Agents & AI Apps"));
         assert!(meta.setup.contains("api.slack.com/apps?new_app=1"));
     }

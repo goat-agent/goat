@@ -139,7 +139,6 @@ pub struct IntegrationMetadata {
     pub secret_label: &'static str,
     pub env_var: Option<&'static str>,
     pub setup: &'static str,
-    pub has_watcher: bool,
 }
 
 #[async_trait]
