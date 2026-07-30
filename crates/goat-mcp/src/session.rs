@@ -3,37 +3,23 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use rmcp::model::{
-    CallToolRequestParams, ClientRequest, ProtocolVersion, ServerResult, Tool as McpTool,
-};
-use rmcp::service::{
-    ClientLifecycleMode, PeerRequestOptions, RunningService, ServiceError,
-    serve_client_with_lifecycle_and_ct,
-};
+use rmcp::model::{CallToolRequestParams, ClientRequest, ErrorCode, ServerResult, Tool as McpTool};
+use rmcp::service::{PeerRequestOptions, ServiceError};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioChildProcess};
-use rmcp::{RoleClient, model::ErrorCode};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
 
+use crate::handshake::{self, Era, Failed};
 use crate::result::McpToolResult;
 use crate::{McpError, ServerConfig};
 
-pub const START_TIMEOUT: Duration = Duration::from_secs(10);
 pub const CALL_TIMEOUT: Duration = Duration::from_mins(2);
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_TIMEOUT: Duration = Duration::from_mins(5);
-
-fn lifecycle() -> ClientLifecycleMode {
-    ClientLifecycleMode::Auto {
-        preferred_versions: vec![ProtocolVersion::V_2026_07_28, ProtocolVersion::V_2025_11_25],
-        legacy_version: None,
-    }
-}
 
 pub struct HttpEndpoint {
     pub url: String,
@@ -85,7 +71,7 @@ fn ensure_crypto_provider() {
 pub struct McpSession {
     server_name: String,
     pid: Option<u32>,
-    client: Mutex<RunningService<RoleClient, ()>>,
+    client: Mutex<handshake::Client>,
 }
 
 impl McpSession {
@@ -94,26 +80,23 @@ impl McpSession {
         config: ServerConfig,
         cwd: &Path,
     ) -> Result<(Self, Vec<McpTool>), McpError> {
-        let mut command = Command::new(&config.command);
-        command
-            .args(&config.args)
-            .envs(&config.env)
-            .current_dir(cwd);
-        let (transport, stderr) = TokioChildProcess::builder(command.configure(|cmd| {
-            cmd.stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            #[cfg(unix)]
-            {
-                cmd.process_group(0);
+        let (transport, mut pid) = spawn_child(&server_name, &config, cwd)?;
+        let client = match handshake::open(handshake::PREFERRED, transport).await {
+            Ok(client) => client,
+            Err(failure) => {
+                let Some(era) = retry_era(&server_name, &failure) else {
+                    return Err(handshake::into_error(&server_name, &failure));
+                };
+                if let Some(stale) = pid.take() {
+                    kill_process_group(&server_name, stale);
+                }
+                let (transport, respawned) = spawn_child(&server_name, &config, cwd)?;
+                pid = respawned;
+                handshake::open(era, transport)
+                    .await
+                    .map_err(|retried| exhausted(&server_name, &failure, &retried))?
             }
-        }))
-        .spawn()?;
-        let pid = transport.id();
-        if let Some(stderr) = stderr {
-            spawn_stderr_logger(server_name.clone(), stderr);
-        }
-        let client = start(&server_name, transport).await?;
+        };
         let session = Self {
             server_name,
             pid,
@@ -129,7 +112,7 @@ impl McpSession {
         client: C,
     ) -> Result<Self, McpError>
     where
-        C: rmcp::transport::streamable_http_client::StreamableHttpClient + 'static,
+        C: rmcp::transport::streamable_http_client::StreamableHttpClient + Clone + 'static,
     {
         let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.url.clone());
         if let Some(auth) = &endpoint.auth_header {
@@ -138,8 +121,19 @@ impl McpSession {
         if !endpoint.headers.is_empty() {
             config = config.custom_headers(headers(&server_name, &endpoint.headers));
         }
-        let transport = StreamableHttpClientTransport::with_client(client, config);
-        let running = start(&server_name, transport).await?;
+        let transport =
+            || StreamableHttpClientTransport::with_client(client.clone(), config.clone());
+        let running = match handshake::open(handshake::PREFERRED, transport()).await {
+            Ok(running) => running,
+            Err(failure) => {
+                let Some(era) = retry_era(&server_name, &failure) else {
+                    return Err(handshake::into_error(&server_name, &failure));
+                };
+                handshake::open(era, transport())
+                    .await
+                    .map_err(|retried| exhausted(&server_name, &failure, &retried))?
+            }
+        };
         Ok(Self {
             server_name,
             pid: None,
@@ -230,36 +224,65 @@ impl McpSession {
 
 impl Drop for McpSession {
     fn drop(&mut self) {
-        if let Some(pgid) = self.pid.and_then(|pid| i32::try_from(pid).ok())
-            && let Err(err) = goat_process::kill_group(pgid)
-        {
-            tracing::warn!(%err, pgid, server = %self.server_name, "failed to kill mcp process group");
+        if let Some(pid) = self.pid {
+            kill_process_group(&self.server_name, pid);
         }
     }
 }
 
-async fn start<T, E, A>(
+fn retry_era(server_name: &str, failure: &Failed) -> Option<Era> {
+    let era = handshake::other_era(handshake::PREFERRED, failure)?;
+    tracing::debug!(
+        server = %server_name,
+        detail = %handshake::message(failure),
+        "retrying the mcp handshake in the other protocol era"
+    );
+    Some(era)
+}
+
+fn exhausted(server_name: &str, first: &Failed, retried: &Failed) -> McpError {
+    tracing::debug!(
+        server = %server_name,
+        detail = %handshake::message(retried),
+        "the retried mcp handshake failed too"
+    );
+    handshake::into_error(server_name, first)
+}
+
+fn spawn_child(
     server_name: &str,
-    transport: T,
-) -> Result<RunningService<RoleClient, ()>, McpError>
-where
-    T: rmcp::transport::IntoTransport<RoleClient, E, A>,
-    E: std::error::Error + Send + Sync + 'static,
-{
-    let token = CancellationToken::new();
-    tokio::time::timeout(
-        START_TIMEOUT,
-        serve_client_with_lifecycle_and_ct((), transport, lifecycle(), token),
-    )
-    .await
-    .map_err(|_| McpError::Initialize {
-        server: server_name.to_owned(),
-        message: format!("timed out after {}s", START_TIMEOUT.as_secs()),
-    })?
-    .map_err(|err| McpError::Initialize {
-        server: server_name.to_owned(),
-        message: err.to_string(),
-    })
+    config: &ServerConfig,
+    cwd: &Path,
+) -> Result<(TokioChildProcess, Option<u32>), McpError> {
+    let mut command = Command::new(&config.command);
+    command
+        .args(&config.args)
+        .envs(&config.env)
+        .current_dir(cwd);
+    let (transport, stderr) = TokioChildProcess::builder(command.configure(|cmd| {
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            cmd.process_group(0);
+        }
+    }))
+    .spawn()?;
+    let pid = transport.id();
+    if let Some(stderr) = stderr {
+        spawn_stderr_logger(server_name.to_owned(), stderr);
+    }
+    Ok((transport, pid))
+}
+
+fn kill_process_group(server_name: &str, child: u32) {
+    let Ok(pgid) = i32::try_from(child) else {
+        return;
+    };
+    if let Err(err) = goat_process::kill_group(pgid) {
+        tracing::warn!(%err, pgid, server = %server_name, "failed to kill mcp process group");
+    }
 }
 
 fn headers(
@@ -319,20 +342,6 @@ fn spawn_stderr_logger(server_name: String, stderr: tokio::process::ChildStderr)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn auto_lifecycle_prefers_the_new_spec_and_keeps_the_legacy_default() {
-        let ClientLifecycleMode::Auto {
-            preferred_versions,
-            legacy_version,
-        } = lifecycle()
-        else {
-            panic!("expected the auto lifecycle");
-        };
-        assert_eq!(preferred_versions[0], ProtocolVersion::V_2026_07_28);
-        assert!(preferred_versions.contains(&ProtocolVersion::V_2025_11_25));
-        assert!(legacy_version.is_none());
-    }
 
     #[test]
     fn unusable_headers_are_dropped_not_fatal() {
