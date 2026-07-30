@@ -68,6 +68,10 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
     `ChannelFactory` also carries `metadata: fn() -> ChannelMetadata`, which is how it declares its
     display name, its setup text, and one `SecretSpec` per secret it needs — the CLI drives its
     prompts off that list, so a channel that forgets it gets asked for nothing.
+    An integration's `ctor` returns `service().build()`, not a hand-written type: every hosted-MCP
+    integration is a `McpService` descriptor and `McpIntegration` is the only `impl Integration`
+    among them. `goat-integration-github` is the exception — no MCP, so it implements the trait
+    itself and uses only the watch driver.
   - agent commands: `inventory`, but the constant is a plain `pub const ID: &str`.
   - agent tools: `inventory` + `pub const NAME: ToolName` for `fs`/`shell`/`skill` only. `goal`,
     `memory`, `pty`, `code`, and `schedule` need injected runtime deps and are wired by explicit
@@ -90,11 +94,14 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
   (`goat-integration-github` registers no tools; the agent reaches GitHub through `shell` and `gh`),
   and so is a connection plus tools (`goat-integration-posthog` has no watcher). Watchers own
   polling and diffing, never the policy of what is worth watching — that is declared per-agent in
-  the binding config, and several watchers decline to spawn until it is.
+  the binding config, and several watchers decline to spawn until it is. `goat-integration-linear`
+  is the one that spawns unconditionally, because its defaults alone are a working query.
 - Connections are global; `IntegrationAuth` decides how one is established — a pasted `Secret`, an
   `OAuth` round trip, or `External`, meaning a host tool such as `gh` owns the credential and the
   `config.json` entry is itself the connection marker. Per-agent binding lives in the agent's
-  `integrations` config map. Raw observations persist losslessly in `integration_observations`.
+  `integrations` config map. Raw observations persist losslessly in `integration_observations`, and
+  the `observation` agent tool reads them back — a briefing cites `observation:<id>`, and that
+  reference resolves.
 - Channel bindings are per-agent, and **no secret ever lives in `config.json`.** The `channels.<kind>`
   map records *that* an agent uses a channel — an empty object is a complete binding, so never delete
   one for looking empty — while every secret sits in `credentials.json` under
@@ -117,6 +124,16 @@ Placements that contradict the naming:
   scopes, different parsers.
 - `goat-provider-openai-compat` registers nothing — it is the shared base thirteen OpenAI-compatible
   crates build on. `goat-provider-local` registers three providers (ollama, lmstudio, llama.cpp).
+- `goat-integration-mcp` registers nothing either — same idea, one family over. It is the shared base
+  every hosted-MCP integration builds on, so a leaf is a `McpService` descriptor plus its parser.
+- `goat-mcp` is the **protocol** crate: transports (stdio and streamable HTTP), session lifecycle,
+  result extraction, error classification, OAuth. It knows neither tool system — `goat-engine` owns
+  the `goat_tool::Tool` adapter for local stdio servers, `goat-integration-mcp` owns the
+  `goat_agent_tool::ToolHandler` passthrough for hosted ones. Do not put a tool adapter in it.
+- `goat-integration`'s `watch` module is the one polling driver, and it does not know rmcp — that is
+  why `goat-integration-github`, which shells out to `gh`, uses it too. `diff::{REBUILD, RETAIN,
+  SETTLE}` are the three re-fire policies; they encode opposite intents on purpose, so pick one
+  rather than unifying them.
 - `goat-embedding` is agent-side and reaches memory only through `goat-runtime`'s adapter;
   `goat-memory` defines its own `Embedder` trait and does not depend on it.
 - `goat-command-*` is the **TUI** slash-command family. Channel slash commands are
