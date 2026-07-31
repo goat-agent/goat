@@ -296,7 +296,7 @@ impl ProcessRegistry {
         code: Option<i32>,
         natural: ProcessExitReason,
     ) {
-        let (watched, reason, db_id) = {
+        let (wake, reason, db_id) = {
             let mut inner = self.inner.lock().await;
             let Some(entry) = inner.entries.get_mut(&id) else {
                 return;
@@ -311,7 +311,7 @@ impl ProcessRegistry {
             } else {
                 natural
             };
-            (entry.watched, reason, entry.db_id)
+            (!entry.exit_observed, reason, entry.db_id)
         };
         if let (Some(store), Some(db_id)) = (self.store.as_ref(), db_id) {
             let _ = store.finish_process(db_id, crate::persist::now_ms()).await;
@@ -325,7 +325,7 @@ impl ProcessRegistry {
             })
             .await;
         self.broadcast_list().await;
-        if watched {
+        if wake {
             self.wake.notify_one();
         }
     }
@@ -353,10 +353,7 @@ impl ProcessRegistry {
             let Some(entry) = inner.entries.get_mut(&id) else {
                 continue;
             };
-            if !entry.watched {
-                continue;
-            }
-            let has_new = entry.lines.len() > entry.seen_cursor;
+            let has_new = entry.watched && entry.lines.len() > entry.seen_cursor;
             let exited_unseen = entry.state == ProcessState::Exited && !entry.exit_observed;
             if !has_new && !exited_unseen {
                 continue;
@@ -684,13 +681,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unwatched_process_does_not_wake() {
+    async fn unwatched_process_does_not_wake_while_it_runs() {
+        let (registry, _events, wake) = harness();
+        let cwd = std::env::temp_dir();
+        let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+        let result = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
+        assert!(
+            result.is_err(),
+            "an unwatched process must not wake the agent for output"
+        );
+        registry.kill(started.id).await.unwrap();
+        wait_until_exited(&registry, started.id).await;
+    }
+
+    #[tokio::test]
+    async fn every_process_wakes_on_exit() {
         let (registry, _events, wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry.spawn(plat::ECHO_QUIET, &cwd, false).await.unwrap();
-        wait_until_exited(&registry, started.id).await;
-        let result = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
-        assert!(result.is_err(), "unwatched process must not wake the agent");
+        tokio::time::timeout(Duration::from_secs(5), wake.notified())
+            .await
+            .expect("an exit must wake the agent even without watch");
+        let obs = registry.take_pending_observations().await;
+        assert!(
+            obs.iter()
+                .any(|(id, o)| *id == started.id && o.state == ProcessState::Exited),
+            "the exit must be reported as an observation"
+        );
     }
 
     #[tokio::test]
