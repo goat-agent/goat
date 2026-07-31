@@ -214,15 +214,15 @@ pub struct ToolCall {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentGroupMember {
+pub struct SubagentGroupMember {
     pub call: ToolCallId,
-    pub agent_type: String,
+    pub subagent_type: String,
     pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentGroupEntry {
-    pub member: AgentGroupMember,
+pub struct SubagentGroupEntry {
+    pub member: SubagentGroupMember,
     pub outcome: ToolOutcome,
 }
 
@@ -347,9 +347,9 @@ pub enum TranscriptEntry {
         call: ToolCall,
         outcome: ToolOutcome,
     },
-    AgentGroup {
+    SubagentGroup {
         group: ToolCallId,
-        members: Vec<AgentGroupEntry>,
+        members: Vec<SubagentGroupEntry>,
     },
     Compaction {
         tokens_before: u32,

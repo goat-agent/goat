@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AccountEntry, AgentGroupMember, InputAttachment, LoginProvider, ModelEntry, ModelTarget,
-    ProcessExitReason, ProcessId, ProcessInfo, RateLimitSnapshot, SkillInfo, TaskId, ThreadSummary,
-    ToolCall, ToolCallId, ToolOutcome, TranscriptEntry, Usage,
+    AccountEntry, InputAttachment, LoginProvider, ModelEntry, ModelTarget, ProcessExitReason,
+    ProcessId, ProcessInfo, RateLimitSnapshot, SkillInfo, SubagentGroupMember, TaskId,
+    ThreadSummary, ToolCall, ToolCallId, ToolOutcome, TranscriptEntry, Usage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -37,10 +37,10 @@ pub enum Event {
         call: ToolCallId,
         outcome: ToolOutcome,
     },
-    AgentGroupStarted {
+    SubagentGroupStarted {
         id: TaskId,
         group: ToolCallId,
-        members: Vec<AgentGroupMember>,
+        members: Vec<SubagentGroupMember>,
     },
     ShellDone {
         id: TaskId,
@@ -50,14 +50,14 @@ pub enum Event {
         id: TaskId,
         interrupted: bool,
     },
-    AgentStarted {
+    SubagentStarted {
         id: TaskId,
         parent: TaskId,
         call: ToolCallId,
-        agent_type: String,
+        subagent_type: String,
         label: String,
     },
-    AgentDone {
+    SubagentDone {
         id: TaskId,
         ok: bool,
     },

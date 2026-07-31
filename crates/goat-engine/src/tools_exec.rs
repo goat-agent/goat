@@ -8,7 +8,8 @@ use crate::{
     Ctx, LoopEnv, Run,
     ask::{ASK_TOOL_NAME, ask_call_display, ask_tool_def, run_ask},
     delegate::{
-        AGENT_TOOL_NAME, agent_call_display, agent_group_member, agent_tool_def, run_delegation,
+        SUBAGENT_TOOL_NAME, run_delegation, subagent_call_display, subagent_group_member,
+        subagent_tool_def,
     },
     persist::{create_tool_call_record, finish_tool_db},
     subagent::ToolSelection,
@@ -64,8 +65,8 @@ fn outcome_image(content: &ToolContent) -> Option<ToolImageData> {
 
 pub(crate) fn call_display(tools: &ToolRegistry, name: &str, input: &str) -> ToolDisplay {
     match name {
-        AGENT_TOOL_NAME => agent_call_display(input),
-        crate::delegate::AGENT_KILL_TOOL_NAME => crate::delegate::agent_kill_display(input),
+        SUBAGENT_TOOL_NAME => subagent_call_display(input),
+        crate::delegate::SUBAGENT_KILL_TOOL_NAME => crate::delegate::subagent_kill_display(input),
         ASK_TOOL_NAME => ask_call_display(input),
         WEB_SEARCH_TOOL_NAME => web_search_display(input),
         _ if crate::process_tools::is_bash_run_tool(name) => {
@@ -150,13 +151,13 @@ async fn execute_tool(
         crate::process_tools::start_background(ctx, env, prep.input_json, token).await
     } else if prep.name == ASK_TOOL_NAME && env.allow_ask {
         Some(run_ask(ctx, run, prep.input_json, ToolCallId(prep.tui_id), token).await)
-    } else if prep.name == crate::delegate::AGENT_KILL_TOOL_NAME && env.allow_delegate {
+    } else if prep.name == crate::delegate::SUBAGENT_KILL_TOOL_NAME && env.allow_delegate {
         Some(
-            crate::delegate::run_agent_kill(ctx, prep.input_json)
+            crate::delegate::run_subagent_kill(ctx, prep.input_json)
                 .await
                 .map(ToolOutput::text),
         )
-    } else if prep.name == AGENT_TOOL_NAME && env.allow_delegate {
+    } else if prep.name == SUBAGENT_TOOL_NAME && env.allow_delegate {
         if crate::delegate::wants_background(prep.input_json) {
             Some(
                 run_delegation(
@@ -274,16 +275,16 @@ pub(crate) async fn run_tool_batch(
     }
     if env.allow_delegate
         && prepared.len() > 1
-        && prepared.iter().all(|prep| prep.name == AGENT_TOOL_NAME)
+        && prepared.iter().all(|prep| prep.name == SUBAGENT_TOOL_NAME)
         && let Some(first) = prepared.first()
     {
         let members = prepared
             .iter()
-            .map(|prep| agent_group_member(ToolCallId(prep.tui_id), prep.input_json))
+            .map(|prep| subagent_group_member(ToolCallId(prep.tui_id), prep.input_json))
             .collect();
         let _ = ctx
             .events
-            .send(Event::AgentGroupStarted {
+            .send(Event::SubagentGroupStarted {
                 id: run.id,
                 group: ToolCallId(first.tui_id),
                 members,
@@ -362,8 +363,8 @@ pub(crate) fn build_tool_defs(
     }
     if allow_delegate {
         if !ctx.subagents.is_empty() {
-            defs.push(agent_tool_def(ctx));
-            defs.push(crate::delegate::agent_kill_tool_def());
+            defs.push(subagent_tool_def(ctx));
+            defs.push(crate::delegate::subagent_kill_tool_def());
         }
         defs.extend(crate::process_tools::tool_defs());
     }

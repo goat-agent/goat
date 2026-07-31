@@ -291,7 +291,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     let subagents = SubagentRegistry::load(&cwd);
     let project_instructions = instructions::load_project_instructions(&cwd);
     let session_date = prompt::current_utc_date();
-    let semaphore = Arc::new(Semaphore::new(delegate::MAX_CONCURRENT_AGENTS));
+    let semaphore = Arc::new(Semaphore::new(delegate::MAX_CONCURRENT_SUBAGENTS));
     let child_ids = AtomicU64::new(CHILD_ID_BASE);
     let wake_ids = AtomicU64::new(WAKE_ID_BASE);
     let wake = Arc::new(tokio::sync::Notify::new());
@@ -539,8 +539,8 @@ mod tests {
                     0 => {
                         yield StreamChunk::ToolCall {
                             id: "call-1".to_owned(),
-                            name: "Agent".to_owned(),
-                            input: "{\"agent_type\":\"explore\",\"prompt\":\"look into it\"}"
+                            name: "Subagent".to_owned(),
+                            input: "{\"subagent_type\":\"explore\",\"prompt\":\"look into it\"}"
                                 .to_owned(),
                         };
                     }
@@ -589,14 +589,14 @@ mod tests {
                 if n == 0 {
                     yield StreamChunk::ToolCall {
                         id: "call-1".to_owned(),
-                        name: "Agent".to_owned(),
-                        input: "{\"agent_type\":\"explore\",\"prompt\":\"map engine\"}"
+                        name: "Subagent".to_owned(),
+                        input: "{\"subagent_type\":\"explore\",\"prompt\":\"map engine\"}"
                             .to_owned(),
                     };
                     yield StreamChunk::ToolCall {
                         id: "call-2".to_owned(),
-                        name: "Agent".to_owned(),
-                        input: "{\"agent_type\":\"critic\",\"prompt\":\"review UI\"}"
+                        name: "Subagent".to_owned(),
+                        input: "{\"subagent_type\":\"critic\",\"prompt\":\"review UI\"}"
                             .to_owned(),
                     };
                 } else if n < 3 {
@@ -1353,13 +1353,15 @@ mod tests {
         .await
         .unwrap();
 
-        let mut agent_started = false;
-        let mut agent_done_ok = false;
+        let mut subagent_started = false;
+        let mut subagent_done_ok = false;
         let mut final_text = String::new();
         while let Some(event) = events.recv().await {
             match event {
-                Event::ToolStarted { call, .. } if call.name == "Agent" => agent_started = true,
-                Event::ToolDone { outcome, .. } => agent_done_ok = outcome.ok,
+                Event::ToolStarted { call, .. } if call.name == "Subagent" => {
+                    subagent_started = true
+                }
+                Event::ToolDone { outcome, .. } => subagent_done_ok = outcome.ok,
                 Event::TextDone { text, .. } => final_text = text,
                 Event::TaskDone { interrupted, .. } => {
                     assert!(!interrupted);
@@ -1368,8 +1370,8 @@ mod tests {
                 _ => {}
             }
         }
-        assert!(agent_started, "expected the Agent tool to start");
-        assert!(agent_done_ok, "expected the Agent delegation to succeed");
+        assert!(subagent_started, "expected the Agent tool to start");
+        assert!(subagent_done_ok, "expected the Agent delegation to succeed");
         assert_eq!(final_text, "final answer");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
@@ -1412,7 +1414,7 @@ mod tests {
         let mut started_calls = Vec::new();
         while let Some(event) = events.recv().await {
             match event {
-                Event::AgentGroupStarted {
+                Event::SubagentGroupStarted {
                     group,
                     members: grouped,
                     ..
@@ -1421,10 +1423,10 @@ mod tests {
                     assert_eq!(group, goat_protocol::ToolCallId(1));
                     members = grouped;
                 }
-                Event::ToolStarted { call, .. } if call.name == "Agent" => {
+                Event::ToolStarted { call, .. } if call.name == "Subagent" => {
                     first_agent_tool_index.get_or_insert(index);
                 }
-                Event::AgentStarted { call, .. } => started_calls.push(call),
+                Event::SubagentStarted { call, .. } => started_calls.push(call),
                 Event::TaskDone { interrupted, .. } => {
                     assert!(!interrupted);
                     break;
@@ -1434,9 +1436,9 @@ mod tests {
             index += 1;
         }
         assert_eq!(members.len(), 2);
-        assert_eq!(members[0].agent_type, "explore");
+        assert_eq!(members[0].subagent_type, "explore");
         assert_eq!(members[0].label, "map engine");
-        assert_eq!(members[1].agent_type, "critic");
+        assert_eq!(members[1].subagent_type, "critic");
         assert_eq!(members[1].label, "review UI");
         assert!(group_index < first_agent_tool_index);
         started_calls.sort_unstable();

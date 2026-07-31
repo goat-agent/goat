@@ -88,12 +88,12 @@ mod tests {
 
     #[test]
     fn agent_group_event_round_trips() {
-        let event = Event::AgentGroupStarted {
+        let event = Event::SubagentGroupStarted {
             id: TaskId(3),
             group: ToolCallId(1),
-            members: vec![crate::AgentGroupMember {
+            members: vec![crate::SubagentGroupMember {
                 call: ToolCallId(1),
-                agent_type: "explore".to_owned(),
+                subagent_type: "explore".to_owned(),
                 label: "map engine".to_owned(),
             }],
         };

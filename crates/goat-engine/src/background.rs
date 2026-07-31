@@ -1195,7 +1195,7 @@ mod tests {
         assert!(cancel.is_cancelled(), "kill must cancel the subagent token");
 
         registry
-            .finish_subagent(id, Err("agent interrupted".to_owned()))
+            .finish_subagent(id, Err("subagent interrupted".to_owned()))
             .await;
         let result = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
         assert!(

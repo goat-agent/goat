@@ -1,5 +1,5 @@
 use goat_protocol::{
-    AgentGroupEntry, AgentGroupMember, Effort, Event, ModelTarget, NotifyKind, SkillInfo,
+    Effort, Event, ModelTarget, NotifyKind, SkillInfo, SubagentGroupEntry, SubagentGroupMember,
     ThreadSummary, ToolCall, ToolCallId, ToolOutcome, TranscriptEntry,
 };
 use goat_provider::{ContentBlock, Message, MessageRole};
@@ -8,14 +8,14 @@ use tokio::sync::mpsc;
 
 use crate::{
     Ctx,
-    delegate::{AGENT_TOOL_NAME, agent_group_member},
+    delegate::{SUBAGENT_TOOL_NAME, subagent_group_member},
     prompt::build_system_prompt,
     tools_exec::{call_display, summarize_line},
 };
 
 struct RestoredToolUse {
     call: ToolCall,
-    member: Option<AgentGroupMember>,
+    member: Option<SubagentGroupMember>,
     group: Option<ToolCallId>,
     group_size: usize,
 }
@@ -179,7 +179,7 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
     let mut entries: Vec<TranscriptEntry> = Vec::new();
     let mut tool_uses: std::collections::HashMap<String, RestoredToolUse> =
         std::collections::HashMap::new();
-    let mut agent_groups: std::collections::HashMap<ToolCallId, Vec<AgentGroupEntry>> =
+    let mut agent_groups: std::collections::HashMap<ToolCallId, Vec<SubagentGroupEntry>> =
         std::collections::HashMap::new();
     let mut tool_seq: u64 = 0;
     let mut next_compaction = 0usize;
@@ -223,13 +223,13 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
         let agent_group_size = if role == MessageRole::Assistant
             && tool_count > 1
             && content.iter().all(|block| {
-                !matches!(block, ContentBlock::ToolUse { name, .. } if name != AGENT_TOOL_NAME)
+                !matches!(block, ContentBlock::ToolUse { name, .. } if name != SUBAGENT_TOOL_NAME)
             }) {
             tool_count
         } else {
             0
         };
-        let mut agent_group = None;
+        let mut subagent_group = None;
         for block in &content {
             match block {
                 ContentBlock::Text { text } => match role {
@@ -259,11 +259,11 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
                     let call_id = ToolCallId(tool_seq);
                     let input = input.to_string();
                     let group = if agent_group_size > 0 {
-                        Some(*agent_group.get_or_insert(call_id))
+                        Some(*subagent_group.get_or_insert(call_id))
                     } else {
                         None
                     };
-                    let member = group.map(|_| agent_group_member(call_id, &input));
+                    let member = group.map(|_| subagent_group_member(call_id, &input));
                     tool_uses.insert(
                         id.clone(),
                         RestoredToolUse {
@@ -296,10 +296,10 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
                         };
                         if let (Some(group), Some(member)) = (restored.group, restored.member) {
                             let grouped = agent_groups.entry(group).or_default();
-                            grouped.push(AgentGroupEntry { member, outcome });
+                            grouped.push(SubagentGroupEntry { member, outcome });
                             if grouped.len() == restored.group_size {
                                 let members = agent_groups.remove(&group).unwrap_or_default();
-                                entries.push(TranscriptEntry::AgentGroup { group, members });
+                                entries.push(TranscriptEntry::SubagentGroup { group, members });
                             }
                         } else {
                             entries.push(TranscriptEntry::Tool {

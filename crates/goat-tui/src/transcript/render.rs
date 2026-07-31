@@ -10,7 +10,9 @@ use crate::{
 };
 
 use super::ImagePlacement;
-use super::item::{AgentGroupView, AgentMemberStatus, Item, ShellStatus, ToolStatus, Working};
+use super::item::{
+    Item, ShellStatus, SubagentGroupView, SubagentMemberStatus, ToolStatus, Working,
+};
 use super::tool_gist::ToolLineCtx;
 use super::tool_line::{ToolRowInput, tool_marker, tool_row};
 
@@ -204,9 +206,9 @@ pub(super) fn build_static_lines(
         if i > 0 {
             let prev_is_tool = matches!(
                 items.get(i - 1),
-                Some(Item::Tool { .. } | Item::AgentGroup(_))
+                Some(Item::Tool { .. } | Item::SubagentGroup(_))
             );
-            let cur_is_tool = matches!(item, Item::Tool { .. } | Item::AgentGroup(_));
+            let cur_is_tool = matches!(item, Item::Tool { .. } | Item::SubagentGroup(_));
             if !(prev_is_tool && cur_is_tool) {
                 lines.push(Line::default());
             }
@@ -226,10 +228,10 @@ pub(super) fn build_static_lines(
                 span: 0,
                 trailing_space: true,
             }),
-            Item::AgentGroup(group) => {
+            Item::SubagentGroup(group) => {
                 spinner_lines.extend(group.members.iter().enumerate().filter_map(
                     |(index, member)| {
-                        matches!(member.status, AgentMemberStatus::Running).then_some(
+                        matches!(member.status, SubagentMemberStatus::Running).then_some(
                             SpinnerPlacement {
                                 line: item_start + index + 1,
                                 span: 1,
@@ -342,7 +344,7 @@ pub(super) fn item_signature(item: &Item) -> u64 {
             tokens_before.hash(&mut hasher);
             tokens_after.hash(&mut hasher);
         }
-        Item::AgentGroup(group) => {
+        Item::SubagentGroup(group) => {
             10u8.hash(&mut hasher);
             group.parent.hash(&mut hasher);
             group.group.hash(&mut hasher);
@@ -350,16 +352,16 @@ pub(super) fn item_signature(item: &Item) -> u64 {
             group.finished_at.hash(&mut hasher);
             for member in &group.members {
                 member.call.hash(&mut hasher);
-                member.agent_type.hash(&mut hasher);
+                member.subagent_type.hash(&mut hasher);
                 member.label.hash(&mut hasher);
                 member.tools.hash(&mut hasher);
                 member.tokens.hash(&mut hasher);
                 member.started_at.hash(&mut hasher);
                 member.finished_at.hash(&mut hasher);
                 match &member.status {
-                    AgentMemberStatus::Pending => 0u8.hash(&mut hasher),
-                    AgentMemberStatus::Running => 1u8.hash(&mut hasher),
-                    AgentMemberStatus::Done(outcome) => {
+                    SubagentMemberStatus::Pending => 0u8.hash(&mut hasher),
+                    SubagentMemberStatus::Running => 1u8.hash(&mut hasher),
+                    SubagentMemberStatus::Done(outcome) => {
                         2u8.hash(&mut hasher);
                         outcome.ok.hash(&mut hasher);
                         outcome.summary.hash(&mut hasher);
@@ -465,7 +467,7 @@ pub(super) fn item_rows(
                 Span::styled("─".repeat(right), theme.muted()),
             ])]
         }
-        Item::AgentGroup(group) => agent_group_rows(group, theme, width),
+        Item::SubagentGroup(group) => subagent_group_rows(group, theme, width),
         Item::Tool {
             name,
             display,
@@ -495,12 +497,12 @@ pub(super) fn item_rows(
     }
 }
 
-fn agent_group_rows(group: &AgentGroupView, theme: Theme, width: u16) -> Vec<Line<'static>> {
+fn subagent_group_rows(group: &SubagentGroupView, theme: Theme, width: u16) -> Vec<Line<'static>> {
     let total = group.members.len();
     let done = group
         .members
         .iter()
-        .filter(|member| matches!(member.status, AgentMemberStatus::Done(_)))
+        .filter(|member| matches!(member.status, SubagentMemberStatus::Done(_)))
         .count();
     let failed = group
         .members
@@ -508,7 +510,7 @@ fn agent_group_rows(group: &AgentGroupView, theme: Theme, width: u16) -> Vec<Lin
         .filter(|member| {
             matches!(
                 member.status,
-                AgentMemberStatus::Done(goat_protocol::ToolOutcome { ok: false, .. })
+                SubagentMemberStatus::Done(goat_protocol::ToolOutcome { ok: false, .. })
             )
         })
         .count();
@@ -520,7 +522,7 @@ fn agent_group_rows(group: &AgentGroupView, theme: Theme, width: u16) -> Vec<Lin
         .members
         .iter()
         .fold(0u64, |sum, member| sum.saturating_add(member.tokens));
-    let mut parts = vec![format!("{total} agents")];
+    let mut parts = vec![format!("{total} subagents")];
     if done < total {
         let state = if failed == 0 { "done" } else { "finished" };
         parts.push(format!("{done}/{total} {state}"));
@@ -556,19 +558,21 @@ fn agent_group_rows(group: &AgentGroupView, theme: Theme, width: u16) -> Vec<Lin
             "  ├─ "
         };
         let (marker, marker_style) = match &member.status {
-            AgentMemberStatus::Pending => (symbols::ui::DOT_EMPTY, theme.muted()),
-            AgentMemberStatus::Running => (symbols::SPINNER[0], theme.accent()),
-            AgentMemberStatus::Done(outcome) if outcome.ok => (symbols::ui::CHECK, theme.success()),
-            AgentMemberStatus::Done(_) => (symbols::ui::CROSS, theme.error()),
+            SubagentMemberStatus::Pending => (symbols::ui::DOT_EMPTY, theme.muted()),
+            SubagentMemberStatus::Running => (symbols::SPINNER[0], theme.accent()),
+            SubagentMemberStatus::Done(outcome) if outcome.ok => {
+                (symbols::ui::CHECK, theme.success())
+            }
+            SubagentMemberStatus::Done(_) => (symbols::ui::CROSS, theme.error()),
         };
         let content_width = usize::from(width.saturating_sub(7));
-        let agent_type = truncate_to_width(&member.agent_type, content_width);
-        let type_width = UnicodeWidthStr::width(agent_type.as_str());
+        let subagent_type = truncate_to_width(&member.subagent_type, content_width);
+        let type_width = UnicodeWidthStr::width(subagent_type.as_str());
         let mut spans = vec![
             Span::styled(connector, theme.muted()),
             Span::styled(marker, marker_style),
             Span::raw(" "),
-            Span::styled(agent_type, theme.tool_fn()),
+            Span::styled(subagent_type, theme.tool_fn()),
         ];
         let label_budget = content_width.saturating_sub(type_width);
         if !member.label.is_empty() && label_budget > symbols::ui::SEPARATOR.width() {
