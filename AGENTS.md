@@ -220,7 +220,7 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   history from the **latest compaction alone**, while the transcript replays full scrollback with a
   marker per compaction.
 - **Backgrounding is a flag on the tool that starts the work, not a tool family.**
-  `Bash(background=true)` and `Agent(background=true)` each return a run id instead of their result;
+  `Bash(background=true)` and `Subagent(background=true)` each return a run id instead of their result;
   there is no `ProcessStart`. The engine intercepts the backgrounded `Bash` call in `tools_exec` —
   `goat-tool-shell` stays a plain synchronous leaf that knows nothing about the registry — and
   `build_tool_defs` adds the `background`/`watch` switches to the `Bash` schema only when
@@ -233,12 +233,15 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   already-seen bookkeeping, `roster`, `kill`, `shutdown_all` — is shared; the ring buffer, stdin and
   process group live in `Detail::Bash`, and the report plus its `CancellationToken` in
   `Detail::Subagent`. `Event::ProcessListChanged` stays **bash-only**: a background subagent already
-  reaches the TUI as `AgentStarted`/`AgentDone`, so putting it in the process list would double-count
-  it. The roster and the wake read `roster()` / `take_pending_observations()`, which cover both.
+  reaches the TUI as `SubagentStarted`/`SubagentDone`, so putting it in the process list would
+  double-count it. The roster and the wake read `roster()` / `take_pending_observations()`, which
+  cover both. The `Event::Process*` family keeps its name on purpose — those events really do carry a
+  pgid, an exit code and stdout/stderr — but the id they share with subagent runs is `RunId`, not
+  `ProcessId`.
 - **A detached subagent outlives its turn by construction.** `delegate::detach` takes no
   `CancellationToken` parameter at all — it mints a fresh one owned by the registry entry — so an
   interrupt on the parent turn cannot reach it; only `SubagentKill` and `shutdown_all` can. The
-  `MAX_CONCURRENT_AGENTS` permit is acquired *inside* the spawned task, not before detaching, so a
+  `MAX_CONCURRENT_SUBAGENTS` permit is acquired *inside* the spawned task, not before detaching, so a
   full pool delays a background run instead of blocking the turn that started it. `run_child` returns
   an explicitly boxed `Send` future because `run_delegation → detach → run_child → core_loop →
   run_delegation` is a cycle that `Send` inference cannot close on its own.
