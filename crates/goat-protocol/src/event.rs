@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AccountEntry, AgentGroupMember, InputAttachment, LoginProvider, ModelEntry, ModelTarget,
-    ProcessExitReason, ProcessId, ProcessInfo, RateLimitSnapshot, SkillInfo, TaskId, ThreadSummary,
+    AccountEntry, InputAttachment, LoginProvider, ModelEntry, ModelTarget, ProcessExitReason,
+    ProcessInfo, RateLimitSnapshot, RunId, SkillInfo, SubagentGroupMember, TaskId, ThreadSummary,
     ToolCall, ToolCallId, ToolOutcome, TranscriptEntry, Usage,
 };
 
@@ -37,10 +37,10 @@ pub enum Event {
         call: ToolCallId,
         outcome: ToolOutcome,
     },
-    AgentGroupStarted {
+    SubagentGroupStarted {
         id: TaskId,
         group: ToolCallId,
-        members: Vec<AgentGroupMember>,
+        members: Vec<SubagentGroupMember>,
     },
     ShellDone {
         id: TaskId,
@@ -50,14 +50,14 @@ pub enum Event {
         id: TaskId,
         interrupted: bool,
     },
-    AgentStarted {
+    SubagentStarted {
         id: TaskId,
         parent: TaskId,
         call: ToolCallId,
-        agent_type: String,
+        subagent_type: String,
         label: String,
     },
-    AgentDone {
+    SubagentDone {
         id: TaskId,
         ok: bool,
     },
@@ -167,23 +167,23 @@ pub enum Event {
         thread_id: i64,
     },
     ProcessStarted {
-        process: ProcessId,
+        process: RunId,
         command: String,
         watched: bool,
     },
     ProcessOutput {
-        process: ProcessId,
+        process: RunId,
         chunk: String,
     },
     ProcessExited {
-        process: ProcessId,
+        process: RunId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         code: Option<i32>,
         reason: ProcessExitReason,
     },
     ProcessObserved {
         id: TaskId,
-        process: ProcessId,
+        process: RunId,
         command: String,
         output: String,
     },

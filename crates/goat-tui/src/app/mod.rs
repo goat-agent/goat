@@ -35,8 +35,8 @@ pub(crate) enum ResumeIntent {
     Index(usize),
 }
 
-pub(crate) struct AgentRunView {
-    pub(crate) agent_type: String,
+pub(crate) struct SubagentRunView {
+    pub(crate) subagent_type: String,
     pub(crate) label: String,
     pub(crate) id: TaskId,
     pub(crate) parent: TaskId,
@@ -50,7 +50,7 @@ pub(crate) struct AgentRunView {
 }
 
 pub(crate) struct ProcessRunView {
-    pub(crate) id: goat_protocol::ProcessId,
+    pub(crate) id: goat_protocol::RunId,
     pub(crate) command: String,
     pub(crate) state: goat_protocol::ProcessState,
     pub(crate) exit_code: Option<i32>,
@@ -60,20 +60,20 @@ pub(crate) struct ProcessRunView {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MainView {
     Live,
-    Agent(TaskId),
-    Process(goat_protocol::ProcessId),
+    Subagent(TaskId),
+    Process(goat_protocol::RunId),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunTarget {
-    Agent(TaskId),
-    Process(goat_protocol::ProcessId),
+    Subagent(TaskId),
+    Process(goat_protocol::RunId),
 }
 
 impl RunTarget {
     fn view(self) -> MainView {
         match self {
-            RunTarget::Agent(id) => MainView::Agent(id),
+            RunTarget::Subagent(id) => MainView::Subagent(id),
             RunTarget::Process(id) => MainView::Process(id),
         }
     }
@@ -173,7 +173,7 @@ pub struct App {
     pub(crate) browser: bool,
     pub(crate) commands: CommandRegistry,
     pub(crate) toasts: Vec<crate::toast::Toast>,
-    pub(crate) agent_runs: Vec<AgentRunView>,
+    pub(crate) subagent_runs: Vec<SubagentRunView>,
     pub(crate) process_runs: Vec<ProcessRunView>,
     pub(crate) main_view: MainView,
     pub(crate) turn: TurnStatus,
@@ -223,7 +223,7 @@ impl App {
         self.terminal_bg = bg;
         self.theme = self.theme.with_base(bg);
         self.transcript.invalidate();
-        for run in &mut self.agent_runs {
+        for run in &mut self.subagent_runs {
             run.transcript.invalidate();
         }
     }
@@ -280,7 +280,7 @@ impl App {
             browser: cfg.browser_enabled,
             commands: CommandRegistry::builtin(),
             toasts: Vec::new(),
-            agent_runs: Vec::new(),
+            subagent_runs: Vec::new(),
             process_runs: Vec::new(),
             main_view: MainView::Live,
             turn: TurnStatus::default(),
@@ -500,7 +500,7 @@ impl App {
             CommandEffect::RenameConversation(title) => vec![Op::RenameThread { title }],
             CommandEffect::ClearConversation => {
                 self.transcript.clear();
-                self.reset_agents();
+                self.reset_subagents();
                 self.turn = TurnStatus::default();
                 self.clear_ctx_indicator();
                 self.scroll = 0;
@@ -566,7 +566,7 @@ impl App {
                 let chosen = if dark { Theme::dark() } else { Theme::light() };
                 self.theme = chosen.with_base(self.terminal_bg);
                 self.transcript.invalidate();
-                for run in &mut self.agent_runs {
+                for run in &mut self.subagent_runs {
                     run.transcript.invalidate();
                 }
                 if let Overlay::Config(config) = &mut self.overlay {
@@ -676,7 +676,7 @@ impl App {
         self.dirty = true;
         if self.turn.active.is_none() {
             self.turn.active = Some(id);
-            self.reset_agents();
+            self.reset_subagents();
         }
         self.queued
             .push((id, text.clone(), None, attachments.clone()));
@@ -695,7 +695,7 @@ impl App {
         self.dirty = true;
         if self.turn.active.is_none() {
             self.turn.active = Some(id);
-            self.reset_agents();
+            self.reset_subagents();
         }
         self.queued
             .push((id, prompt.clone(), Some(display.clone()), Vec::new()));
@@ -1250,7 +1250,7 @@ impl App {
         if !self.is_busy() {
             return None;
         }
-        let grouped_agents = self.transcript.has_running_agent_group();
+        let grouped_agents = self.transcript.has_running_subagent_group();
         let label = self
             .retry_status()
             .or_else(|| self.compacting_status())
@@ -1258,7 +1258,7 @@ impl App {
                 if grouped_agents {
                     None
                 } else {
-                    self.agent_status()
+                    self.subagent_status()
                 }
             });
         if label.is_none() && (self.transcript_has_running_activity() || grouped_agents) {
@@ -1350,10 +1350,10 @@ impl App {
         &self.toasts
     }
 
-    pub(crate) fn reset_agents(&mut self) {
-        self.agent_runs.retain(|run| run.done.is_none());
+    pub(crate) fn reset_subagents(&mut self) {
+        self.subagent_runs.retain(|run| run.done.is_none());
         let viewing_dropped = match self.main_view {
-            MainView::Agent(id) => !self.agent_runs.iter().any(|run| run.id == id),
+            MainView::Subagent(id) => !self.subagent_runs.iter().any(|run| run.id == id),
             _ => false,
         };
         if viewing_dropped {
@@ -1374,8 +1374,8 @@ impl App {
     pub(crate) fn active_transcript(&self) -> &Transcript {
         match self.main_view {
             MainView::Live => &self.transcript,
-            MainView::Agent(id) => self
-                .agent_runs
+            MainView::Subagent(id) => self
+                .subagent_runs
                 .iter()
                 .find(|run| run.id == id)
                 .map_or(&self.transcript, |run| &run.transcript),
@@ -1389,9 +1389,9 @@ impl App {
 
     pub(crate) fn run_targets(&self) -> Vec<RunTarget> {
         let mut targets: Vec<RunTarget> = self
-            .agent_runs
+            .subagent_runs
             .iter()
-            .map(|r| RunTarget::Agent(r.id))
+            .map(|r| RunTarget::Subagent(r.id))
             .collect();
         targets.extend(self.process_runs.iter().map(|r| RunTarget::Process(r.id)));
         targets
@@ -1434,8 +1434,8 @@ impl App {
         self.dirty = true;
     }
 
-    pub(crate) fn agent_runs(&self) -> &[AgentRunView] {
-        &self.agent_runs
+    pub(crate) fn subagent_runs(&self) -> &[SubagentRunView] {
+        &self.subagent_runs
     }
     pub(crate) fn process_runs(&self) -> &[ProcessRunView] {
         &self.process_runs
@@ -1446,13 +1446,16 @@ impl App {
             _ => None,
         }
     }
-    pub(crate) fn agent_status(&self) -> Option<String> {
+    pub(crate) fn subagent_status(&self) -> Option<String> {
         let mut counts: Vec<(&str, usize)> = Vec::new();
-        for run in self.agent_runs.iter().filter(|run| run.done.is_none()) {
-            if let Some(entry) = counts.iter_mut().find(|(kind, _)| *kind == run.agent_type) {
+        for run in self.subagent_runs.iter().filter(|run| run.done.is_none()) {
+            if let Some(entry) = counts
+                .iter_mut()
+                .find(|(kind, _)| *kind == run.subagent_type)
+            {
                 entry.1 += 1;
             } else {
-                counts.push((run.agent_type.as_str(), 1));
+                counts.push((run.subagent_type.as_str(), 1));
             }
         }
         let running: usize = counts.iter().map(|(_, n)| n).sum();
@@ -2732,19 +2735,19 @@ mod tests {
             id: top,
             call: ToolCall {
                 id: ToolCallId(1),
-                name: "Agent".to_owned(),
+                name: "Subagent".to_owned(),
                 display: goat_protocol::ToolDisplay::primary("explore"),
             },
         });
         let child = TaskId(1 << 32);
-        app.on_engine(EngineEvent::AgentStarted {
+        app.on_engine(EngineEvent::SubagentStarted {
             id: child,
             parent: top,
             call: ToolCallId(1),
-            agent_type: "explore".to_owned(),
+            subagent_type: "explore".to_owned(),
             label: "look into it".to_owned(),
         });
-        assert_eq!(app.agent_runs().len(), 1);
+        assert_eq!(app.subagent_runs().len(), 1);
         app.on_engine(EngineEvent::ToolStarted {
             id: child,
             call: ToolCall {
@@ -2764,19 +2767,19 @@ mod tests {
         });
 
         assert_eq!(app.transcript.items.len(), 2);
-        assert_eq!(app.agent_runs[0].transcript.items.len(), 1);
-        assert!(app.agent_status().is_some_and(|s| s.contains("explore")));
+        assert_eq!(app.subagent_runs[0].transcript.items.len(), 1);
+        assert!(app.subagent_status().is_some_and(|s| s.contains("explore")));
 
-        app.on_engine(EngineEvent::AgentDone {
+        app.on_engine(EngineEvent::SubagentDone {
             id: child,
             ok: true,
         });
-        assert_eq!(app.agent_runs[0].done, Some(true));
-        assert!(app.agent_status().is_none());
+        assert_eq!(app.subagent_runs[0].done, Some(true));
+        assert!(app.subagent_status().is_none());
 
         assert_eq!(app.transcript().items.len(), 2);
         app.open_run(0);
-        assert!(matches!(app.main_view, super::MainView::Agent(_)));
+        assert!(matches!(app.main_view, super::MainView::Subagent(_)));
         assert_eq!(app.transcript().items.len(), 1);
         app.close_run_selector();
         assert!(matches!(app.main_view, super::MainView::Live));
@@ -2785,23 +2788,23 @@ mod tests {
 
     #[test]
     fn parallel_agent_group_replaces_tool_rows_and_aggregates_metrics() {
-        use goat_protocol::{AgentGroupMember, ToolCall, ToolCallId, ToolOutcome, Usage};
+        use goat_protocol::{SubagentGroupMember, ToolCall, ToolCallId, ToolOutcome, Usage};
 
         let mut app = App::new(Theme::dark());
         let top = TaskId(4);
         app.on_engine(EngineEvent::TaskStarted { id: top });
-        app.on_engine(EngineEvent::AgentGroupStarted {
+        app.on_engine(EngineEvent::SubagentGroupStarted {
             id: top,
             group: ToolCallId(1),
             members: vec![
-                AgentGroupMember {
+                SubagentGroupMember {
                     call: ToolCallId(1),
-                    agent_type: "explore".to_owned(),
+                    subagent_type: "explore".to_owned(),
                     label: "map engine".to_owned(),
                 },
-                AgentGroupMember {
+                SubagentGroupMember {
                     call: ToolCallId(2),
-                    agent_type: "critic".to_owned(),
+                    subagent_type: "critic".to_owned(),
                     label: "review UI".to_owned(),
                 },
             ],
@@ -2811,7 +2814,7 @@ mod tests {
                 id: top,
                 call: ToolCall {
                     id: ToolCallId(id),
-                    name: "Agent".to_owned(),
+                    name: "Subagent".to_owned(),
                     display: goat_protocol::ToolDisplay::primary("Agent"),
                 },
             });
@@ -2820,11 +2823,11 @@ mod tests {
         assert!(app.working_state().is_none());
 
         let child = TaskId(8);
-        app.on_engine(EngineEvent::AgentStarted {
+        app.on_engine(EngineEvent::SubagentStarted {
             id: child,
             parent: top,
             call: ToolCallId(1),
-            agent_type: "explore".to_owned(),
+            subagent_type: "explore".to_owned(),
             label: "map engine".to_owned(),
         });
         app.on_engine(EngineEvent::ToolStarted {
@@ -2866,18 +2869,18 @@ mod tests {
             },
         });
 
-        let crate::transcript::Item::AgentGroup(group) = &app.transcript.items[0] else {
+        let crate::transcript::Item::SubagentGroup(group) = &app.transcript.items[0] else {
             panic!("expected agent group")
         };
         assert_eq!(group.members[0].tools, 1);
         assert_eq!(group.members[0].tokens, 15);
         assert!(matches!(
             group.members[0].status,
-            crate::transcript::AgentMemberStatus::Done(ref outcome) if outcome.ok
+            crate::transcript::SubagentMemberStatus::Done(ref outcome) if outcome.ok
         ));
         assert!(matches!(
             group.members[1].status,
-            crate::transcript::AgentMemberStatus::Done(ref outcome) if !outcome.ok
+            crate::transcript::SubagentMemberStatus::Done(ref outcome) if !outcome.ok
         ));
         assert!(group.finished_at.is_some());
         assert_eq!(app.usage.turn_tokens, 0);
@@ -3048,14 +3051,14 @@ mod tests {
         app.on_engine(EngineEvent::ProcessListChanged {
             processes: vec![
                 goat_protocol::ProcessInfo {
-                    id: goat_protocol::ProcessId(1),
+                    id: goat_protocol::RunId(1),
                     command: "pnpm dev".to_owned(),
                     state: goat_protocol::ProcessState::Running,
                     watched: false,
                     exit_code: None,
                 },
                 goat_protocol::ProcessInfo {
-                    id: goat_protocol::ProcessId(2),
+                    id: goat_protocol::RunId(2),
                     command: "gh run watch".to_owned(),
                     state: goat_protocol::ProcessState::Exited,
                     watched: true,
@@ -3073,7 +3076,7 @@ mod tests {
 
     fn process_started(app: &mut App, id: u64, command: &str) {
         app.on_engine(EngineEvent::ProcessStarted {
-            process: goat_protocol::ProcessId(id),
+            process: goat_protocol::RunId(id),
             command: command.to_owned(),
             watched: false,
         });
@@ -3085,7 +3088,7 @@ mod tests {
         process_started(&mut app, 1, "pnpm dev");
         assert_eq!(app.process_runs().len(), 1);
         app.on_engine(EngineEvent::ProcessOutput {
-            process: goat_protocol::ProcessId(1),
+            process: goat_protocol::RunId(1),
             chunk: "listening on :3000".to_owned(),
         });
         let item = app.process_runs()[0]
@@ -3104,27 +3107,27 @@ mod tests {
     fn output_before_started_creates_run_lazily() {
         let mut app = App::new(Theme::dark());
         app.on_engine(EngineEvent::ProcessOutput {
-            process: goat_protocol::ProcessId(7),
+            process: goat_protocol::RunId(7),
             chunk: "early line".to_owned(),
         });
         assert_eq!(app.process_runs().len(), 1);
-        assert_eq!(app.process_runs()[0].id, goat_protocol::ProcessId(7));
+        assert_eq!(app.process_runs()[0].id, goat_protocol::RunId(7));
     }
 
     #[test]
     fn selector_lists_agents_then_processes() {
         let mut app = App::new(Theme::dark());
-        app.on_engine(EngineEvent::AgentStarted {
+        app.on_engine(EngineEvent::SubagentStarted {
             id: TaskId(9),
             parent: TaskId(0),
             call: goat_protocol::ToolCallId(1),
-            agent_type: "explore".to_owned(),
+            subagent_type: "explore".to_owned(),
             label: String::new(),
         });
         process_started(&mut app, 1, "pnpm dev");
         let targets = app.run_targets();
         assert_eq!(targets.len(), 2);
-        assert!(matches!(targets[0], super::RunTarget::Agent(_)));
+        assert!(matches!(targets[0], super::RunTarget::Subagent(_)));
         assert!(matches!(targets[1], super::RunTarget::Process(_)));
     }
 
@@ -3143,7 +3146,7 @@ mod tests {
         let mut app = App::new(Theme::dark());
         process_started(&mut app, 1, "pnpm dev");
         app.open_run(0);
-        app.reset_agents();
+        app.reset_subagents();
         assert_eq!(app.process_runs().len(), 1);
         assert!(matches!(app.main_view, super::MainView::Process(_)));
     }
@@ -3153,7 +3156,7 @@ mod tests {
         let mut app = App::new(Theme::dark());
         process_started(&mut app, 1, "pnpm dev");
         app.on_engine(EngineEvent::ProcessExited {
-            process: goat_protocol::ProcessId(1),
+            process: goat_protocol::RunId(1),
             code: Some(1),
             reason: goat_protocol::ProcessExitReason::Natural,
         });
@@ -3164,7 +3167,7 @@ mod tests {
         );
         app.on_engine(EngineEvent::ProcessListChanged {
             processes: vec![goat_protocol::ProcessInfo {
-                id: goat_protocol::ProcessId(1),
+                id: goat_protocol::RunId(1),
                 command: "pnpm dev".to_owned(),
                 state: goat_protocol::ProcessState::Exited,
                 watched: false,
@@ -3192,13 +3195,13 @@ mod tests {
         assert!(matches!(app.main_view, super::MainView::Process(_)));
     }
 
-    fn agent_started(app: &mut App, id: u64, agent_type: &str) -> TaskId {
+    fn subagent_started(app: &mut App, id: u64, subagent_type: &str) -> TaskId {
         let child = TaskId((1 << 32) + id);
-        app.on_engine(EngineEvent::AgentStarted {
+        app.on_engine(EngineEvent::SubagentStarted {
             id: child,
             parent: TaskId(1),
             call: goat_protocol::ToolCallId(id),
-            agent_type: agent_type.to_owned(),
+            subagent_type: subagent_type.to_owned(),
             label: String::new(),
         });
         child
@@ -3207,7 +3210,7 @@ mod tests {
     #[test]
     fn arrows_move_the_highlight_without_swapping_the_view() {
         let mut app = App::new(Theme::dark());
-        agent_started(&mut app, 1, "explore");
+        subagent_started(&mut app, 1, "explore");
         process_started(&mut app, 1, "pnpm dev");
 
         app.move_run_cursor(0);
@@ -3232,16 +3235,16 @@ mod tests {
     #[test]
     fn reset_agents_keeps_a_still_running_agent() {
         let mut app = App::new(Theme::dark());
-        let running = agent_started(&mut app, 1, "explore");
-        let finished = agent_started(&mut app, 2, "general");
-        app.on_engine(EngineEvent::AgentDone {
+        let running = subagent_started(&mut app, 1, "explore");
+        let finished = subagent_started(&mut app, 2, "general");
+        app.on_engine(EngineEvent::SubagentDone {
             id: finished,
             ok: true,
         });
 
-        app.reset_agents();
+        app.reset_subagents();
 
-        let ids: Vec<TaskId> = app.agent_runs().iter().map(|run| run.id).collect();
+        let ids: Vec<TaskId> = app.subagent_runs().iter().map(|run| run.id).collect();
         assert_eq!(
             ids,
             vec![running],
@@ -3252,17 +3255,17 @@ mod tests {
     #[test]
     fn reset_agents_leaves_the_view_when_the_shown_run_is_dropped() {
         let mut app = App::new(Theme::dark());
-        let finished = agent_started(&mut app, 1, "explore");
-        app.on_engine(EngineEvent::AgentDone {
+        let finished = subagent_started(&mut app, 1, "explore");
+        app.on_engine(EngineEvent::SubagentDone {
             id: finished,
             ok: true,
         });
         app.open_run(0);
-        assert!(matches!(app.main_view, super::MainView::Agent(_)));
+        assert!(matches!(app.main_view, super::MainView::Subagent(_)));
 
-        app.reset_agents();
+        app.reset_subagents();
 
-        assert!(app.agent_runs().is_empty());
+        assert!(app.subagent_runs().is_empty());
         assert!(matches!(app.main_view, super::MainView::Live));
     }
 }

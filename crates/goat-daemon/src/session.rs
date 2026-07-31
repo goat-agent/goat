@@ -346,7 +346,7 @@ mod tests {
         let mut inner = blank_inner();
         assert!(inner.evictable());
         inner.record_and_fanout(Event::ProcessStarted {
-            process: goat_protocol::ProcessId(1),
+            process: goat_protocol::RunId(1),
             command: "pnpm dev".to_owned(),
             watched: false,
         });
@@ -355,7 +355,7 @@ mod tests {
             "a live background process must keep the session alive after the window closes"
         );
         inner.record_and_fanout(Event::ProcessExited {
-            process: goat_protocol::ProcessId(1),
+            process: goat_protocol::RunId(1),
             code: Some(0),
             reason: goat_protocol::ProcessExitReason::Natural,
         });

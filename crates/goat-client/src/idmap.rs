@@ -87,7 +87,7 @@ fn event_ids_mut(event: &mut Event) -> Vec<&mut TaskId> {
         | Event::TextDone { id, .. }
         | Event::ToolStarted { id, .. }
         | Event::ToolDone { id, .. }
-        | Event::AgentGroupStarted { id, .. }
+        | Event::SubagentGroupStarted { id, .. }
         | Event::ShellDone { id, .. }
         | Event::TaskDone { id, .. }
         | Event::ThinkingDelta { id, .. }
@@ -99,9 +99,9 @@ fn event_ids_mut(event: &mut Event) -> Vec<&mut TaskId> {
         | Event::MessageDequeued { id, .. }
         | Event::CompactionStarted { id }
         | Event::CompactionDone { id, .. }
-        | Event::AgentDone { id, .. }
+        | Event::SubagentDone { id, .. }
         | Event::Error { id: Some(id), .. } => ids.push(id),
-        Event::AgentStarted { id, parent, .. } => {
+        Event::SubagentStarted { id, parent, .. } => {
             ids.push(id);
             ids.push(parent);
         }
@@ -178,15 +178,15 @@ mod tests {
     fn agent_started_translates_both_id_and_parent() {
         let mut map = IdMap::new();
         map.record_correlation(2, TaskId(7));
-        let mut ev = Event::AgentStarted {
+        let mut ev = Event::SubagentStarted {
             id: TaskId(900),
             parent: TaskId(7),
             call: goat_protocol::ToolCallId(3),
-            agent_type: "explore".to_owned(),
+            subagent_type: "explore".to_owned(),
             label: "x".to_owned(),
         };
         map.translate_inbound(&mut ev);
-        let Event::AgentStarted { parent, id, .. } = ev else {
+        let Event::SubagentStarted { parent, id, .. } = ev else {
             unreachable!()
         };
         assert_eq!(parent, TaskId(2));

@@ -1,7 +1,7 @@
 use std::{fmt::Write as _, sync::Arc, sync::atomic::Ordering};
 
 use goat_protocol::{
-    AgentGroupMember, Effort, Event, ModelTarget, TaskId, ToolCallId, ToolDisplay,
+    Effort, Event, ModelTarget, SubagentGroupMember, TaskId, ToolCallId, ToolDisplay,
 };
 use goat_provider::{ContentBlock, Message, MessageRole, Provider, ToolDefinition};
 use tokio_util::sync::CancellationToken;
@@ -17,13 +17,13 @@ use crate::{
     tools_exec::build_tool_defs,
 };
 
-pub(crate) const MAX_CONCURRENT_AGENTS: usize = 8;
-pub(crate) const AGENT_TOOL_NAME: &str = "Agent";
-pub(crate) const AGENT_KILL_TOOL_NAME: &str = "SubagentKill";
+pub(crate) const MAX_CONCURRENT_SUBAGENTS: usize = 8;
+pub(crate) const SUBAGENT_TOOL_NAME: &str = "Subagent";
+pub(crate) const SUBAGENT_KILL_TOOL_NAME: &str = "SubagentKill";
 
 #[derive(serde::Deserialize)]
-struct AgentInput {
-    agent_type: String,
+struct SubagentInput {
+    subagent_type: String,
     prompt: String,
     #[serde(default)]
     background: bool,
@@ -31,56 +31,56 @@ struct AgentInput {
 
 #[derive(serde::Deserialize)]
 struct KillInput {
-    run: goat_protocol::ProcessId,
+    run: goat_protocol::RunId,
 }
 
-pub(crate) fn agent_tool_def(ctx: &Ctx) -> ToolDefinition {
+pub(crate) fn subagent_tool_def(ctx: &Ctx) -> ToolDefinition {
     let names: Vec<String> = ctx.subagents.names();
     let mut description = String::from(
-        "Delegate a self-contained task to a sub-agent that runs in its own context with a restricted tool set and returns only its final report. Prefer this for focused investigation or work that would otherwise flood the main context. Issue several Agent calls in one response to run them in parallel. Set background=true to detach it instead: the call returns a run id immediately and a fresh turn wakes you with the report when it finishes, so if you have other work to get on with, detach it and end your turn rather than waiting. Stop a detached one with SubagentKill. Available agent_type values:",
+        "Delegate a self-contained task to a subagent that runs in its own context with a restricted tool set and returns only its final report. Prefer this for focused investigation or work that would otherwise flood the main context. Issue several Subagent calls in one response to run them in parallel. Set background=true to detach it instead: the call returns a run id immediately and a fresh turn wakes you with the report when it finishes, so if you have other work to get on with, detach it and end your turn rather than waiting. Stop a detached one with SubagentKill. Available subagent_type values:",
     );
     for spec in ctx.subagents.iter() {
         let _ = write!(description, "\n- {}: {}", spec.name, spec.description);
     }
     ToolDefinition {
-        name: AGENT_TOOL_NAME.to_owned(),
+        name: SUBAGENT_TOOL_NAME.to_owned(),
         description,
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "agent_type": {
+                "subagent_type": {
                     "type": "string",
                     "enum": names,
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "A complete, self-contained instruction for the sub-agent. It does not see the conversation, so include all needed context.",
+                    "description": "A complete, self-contained instruction for the subagent. It does not see the conversation, so include all needed context.",
                 },
                 "background": {
                     "type": "boolean",
                     "description": "detach it and return a run id instead of waiting for the report (default false)",
                 },
             },
-            "required": ["agent_type", "prompt"],
+            "required": ["subagent_type", "prompt"],
         }),
     }
 }
 
-pub(crate) fn agent_kill_tool_def() -> ToolDefinition {
+pub(crate) fn subagent_kill_tool_def() -> ToolDefinition {
     ToolDefinition {
-        name: AGENT_KILL_TOOL_NAME.to_owned(),
-        description: "Stop a detached sub-agent run started with Agent(background=true). It will not report back.".to_owned(),
+        name: SUBAGENT_KILL_TOOL_NAME.to_owned(),
+        description: "Stop a detached subagent run started with Subagent(background=true). It will not report back.".to_owned(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "run": {"type": "string", "description": "run id from Agent(background=true)"}
+                "run": {"type": "string", "description": "run id from Subagent(background=true)"}
             },
             "required": ["run"],
         }),
     }
 }
 
-pub(crate) async fn run_agent_kill(ctx: &Ctx, input_json: &str) -> Result<String, String> {
+pub(crate) async fn run_subagent_kill(ctx: &Ctx, input_json: &str) -> Result<String, String> {
     let args: KillInput =
         serde_json::from_str(input_json).map_err(|err| format!("invalid input: {err}"))?;
     ctx.background
@@ -89,46 +89,46 @@ pub(crate) async fn run_agent_kill(ctx: &Ctx, input_json: &str) -> Result<String
     Ok(format!("Killed subagent run #{}.", args.run))
 }
 
-pub(crate) fn agent_kill_display(input: &str) -> ToolDisplay {
+pub(crate) fn subagent_kill_display(input: &str) -> ToolDisplay {
     match serde_json::from_str::<KillInput>(input) {
         Ok(args) => ToolDisplay::primary(format!("SubagentKill(#{})", args.run)),
-        Err(_) => ToolDisplay::primary(AGENT_KILL_TOOL_NAME.to_owned()),
+        Err(_) => ToolDisplay::primary(SUBAGENT_KILL_TOOL_NAME.to_owned()),
     }
 }
 
-pub(crate) fn agent_call_display(input: &str) -> ToolDisplay {
-    match serde_json::from_str::<AgentInput>(input) {
+pub(crate) fn subagent_call_display(input: &str) -> ToolDisplay {
+    match serde_json::from_str::<SubagentInput>(input) {
         Ok(args) => {
             let prompt = goat_tool::display::flatten(&args.prompt);
             ToolDisplay::primary(goat_tool::display::call_sig(
-                AGENT_TOOL_NAME,
-                &[args.agent_type.as_str(), prompt.as_str()],
+                SUBAGENT_TOOL_NAME,
+                &[args.subagent_type.as_str(), prompt.as_str()],
             ))
         }
-        Err(_) => goat_tool::display::generic_named(AGENT_TOOL_NAME, input),
+        Err(_) => goat_tool::display::generic_named(SUBAGENT_TOOL_NAME, input),
     }
 }
 
 pub(crate) fn wants_background(input_json: &str) -> bool {
-    serde_json::from_str::<AgentInput>(input_json).is_ok_and(|args| args.background)
+    serde_json::from_str::<SubagentInput>(input_json).is_ok_and(|args| args.background)
 }
 
-pub(crate) fn agent_group_member(call: ToolCallId, input: &str) -> AgentGroupMember {
-    match serde_json::from_str::<AgentInput>(input) {
-        Ok(args) => AgentGroupMember {
+pub(crate) fn subagent_group_member(call: ToolCallId, input: &str) -> SubagentGroupMember {
+    match serde_json::from_str::<SubagentInput>(input) {
+        Ok(args) => SubagentGroupMember {
             call,
-            agent_type: args.agent_type,
+            subagent_type: args.subagent_type,
             label: delegation_label(&args.prompt),
         },
-        Err(_) => AgentGroupMember {
+        Err(_) => SubagentGroupMember {
             call,
-            agent_type: "agent".to_owned(),
+            subagent_type: "subagent".to_owned(),
             label: String::new(),
         },
     }
 }
 
-fn resolve_agent_model(
+fn resolve_subagent_model(
     ctx: &Ctx,
     parent: &ModelTarget,
     spec: &SubagentSpec,
@@ -152,7 +152,7 @@ fn resolve_agent_model(
                 .or_else(|| provider.efforts(model_id).into_iter().next());
             return Some((provider, model_id.clone(), effort));
         }
-        tracing::warn!(model = %model_id, "agent model not found; inheriting parent model");
+        tracing::warn!(model = %model_id, "subagent model not found; inheriting parent model");
     }
     let provider = provider_for(
         ctx,
@@ -186,10 +186,10 @@ pub(crate) async fn run_delegation(
     call: ToolCallId,
     token: &CancellationToken,
 ) -> Result<String, String> {
-    let args: AgentInput =
-        serde_json::from_str(input_json).map_err(|err| format!("invalid Agent input: {err}"))?;
-    if ctx.subagents.get(&args.agent_type).is_none() {
-        return Err(format!("unknown agent_type: {}", args.agent_type));
+    let args: SubagentInput =
+        serde_json::from_str(input_json).map_err(|err| format!("invalid Subagent input: {err}"))?;
+    if ctx.subagents.get(&args.subagent_type).is_none() {
+        return Err(format!("unknown subagent_type: {}", args.subagent_type));
     }
     let origin = Origin::of(env);
     if args.background {
@@ -202,21 +202,25 @@ pub(crate) async fn run_delegation(
 async fn detach(
     ctx: &Ctx,
     origin: Origin,
-    args: AgentInput,
+    args: SubagentInput,
     parent: TaskId,
     call: ToolCallId,
 ) -> Result<String, String> {
     let cancel = CancellationToken::new();
-    let agent_type = args.agent_type.clone();
+    let subagent_type = args.subagent_type.clone();
     let run_id = ctx
         .background
-        .register_subagent(&agent_type, &delegation_label(&args.prompt), cancel.clone())
+        .register_subagent(
+            &subagent_type,
+            &delegation_label(&args.prompt),
+            cancel.clone(),
+        )
         .await;
     let ctx = ctx.clone();
     tokio::spawn(async move {
         let permit = ctx.semaphore.clone().acquire_owned().await;
         let result = if cancel.is_cancelled() {
-            Err("agent interrupted".to_owned())
+            Err("subagent interrupted".to_owned())
         } else {
             run_child(&ctx, &origin, &args, parent, call, &cancel).await
         };
@@ -224,7 +228,7 @@ async fn detach(
         ctx.background.finish_subagent(run_id, result).await;
     });
     Ok(format!(
-        "Started subagent run #{run_id} ({agent_type}). A fresh turn will wake you with its report when it finishes, so if you have other work to get on with, do that and end your turn instead of waiting. Stop it with SubagentKill(run={run_id})."
+        "Started subagent run #{run_id} ({subagent_type}). A fresh turn will wake you with its report when it finishes, so if you have other work to get on with, do that and end your turn instead of waiting. Stop it with SubagentKill(run={run_id})."
     ))
 }
 
@@ -234,7 +238,7 @@ type ChildFuture<'a> =
 fn run_child<'a>(
     ctx: &'a Ctx,
     origin: &'a Origin,
-    args: &'a AgentInput,
+    args: &'a SubagentInput,
     parent: TaskId,
     call: ToolCallId,
     token: &'a CancellationToken,
@@ -245,16 +249,16 @@ fn run_child<'a>(
 async fn run_child_inner(
     ctx: &Ctx,
     origin: &Origin,
-    args: &AgentInput,
+    args: &SubagentInput,
     parent: TaskId,
     call: ToolCallId,
     token: &CancellationToken,
 ) -> Result<String, String> {
-    let Some(spec) = ctx.subagents.get(&args.agent_type) else {
-        return Err(format!("unknown agent_type: {}", args.agent_type));
+    let Some(spec) = ctx.subagents.get(&args.subagent_type) else {
+        return Err(format!("unknown subagent_type: {}", args.subagent_type));
     };
-    let Some((provider, model, effort)) = resolve_agent_model(ctx, &origin.target, spec) else {
-        return Err("could not resolve a model for the agent".to_owned());
+    let Some((provider, model, effort)) = resolve_subagent_model(ctx, &origin.target, spec) else {
+        return Err("could not resolve a model for the subagent".to_owned());
     };
     let child_target = ModelTarget {
         provider: provider.id().to_string(),
@@ -276,11 +280,11 @@ async fn run_child_inner(
     let child_id = TaskId(ctx.child_ids.fetch_add(1, Ordering::Relaxed));
     let _ = ctx
         .events
-        .send(Event::AgentStarted {
+        .send(Event::SubagentStarted {
             id: child_id,
             parent,
             call,
-            agent_type: args.agent_type.clone(),
+            subagent_type: args.subagent_type.clone(),
             label: delegation_label(&args.prompt),
         })
         .await;
@@ -305,12 +309,12 @@ async fn run_child_inner(
     .await;
     let result = match outcome {
         LoopOutcome::Completed => Ok(final_text(conversation.messages())),
-        LoopOutcome::Cancelled => Err("agent interrupted".to_owned()),
+        LoopOutcome::Cancelled => Err("subagent interrupted".to_owned()),
         LoopOutcome::Failed(message, _) => Err(message),
     };
     let _ = ctx
         .events
-        .send(Event::AgentDone {
+        .send(Event::SubagentDone {
             id: child_id,
             ok: result.is_ok(),
         })
@@ -337,7 +341,7 @@ fn final_text(history: &[Message]) -> String {
             }
         }
     }
-    "(agent produced no output)".to_owned()
+    "(subagent produced no output)".to_owned()
 }
 
 #[cfg(test)]
@@ -367,6 +371,6 @@ mod tests {
     #[test]
     fn final_text_falls_back_when_no_output() {
         let history = vec![Message::text(MessageRole::User, "ask")];
-        assert_eq!(final_text(&history), "(agent produced no output)");
+        assert_eq!(final_text(&history), "(subagent produced no output)");
     }
 }

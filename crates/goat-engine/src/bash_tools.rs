@@ -132,12 +132,12 @@ struct StartInput {
 
 #[derive(Deserialize)]
 struct RunRef {
-    run: goat_protocol::ProcessId,
+    run: goat_protocol::RunId,
 }
 
 #[derive(Deserialize)]
 struct InputArgs {
-    run: goat_protocol::ProcessId,
+    run: goat_protocol::RunId,
     text: String,
 }
 
@@ -205,7 +205,7 @@ async fn start(ctx: &Ctx, env: &LoopEnv, input_json: &str) -> Result<ToolOutput,
         .with_summary(format!("#{id} {}", process_start_summary(&args.command))))
 }
 
-fn start_reply(id: goat_protocol::ProcessId) -> String {
+fn start_reply(id: goat_protocol::RunId) -> String {
     format!(
         "Started run #{id}. A fresh turn will wake you when it exits, so if you are only waiting for it, end your turn now instead of calling BashOutput. Read buffered output any time with BashOutput(run={id}); stop it with BashKill(run={id})."
     )
@@ -222,7 +222,7 @@ async fn output(ctx: &Ctx, input_json: &str) -> Result<ToolOutput, String> {
     Ok(ToolOutput::text(output_reply(args.run, &chunk)))
 }
 
-fn output_reply(id: goat_protocol::ProcessId, chunk: &crate::background::ReadChunk) -> String {
+fn output_reply(id: goat_protocol::RunId, chunk: &crate::background::ReadChunk) -> String {
     let status = match chunk.state {
         goat_protocol::ProcessState::Running => "running".to_owned(),
         goat_protocol::ProcessState::Exited => match chunk.exit_code {
@@ -293,7 +293,7 @@ fn roster_text(running: &[crate::background::RunInfo]) -> String {
 mod tests {
     use super::{augment_bash, output_reply, start_reply, tool_defs, wants_background};
     use crate::background::ReadChunk;
-    use goat_protocol::{ProcessId, ProcessState};
+    use goat_protocol::{ProcessState, RunId};
 
     fn chunk(text: &str, state: ProcessState) -> ReadChunk {
         ReadChunk {
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn start_reply_sends_a_waiting_agent_to_end_its_turn() {
-        let reply = start_reply(ProcessId(3));
+        let reply = start_reply(RunId(3));
         assert!(reply.contains("end your turn"), "got: {reply}");
         assert!(
             !reply.contains("watch"),
@@ -330,14 +330,11 @@ mod tests {
 
     #[test]
     fn running_run_reply_always_points_away_from_polling() {
-        let quiet = output_reply(ProcessId(3), &chunk("", ProcessState::Running));
+        let quiet = output_reply(RunId(3), &chunk("", ProcessState::Running));
         assert!(quiet.contains("[no new output]"), "got: {quiet}");
         assert!(quiet.contains("end your turn"), "got: {quiet}");
 
-        let chatty = output_reply(
-            ProcessId(3),
-            &chunk("compiling...\n", ProcessState::Running),
-        );
+        let chatty = output_reply(RunId(3), &chunk("compiling...\n", ProcessState::Running));
         assert!(chatty.contains("compiling..."), "got: {chatty}");
         assert!(
             chatty.contains("end your turn"),
@@ -347,7 +344,7 @@ mod tests {
 
     #[test]
     fn exited_run_reply_carries_no_waiting_advice() {
-        let reply = output_reply(ProcessId(3), &chunk("done\n", ProcessState::Exited));
+        let reply = output_reply(RunId(3), &chunk("done\n", ProcessState::Exited));
         assert!(reply.contains("exited (code 0)"), "got: {reply}");
         assert!(!reply.contains("end your turn"), "got: {reply}");
     }
@@ -355,7 +352,7 @@ mod tests {
     #[test]
     fn huge_output_keeps_its_status_marker() {
         let text = "x".repeat(200 * 1024);
-        let reply = output_reply(ProcessId(3), &chunk(&text, ProcessState::Running));
+        let reply = output_reply(RunId(3), &chunk(&text, ProcessState::Running));
         assert!(reply.contains("[output truncated]"), "should be capped");
         assert!(
             reply.trim_end().ends_with("to wait]"),

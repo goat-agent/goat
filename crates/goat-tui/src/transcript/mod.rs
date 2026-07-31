@@ -7,7 +7,8 @@ mod tool_line;
 use std::cell::RefCell;
 
 use goat_protocol::{
-    AgentGroupEntry, AgentGroupMember, InputAttachment, TaskId, ToolCall, ToolCallId, ToolOutcome,
+    InputAttachment, SubagentGroupEntry, SubagentGroupMember, TaskId, ToolCall, ToolCallId,
+    ToolOutcome,
 };
 use ratatui::{
     Frame,
@@ -20,8 +21,8 @@ use crate::{highlight::Highlighter, markdown, symbols, theme::Theme};
 
 use gutter::hang;
 pub(crate) use item::{
-    AgentGroupMemberView, AgentGroupView, AgentMemberStatus, Item, ShellStatus, ToolStatus,
-    UserMessage, Working,
+    Item, ShellStatus, SubagentGroupMemberView, SubagentGroupView, SubagentMemberStatus,
+    ToolStatus, UserMessage, Working,
 };
 pub(crate) use render::format_elapsed;
 use render::{build_static_lines, is_blank, queued_rows, stable_prefix_len, working_rows};
@@ -272,25 +273,25 @@ impl Transcript {
         self.items.push(Item::Agent(text.to_owned()));
     }
 
-    pub fn push_agent_group(
+    pub fn push_subagent_group(
         &mut self,
         parent: TaskId,
         group: ToolCallId,
-        members: Vec<AgentGroupMember>,
+        members: Vec<SubagentGroupMember>,
     ) {
         self.flush_thinking();
         self.bump_version();
         let now = std::time::Instant::now();
-        self.items.push(Item::AgentGroup(AgentGroupView {
+        self.items.push(Item::SubagentGroup(SubagentGroupView {
             parent,
             group,
             members: members
                 .into_iter()
-                .map(|member| AgentGroupMemberView {
+                .map(|member| SubagentGroupMemberView {
                     call: member.call,
-                    agent_type: member.agent_type,
+                    subagent_type: member.subagent_type,
                     label: member.label,
-                    status: AgentMemberStatus::Pending,
+                    status: SubagentMemberStatus::Pending,
                     tools: 0,
                     tokens: 0,
                     started_at: None,
@@ -302,18 +303,22 @@ impl Transcript {
         }));
     }
 
-    pub fn push_restored_agent_group(&mut self, group: ToolCallId, members: Vec<AgentGroupEntry>) {
+    pub fn push_restored_agent_group(
+        &mut self,
+        group: ToolCallId,
+        members: Vec<SubagentGroupEntry>,
+    ) {
         self.bump_version();
-        self.items.push(Item::AgentGroup(AgentGroupView {
+        self.items.push(Item::SubagentGroup(SubagentGroupView {
             parent: TaskId(0),
             group,
             members: members
                 .into_iter()
-                .map(|entry| AgentGroupMemberView {
+                .map(|entry| SubagentGroupMemberView {
                     call: entry.member.call,
-                    agent_type: entry.member.agent_type,
+                    subagent_type: entry.member.subagent_type,
                     label: entry.member.label,
-                    status: AgentMemberStatus::Done(entry.outcome),
+                    status: SubagentMemberStatus::Done(entry.outcome),
                     tools: 0,
                     tokens: 0,
                     started_at: None,
@@ -325,38 +330,38 @@ impl Transcript {
         }));
     }
 
-    pub fn is_agent_group_call(&self, parent: TaskId, call: ToolCallId) -> bool {
+    pub fn is_subagent_group_call(&self, parent: TaskId, call: ToolCallId) -> bool {
         self.items.iter().rev().any(|item| {
             matches!(
                 item,
-                Item::AgentGroup(group)
+                Item::SubagentGroup(group)
                     if group.parent == parent
                         && group.members.iter().any(|member| member.call == call)
             )
         })
     }
 
-    pub fn start_agent(&mut self, parent: TaskId, call: ToolCallId) {
+    pub fn start_subagent(&mut self, parent: TaskId, call: ToolCallId) {
         self.bump_version();
         for item in self.items.iter_mut().rev() {
-            let Item::AgentGroup(group) = item else {
+            let Item::SubagentGroup(group) = item else {
                 continue;
             };
             if group.parent != parent {
                 continue;
             }
             if let Some(member) = group.members.iter_mut().find(|member| member.call == call) {
-                member.status = AgentMemberStatus::Running;
+                member.status = SubagentMemberStatus::Running;
                 member.started_at = Some(std::time::Instant::now());
                 return;
             }
         }
     }
 
-    pub fn add_agent_tool(&mut self, parent: TaskId, call: ToolCallId) {
+    pub fn add_subagent_tool(&mut self, parent: TaskId, call: ToolCallId) {
         self.bump_version();
         for item in self.items.iter_mut().rev() {
-            let Item::AgentGroup(group) = item else {
+            let Item::SubagentGroup(group) = item else {
                 continue;
             };
             if group.parent != parent {
@@ -369,10 +374,10 @@ impl Transcript {
         }
     }
 
-    pub fn add_agent_tokens(&mut self, parent: TaskId, call: ToolCallId, tokens: u64) {
+    pub fn add_subagent_tokens(&mut self, parent: TaskId, call: ToolCallId, tokens: u64) {
         self.bump_version();
         for item in self.items.iter_mut().rev() {
-            let Item::AgentGroup(group) = item else {
+            let Item::SubagentGroup(group) = item else {
                 continue;
             };
             if group.parent != parent {
@@ -385,10 +390,10 @@ impl Transcript {
         }
     }
 
-    pub fn finish_agent(&mut self, parent: TaskId, call: ToolCallId, outcome: ToolOutcome) {
+    pub fn finish_subagent(&mut self, parent: TaskId, call: ToolCallId, outcome: ToolOutcome) {
         self.bump_version();
         for item in self.items.iter_mut().rev() {
-            let Item::AgentGroup(group) = item else {
+            let Item::SubagentGroup(group) = item else {
                 continue;
             };
             if group.parent != parent {
@@ -397,12 +402,12 @@ impl Transcript {
             let Some(member) = group.members.iter_mut().find(|member| member.call == call) else {
                 continue;
             };
-            member.status = AgentMemberStatus::Done(outcome);
+            member.status = SubagentMemberStatus::Done(outcome);
             member.finished_at = Some(std::time::Instant::now());
             if group
                 .members
                 .iter()
-                .all(|member| matches!(member.status, AgentMemberStatus::Done(_)))
+                .all(|member| matches!(member.status, SubagentMemberStatus::Done(_)))
             {
                 group.finished_at = Some(std::time::Instant::now());
             }
@@ -410,15 +415,15 @@ impl Transcript {
         }
     }
 
-    pub fn has_running_agent_group(&self) -> bool {
+    pub fn has_running_subagent_group(&self) -> bool {
         self.items.iter().any(|item| {
             matches!(
                 item,
-                Item::AgentGroup(group)
+                Item::SubagentGroup(group)
                     if group.members.iter().any(|member| {
                         matches!(
                             member.status,
-                            AgentMemberStatus::Pending | AgentMemberStatus::Running
+                            SubagentMemberStatus::Pending | SubagentMemberStatus::Running
                         )
                     })
             )
@@ -566,14 +571,14 @@ impl Transcript {
                         image: None,
                     });
                 }
-                if let Item::AgentGroup(group) = item {
+                if let Item::SubagentGroup(group) = item {
                     let now = std::time::Instant::now();
                     for member in &mut group.members {
                         if matches!(
                             member.status,
-                            AgentMemberStatus::Pending | AgentMemberStatus::Running
+                            SubagentMemberStatus::Pending | SubagentMemberStatus::Running
                         ) {
-                            member.status = AgentMemberStatus::Done(ToolOutcome {
+                            member.status = SubagentMemberStatus::Done(ToolOutcome {
                                 ok: false,
                                 summary: None,
                                 image: None,
@@ -1184,25 +1189,25 @@ mod tests {
     }
 
     #[test]
-    fn agent_group_renders_compact_tree_with_live_spinner() {
+    fn subagent_group_renders_compact_tree_with_live_spinner() {
         let mut t = Transcript::default();
-        t.push_agent_group(
+        t.push_subagent_group(
             TaskId(1),
             ToolCallId(1),
             vec![
-                goat_protocol::AgentGroupMember {
+                goat_protocol::SubagentGroupMember {
                     call: ToolCallId(1),
-                    agent_type: "explore".to_owned(),
+                    subagent_type: "explore".to_owned(),
                     label: "map engine".to_owned(),
                 },
-                goat_protocol::AgentGroupMember {
+                goat_protocol::SubagentGroupMember {
                     call: ToolCallId(2),
-                    agent_type: "critic".to_owned(),
+                    subagent_type: "critic".to_owned(),
                     label: "review UI".to_owned(),
                 },
             ],
         );
-        t.start_agent(TaskId(1), ToolCallId(1));
+        t.start_subagent(TaskId(1), ToolCallId(1));
         let mut terminal = Terminal::new(TestBackend::new(60, 3)).unwrap();
         terminal
             .draw(|frame| {
@@ -1223,7 +1228,7 @@ mod tests {
                 );
             })
             .unwrap();
-        assert!(buffer_row(&terminal, 0).contains("2 agents · 0/2 done"));
+        assert!(buffer_row(&terminal, 0).contains("2 subagents · 0/2 done"));
         assert!(
             buffer_row(&terminal, 1)
                 .contains(&format!("├─ {} explore · map engine", symbols::SPINNER[3]))

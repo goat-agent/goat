@@ -454,7 +454,7 @@ pub(crate) async fn core_loop(
             }
         }
         let roster = if run.is_top() {
-            crate::process_tools::roster_message(ctx).await
+            crate::bash_tools::roster_message(ctx).await
         } else {
             None
         };

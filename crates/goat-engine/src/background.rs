@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt::Write as _, path::Path, process::Stdio, sync::Arc};
 
-use goat_protocol::{Event, ProcessExitReason, ProcessId, ProcessInfo, ProcessState};
+use goat_protocol::{Event, ProcessExitReason, ProcessInfo, ProcessState, RunId};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Command,
@@ -101,7 +101,7 @@ impl Entry {
         self.bash().is_some_and(|bash| bash.watched)
     }
 
-    fn info(&self, id: ProcessId) -> ProcessInfo {
+    fn info(&self, id: RunId) -> ProcessInfo {
         ProcessInfo {
             id,
             command: self.title.clone(),
@@ -111,7 +111,7 @@ impl Entry {
         }
     }
 
-    fn run_info(&self, id: ProcessId) -> RunInfo {
+    fn run_info(&self, id: RunId) -> RunInfo {
         RunInfo {
             id,
             kind: self.kind(),
@@ -128,7 +128,7 @@ impl Drop for Entry {
 }
 
 struct Inner {
-    entries: HashMap<ProcessId, Entry>,
+    entries: HashMap<RunId, Entry>,
     next_id: u64,
 }
 
@@ -158,12 +158,12 @@ impl std::fmt::Display for SpawnError {
 }
 
 pub(crate) struct Started {
-    pub(crate) id: ProcessId,
+    pub(crate) id: RunId,
     pub(crate) pgid: Option<i32>,
 }
 
 pub(crate) struct RunInfo {
-    pub(crate) id: ProcessId,
+    pub(crate) id: RunId,
     pub(crate) kind: Kind,
     pub(crate) title: String,
     pub(crate) watched: bool,
@@ -202,7 +202,7 @@ impl Runs {
             if live >= MAX_LIVE_PROCESSES {
                 return Err(SpawnError::TooMany);
             }
-            ProcessId(inner.next_id)
+            RunId(inner.next_id)
         };
 
         let mut builder = shell_command(command);
@@ -278,9 +278,9 @@ impl Runs {
         subagent_type: &str,
         label: &str,
         cancel: CancellationToken,
-    ) -> ProcessId {
+    ) -> RunId {
         let mut inner = self.inner.lock().await;
-        let id = ProcessId(inner.next_id);
+        let id = RunId(inner.next_id);
         inner.next_id += 1;
         let title = if label.is_empty() {
             subagent_type.to_owned()
@@ -304,7 +304,7 @@ impl Runs {
         id
     }
 
-    pub(crate) async fn finish_subagent(&self, id: ProcessId, result: Result<String, String>) {
+    pub(crate) async fn finish_subagent(&self, id: RunId, result: Result<String, String>) {
         let wake = {
             let mut inner = self.inner.lock().await;
             let Some(entry) = inner.entries.get_mut(&id) else {
@@ -327,7 +327,7 @@ impl Runs {
         }
     }
 
-    pub(crate) async fn set_db_id(&self, id: ProcessId, db_id: i64) {
+    pub(crate) async fn set_db_id(&self, id: RunId, db_id: i64) {
         let mut inner = self.inner.lock().await;
         if let Some(bash) = inner.entries.get_mut(&id).and_then(Entry::bash_mut) {
             bash.db_id = Some(db_id);
@@ -336,7 +336,7 @@ impl Runs {
 
     fn spawn_reader<R>(
         self: &Arc<Self>,
-        id: ProcessId,
+        id: RunId,
         pipe: R,
         stream: Stream,
     ) -> tokio::task::JoinHandle<()>
@@ -354,7 +354,7 @@ impl Runs {
 
     fn spawn_waiter(
         self: &Arc<Self>,
-        id: ProcessId,
+        id: RunId,
         mut child: tokio::process::Child,
         pgid: Option<i32>,
         kill_rx: tokio::sync::oneshot::Receiver<()>,
@@ -376,7 +376,7 @@ impl Runs {
         })
     }
 
-    async fn append_line(self: &Arc<Self>, id: ProcessId, stream: Stream, text: String) {
+    async fn append_line(self: &Arc<Self>, id: RunId, stream: Stream, text: String) {
         let should_wake = {
             let mut inner = self.inner.lock().await;
             let Some(bash) = inner.entries.get_mut(&id).and_then(Entry::bash_mut) else {
@@ -416,7 +416,7 @@ impl Runs {
 
     async fn mark_exited(
         self: &Arc<Self>,
-        id: ProcessId,
+        id: RunId,
         code: Option<i32>,
         natural: ProcessExitReason,
     ) {
@@ -463,7 +463,7 @@ impl Runs {
         }
     }
 
-    pub(crate) async fn read_new(&self, id: ProcessId) -> Option<ReadChunk> {
+    pub(crate) async fn read_new(&self, id: RunId) -> Option<ReadChunk> {
         let mut inner = self.inner.lock().await;
         let entry = inner.entries.get_mut(&id)?;
         let exited = entry.state == ProcessState::Exited;
@@ -481,9 +481,9 @@ impl Runs {
         })
     }
 
-    pub(crate) async fn take_pending_observations(&self) -> Vec<(ProcessId, Observation)> {
+    pub(crate) async fn take_pending_observations(&self) -> Vec<(RunId, Observation)> {
         let mut inner = self.inner.lock().await;
-        let ids: Vec<ProcessId> = inner.entries.keys().copied().collect();
+        let ids: Vec<RunId> = inner.entries.keys().copied().collect();
         let mut out = Vec::new();
         for id in ids {
             let Some(entry) = inner.entries.get_mut(&id) else {
@@ -537,7 +537,7 @@ impl Runs {
     }
 
     #[cfg(test)]
-    async fn buffered_lines(&self, id: ProcessId) -> usize {
+    async fn buffered_lines(&self, id: RunId) -> usize {
         let inner = self.inner.lock().await;
         inner
             .entries
@@ -546,7 +546,7 @@ impl Runs {
             .map_or(0, |bash| bash.lines.len())
     }
 
-    pub(crate) async fn write_stdin(&self, id: ProcessId, text: &str) -> Result<(), String> {
+    pub(crate) async fn write_stdin(&self, id: RunId, text: &str) -> Result<(), String> {
         let mut stdin = {
             let mut inner = self.inner.lock().await;
             let entry = inner
@@ -577,7 +577,7 @@ impl Runs {
         result.map_err(|err| format!("failed to write to run #{id}: {err}"))
     }
 
-    pub(crate) async fn set_watch(&self, id: ProcessId, on: bool) -> Result<(), String> {
+    pub(crate) async fn set_watch(&self, id: RunId, on: bool) -> Result<(), String> {
         {
             let mut inner = self.inner.lock().await;
             let bash = inner
@@ -594,7 +594,7 @@ impl Runs {
         Ok(())
     }
 
-    pub(crate) async fn kill(&self, id: ProcessId, kind: Option<Kind>) -> Result<(), String> {
+    pub(crate) async fn kill(&self, id: RunId, kind: Option<Kind>) -> Result<(), String> {
         let stop = {
             let mut inner = self.inner.lock().await;
             let entry = inner
@@ -830,7 +830,7 @@ mod tests {
         panic!("process group {pgid} never went away");
     }
 
-    async fn wait_until_exited(registry: &Runs, id: goat_protocol::ProcessId) {
+    async fn wait_until_exited(registry: &Runs, id: goat_protocol::RunId) {
         for _ in 0..1000 {
             let list = registry.list().await;
             if list
@@ -949,7 +949,7 @@ mod tests {
         wait_until_exited(&registry, started.id).await;
     }
 
-    async fn wait_until_buffered(registry: &Runs, id: goat_protocol::ProcessId, n: usize) {
+    async fn wait_until_buffered(registry: &Runs, id: goat_protocol::RunId, n: usize) {
         for _ in 0..1000 {
             if registry.buffered_lines(id).await >= n {
                 return;
@@ -1195,7 +1195,7 @@ mod tests {
         assert!(cancel.is_cancelled(), "kill must cancel the subagent token");
 
         registry
-            .finish_subagent(id, Err("agent interrupted".to_owned()))
+            .finish_subagent(id, Err("subagent interrupted".to_owned()))
             .await;
         let result = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
         assert!(
