@@ -57,10 +57,76 @@ async fn main() -> color_eyre::Result<()> {
         Some(Command::Doctor(args)) => goat_agent::cli::doctor::run(args)
             .await
             .map_err(|e| into_eyre(&e)),
+        Some(Command::Reload { agent }) => run_reload(agent).await,
         Some(Command::Update { force }) => update::run(force).await,
         Some(Command::Provider(command)) => auth::run_provider(command).await,
         Some(Command::Daemon(command)) => run_daemon_command(command).await,
         Some(Command::Remote(command)) => run_remote_command(command).await,
+    }
+}
+
+async fn run_reload(agent: Option<String>) -> color_eyre::Result<()> {
+    let color = ColorMode::detect();
+    let socket_path = goat_config::socket_path()
+        .ok_or_else(|| color_eyre::eyre::eyre!(goat_config::HOME_NOT_FOUND))?;
+    if !goat_daemon::already_running(&socket_path) {
+        println!(
+            "{}",
+            color.paint(
+                "no daemon is running; the new config loads the next time goat starts",
+                Palette::Muted,
+            )
+        );
+        return Ok(());
+    }
+
+    let report = goat_client::reload(&socket_path, agent)
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
+
+    for warning in &report.warnings {
+        println!(
+            "{}",
+            color.paint(format!("warning: {warning}"), Palette::Warning)
+        );
+    }
+    for failure in &report.failed {
+        println!(
+            "{}",
+            color.paint(
+                format!("{}: {}", failure.agent, failure.reason),
+                Palette::Warning,
+            )
+        );
+    }
+    if !report.reloaded.is_empty() {
+        println!(
+            "{}",
+            color.paint(
+                format!("reloaded {}", report.reloaded.join(", ")),
+                Palette::Success
+            )
+        );
+    }
+    if !report.unchanged.is_empty() {
+        println!(
+            "{}",
+            color.paint(
+                format!("unchanged {}", report.unchanged.join(", ")),
+                Palette::Muted,
+            )
+        );
+    }
+    if report.reloaded.is_empty() && report.unchanged.is_empty() && report.failed.is_empty() {
+        println!(
+            "{}",
+            color.paint("no agents are configured", Palette::Muted)
+        );
+    }
+    if report.failed.is_empty() {
+        Ok(())
+    } else {
+        Err(color_eyre::eyre::eyre!("some agents did not reload"))
     }
 }
 

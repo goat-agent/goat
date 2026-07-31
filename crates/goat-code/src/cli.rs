@@ -70,6 +70,15 @@ pub enum Command {
   goat provider logout <provider> <account>"
     )]
     Provider(ProviderCommand),
+    #[command(
+        about = "Apply config changes to the running daemon",
+        after_help = "Edit the files under ~/.goat, then run this. Config is validated first: \
+when it does not check out nothing is replaced and the running agents keep their old settings."
+    )]
+    Reload {
+        #[arg(long, short, help = "Reload only this agent")]
+        agent: Option<String>,
+    },
     #[command(about = "Update goat")]
     Update {
         #[arg(long)]
