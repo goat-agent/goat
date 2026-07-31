@@ -172,6 +172,8 @@ fn render_agents(
 ) -> Result<()> {
     let catalog = known_models(store, user);
     let loaded: HashMap<&str, _> = cfg.agents.iter().map(|p| (p.slug.as_str(), p)).collect();
+    let watch: HashMap<String, Vec<goat_runtime::WatchIssue>> =
+        goat_runtime::validate_agents(cfg).into_iter().collect();
 
     if !paths.agents_dir.exists() {
         ui::line(&ui::dim("no agents dir"));
@@ -205,9 +207,16 @@ fn render_agents(
         return Ok(());
     }
 
-    let mut t = Table::new(["agent", "status", "model", "bindings"]);
+    let mut t = Table::new(["agent", "status", "model", "bindings", "watch"]);
     for slug in &slugs {
         if let Some(p) = loaded.get(slug.as_str()) {
+            let issues = watch.get(slug).map_or(&[][..], Vec::as_slice);
+            let (watch_cell, watch_style) = if issues.is_empty() {
+                ("ok".to_string(), Palette::Success)
+            } else {
+                *warnings += issues.len();
+                (format!("{} dropped", issues.len()), Palette::Warning)
+            };
             let model = p.default_model.to_string();
             let bindings = if p.bindings.is_empty() {
                 "—".into()
@@ -233,6 +242,7 @@ fn render_agents(
                 (badge.to_string(), style),
                 (model, Palette::Plain),
                 (bindings, Palette::Plain),
+                (watch_cell, watch_style),
             ]);
         } else {
             *warnings += 1;
@@ -241,10 +251,17 @@ fn render_agents(
                 ("warn".into(), Palette::Warning),
                 ("?".into(), Palette::Plain),
                 ("?".into(), Palette::Plain),
+                ("?".into(), Palette::Plain),
             ]);
         }
     }
     t.render();
+
+    for slug in &slugs {
+        for issue in watch.get(slug).map_or(&[][..], Vec::as_slice) {
+            ui::line(&ui::dim(&format!("{slug}: {issue}")));
+        }
+    }
     Ok(())
 }
 

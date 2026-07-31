@@ -283,6 +283,22 @@ async fn dispatch(
                 Disposition::Continue
             }
         }
+        ClientFrame::ReloadAgents { agent } => {
+            if origin.is_local() {
+                let frame = match manager.reload_agents(agent).await {
+                    Ok(report) => ServerFrame::Reloaded { report },
+                    Err(message) => ServerFrame::Error { message },
+                };
+                let _ = out_tx.send(frame).await;
+            } else {
+                let _ = out_tx
+                    .send(ServerFrame::Error {
+                        message: "ReloadAgents is local-only".to_owned(),
+                    })
+                    .await;
+            }
+            Disposition::Continue
+        }
         ClientFrame::Goodbye {} => Disposition::Closed,
     }
 }

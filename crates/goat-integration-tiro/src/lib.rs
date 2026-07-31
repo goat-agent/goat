@@ -49,7 +49,7 @@ pub fn service() -> McpService {
             describe: parse::describe_identity,
         })
         .defaults(watch::defaults)
-        .compile(watch::compile)
+        .watch(&VOCABULARY, watch::compile)
 }
 
 #[derive(Debug, Default, Deserialize)]

@@ -31,6 +31,12 @@ struct ManagerInner {
     next_client: AtomicU64,
     remote: Mutex<Option<RemoteControls>>,
     meter: std::sync::OnceLock<goat_proxy::Meter>,
+    reload: std::sync::OnceLock<mpsc::Sender<ReloadRequest>>,
+}
+
+pub struct ReloadRequest {
+    pub agent: Option<String>,
+    pub reply: oneshot::Sender<goat_wire::ReloadReport>,
 }
 
 struct RemoteControls {
@@ -57,12 +63,34 @@ impl Manager {
                 next_client: AtomicU64::new(1),
                 remote: Mutex::new(None),
                 meter: std::sync::OnceLock::new(),
+                reload: std::sync::OnceLock::new(),
             }),
         }
     }
 
     pub fn set_meter(&self, meter: goat_proxy::Meter) {
         let _ = self.inner.meter.set(meter);
+    }
+
+    pub fn set_reload(&self, sender: mpsc::Sender<ReloadRequest>) {
+        let _ = self.inner.reload.set(sender);
+    }
+
+    pub async fn reload_agents(
+        &self,
+        agent: Option<String>,
+    ) -> Result<goat_wire::ReloadReport, String> {
+        let Some(sender) = self.inner.reload.get() else {
+            return Err("no agent runtime is attached to this daemon".to_owned());
+        };
+        let (reply, answer) = oneshot::channel();
+        sender
+            .send(ReloadRequest { agent, reply })
+            .await
+            .map_err(|_| "the agent runtime is no longer accepting reloads".to_owned())?;
+        answer
+            .await
+            .map_err(|_| "the agent runtime dropped the reload request".to_owned())
     }
 
     pub(crate) fn set_remote(

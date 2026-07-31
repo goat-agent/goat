@@ -78,6 +78,10 @@ impl Integration for GithubIntegration {
         watch::defaults()
     }
 
+    fn watch_vocabulary(&self) -> Option<&'static goat_integration::query::WatchVocabulary> {
+        Some(&VOCABULARY)
+    }
+
     fn compile_watch(
         &self,
         _binding: &IntegrationBinding,

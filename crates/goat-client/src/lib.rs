@@ -28,6 +28,8 @@ pub enum ClientError {
     OpenFailed(String),
     #[error("could not start daemon: {0}")]
     SpawnFailed(String),
+    #[error("daemon refused the request: {0}")]
+    Refused(String),
 }
 
 pub struct Attachment {
@@ -468,6 +470,25 @@ pub async fn stop(socket_path: &Path) -> Result<(), ClientError> {
     expect_welcome(&mut conn).await?;
     conn.send(&ClientFrame::StopDaemon {}).await?;
     Ok(())
+}
+
+pub async fn reload(
+    socket_path: &Path,
+    agent: Option<String>,
+) -> Result<goat_wire::ReloadReport, ClientError> {
+    let stream = transport::connect(socket_path).await?;
+    let mut conn: ClientConn<Stream> = ClientConn::new(stream);
+    conn.send(&ClientFrame::Hello {
+        version: PROTOCOL_VERSION,
+    })
+    .await?;
+    expect_welcome(&mut conn).await?;
+    conn.send(&ClientFrame::ReloadAgents { agent }).await?;
+    match conn.recv().await? {
+        ServerFrame::Reloaded { report } => Ok(report),
+        ServerFrame::Error { message } => Err(ClientError::Refused(message)),
+        _ => Err(ClientError::Handshake),
+    }
 }
 
 pub async fn kill_session(socket_path: &Path, session: u64) -> Result<(), ClientError> {

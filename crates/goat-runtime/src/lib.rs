@@ -88,11 +88,9 @@ impl Goat {
         let pool_for_memory = sqlite_store.pool();
         let store: Arc<dyn Store> = Arc::new(sqlite_store);
 
-        let sdk_store = goat_auth::CredentialStore::new(cfg.paths.credentials_json.clone());
+        let credentials = goat_auth::CredentialStore::new(cfg.paths.credentials_json.clone());
         let user_providers = goat_config::UserProviders::at(cfg.paths.config_json.clone());
-        let providers = build_provider_registry(&sdk_store, &user_providers, meter.as_ref());
-        let embedders = build_embedders(&cfg.agents, &sdk_store).await;
-        let channels = build_channel_registry();
+        let embedders = build_embedders(&cfg.agents, &credentials).await;
 
         let bus = EventBus::new();
         let (scheduler_handle, prepared_scheduler) =
@@ -101,11 +99,6 @@ impl Goat {
                 .context("prepare scheduler")?;
 
         let cancel = CancellationToken::new();
-
-        let mut tools_reg = ToolRegistry::from_inventory();
-        goat_agent_tool_schedule::register(&mut tools_reg, store.clone(), scheduler_handle);
-        goat_agent_tool_goal::register(&mut tools_reg, store.clone());
-        goat_agent_tool_observation::register(&mut tools_reg, store.clone());
 
         let mem_embedder: Option<Arc<dyn Embedder>> = embedders.values().next().cloned();
         let memory_engine = Arc::new(
@@ -118,86 +111,46 @@ impl Goat {
             .await
             .context("open memory engine")?,
         );
-        goat_agent_tool_memory::register(&mut tools_reg, memory_engine.clone());
         let pty_manager = Arc::new(goat_agent_tool_pty::PtyManager::new(
             cancel.clone(),
             goat_agent_tool_pty::MAX_SESSIONS,
         ));
-        goat_agent_tool_pty::register(&mut tools_reg, pty_manager.clone());
 
-        if let Some(manager) = code {
-            goat_agent_tool_code::register(&mut tools_reg, manager);
-        }
-
-        let integrations = goat_integration::registry_from_inventory();
-        let connections = load_integration_connections(&cfg.paths.config_json);
-        let integration_bindings =
-            build_integration_bindings(&cfg.agents, &integrations, &connections);
-        let integration_runtime = IntegrationRuntime {
-            credentials: sdk_store.clone(),
+        let base = RuntimeBase {
+            paths: cfg.paths.clone(),
             store: store.clone(),
-            bus: bus.clone(),
+            credentials,
+            user_providers,
+            meter,
+            memory_engine: memory_engine.clone(),
+            pty_manager: pty_manager.clone(),
+            scheduler_handle,
+            code: code.clone(),
+            bus,
+            renderer: Arc::new(DefaultStreamRenderer),
         };
-        let mut integration_tool_names: HashMap<String, Vec<String>> = HashMap::new();
-        for (id, integration) in &integrations {
-            if let Some(bindings) = integration_bindings.get(id).filter(|b| !b.is_empty()) {
-                let names = integration
-                    .register_tools(&mut tools_reg, &integration_runtime, bindings.clone())
-                    .await;
-                integration_tool_names.insert(
-                    id.clone(),
-                    names.iter().map(|n| n.as_str().to_string()).collect(),
-                );
-            }
-        }
 
-        let tools = Arc::new(tools_reg);
-        info!(
-            default_tools = tools.default_specs().len(),
-            "loaded tool registry"
-        );
+        let shared = build_shared(&base, &cfg.agents).await;
+        let providers = shared.providers.clone();
 
-        let renderer: Arc<dyn StreamRenderer> = Arc::new(DefaultStreamRenderer);
+        let mut supervisor = Supervisor {
+            base,
+            shared,
+            agents: HashMap::new(),
+            shared_key: shared_fingerprint(&cfg.paths.config_json, &cfg.agents),
+            cancel: cancel.clone(),
+            models: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        supervisor.sync(cfg.agents, None).await;
 
         let mut join_handles = Vec::new();
-
-        let shared = RuntimeShared {
-            providers: providers.clone(),
-            channels: &channels,
-            integrations: &integrations,
-            integration_bindings: &integration_bindings,
-            integration_runtime,
-            integration_tool_names,
-            tools,
-            goat_root: cfg.paths.root.clone(),
-            agents_dir: cfg.paths.agents_dir.clone(),
-            credentials: sdk_store.clone(),
-            store,
-            memory_engine,
-            renderer,
-            bus,
-            cancel: cancel.clone(),
-        };
-
-        for raw_agent in &cfg.agents {
-            match spawn_agent(raw_agent, &shared).await {
-                Ok(handles) => join_handles.extend(handles),
-                Err(e) => warn!(agent = %raw_agent.slug, error = ?e, "skipping agent"),
-            }
-        }
-
         tokio::task::yield_now().await;
         join_handles.push(prepared_scheduler.spawn_with_cancel(cancel.clone()));
 
         {
-            let engine = shared.memory_engine.clone();
-            let providers = shared.providers.clone();
-            let store = shared.store.clone();
-            let agent_models: Vec<(AgentId, goat_model::Model)> = cfg
-                .agents
-                .iter()
-                .map(|p| (p.id, p.default_model.clone()))
-                .collect();
+            let engine = memory_engine.clone();
+            let store = store.clone();
+            let models = supervisor.models.clone();
             join_handles.push(goat_sleep::spawn(
                 goat_sleep::SleepConfig::default(),
                 cancel.clone(),
@@ -205,16 +158,23 @@ impl Goat {
                     let engine = engine.clone();
                     let providers = providers.clone();
                     let store = store.clone();
-                    let agent_models = agent_models.clone();
+                    let models = models.clone();
                     async move {
                         if store.is_paused().await.unwrap_or(false) {
                             return;
                         }
+                        let agent_models = models.lock().map(|m| m.clone()).unwrap_or_default();
                         run_consolidation(&engine, &providers, &store, &agent_models).await;
                     }
                 },
             ));
         }
+
+        let (reload_tx, reload_rx) = tokio::sync::mpsc::channel(4);
+        if let Some(manager) = code.as_ref() {
+            manager.set_reload(reload_tx);
+        }
+        join_handles.push(tokio::spawn(supervisor.run(reload_rx)));
 
         Ok(Self {
             join_handles,
@@ -483,8 +443,41 @@ fn build_integration_bindings(
     maps.into_iter().map(|(k, v)| (k, Arc::new(v))).collect()
 }
 
-fn build_watch_plan(raw: &AgentConfig, shared: &RuntimeShared<'_>) -> Vec<Workflow> {
-    let declared: Vec<(String, Vec<(String, WatchSpec)>)> = match &raw.watch {
+#[derive(Clone, Debug)]
+pub struct WatchIssue {
+    pub workflow: String,
+    pub source: String,
+    pub stream: String,
+    pub reason: String,
+}
+
+impl std::fmt::Display for WatchIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "watch `{}` source `{}` (stream `{}`): {}",
+            self.workflow, self.source, self.stream, self.reason
+        )
+    }
+}
+
+struct ResolvedSource {
+    workflow: String,
+    name: String,
+    integration: Arc<dyn Integration>,
+    binding: IntegrationBinding,
+    spec: WatchSpec,
+}
+
+type IntegrationMap = HashMap<String, Arc<dyn Integration>>;
+type BindingMaps = HashMap<String, Arc<goat_integration::BindingMap>>;
+
+fn declared_watch(
+    raw: &AgentConfig,
+    integrations: &IntegrationMap,
+    bindings: &BindingMaps,
+) -> Vec<(String, Vec<(String, WatchSpec)>)> {
+    match &raw.watch {
         Some(workflows) => workflows
             .iter()
             .map(|workflow| {
@@ -513,11 +506,8 @@ fn build_watch_plan(raw: &AgentConfig, shared: &RuntimeShared<'_>) -> Vec<Workfl
             .iter()
             .filter_map(|agent_integration| {
                 let name = agent_integration.name.as_str();
-                let integration = shared.integrations.get(name)?;
-                let binding = shared
-                    .integration_bindings
-                    .get(name)
-                    .and_then(|map| map.get(&raw.id))?;
+                let integration = integrations.get(name)?;
+                let binding = bindings.get(name).and_then(|map| map.get(&raw.id))?;
                 Some((name.to_string(), integration.default_watch(binding)))
             })
             .flat_map(|(name, specs)| {
@@ -526,79 +516,140 @@ fn build_watch_plan(raw: &AgentConfig, shared: &RuntimeShared<'_>) -> Vec<Workfl
                     .map(move |spec| (spec.stream.clone(), vec![(name.clone(), spec)]))
             })
             .collect(),
-    };
-
-    let mut seen: std::collections::HashSet<(String, String, String)> =
-        std::collections::HashSet::new();
-    let mut plan = Vec::new();
-    for (workflow_name, sources) in declared {
-        let mut compiled_sources = Vec::new();
-        for (source_name, spec) in sources {
-            let Some(integration) = shared.integrations.get(&source_name) else {
-                warn!(
-                    agent = %raw.slug,
-                    workflow = %workflow_name,
-                    source = %source_name,
-                    "skipping watch source: no compiled-in integration with this name",
-                );
-                continue;
-            };
-            let Some(binding) = shared
-                .integration_bindings
-                .get(&source_name)
-                .and_then(|map| map.get(&raw.id))
-            else {
-                warn!(
-                    agent = %raw.slug,
-                    workflow = %workflow_name,
-                    source = %source_name,
-                    "skipping watch source: the integration is not bound to this agent",
-                );
-                continue;
-            };
-            let key = (
-                source_name.clone(),
-                binding.account.clone(),
-                spec.stream.clone(),
-            );
-            if !seen.insert(key) {
-                warn!(
-                    agent = %raw.slug,
-                    workflow = %workflow_name,
-                    source = %source_name,
-                    stream = %spec.stream,
-                    "skipping watch source: duplicate stream; name it explicitly with `stream`",
-                );
-                continue;
-            }
-            match integration.compile_watch(binding, &shared.integration_runtime, &spec) {
-                Ok(compiled) => compiled_sources.push(WorkflowSource {
-                    integration: integration.id(),
-                    account: binding.account.clone(),
-                    stream: spec.stream,
-                    compiled,
-                }),
-                Err(e) => warn!(
-                    agent = %raw.slug,
-                    workflow = %workflow_name,
-                    source = %source_name,
-                    error = %e,
-                    "skipping watch source: its query does not compile",
-                ),
-            }
-        }
-        if !compiled_sources.is_empty() {
-            plan.push(Workflow::new(workflow_name, compiled_sources));
-        }
     }
-    plan
 }
 
-struct RuntimeShared<'a> {
+fn resolve_watch_sources(
+    raw: &AgentConfig,
+    integrations: &IntegrationMap,
+    bindings: &BindingMaps,
+) -> (Vec<ResolvedSource>, Vec<WatchIssue>) {
+    let mut seen: std::collections::HashSet<(String, String, String)> =
+        std::collections::HashSet::new();
+    let mut resolved = Vec::new();
+    let mut issues = Vec::new();
+    for (workflow, sources) in declared_watch(raw, integrations, bindings) {
+        for (name, spec) in sources {
+            let mut reject = |reason: &str| {
+                issues.push(WatchIssue {
+                    workflow: workflow.clone(),
+                    source: name.clone(),
+                    stream: spec.stream.clone(),
+                    reason: reason.to_owned(),
+                });
+            };
+            let Some(integration) = integrations.get(&name) else {
+                reject("no compiled-in integration with this name");
+                continue;
+            };
+            let Some(binding) = bindings.get(&name).and_then(|map| map.get(&raw.id)) else {
+                reject("the integration is not bound to this agent");
+                continue;
+            };
+            let key = (name.clone(), binding.account.clone(), spec.stream.clone());
+            if !seen.insert(key) {
+                reject("duplicate stream; name it explicitly with `stream`");
+                continue;
+            }
+            resolved.push(ResolvedSource {
+                workflow: workflow.clone(),
+                name,
+                integration: integration.clone(),
+                binding: binding.clone(),
+                spec,
+            });
+        }
+    }
+    (resolved, issues)
+}
+
+pub fn validate_agents(cfg: &LoadedConfig) -> Vec<(String, Vec<WatchIssue>)> {
+    let integrations = goat_integration::registry_from_inventory();
+    let connections = load_integration_connections(&cfg.paths.config_json);
+    let bindings = build_integration_bindings(&cfg.agents, &integrations, &connections);
+    cfg.agents
+        .iter()
+        .map(|agent| {
+            (
+                agent.slug.clone(),
+                validate_watch(agent, &integrations, &bindings),
+            )
+        })
+        .collect()
+}
+
+pub fn validate_watch(
+    raw: &AgentConfig,
+    integrations: &IntegrationMap,
+    bindings: &BindingMaps,
+) -> Vec<WatchIssue> {
+    let (resolved, mut issues) = resolve_watch_sources(raw, integrations, bindings);
+    for source in resolved {
+        let Some(vocabulary) = source.integration.watch_vocabulary() else {
+            issues.push(WatchIssue {
+                workflow: source.workflow,
+                source: source.name,
+                stream: source.spec.stream,
+                reason: "this integration does not support watch queries".to_owned(),
+            });
+            continue;
+        };
+        if let Err(e) = goat_integration::query::validate(vocabulary, &source.spec.query) {
+            issues.push(WatchIssue {
+                workflow: source.workflow,
+                source: source.name,
+                stream: source.spec.stream,
+                reason: e.to_string(),
+            });
+        }
+    }
+    issues
+}
+
+fn build_watch_plan(raw: &AgentConfig, shared: &RuntimeShared) -> (Vec<Workflow>, Vec<WatchIssue>) {
+    let (resolved, mut issues) =
+        resolve_watch_sources(raw, &shared.integrations, &shared.integration_bindings);
+    let mut plan: Vec<(String, Vec<WorkflowSource>)> = Vec::new();
+    for source in resolved {
+        let compiled = match source.integration.compile_watch(
+            &source.binding,
+            &shared.integration_runtime,
+            &source.spec,
+        ) {
+            Ok(compiled) => compiled,
+            Err(e) => {
+                issues.push(WatchIssue {
+                    workflow: source.workflow,
+                    source: source.name,
+                    stream: source.spec.stream,
+                    reason: e.to_string(),
+                });
+                continue;
+            }
+        };
+        let entry = WorkflowSource {
+            integration: source.integration.id(),
+            account: source.binding.account,
+            stream: source.spec.stream,
+            compiled,
+        };
+        match plan.iter_mut().find(|(name, _)| *name == source.workflow) {
+            Some((_, sources)) => sources.push(entry),
+            None => plan.push((source.workflow, vec![entry])),
+        }
+    }
+    let workflows = plan
+        .into_iter()
+        .map(|(name, sources)| Workflow::new(name, sources))
+        .collect();
+    (workflows, issues)
+}
+
+struct RuntimeShared {
     providers: Arc<ProviderRegistry>,
-    channels: &'a HashMap<String, Arc<dyn Channel>>,
-    integrations: &'a HashMap<String, Arc<dyn Integration>>,
-    integration_bindings: &'a HashMap<String, Arc<goat_integration::BindingMap>>,
+    channels: Arc<HashMap<String, Arc<dyn Channel>>>,
+    integrations: Arc<IntegrationMap>,
+    integration_bindings: Arc<BindingMaps>,
     integration_runtime: IntegrationRuntime,
     integration_tool_names: HashMap<String, Vec<String>>,
     tools: Arc<ToolRegistry>,
@@ -609,12 +660,324 @@ struct RuntimeShared<'a> {
     memory_engine: Arc<goat_memory::MemoryEngine>,
     renderer: Arc<dyn StreamRenderer>,
     bus: EventBus,
+}
+
+struct RuntimeBase {
+    paths: GoatPaths,
+    store: Arc<dyn Store>,
+    credentials: goat_auth::CredentialStore,
+    user_providers: goat_config::UserProviders,
+    meter: Option<goat_proxy::Meter>,
+    memory_engine: Arc<goat_memory::MemoryEngine>,
+    pty_manager: Arc<goat_agent_tool_pty::PtyManager>,
+    scheduler_handle: goat_loop::scheduler::SchedulerHandle,
+    code: Option<goat_daemon::Manager>,
+    bus: EventBus,
+    renderer: Arc<dyn StreamRenderer>,
+}
+
+async fn build_shared(base: &RuntimeBase, agents: &[AgentConfig]) -> RuntimeShared {
+    let providers =
+        build_provider_registry(&base.credentials, &base.user_providers, base.meter.as_ref());
+    let channels = build_channel_registry();
+
+    let mut tools_reg = ToolRegistry::from_inventory();
+    goat_agent_tool_schedule::register(
+        &mut tools_reg,
+        base.store.clone(),
+        base.scheduler_handle.clone(),
+    );
+    goat_agent_tool_goal::register(&mut tools_reg, base.store.clone());
+    goat_agent_tool_observation::register(&mut tools_reg, base.store.clone());
+    goat_agent_tool_memory::register(&mut tools_reg, base.memory_engine.clone());
+    goat_agent_tool_pty::register(&mut tools_reg, base.pty_manager.clone());
+    if let Some(manager) = base.code.clone() {
+        goat_agent_tool_code::register(&mut tools_reg, manager);
+    }
+
+    let integrations = goat_integration::registry_from_inventory();
+    let connections = load_integration_connections(&base.paths.config_json);
+    let integration_bindings = build_integration_bindings(agents, &integrations, &connections);
+    let integration_runtime = IntegrationRuntime {
+        credentials: base.credentials.clone(),
+        store: base.store.clone(),
+        bus: base.bus.clone(),
+    };
+    let mut integration_tool_names: HashMap<String, Vec<String>> = HashMap::new();
+    for (id, integration) in &integrations {
+        if let Some(bindings) = integration_bindings.get(id).filter(|b| !b.is_empty()) {
+            let names = integration
+                .register_tools(&mut tools_reg, &integration_runtime, bindings.clone())
+                .await;
+            integration_tool_names.insert(
+                id.clone(),
+                names.iter().map(|n| n.as_str().to_string()).collect(),
+            );
+        }
+    }
+
+    let tools = Arc::new(tools_reg);
+    info!(
+        default_tools = tools.default_specs().len(),
+        "loaded tool registry"
+    );
+
+    RuntimeShared {
+        providers,
+        channels: Arc::new(channels),
+        integrations: Arc::new(integrations),
+        integration_bindings: Arc::new(integration_bindings),
+        integration_runtime,
+        integration_tool_names,
+        tools,
+        goat_root: base.paths.root.clone(),
+        agents_dir: base.paths.agents_dir.clone(),
+        credentials: base.credentials.clone(),
+        store: base.store.clone(),
+        memory_engine: base.memory_engine.clone(),
+        renderer: base.renderer.clone(),
+        bus: base.bus.clone(),
+    }
+}
+
+fn shared_fingerprint(config_json: &Path, agents: &[AgentConfig]) -> String {
+    let raw = std::fs::read_to_string(config_json).unwrap_or_default();
+    let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+    let pick = |key: &str| parsed.get(key).cloned().unwrap_or(serde_json::Value::Null);
+    let mut bound: Vec<&str> = agents
+        .iter()
+        .flat_map(|agent| agent.integrations.iter().map(|i| i.name.as_str()))
+        .collect();
+    bound.sort_unstable();
+    bound.dedup();
+    serde_json::json!({
+        "integrations": pick("integrations"),
+        "providers": pick("providers"),
+        "bound": bound,
+    })
+    .to_string()
+}
+
+fn agent_fingerprint(agents_dir: &Path, slug: &str) -> String {
+    std::fs::read_to_string(agents_dir.join(slug).join("config.json")).unwrap_or_default()
+}
+
+fn declared_agents(agents_dir: &Path) -> std::collections::HashSet<String> {
+    let mut slugs = std::collections::HashSet::new();
+    let Ok(entries) = std::fs::read_dir(agents_dir) else {
+        return slugs;
+    };
+    for entry in entries.flatten() {
+        if !entry
+            .path()
+            .join(goat_config::AGENT_DEFINITION_FILE)
+            .exists()
+        {
+            continue;
+        }
+        if let Some(slug) = entry.file_name().to_str() {
+            slugs.insert(slug.to_owned());
+        }
+    }
+    slugs
+}
+
+struct AgentTasks {
     cancel: CancellationToken,
+    joins: Vec<tokio::task::JoinHandle<()>>,
+    fingerprint: String,
+}
+
+struct Supervisor {
+    base: RuntimeBase,
+    shared: RuntimeShared,
+    agents: HashMap<String, AgentTasks>,
+    shared_key: String,
+    cancel: CancellationToken,
+    models: Arc<std::sync::Mutex<Vec<(AgentId, goat_model::Model)>>>,
+}
+
+async fn stop_agent(tasks: AgentTasks) {
+    tasks.cancel.cancel();
+    let grace = std::time::Duration::from_secs(5);
+    let drain = futures::future::join_all(tasks.joins);
+    if tokio::time::timeout(grace, drain).await.is_err() {
+        warn!("agent teardown grace elapsed; detaching remaining tasks");
+    }
+}
+
+impl Supervisor {
+    async fn sync(
+        &mut self,
+        agents: Vec<AgentConfig>,
+        only: Option<&str>,
+    ) -> goat_wire::ReloadReport {
+        let mut report = goat_wire::ReloadReport::default();
+
+        if only.is_none() {
+            let wanted: std::collections::HashSet<&str> =
+                agents.iter().map(|a| a.slug.as_str()).collect();
+            let stale: Vec<String> = self
+                .agents
+                .keys()
+                .filter(|slug| !wanted.contains(slug.as_str()))
+                .cloned()
+                .collect();
+            let on_disk = declared_agents(&self.base.paths.agents_dir);
+            for slug in stale {
+                if on_disk.contains(&slug) {
+                    warn!(agent = %slug, "config did not load; keeping the running agent");
+                    report.failed.push(goat_wire::ReloadFailure {
+                        agent: slug,
+                        reason: "config did not load; keeping the settings already running"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                if let Some(tasks) = self.agents.remove(&slug) {
+                    stop_agent(tasks).await;
+                    info!(agent = %slug, "agent removed from config; stopped");
+                    report
+                        .warnings
+                        .push(format!("{slug}: no longer in config; stopped"));
+                }
+            }
+        }
+
+        for agent in &agents {
+            if only.is_some_and(|slug| slug != agent.slug) {
+                continue;
+            }
+            let fingerprint = agent_fingerprint(&self.base.paths.agents_dir, &agent.slug);
+            let live = self.agents.get(&agent.slug);
+            if live.is_some_and(|tasks| tasks.fingerprint == fingerprint) {
+                report.unchanged.push(agent.slug.clone());
+                continue;
+            }
+            if let Some(tasks) = self.agents.remove(&agent.slug) {
+                stop_agent(tasks).await;
+            }
+            for issue in validate_watch(
+                agent,
+                &self.shared.integrations,
+                &self.shared.integration_bindings,
+            ) {
+                report.warnings.push(format!("{}: {issue}", agent.slug));
+            }
+            let cancel = self.cancel.child_token();
+            match spawn_agent(agent, &self.shared, &cancel).await {
+                Ok(joins) => {
+                    self.agents.insert(
+                        agent.slug.clone(),
+                        AgentTasks {
+                            cancel,
+                            joins,
+                            fingerprint,
+                        },
+                    );
+                    report.reloaded.push(agent.slug.clone());
+                }
+                Err(e) => {
+                    cancel.cancel();
+                    warn!(agent = %agent.slug, error = ?e, "skipping agent");
+                    report.failed.push(goat_wire::ReloadFailure {
+                        agent: agent.slug.clone(),
+                        reason: format!("{e:#}"),
+                    });
+                }
+            }
+        }
+
+        if let Some(slug) = only
+            && !agents.iter().any(|a| a.slug == slug)
+        {
+            report.failed.push(goat_wire::ReloadFailure {
+                agent: slug.to_owned(),
+                reason: "no agent with this name loaded from config".to_owned(),
+            });
+        }
+
+        if let Ok(mut models) = self.models.lock() {
+            *models = agents
+                .iter()
+                .map(|a| (a.id, a.default_model.clone()))
+                .collect();
+        }
+        report
+    }
+
+    async fn reload(&mut self, only: Option<String>) -> goat_wire::ReloadReport {
+        let cfg = match goat_config::load_from(self.base.paths.clone()) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                return goat_wire::ReloadReport {
+                    failed: vec![goat_wire::ReloadFailure {
+                        agent: "*".to_owned(),
+                        reason: format!("{e:#}"),
+                    }],
+                    ..Default::default()
+                };
+            }
+        };
+
+        let shared_key = shared_fingerprint(&self.base.paths.config_json, &cfg.agents);
+        let mut only = only;
+        if shared_key == self.shared_key {
+            let bindings = build_integration_bindings(
+                &cfg.agents,
+                &self.shared.integrations,
+                &load_integration_connections(&self.base.paths.config_json),
+            );
+            self.shared.integration_bindings = Arc::new(bindings);
+        } else {
+            info!("shared configuration changed; rebuilding providers, integrations, and tools");
+            self.shared = build_shared(&self.base, &cfg.agents).await;
+            self.shared_key = shared_key;
+            only = None;
+            let live: Vec<String> = self.agents.keys().cloned().collect();
+            for slug in live {
+                if let Some(tasks) = self.agents.remove(&slug) {
+                    stop_agent(tasks).await;
+                }
+            }
+        }
+
+        self.sync(cfg.agents, only.as_deref()).await
+    }
+
+    async fn run(mut self, mut requests: tokio::sync::mpsc::Receiver<goat_daemon::ReloadRequest>) {
+        loop {
+            tokio::select! {
+                biased;
+                () = self.cancel.cancelled() => break,
+                request = requests.recv() => match request {
+                    Some(request) => {
+                        let report = self.reload(request.agent).await;
+                        let _ = request.reply.send(report);
+                    }
+                    None => break,
+                },
+            }
+        }
+        let joins: Vec<tokio::task::JoinHandle<()>> = self
+            .agents
+            .drain()
+            .flat_map(|(_, tasks)| tasks.joins)
+            .collect();
+        let grace = std::time::Duration::from_secs(5);
+        if tokio::time::timeout(grace, futures::future::join_all(joins))
+            .await
+            .is_err()
+        {
+            warn!("agent drain grace elapsed; detaching remaining tasks");
+        }
+    }
 }
 
 async fn spawn_agent(
     raw: &AgentConfig,
-    shared: &RuntimeShared<'_>,
+    shared: &RuntimeShared,
+    cancel: &CancellationToken,
 ) -> Result<Vec<tokio::task::JoinHandle<()>>> {
     shared
         .providers
@@ -665,7 +1028,7 @@ async fn spawn_agent(
         match channel.clone().bind(raw.id, chan_binding).await {
             Ok((handle, mut rx)) => {
                 let bus_for_pump = shared.bus.clone();
-                let cancel_for_pump = shared.cancel.clone();
+                let cancel_for_pump = cancel.clone();
                 joins.push(tokio::spawn(async move {
                     loop {
                         tokio::select! {
@@ -693,12 +1056,16 @@ async fn spawn_agent(
         anyhow::bail!("no successful channel bindings");
     }
 
-    for workflow in build_watch_plan(raw, shared) {
+    let (workflows, issues) = build_watch_plan(raw, shared);
+    for issue in &issues {
+        warn!(agent = %raw.slug, issue = %issue, "skipping watch source");
+    }
+    for workflow in workflows {
         joins.push(tokio::spawn(run_workflow(
             workflow,
             raw.id,
             shared.integration_runtime.clone(),
-            shared.cancel.clone(),
+            cancel.clone(),
         )));
     }
 
@@ -730,7 +1097,7 @@ async fn spawn_agent(
         intake_ceiling: raw.intake_ceiling,
     }));
     let bus = shared.bus.clone();
-    let cancel_for_brain = shared.cancel.clone();
+    let cancel_for_brain = cancel.clone();
     joins.push(tokio::spawn(async move {
         if let Err(e) = brain.run(bus, handles, cancel_for_brain).await {
             warn!(error = ?e, "brain exited");
@@ -791,12 +1158,25 @@ mod tests {
         }
     }
 
+    static FAKE_VOCABULARY: goat_integration::query::WatchVocabulary =
+        goat_integration::query::WatchVocabulary {
+            integration: "fake",
+            residue: goat_integration::query::Residue::Reject,
+            terms: goat_integration::query::TermPolicy::Reject,
+            limit: None,
+            keys: &[goat_integration::query::KeySpec::new("assignee").selfref()],
+        };
+
     struct FakeIntegration;
 
     #[async_trait::async_trait]
     impl Integration for FakeIntegration {
         fn id(&self) -> goat_types::IntegrationId {
             goat_types::IntegrationId::from_static("fake")
+        }
+
+        fn watch_vocabulary(&self) -> Option<&'static goat_integration::query::WatchVocabulary> {
+            Some(&FAKE_VOCABULARY)
         }
 
         fn metadata(&self) -> goat_integration::IntegrationMetadata {
@@ -877,6 +1257,81 @@ mod tests {
         assert!(!maps.contains_key("unknown"));
     }
 
+    fn watching(slug: &str, query: &str) -> AgentConfig {
+        let mut agent = agent(slug, "gpt-x");
+        agent.integrations = vec![goat_agent_config::AgentIntegration {
+            name: "fake".into(),
+            config: serde_json::json!({ "account": "work" }),
+        }];
+        agent.watch = Some(vec![goat_agent_config::WatchWorkflow {
+            name: "inbox".into(),
+            sources: vec![goat_agent_config::WatchSourceEntry {
+                source: "fake".into(),
+                query: query.into(),
+                stream: None,
+            }],
+        }]);
+        agent
+    }
+
+    fn issues_for(agent: &AgentConfig) -> Vec<WatchIssue> {
+        let integrations = goat_integration::registry_from_inventory();
+        let bindings = build_integration_bindings(
+            std::slice::from_ref(agent),
+            &integrations,
+            &std::collections::BTreeMap::new(),
+        );
+        validate_watch(agent, &integrations, &bindings)
+    }
+
+    #[test]
+    fn a_watch_query_the_vocabulary_accepts_raises_nothing() {
+        assert!(issues_for(&watching("good", "assignee:@me")).is_empty());
+    }
+
+    #[test]
+    fn a_watch_query_with_an_unknown_key_is_reported_against_its_workflow() {
+        let issues = issues_for(&watching("bad", "squad:core"));
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].workflow, "inbox");
+        assert_eq!(issues[0].source, "fake");
+        assert_eq!(issues[0].stream, "inbox");
+        assert!(issues[0].reason.contains("squad"), "{}", issues[0].reason);
+    }
+
+    #[test]
+    fn an_agent_whose_config_stopped_loading_is_not_treated_as_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents_dir = dir.path().join("agents");
+        std::fs::create_dir_all(agents_dir.join("alice")).unwrap();
+        std::fs::write(agents_dir.join("alice").join("agent.md"), "You are alice.").unwrap();
+        std::fs::write(agents_dir.join("alice").join("config.json"), "{ oops").unwrap();
+        std::fs::create_dir_all(agents_dir.join("gone")).unwrap();
+
+        let on_disk = declared_agents(&agents_dir);
+        assert!(
+            on_disk.contains("alice"),
+            "a directory with agent.md is declared even when its config is broken",
+        );
+        assert!(
+            !on_disk.contains("gone"),
+            "a directory without agent.md is not an agent",
+        );
+    }
+
+    #[test]
+    fn a_watch_source_naming_an_unbound_integration_is_reported() {
+        let mut agent = watching("unbound", "assignee:@me");
+        agent.integrations.clear();
+        let issues = issues_for(&agent);
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].reason.contains("not bound"),
+            "{}",
+            issues[0].reason
+        );
+    }
+
     #[tokio::test]
     async fn boots_with_no_agents_and_spawns_only_scheduler() {
         let dir = tempfile::tempdir().unwrap();
@@ -887,8 +1342,8 @@ mod tests {
         let goat = Goat::boot_inner(cfg, None, None, None).await.expect("boot");
         assert_eq!(
             goat.join_handles.len(),
-            2,
-            "expected the scheduler and sleep-job tasks"
+            3,
+            "expected the scheduler, sleep-job, and supervisor tasks"
         );
     }
 
@@ -900,7 +1355,7 @@ mod tests {
             agents: vec![agent("alice", "openai/gpt-5.1")],
         };
         let goat = Goat::boot_inner(cfg, None, None, None).await.expect("boot");
-        assert_eq!(goat.join_handles.len(), 2);
+        assert_eq!(goat.join_handles.len(), 3);
     }
 
     #[tokio::test]
@@ -921,6 +1376,6 @@ mod tests {
             agents: vec![p],
         };
         let goat = Goat::boot_inner(cfg, None, None, None).await.expect("boot");
-        assert_eq!(goat.join_handles.len(), 2);
+        assert_eq!(goat.join_handles.len(), 3);
     }
 }

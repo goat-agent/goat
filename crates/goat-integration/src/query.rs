@@ -399,6 +399,10 @@ pub fn resolve(vocab: &WatchVocabulary, tokens: Vec<Token>) -> Result<ResolvedQu
     Ok(resolved)
 }
 
+pub fn validate(vocab: &WatchVocabulary, raw: &str) -> Result<(), QueryError> {
+    resolve(vocab, parse(raw)?).map(|_| ())
+}
+
 fn known_keys(vocab: &WatchVocabulary) -> String {
     let mut keys: Vec<&str> = vocab.keys.iter().map(|s| s.key).collect();
     if vocab.limit.is_some() {
@@ -839,5 +843,42 @@ mod tests {
     fn empty_input_parses_to_no_tokens() {
         assert_eq!(parse("").unwrap(), Vec::new());
         assert_eq!(parse("   ").unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn validate_names_the_offending_key_and_lists_the_known_ones() {
+        let error = validate(&VOCAB, "assignee:@me squad:core").unwrap_err();
+        let rendered = error.to_string();
+        assert!(rendered.contains("squad"), "{rendered}");
+        assert!(rendered.contains("assignee"), "{rendered}");
+        assert!(rendered.contains("team"), "{rendered}");
+    }
+
+    #[test]
+    fn validate_accepts_what_the_vocabulary_declares() {
+        validate(&VOCAB, "assignee:@me -is:closed label:\"needs triage\"").unwrap();
+    }
+
+    #[test]
+    fn a_keep_vocabulary_forwards_everything_it_does_not_know() {
+        validate(&PASSTHROUGH, "repo:goat-agent/goat review-requested:@me").unwrap();
+        validate(&PASSTHROUGH, "loose words").unwrap();
+    }
+
+    #[test]
+    fn free_text_is_rejected_only_when_the_residue_is_also_rejected() {
+        const STRICT: WatchVocabulary = WatchVocabulary {
+            terms: TermPolicy::Reject,
+            ..VOCAB
+        };
+        let error = validate(&STRICT, "team:core loose").unwrap_err();
+        assert!(error.to_string().contains("free text"), "{error}");
+        validate(&VOCAB, "team:core loose").unwrap();
+    }
+
+    #[test]
+    fn validate_reports_a_malformed_query_before_any_vocabulary_check() {
+        let error = validate(&PASSTHROUGH, "title:\"unterminated").unwrap_err();
+        assert!(matches!(error, QueryError::UnbalancedQuote(_)), "{error}");
     }
 }
