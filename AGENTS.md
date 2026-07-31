@@ -219,12 +219,22 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
 - `code_messages` is insert-only; compactions live in `code_compactions`. `/resume` rebuilds engine
   history from the **latest compaction alone**, while the transcript replays full scrollback with a
   marker per compaction.
-- **Every background process wakes the agent when it exits — `watch` only adds wakes for output
-  while it still runs.** Waiting is therefore never a reason to set `watch`, and the process tools'
-  descriptions send a waiting agent to end its turn rather than re-read `ProcessOutput`; that is the
+- **Backgrounding is a flag on the tool that starts the work, not a tool family.**
+  `Bash(background=true)` returns a run id instead of output; there is no `ProcessStart`. The engine
+  intercepts that call in `tools_exec` — `goat-tool-shell` stays a plain synchronous leaf that knows
+  nothing about the registry — and `build_tool_defs` adds the `background`/`watch` switches to the
+  `Bash` schema only when `allow_delegate`, so a subagent is never offered them. The remaining verbs
+  are `BashOutput` / `BashInput` / `BashKill`. There is deliberately **no list tool**: `roster_message`
+  injects the running set every top-level round, so a list would only turn something the agent is
+  already told into something it must remember to ask for.
+- **Every background run wakes the agent when it exits — `watch` only adds wakes for output
+  while it still runs.** Waiting is therefore never a reason to set `watch`, and the tool
+  descriptions send a waiting agent to end its turn rather than re-read `BashOutput`; that is the
   whole anti-polling design, so do not reintroduce a blocking read or a wait timeout. A wake is
   suppressed exactly when the agent already knows: `exit_observed` (it read the exit through
-  `ProcessOutput`) or the agent's own `ProcessKill`.
+  `BashOutput`) or the agent's own `BashKill`. `BashOutput` cannot be dropped in favour of the wake:
+  a run that never exits (`pnpm dev`) never fires one, and a `watch` flood auto-clears `watched`
+  (`WATCH_FLOOD_LINES`), which would otherwise leave its output unreachable.
 - Providers classify wire failures into `StreamError`; the engine decides — retry with jittered
   backoff, reactive compaction on `ContextOverflow`, or abort. Callers never inspect error strings.
 - The MCP handshake tries one protocol era and, only when the failure could be the era itself,
