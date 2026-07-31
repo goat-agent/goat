@@ -1351,15 +1351,15 @@ impl App {
     }
 
     pub(crate) fn reset_agents(&mut self) {
-        self.agent_runs.clear();
-        if matches!(self.main_view, MainView::Agent(_)) {
+        self.agent_runs.retain(|run| run.done.is_none());
+        let viewing_dropped = match self.main_view {
+            MainView::Agent(id) => !self.agent_runs.iter().any(|run| run.id == id),
+            _ => false,
+        };
+        if viewing_dropped {
             self.close_run_selector();
         } else if self.run_selector().is_some() {
-            if self.run_targets().is_empty() {
-                self.close_run_selector();
-            } else {
-                self.sync_run_selector();
-            }
+            self.sync_run_selector();
         }
     }
 
@@ -3227,5 +3227,42 @@ mod tests {
         app.open_run(1);
         assert!(matches!(app.main_view, super::MainView::Process(_)));
         assert_eq!(app.run_selector(), None, "opening closes the list");
+    }
+
+    #[test]
+    fn reset_agents_keeps_a_still_running_agent() {
+        let mut app = App::new(Theme::dark());
+        let running = agent_started(&mut app, 1, "explore");
+        let finished = agent_started(&mut app, 2, "general");
+        app.on_engine(EngineEvent::AgentDone {
+            id: finished,
+            ok: true,
+        });
+
+        app.reset_agents();
+
+        let ids: Vec<TaskId> = app.agent_runs().iter().map(|run| run.id).collect();
+        assert_eq!(
+            ids,
+            vec![running],
+            "a background subagent must survive the next user message"
+        );
+    }
+
+    #[test]
+    fn reset_agents_leaves_the_view_when_the_shown_run_is_dropped() {
+        let mut app = App::new(Theme::dark());
+        let finished = agent_started(&mut app, 1, "explore");
+        app.on_engine(EngineEvent::AgentDone {
+            id: finished,
+            ok: true,
+        });
+        app.open_run(0);
+        assert!(matches!(app.main_view, super::MainView::Agent(_)));
+
+        app.reset_agents();
+
+        assert!(app.agent_runs().is_empty());
+        assert!(matches!(app.main_view, super::MainView::Live));
     }
 }
