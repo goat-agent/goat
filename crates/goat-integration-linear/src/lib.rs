@@ -52,7 +52,7 @@ pub fn service() -> McpService {
         .tools(ToolPolicy::all(PREFIX))
         .truncation_hint("narrow the filter, request fewer issues, or fetch a single issue instead")
         .defaults(watch::defaults)
-        .compile(watch::compile)
+        .watch(&VOCABULARY, watch::compile)
 }
 
 #[derive(Debug, Default, Deserialize)]

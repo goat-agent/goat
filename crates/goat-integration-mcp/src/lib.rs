@@ -5,6 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use goat_agent_tool::{ToolName, ToolRegistry};
 use goat_auth::{Credential, CredentialStore};
+use goat_integration::query::WatchVocabulary;
 use goat_integration::{
     BindingMap, CompiledWatch, Integration, IntegrationAuth, IntegrationBinding, IntegrationError,
     IntegrationMetadata, IntegrationResult, IntegrationRuntime, WatchSpec,
@@ -142,6 +143,7 @@ pub struct McpService {
     pub truncation_hint: &'static str,
     pub tools: ToolPolicy,
     pub identity: Option<IdentityProbe>,
+    pub vocabulary: Option<&'static WatchVocabulary>,
     pub compile: Option<CompileWatchFn>,
     pub defaults: Option<DefaultWatchFn>,
 }
@@ -172,6 +174,7 @@ impl McpService {
             truncation_hint: "narrow the request and call again",
             tools: ToolPolicy::all(""),
             identity: None,
+            vocabulary: None,
             compile: None,
             defaults: None,
         }
@@ -235,7 +238,12 @@ impl McpService {
     }
 
     #[must_use]
-    pub const fn compile(mut self, compile: CompileWatchFn) -> Self {
+    pub const fn watch(
+        mut self,
+        vocabulary: &'static WatchVocabulary,
+        compile: CompileWatchFn,
+    ) -> Self {
+        self.vocabulary = Some(vocabulary);
         self.compile = Some(compile);
         self
     }
@@ -505,6 +513,10 @@ impl Integration for McpIntegration {
         }
     }
 
+    fn watch_vocabulary(&self) -> Option<&'static WatchVocabulary> {
+        self.service.vocabulary
+    }
+
     fn compile_watch(
         &self,
         binding: &IntegrationBinding,
@@ -727,12 +739,20 @@ mod tests {
         ) -> IntegrationResult<CompiledWatch> {
             Err(IntegrationError::Config("no".into()))
         }
+        static VOCABULARY: WatchVocabulary = WatchVocabulary {
+            integration: "acme",
+            residue: goat_integration::query::Residue::Reject,
+            terms: goat_integration::query::TermPolicy::Reject,
+            limit: None,
+            keys: &[],
+        };
         let integration = McpService::new("acme", "Acme", ServiceUrl::Fixed("u"), "s")
             .defaults(no_defaults)
-            .compile(no_compile)
+            .watch(&VOCABULARY, no_compile)
             .build();
         assert!(integration.service().compile.is_some());
         assert!(integration.service().defaults.is_some());
+        assert!(integration.watch_vocabulary().is_some());
     }
 
     #[test]

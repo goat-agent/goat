@@ -42,7 +42,7 @@ pub fn service() -> McpService {
         .tools(ToolPolicy::all(PREFIX))
         .truncation_hint("narrow the query, or search a single channel instead")
         .defaults(watch::defaults)
-        .compile(watch::compile)
+        .watch(&VOCABULARY, watch::compile)
 }
 
 #[derive(Debug, Default, Deserialize)]

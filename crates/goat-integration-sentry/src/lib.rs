@@ -42,7 +42,7 @@ pub fn service() -> McpService {
             "narrow the time range, request fewer fields, or fetch a single issue instead",
         )
         .defaults(watch::defaults)
-        .compile(watch::compile)
+        .watch(&VOCABULARY, watch::compile)
 }
 
 #[derive(Debug, Default, Deserialize)]
