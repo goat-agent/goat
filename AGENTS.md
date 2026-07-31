@@ -115,10 +115,17 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
   everything; a present section replaces defaults, never merges. The grammar lives in
   `goat-integration::query` and is closed — leaves own only a static `WatchVocabulary` (which keys
   they understand) and a `compile_watch` hook that turns a resolved query into a `CompiledWatch`.
+  Both are declared together: a leaf implementing `Integration` overrides `watch_vocabulary`, and a
+  hosted-MCP leaf passes the pair to `McpService::watch(&VOCABULARY, compile)` — there is no way to
+  set one without the other, which is what keeps `goat_runtime::validate_watch` honest. That
+  validator resolves a query against the vocabulary alone, so it needs no store, bus, or network and
+  runs anywhere (`goat doctor`, the config-writing CLIs, `goat reload`); `compile_watch` stays
+  authoritative and runs only when a plan is actually built.
   `Residue::Keep` leaves (github, sentry, slack, langfuse) forward unrecognized tokens verbatim to
-  the service's native search language; `Residue::Reject` leaves (linear, notion, tiro) hard-error
-  on unknown keys at boot. `limit:` is resolver-reserved, `@me` is the one self-reference, and
-  stream names key persisted `WatchState`, so default stream names never change.
+  the service's native search language — including bare terms, so their `TermPolicy` never fires;
+  `Residue::Reject` leaves (linear, notion, tiro) hard-error on unknown keys, and only there does
+  `TermPolicy::Reject` refuse free text. `limit:` is resolver-reserved, `@me` is the one
+  self-reference, and stream names key persisted `WatchState`, so default stream names never change.
 - Connections are global; `IntegrationAuth` decides how one is established — a pasted `Secret`, an
   `OAuth` round trip, or `External`, meaning a host tool such as `gh` owns the credential and the
   `config.json` entry is itself the connection marker. Per-agent binding lives in the agent's
@@ -186,6 +193,25 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
 
 ## Non-obvious behavior
 
+- **Config is applied by `goat reload`, not by writing the file.** A `Supervisor` in `goat-runtime`
+  owns one `CancellationToken` child per agent plus that agent's `config.json` fingerprint, so a
+  reload re-reads config, validates it, and respawns only the agents whose own config changed. When
+  the top-level `config.json` changed its `integrations` or `providers`, the shared world — provider
+  registry, connections, integration tools — is rebuilt and every agent respawns, because the
+  `ToolRegistry` handed to each `Brain` is immutable once built. Validation failure replaces nothing:
+  the running agents keep the settings they already had. That guarantee is why the reload asks the
+  filesystem which agents exist rather than trusting `scan_agents`, which silently drops an agent
+  whose `config.json` stopped parsing — a directory that still holds an `agent.md` is a load failure
+  to report, not a removal to act on. The trigger is a local-only `ClientFrame::ReloadAgents`, and
+  every CLI that writes config calls it after writing, so nothing tells the user to restart the
+  daemon any more. Only a new binary still needs one.
+- An agent respawn does not kill the turn in flight. `Brain::run` awaits `handle_turn` inside a
+  `tokio::select!` arm body, and a chosen arm runs to completion — cancelling the token is only
+  observed on the next loop. What a respawn does interrupt is the channel pump, so inbound messages
+  during the swap can be lost.
+- `agent.md` and skills are re-read on every turn (`Brain::agent_definition`,
+  `SkillIndex::discover_root`), so neither is part of a reload. The `AgentCard` loaded at boot is
+  only the fallback for a read that fails.
 - `Engine`'s only method takes `self` by value, so it is not callable through a trait object;
   nothing uses `dyn Engine`. Decoupling comes from generics plus bounded `tokio::mpsc` channels
   (32 ops, 512 events) carrying `goat-protocol`. The trait avoids `async_trait` and `Stream` —
