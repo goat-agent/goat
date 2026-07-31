@@ -374,7 +374,8 @@ fn render_run_footer(frame: &mut Frame, area: Rect, theme: Theme) {
     frame.render_widget(
         Paragraph::new(overlay::hint_line(
             &[
-                (symbols::key::ARROWS_UPDOWN, "select"),
+                (symbols::key::ARROWS_UPDOWN, "move"),
+                (symbols::key::ENTER, "open"),
                 (symbols::key::ESC, "back"),
             ],
             theme,

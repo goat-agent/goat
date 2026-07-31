@@ -293,7 +293,7 @@ impl App {
             }
             KeyCode::Down => {
                 if self.composer.is_empty() && !self.run_targets().is_empty() {
-                    self.set_run_cursor(0);
+                    self.move_run_cursor(0);
                 } else if self.composer.on_last_row() {
                     self.composer.history_next();
                     self.dirty = true;
@@ -642,15 +642,20 @@ impl App {
         self.dirty = true;
         match key.code {
             KeyCode::Esc => self.close_run_selector(),
+            KeyCode::Enter => {
+                if let Some(cursor) = self.run_selector() {
+                    self.open_run(cursor);
+                }
+            }
             KeyCode::Up => match self.run_selector() {
                 Some(0) | None => self.close_run_selector(),
-                Some(cursor) => self.set_run_cursor(cursor - 1),
+                Some(cursor) => self.move_run_cursor(cursor - 1),
             },
             KeyCode::Down => {
                 if let Some(cursor) = self.run_selector()
                     && cursor + 1 < self.run_targets().len()
                 {
-                    self.set_run_cursor(cursor + 1);
+                    self.move_run_cursor(cursor + 1);
                 }
             }
             KeyCode::PageUp => {
