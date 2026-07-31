@@ -181,7 +181,7 @@ async fn start(ctx: &Ctx, env: &LoopEnv, input_json: &str) -> Result<ToolOutput,
     let args: StartInput =
         serde_json::from_str(input_json).map_err(|err| format!("invalid input: {err}"))?;
     let started = ctx
-        .processes
+        .background
         .spawn(&args.command, &env.cwd, args.watch)
         .await
         .map_err(|err| err.to_string())?;
@@ -197,7 +197,7 @@ async fn start(ctx: &Ctx, env: &LoopEnv, input_json: &str) -> Result<ToolOutput,
             .await
             .ok();
         if let Some(db_id) = db_id {
-            ctx.processes.set_db_id(started.id, db_id).await;
+            ctx.background.set_db_id(started.id, db_id).await;
         }
     }
     let id = started.id;
@@ -215,14 +215,14 @@ async fn output(ctx: &Ctx, input_json: &str) -> Result<ToolOutput, String> {
     let args: RunRef =
         serde_json::from_str(input_json).map_err(|err| format!("invalid input: {err}"))?;
     let chunk = ctx
-        .processes
+        .background
         .read_new(args.run)
         .await
         .ok_or_else(|| format!("no run #{}", args.run))?;
     Ok(ToolOutput::text(output_reply(args.run, &chunk)))
 }
 
-fn output_reply(id: goat_protocol::ProcessId, chunk: &crate::process::ReadChunk) -> String {
+fn output_reply(id: goat_protocol::ProcessId, chunk: &crate::background::ReadChunk) -> String {
     let status = match chunk.state {
         goat_protocol::ProcessState::Running => "running".to_owned(),
         goat_protocol::ProcessState::Exited => match chunk.exit_code {
@@ -247,44 +247,52 @@ fn output_reply(id: goat_protocol::ProcessId, chunk: &crate::process::ReadChunk)
 async fn input(ctx: &Ctx, input_json: &str) -> Result<ToolOutput, String> {
     let args: InputArgs =
         serde_json::from_str(input_json).map_err(|err| format!("invalid input: {err}"))?;
-    ctx.processes.write_stdin(args.run, &args.text).await?;
+    ctx.background.write_stdin(args.run, &args.text).await?;
     Ok(ToolOutput::text(format!("Wrote to run #{}.", args.run)))
 }
 
 async fn kill(ctx: &Ctx, input_json: &str) -> Result<ToolOutput, String> {
     let args: RunRef =
         serde_json::from_str(input_json).map_err(|err| format!("invalid input: {err}"))?;
-    ctx.processes.kill(args.run).await?;
+    ctx.background
+        .kill(args.run, Some(crate::background::Kind::Bash))
+        .await?;
     Ok(ToolOutput::text(format!("Killed run #{}.", args.run)))
 }
 
 pub(crate) async fn roster_message(ctx: &Ctx) -> Option<goat_provider::Message> {
-    let processes = ctx.processes.list().await;
-    let running: Vec<_> = processes
-        .iter()
-        .filter(|p| p.state == goat_protocol::ProcessState::Running)
-        .collect();
+    let running = ctx.background.roster().await;
     if running.is_empty() {
         return None;
     }
-    let mut text = String::from(
-        "<environment-status>\nAutomated status snapshot, not a user message — background runs going now (read with BashOutput, stop with BashKill):\n",
-    );
-    for p in running {
-        let watched = if p.watched { " watched" } else { "" };
-        let _ = writeln!(text, "  #{}{watched} — bash: {}", p.id, p.command);
-    }
-    text.push_str("</environment-status>");
     Some(goat_provider::Message::text(
         goat_provider::MessageRole::User,
-        text,
+        roster_text(&running),
     ))
+}
+
+fn roster_text(running: &[crate::background::RunInfo]) -> String {
+    let mut text = String::from(
+        "<environment-status>\nAutomated status snapshot, not a user message — background work going now (a bash run reads with BashOutput and stops with BashKill; a subagent reports on its own when it finishes and stops with SubagentKill):\n",
+    );
+    for run in running {
+        let watched = if run.watched { " watched" } else { "" };
+        let _ = writeln!(
+            text,
+            "  #{}{watched} — {}: {}",
+            run.id,
+            run.kind.label(),
+            run.title
+        );
+    }
+    text.push_str("</environment-status>");
+    text
 }
 
 #[cfg(test)]
 mod tests {
     use super::{augment_bash, output_reply, start_reply, tool_defs, wants_background};
-    use crate::process::ReadChunk;
+    use crate::background::ReadChunk;
     use goat_protocol::{ProcessId, ProcessState};
 
     fn chunk(text: &str, state: ProcessState) -> ReadChunk {

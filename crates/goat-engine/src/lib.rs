@@ -20,13 +20,13 @@ use tokio::{
 
 mod accounts;
 mod ask;
+mod background;
 mod compaction;
 mod conversation;
 mod delegate;
 mod instructions;
 mod mcp_tools;
 mod persist;
-mod process;
 mod process_tools;
 mod prompt;
 mod rate_limit_cache;
@@ -126,7 +126,7 @@ pub(crate) struct Shared {
     pub(crate) semaphore: Arc<Semaphore>,
     pub(crate) child_ids: AtomicU64,
     pub(crate) wake_ids: AtomicU64,
-    pub(crate) processes: Arc<process::ProcessRegistry>,
+    pub(crate) background: Arc<background::Runs>,
     pub(crate) asks: Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>>,
     pub(crate) rl_cache: std::sync::Mutex<rate_limit_cache::RateLimitCache>,
     pub(crate) rl_path: Option<PathBuf>,
@@ -295,8 +295,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     let child_ids = AtomicU64::new(CHILD_ID_BASE);
     let wake_ids = AtomicU64::new(WAKE_ID_BASE);
     let wake = Arc::new(tokio::sync::Notify::new());
-    let processes =
-        process::ProcessRegistry::new(events.clone(), wake.clone(), Some(store.clone()));
+    let processes = background::Runs::new(events.clone(), wake.clone(), Some(store.clone()));
     let asks: Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>> = Mutex::new(HashMap::new());
     let _ = events
         .send(Event::SkillsChanged {
@@ -340,7 +339,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
         semaphore,
         child_ids,
         wake_ids,
-        processes,
+        background: processes,
         asks,
         rl_cache,
         rl_path,
@@ -382,10 +381,10 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
             Op::Interrupt { .. } | Op::Answer { .. } | Op::DequeueMessage { .. } | Op::Clear {} => {
             }
             Op::ProcessKill { process } => {
-                let _ = ctx.processes.kill(process).await;
+                let _ = ctx.background.kill(process, None).await;
             }
             Op::ProcessWatch { process, on } => {
-                let _ = ctx.processes.set_watch(process, on).await;
+                let _ = ctx.background.set_watch(process, on).await;
             }
             Op::Compact { id, instructions } => {
                 if let Flow::Shutdown =
@@ -409,7 +408,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                     state.thread_id,
                     &mut state.target,
                     &ctx.events,
-                    &ctx.processes,
+                    &ctx.background,
                 )
                 .await;
             }
@@ -456,7 +455,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
             Op::Shutdown {} => break,
         }
     }
-    ctx.processes.shutdown_all().await;
+    ctx.background.shutdown_all().await;
     mcp.shutdown().await;
 }
 

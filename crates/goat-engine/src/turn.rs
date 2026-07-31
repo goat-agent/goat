@@ -105,11 +105,11 @@ pub(crate) async fn handle_idle_op(
     thread_id: Option<i64>,
     target: &mut Option<ModelTarget>,
     events: &mpsc::Sender<Event>,
-    processes: &std::sync::Arc<crate::process::ProcessRegistry>,
+    processes: &std::sync::Arc<crate::background::Runs>,
 ) {
     match op {
         Op::ProcessKill { process } => {
-            let _ = processes.kill(process).await;
+            let _ = processes.kill(process, None).await;
         }
         Op::ProcessWatch { process, on } => {
             let _ = processes.set_watch(process, on).await;
@@ -224,35 +224,49 @@ async fn pump_op(
     }
 }
 
-pub(crate) async fn handle_wake(
-    ctx: &Ctx,
-    state: &mut SessionState,
-    ops: &mut mpsc::Receiver<Op>,
-) -> Flow {
-    let observations = ctx.processes.take_pending_observations().await;
-    if observations.is_empty() {
-        return Flow::Continue;
-    }
+fn wake_notice(
+    observations: &[(goat_protocol::ProcessId, crate::background::Observation)],
+) -> String {
     let mut body = String::from(
-        "<environment-notice>\nAutomated runtime signal — this is NOT a message from the user. Do not reply to it conversationally, do not acknowledge or thank it, and do not repeat an earlier waiting reply. A background process exited or produced output you had not read; act only if it now needs action (read it, fix it, or move on), otherwise produce no user-facing text and continue what you were doing.\n",
+        "<environment-notice>\nAutomated runtime signal — this is NOT a message from the user. Do not reply to it conversationally, do not acknowledge or thank it, and do not repeat an earlier waiting reply. Background work finished or produced output you had not read; act only if it now needs action (read it, fix it, or move on), otherwise produce no user-facing text and continue what you were doing.\n",
     );
-    for (id, obs) in &observations {
-        let status = match obs.state {
-            goat_protocol::ProcessState::Running => "running".to_owned(),
-            goat_protocol::ProcessState::Exited => match obs.exit_code {
+    for (id, obs) in observations {
+        let status = match (obs.state, obs.ok) {
+            (goat_protocol::ProcessState::Running, _) => "running".to_owned(),
+            (goat_protocol::ProcessState::Exited, Some(true)) => "done".to_owned(),
+            (goat_protocol::ProcessState::Exited, Some(false)) => "failed".to_owned(),
+            (goat_protocol::ProcessState::Exited, None) => match obs.exit_code {
                 Some(code) => format!("exited(code {code})"),
                 None => "exited".to_owned(),
             },
         };
-        let _ = write!(body, "\n[process #{id} · {} · {status}]\n", obs.command);
+        let _ = write!(
+            body,
+            "\n[{} #{id} · {} · {status}]\n",
+            obs.kind.label(),
+            obs.title
+        );
         if obs.output.trim().is_empty() {
-            body.push_str("(no new output)\n");
+            body.push_str("(no output)\n");
         } else {
             body.push_str(obs.output.trim_end());
             body.push('\n');
         }
     }
     body.push_str("</environment-notice>");
+    body
+}
+
+pub(crate) async fn handle_wake(
+    ctx: &Ctx,
+    state: &mut SessionState,
+    ops: &mut mpsc::Receiver<Op>,
+) -> Flow {
+    let observations = ctx.background.take_pending_observations().await;
+    if observations.is_empty() {
+        return Flow::Continue;
+    }
+    let body = wake_notice(&observations);
 
     let wake_id = TaskId(
         ctx.wake_ids
@@ -263,7 +277,7 @@ pub(crate) async fn handle_wake(
         crate::UserInput {
             id: wake_id,
             text: body,
-            display: Some("(process activity)".to_owned()),
+            display: Some("(background activity)".to_owned()),
             attachments: Vec::new(),
         },
         std::collections::VecDeque::new(),
@@ -355,7 +369,7 @@ async fn drain_deferred(
                     state.thread_id,
                     &mut state.target,
                     &ctx.events,
-                    &ctx.processes,
+                    &ctx.background,
                 )
                 .await;
             }
@@ -765,4 +779,65 @@ async fn run_one_turn(
         }
     }
     (TurnFlow::Idle, deferred)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wake_notice;
+    use crate::background::{Kind, Observation};
+    use goat_protocol::{ProcessId, ProcessState};
+
+    fn bash(title: &str, output: &str, code: i32) -> (ProcessId, Observation) {
+        (
+            ProcessId(3),
+            Observation {
+                kind: Kind::Bash,
+                title: title.to_owned(),
+                output: output.to_owned(),
+                state: ProcessState::Exited,
+                exit_code: Some(code),
+                ok: None,
+            },
+        )
+    }
+
+    fn subagent(title: &str, report: &str, ok: bool) -> (ProcessId, Observation) {
+        (
+            ProcessId(7),
+            Observation {
+                kind: Kind::Subagent,
+                title: title.to_owned(),
+                output: report.to_owned(),
+                state: ProcessState::Exited,
+                exit_code: None,
+                ok: Some(ok),
+            },
+        )
+    }
+
+    #[test]
+    fn a_wake_names_each_kind_and_carries_its_result() {
+        let notice = wake_notice(&[
+            bash("cargo build", "error[E0432]", 1),
+            subagent("explore — map auth", "auth goes through goat-auth", true),
+        ]);
+        assert!(notice.contains("[bash #3 · cargo build · exited(code 1)]"));
+        assert!(notice.contains("error[E0432]"));
+        assert!(notice.contains("[subagent #7 · explore — map auth · done]"));
+        assert!(notice.contains("auth goes through goat-auth"));
+    }
+
+    #[test]
+    fn a_failed_subagent_is_marked_failed_not_exited() {
+        let notice = wake_notice(&[subagent("general", "context overflow", false)]);
+        assert!(notice.contains("· failed]"), "got: {notice}");
+        assert!(!notice.contains("exited"), "got: {notice}");
+    }
+
+    #[test]
+    fn a_wake_is_never_addressed_as_a_user_message() {
+        let notice = wake_notice(&[bash("true", "", 0)]);
+        assert!(notice.contains("NOT a message from the user"));
+        assert!(notice.contains("(no output)"));
+    }
 }

@@ -6,6 +6,7 @@ use tokio::{
     process::Command,
     sync::{Mutex, Notify, mpsc},
 };
+use tokio_util::sync::CancellationToken;
 
 const RING_CAPACITY: usize = 2000;
 const MAX_LIVE_PROCESSES: usize = 16;
@@ -22,38 +23,100 @@ enum Stream {
     Err,
 }
 
-struct Entry {
-    command: String,
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Kind {
+    Bash,
+    Subagent,
+}
+
+impl Kind {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Bash => "bash",
+            Self::Subagent => "subagent",
+        }
+    }
+}
+
+struct Bash {
     db_id: Option<i64>,
     lines: std::collections::VecDeque<Line>,
     dropped: usize,
     seen_cursor: usize,
-    total: usize,
-    state: ProcessState,
     exit_code: Option<i32>,
-    exit_observed: bool,
     watched: bool,
     watch_flooded: bool,
     stdin: Option<tokio::process::ChildStdin>,
-    kill_pending: bool,
     kill_tx: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+struct Subagent {
+    report: Option<Result<String, String>>,
+    cancel: CancellationToken,
+}
+
+enum Detail {
+    Bash(Bash),
+    Subagent(Subagent),
+}
+
+struct Entry {
+    title: String,
+    state: ProcessState,
+    observed: bool,
+    kill_pending: bool,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    detail: Detail,
 }
 
 impl Entry {
+    fn kind(&self) -> Kind {
+        match self.detail {
+            Detail::Bash(_) => Kind::Bash,
+            Detail::Subagent(_) => Kind::Subagent,
+        }
+    }
+
+    fn bash(&self) -> Option<&Bash> {
+        match &self.detail {
+            Detail::Bash(bash) => Some(bash),
+            Detail::Subagent(_) => None,
+        }
+    }
+
+    fn bash_mut(&mut self) -> Option<&mut Bash> {
+        match &mut self.detail {
+            Detail::Bash(bash) => Some(bash),
+            Detail::Subagent(_) => None,
+        }
+    }
+
     fn abort_tasks(&mut self) {
         for task in self.tasks.drain(..) {
             task.abort();
         }
     }
 
+    fn watched(&self) -> bool {
+        self.bash().is_some_and(|bash| bash.watched)
+    }
+
     fn info(&self, id: ProcessId) -> ProcessInfo {
         ProcessInfo {
             id,
-            command: self.command.clone(),
+            command: self.title.clone(),
             state: self.state,
-            watched: self.watched,
-            exit_code: self.exit_code,
+            watched: self.watched(),
+            exit_code: self.bash().and_then(|bash| bash.exit_code),
+        }
+    }
+
+    fn run_info(&self, id: ProcessId) -> RunInfo {
+        RunInfo {
+            id,
+            kind: self.kind(),
+            title: self.title.clone(),
+            watched: self.watched(),
         }
     }
 }
@@ -69,7 +132,7 @@ struct Inner {
     next_id: u64,
 }
 
-pub(crate) struct ProcessRegistry {
+pub(crate) struct Runs {
     inner: Mutex<Inner>,
     events: mpsc::Sender<Event>,
     wake: Arc<Notify>,
@@ -99,7 +162,14 @@ pub(crate) struct Started {
     pub(crate) pgid: Option<i32>,
 }
 
-impl ProcessRegistry {
+pub(crate) struct RunInfo {
+    pub(crate) id: ProcessId,
+    pub(crate) kind: Kind,
+    pub(crate) title: String,
+    pub(crate) watched: bool,
+}
+
+impl Runs {
     pub(crate) fn new(
         events: mpsc::Sender<Event>,
         wake: Arc<Notify>,
@@ -127,7 +197,7 @@ impl ProcessRegistry {
             let live = inner
                 .entries
                 .values()
-                .filter(|e| e.state == ProcessState::Running)
+                .filter(|e| e.state == ProcessState::Running && matches!(e.detail, Detail::Bash(_)))
                 .count();
             if live >= MAX_LIVE_PROCESSES {
                 return Err(SpawnError::TooMany);
@@ -170,21 +240,22 @@ impl ProcessRegistry {
             inner.entries.insert(
                 id,
                 Entry {
-                    command: command.to_owned(),
-                    db_id: None,
-                    lines: std::collections::VecDeque::new(),
-                    dropped: 0,
-                    seen_cursor: 0,
-                    total: 0,
+                    title: command.to_owned(),
                     state: ProcessState::Running,
-                    exit_code: None,
-                    exit_observed: false,
-                    watched,
-                    watch_flooded: false,
-                    stdin,
+                    observed: false,
                     kill_pending: false,
-                    kill_tx: Some(kill_tx),
                     tasks,
+                    detail: Detail::Bash(Bash {
+                        db_id: None,
+                        lines: std::collections::VecDeque::new(),
+                        dropped: 0,
+                        seen_cursor: 0,
+                        exit_code: None,
+                        watched,
+                        watch_flooded: false,
+                        stdin,
+                        kill_tx: Some(kill_tx),
+                    }),
                 },
             );
         }
@@ -202,10 +273,64 @@ impl ProcessRegistry {
         Ok(Started { id, pgid })
     }
 
+    pub(crate) async fn register_subagent(
+        &self,
+        subagent_type: &str,
+        label: &str,
+        cancel: CancellationToken,
+    ) -> ProcessId {
+        let mut inner = self.inner.lock().await;
+        let id = ProcessId(inner.next_id);
+        inner.next_id += 1;
+        let title = if label.is_empty() {
+            subagent_type.to_owned()
+        } else {
+            format!("{subagent_type} — {label}")
+        };
+        inner.entries.insert(
+            id,
+            Entry {
+                title,
+                state: ProcessState::Running,
+                observed: false,
+                kill_pending: false,
+                tasks: Vec::new(),
+                detail: Detail::Subagent(Subagent {
+                    report: None,
+                    cancel,
+                }),
+            },
+        );
+        id
+    }
+
+    pub(crate) async fn finish_subagent(&self, id: ProcessId, result: Result<String, String>) {
+        let wake = {
+            let mut inner = self.inner.lock().await;
+            let Some(entry) = inner.entries.get_mut(&id) else {
+                return;
+            };
+            if entry.state == ProcessState::Exited {
+                return;
+            }
+            entry.state = ProcessState::Exited;
+            if let Detail::Subagent(subagent) = &mut entry.detail {
+                subagent.report = Some(result);
+            }
+            if entry.kill_pending {
+                entry.observed = true;
+            }
+            !entry.observed
+        };
+        if wake {
+            self.wake.notify_one();
+        }
+    }
+
     pub(crate) async fn set_db_id(&self, id: ProcessId, db_id: i64) {
         let mut inner = self.inner.lock().await;
-        if let Some(entry) = inner.entries.get_mut(&id) {
-            entry.db_id = Some(db_id);
+        if let Some(bash) = inner.entries.get_mut(&id).and_then(Entry::bash_mut) {
+            bash.db_id = Some(db_id);
         }
     }
 
@@ -254,29 +379,28 @@ impl ProcessRegistry {
     async fn append_line(self: &Arc<Self>, id: ProcessId, stream: Stream, text: String) {
         let should_wake = {
             let mut inner = self.inner.lock().await;
-            let Some(entry) = inner.entries.get_mut(&id) else {
+            let Some(bash) = inner.entries.get_mut(&id).and_then(Entry::bash_mut) else {
                 return;
             };
-            if entry.lines.len() >= RING_CAPACITY {
-                entry.lines.pop_front();
-                entry.dropped += 1;
-                if entry.seen_cursor > 0 {
-                    entry.seen_cursor -= 1;
+            if bash.lines.len() >= RING_CAPACITY {
+                bash.lines.pop_front();
+                bash.dropped += 1;
+                if bash.seen_cursor > 0 {
+                    bash.seen_cursor -= 1;
                 }
             }
-            entry.lines.push_back(Line {
+            bash.lines.push_back(Line {
                 stream,
                 text: text.clone(),
             });
-            entry.total += 1;
-            if entry.watched && !entry.watch_flooded {
-                let pending = entry.lines.len() - entry.seen_cursor;
+            if bash.watched && !bash.watch_flooded {
+                let pending = bash.lines.len() - bash.seen_cursor;
                 if pending > WATCH_FLOOD_LINES {
-                    entry.watched = false;
-                    entry.watch_flooded = true;
+                    bash.watched = false;
+                    bash.watch_flooded = true;
                 }
             }
-            entry.watched
+            bash.watched
         };
         let _ = self
             .events
@@ -305,16 +429,22 @@ impl ProcessRegistry {
                 return;
             }
             entry.state = ProcessState::Exited;
-            entry.exit_code = code;
             let reason = if entry.kill_pending {
                 ProcessExitReason::Killed
             } else {
                 natural
             };
             if reason == ProcessExitReason::Killed {
-                entry.exit_observed = true;
+                entry.observed = true;
             }
-            (!entry.exit_observed, reason, entry.db_id)
+            let db_id = match &mut entry.detail {
+                Detail::Bash(bash) => {
+                    bash.exit_code = code;
+                    bash.db_id
+                }
+                Detail::Subagent(_) => None,
+            };
+            (!entry.observed, reason, db_id)
         };
         if let (Some(store), Some(db_id)) = (self.store.as_ref(), db_id) {
             let _ = store.finish_process(db_id, crate::persist::now_ms()).await;
@@ -336,15 +466,18 @@ impl ProcessRegistry {
     pub(crate) async fn read_new(&self, id: ProcessId) -> Option<ReadChunk> {
         let mut inner = self.inner.lock().await;
         let entry = inner.entries.get_mut(&id)?;
-        let chunk = collect_from(entry, entry.seen_cursor);
-        entry.seen_cursor = entry.lines.len();
-        if entry.state == ProcessState::Exited {
-            entry.exit_observed = true;
+        let exited = entry.state == ProcessState::Exited;
+        if exited {
+            entry.observed = true;
         }
+        let state = entry.state;
+        let bash = entry.bash_mut()?;
+        let chunk = collect_from(bash, bash.seen_cursor);
+        bash.seen_cursor = bash.lines.len();
         Some(ReadChunk {
             text: chunk,
-            state: entry.state,
-            exit_code: entry.exit_code,
+            state,
+            exit_code: bash.exit_code,
         })
     }
 
@@ -356,23 +489,48 @@ impl ProcessRegistry {
             let Some(entry) = inner.entries.get_mut(&id) else {
                 continue;
             };
-            let has_new = entry.watched && entry.lines.len() > entry.seen_cursor;
-            let exited_unseen = entry.state == ProcessState::Exited && !entry.exit_observed;
-            if !has_new && !exited_unseen {
-                continue;
-            }
-            let text = collect_tail_from(entry, entry.seen_cursor);
-            entry.seen_cursor = entry.lines.len();
-            entry.exit_observed = true;
-            out.push((
-                id,
-                Observation {
-                    command: entry.command.clone(),
-                    output: text,
-                    state: entry.state,
-                    exit_code: entry.exit_code,
-                },
-            ));
+            let finished_unseen = entry.state == ProcessState::Exited && !entry.observed;
+            let kind = entry.kind();
+            let title = entry.title.clone();
+            let state = entry.state;
+            let observation = match &mut entry.detail {
+                Detail::Bash(bash) => {
+                    let has_new = bash.watched && bash.lines.len() > bash.seen_cursor;
+                    if !has_new && !finished_unseen {
+                        continue;
+                    }
+                    let text = collect_tail_from(bash, bash.seen_cursor);
+                    bash.seen_cursor = bash.lines.len();
+                    Observation {
+                        kind,
+                        title,
+                        output: text,
+                        state,
+                        exit_code: bash.exit_code,
+                        ok: None,
+                    }
+                }
+                Detail::Subagent(subagent) => {
+                    if !finished_unseen {
+                        continue;
+                    }
+                    let (output, ok) = match subagent.report.take() {
+                        Some(Ok(report)) => (report, Some(true)),
+                        Some(Err(message)) => (message, Some(false)),
+                        None => ("(no report)".to_owned(), Some(false)),
+                    };
+                    Observation {
+                        kind,
+                        title,
+                        output,
+                        state,
+                        exit_code: None,
+                        ok,
+                    }
+                }
+            };
+            entry.observed = true;
+            out.push((id, observation));
         }
         out.sort_by_key(|(id, _)| id.0);
         out
@@ -381,7 +539,11 @@ impl ProcessRegistry {
     #[cfg(test)]
     async fn buffered_lines(&self, id: ProcessId) -> usize {
         let inner = self.inner.lock().await;
-        inner.entries.get(&id).map_or(0, |entry| entry.lines.len())
+        inner
+            .entries
+            .get(&id)
+            .and_then(Entry::bash)
+            .map_or(0, |bash| bash.lines.len())
     }
 
     pub(crate) async fn write_stdin(&self, id: ProcessId, text: &str) -> Result<(), String> {
@@ -390,16 +552,18 @@ impl ProcessRegistry {
             let entry = inner
                 .entries
                 .get_mut(&id)
-                .ok_or_else(|| format!("no process #{id}"))?;
+                .ok_or_else(|| format!("no background run #{id}"))?;
             if entry.state == ProcessState::Exited {
                 return Err(format!(
                     "run #{id} has exited; start it again with Bash(background=true)"
                 ));
             }
-            entry
-                .stdin
+            let bash = entry
+                .bash_mut()
+                .ok_or_else(|| format!("run #{id} is not a bash run"))?;
+            bash.stdin
                 .take()
-                .ok_or_else(|| format!("process #{id} does not accept input"))?
+                .ok_or_else(|| format!("run #{id} does not accept input"))?
         };
         let write = async {
             stdin.write_all(text.as_bytes()).await?;
@@ -407,48 +571,80 @@ impl ProcessRegistry {
         };
         let result = write.await;
         let mut inner = self.inner.lock().await;
-        if let Some(entry) = inner.entries.get_mut(&id) {
-            entry.stdin = Some(stdin);
+        if let Some(bash) = inner.entries.get_mut(&id).and_then(Entry::bash_mut) {
+            bash.stdin = Some(stdin);
         }
-        result.map_err(|err| format!("failed to write to process #{id}: {err}"))
+        result.map_err(|err| format!("failed to write to run #{id}: {err}"))
     }
 
     pub(crate) async fn set_watch(&self, id: ProcessId, on: bool) -> Result<(), String> {
         {
             let mut inner = self.inner.lock().await;
-            let entry = inner
+            let bash = inner
                 .entries
                 .get_mut(&id)
-                .ok_or_else(|| format!("no process #{id}"))?;
-            entry.watched = on;
+                .and_then(Entry::bash_mut)
+                .ok_or_else(|| format!("no background bash run #{id}"))?;
+            bash.watched = on;
             if on {
-                entry.watch_flooded = false;
+                bash.watch_flooded = false;
             }
         }
         self.broadcast_list().await;
         Ok(())
     }
 
-    pub(crate) async fn kill(&self, id: ProcessId) -> Result<(), String> {
-        let kill_tx = {
+    pub(crate) async fn kill(&self, id: ProcessId, kind: Option<Kind>) -> Result<(), String> {
+        let stop = {
             let mut inner = self.inner.lock().await;
             let entry = inner
                 .entries
                 .get_mut(&id)
-                .ok_or_else(|| format!("no process #{id}"))?;
+                .ok_or_else(|| format!("no background run #{id}"))?;
+            if let Some(kind) = kind
+                && entry.kind() != kind
+            {
+                return Err(format!(
+                    "run #{id} is a {} run, not a {} run",
+                    entry.kind().label(),
+                    kind.label()
+                ));
+            }
             if entry.state == ProcessState::Exited {
                 return Ok(());
             }
             entry.kill_pending = true;
-            entry.stdin.take();
-            entry.kill_tx.take()
+            match &mut entry.detail {
+                Detail::Bash(bash) => {
+                    bash.stdin.take();
+                    Stop::Bash(bash.kill_tx.take())
+                }
+                Detail::Subagent(subagent) => Stop::Subagent(subagent.cancel.clone()),
+            }
         };
-        if let Some(tx) = kill_tx {
-            let _ = tx.send(());
+        match stop {
+            Stop::Bash(Some(tx)) => {
+                let _ = tx.send(());
+            }
+            Stop::Bash(None) => {}
+            Stop::Subagent(cancel) => cancel.cancel(),
         }
         Ok(())
     }
 
+    pub(crate) async fn roster(&self) -> Vec<RunInfo> {
+        let inner = self.inner.lock().await;
+        let mut infos: Vec<RunInfo> = inner
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.state == ProcessState::Running)
+            .map(|(id, entry)| entry.run_info(*id))
+            .collect();
+        infos.sort_by_key(|i| i.id.0);
+        infos
+    }
+
+    #[cfg(test)]
     pub(crate) async fn list(&self) -> Vec<ProcessInfo> {
         let inner = self.inner.lock().await;
         collect_infos(&inner)
@@ -471,8 +667,13 @@ impl ProcessRegistry {
             inner.entries.drain().map(|(_, entry)| entry).collect()
         };
         for entry in &mut entries {
-            if let Some(tx) = entry.kill_tx.take() {
-                let _ = tx.send(());
+            match &mut entry.detail {
+                Detail::Bash(bash) => {
+                    if let Some(tx) = bash.kill_tx.take() {
+                        let _ = tx.send(());
+                    }
+                }
+                Detail::Subagent(subagent) => subagent.cancel.cancel(),
             }
         }
         for entry in &mut entries {
@@ -483,6 +684,11 @@ impl ProcessRegistry {
     }
 }
 
+enum Stop {
+    Bash(Option<tokio::sync::oneshot::Sender<()>>),
+    Subagent(CancellationToken),
+}
+
 pub(crate) struct ReadChunk {
     pub(crate) text: String,
     pub(crate) state: ProcessState,
@@ -490,29 +696,31 @@ pub(crate) struct ReadChunk {
 }
 
 pub(crate) struct Observation {
-    pub(crate) command: String,
+    pub(crate) kind: Kind,
+    pub(crate) title: String,
     pub(crate) output: String,
     pub(crate) state: ProcessState,
     pub(crate) exit_code: Option<i32>,
+    pub(crate) ok: Option<bool>,
 }
 
-fn collect_tail_from(entry: &Entry, cursor: usize) -> String {
-    let unread = entry.lines.len() - cursor;
+fn collect_tail_from(bash: &Bash, cursor: usize) -> String {
+    let unread = bash.lines.len() - cursor;
     if unread <= WATCH_FLOOD_LINES {
-        return collect_from(entry, cursor);
+        return collect_from(bash, cursor);
     }
     let dropped = unread - WATCH_FLOOD_LINES;
     let mut out = format!("[{dropped} earlier lines dropped]\n");
-    out.push_str(&collect_from(entry, entry.lines.len() - WATCH_FLOOD_LINES));
+    out.push_str(&collect_from(bash, bash.lines.len() - WATCH_FLOOD_LINES));
     out
 }
 
-fn collect_from(entry: &Entry, cursor: usize) -> String {
+fn collect_from(bash: &Bash, cursor: usize) -> String {
     let mut out = String::new();
-    if cursor == 0 && entry.dropped > 0 {
-        let _ = writeln!(out, "[{} earlier lines dropped]", entry.dropped);
+    if cursor == 0 && bash.dropped > 0 {
+        let _ = writeln!(out, "[{} earlier lines dropped]", bash.dropped);
     }
-    for line in entry.lines.iter().skip(cursor) {
+    for line in bash.lines.iter().skip(cursor) {
         if line.stream == Stream::Err {
             out.push_str("[err] ");
         }
@@ -526,6 +734,7 @@ fn collect_infos(inner: &Inner) -> Vec<ProcessInfo> {
     let mut infos: Vec<ProcessInfo> = inner
         .entries
         .iter()
+        .filter(|(_, entry)| matches!(entry.detail, Detail::Bash(_)))
         .map(|(id, entry)| entry.info(*id))
         .collect();
     infos.sort_by_key(|i| i.id.0);
@@ -570,11 +779,12 @@ fn kill_group(pgid: Option<i32>) {
 
 #[cfg(test)]
 mod tests {
-    use super::ProcessRegistry;
+    use super::{Kind, Runs};
     use goat_protocol::{Event, ProcessState};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::{Notify, mpsc};
+    use tokio_util::sync::CancellationToken;
 
     #[cfg(not(windows))]
     mod plat {
@@ -602,14 +812,10 @@ mod tests {
         pub const COUNT_TO_600: &str = "for /L %i in (1,1,600) do @echo %i";
     }
 
-    fn harness() -> (
-        std::sync::Arc<ProcessRegistry>,
-        mpsc::Receiver<Event>,
-        Arc<Notify>,
-    ) {
+    fn harness() -> (Arc<Runs>, mpsc::Receiver<Event>, Arc<Notify>) {
         let (event_tx, event_rx) = mpsc::channel(256);
         let wake = Arc::new(Notify::new());
-        let registry = ProcessRegistry::new(event_tx, wake.clone(), None);
+        let registry = Runs::new(event_tx, wake.clone(), None);
         (registry, event_rx, wake)
     }
 
@@ -624,7 +830,7 @@ mod tests {
         panic!("process group {pgid} never went away");
     }
 
-    async fn wait_until_exited(registry: &ProcessRegistry, id: goat_protocol::ProcessId) {
+    async fn wait_until_exited(registry: &Runs, id: goat_protocol::ProcessId) {
         for _ in 0..1000 {
             let list = registry.list().await;
             if list
@@ -635,7 +841,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("process did not exit in time");
+        panic!("run did not exit in time");
     }
 
     #[tokio::test]
@@ -683,7 +889,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn watched_process_wakes_on_output() {
+    async fn watched_run_wakes_on_output() {
         let (registry, _events, wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry.spawn(plat::ECHO_PING, &cwd, true).await.unwrap();
@@ -703,21 +909,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unwatched_process_does_not_wake_while_it_runs() {
+    async fn unwatched_run_does_not_wake_while_it_runs() {
         let (registry, _events, wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
         let result = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
         assert!(
             result.is_err(),
-            "an unwatched process must not wake the agent for output"
+            "an unwatched run must not wake the agent for output"
         );
-        registry.kill(started.id).await.unwrap();
+        registry.kill(started.id, None).await.unwrap();
         wait_until_exited(&registry, started.id).await;
     }
 
     #[tokio::test]
-    async fn every_process_wakes_on_exit() {
+    async fn every_run_wakes_on_exit() {
         let (registry, _events, wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry.spawn(plat::ECHO_QUIET, &cwd, false).await.unwrap();
@@ -733,28 +939,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn kill_terminates_running_process() {
+    async fn kill_terminates_running_run() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
         let running = registry.list().await;
         assert_eq!(running[0].state, ProcessState::Running);
-        registry.kill(started.id).await.unwrap();
+        registry.kill(started.id, None).await.unwrap();
         wait_until_exited(&registry, started.id).await;
     }
 
-    async fn wait_until_buffered(
-        registry: &ProcessRegistry,
-        id: goat_protocol::ProcessId,
-        n: usize,
-    ) {
+    async fn wait_until_buffered(registry: &Runs, id: goat_protocol::ProcessId, n: usize) {
         for _ in 0..1000 {
             if registry.buffered_lines(id).await >= n {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("process never buffered {n} lines");
+        panic!("run never buffered {n} lines");
     }
 
     #[tokio::test]
@@ -791,27 +993,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn killed_process_does_not_wake() {
+    async fn killed_run_does_not_wake() {
         let (registry, _events, wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry.spawn(plat::SLEEP_LONG, &cwd, true).await.unwrap();
-        registry.kill(started.id).await.unwrap();
+        registry.kill(started.id, None).await.unwrap();
         wait_until_exited(&registry, started.id).await;
         let result = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
         assert!(
             result.is_err(),
-            "a process the agent killed itself must not wake it"
+            "a run the agent killed itself must not wake it"
         );
         let pending = registry.take_pending_observations().await;
         assert!(
             pending.is_empty(),
-            "a killed process must not be reported as an observation"
+            "a killed run must not be reported as an observation"
         );
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn stdin_write_reaches_process() {
+    async fn stdin_write_reaches_run() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry.spawn(plat::CAT, &cwd, false).await.unwrap();
@@ -827,7 +1029,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        registry.kill(started.id).await.unwrap();
+        registry.kill(started.id, None).await.unwrap();
         wait_until_exited(&registry, started.id).await;
         assert!(got, "stdin was not echoed back");
     }
@@ -839,12 +1041,12 @@ mod tests {
         let cwd = std::env::temp_dir();
         let started = registry.spawn(plat::CAT, &cwd, false).await.unwrap();
         registry.write_stdin(started.id, "typed\n").await.unwrap();
-        registry.kill(started.id).await.unwrap();
+        registry.kill(started.id, None).await.unwrap();
         wait_until_exited(&registry, started.id).await;
     }
 
     #[tokio::test]
-    async fn write_to_exited_process_errors() {
+    async fn write_to_exited_run_errors() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry.spawn(plat::TRUE, &cwd, false).await.unwrap();
@@ -861,7 +1063,7 @@ mod tests {
         registry.set_watch(started.id, true).await.unwrap();
         registry.write_stdin(started.id, "").await.ok();
         registry.set_watch(started.id, false).await.unwrap();
-        registry.kill(started.id).await.unwrap();
+        registry.kill(started.id, None).await.unwrap();
     }
 
     #[tokio::test]
@@ -878,7 +1080,7 @@ mod tests {
         let pending = registry.take_pending_observations().await;
         assert!(
             pending.is_empty(),
-            "output already read via ProcessOutput must not wake the agent again, got: {:?}",
+            "output already read via BashOutput must not wake the agent again, got: {:?}",
             pending
                 .iter()
                 .map(|(_, o)| o.output.clone())
@@ -903,7 +1105,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shutdown_all_terminates_running_processes() {
+    async fn shutdown_all_terminates_running_runs() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let a = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
@@ -923,7 +1125,7 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
-        let pgid = started.pgid.expect("spawned process has a group");
+        let pgid = started.pgid.expect("spawned run has a group");
         assert!(goat_process::group_is_alive(pgid));
 
         registry.shutdown_all().await;
@@ -937,9 +1139,9 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
-        let pgid = started.pgid.expect("spawned process has a group");
+        let pgid = started.pgid.expect("spawned run has a group");
 
-        registry.kill(started.id).await.unwrap();
+        registry.kill(started.id, None).await.unwrap();
         wait_until_exited(&registry, started.id).await;
 
         wait_until_group_gone(pgid).await;
@@ -952,6 +1154,122 @@ mod tests {
         let started = registry.spawn(plat::TRUE, &cwd, false).await.unwrap();
         wait_until_exited(&registry, started.id).await;
 
-        registry.kill(started.id).await.unwrap();
+        registry.kill(started.id, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn finished_subagent_wakes_once_with_its_report() {
+        let (registry, _events, wake) = harness();
+        let id = registry
+            .register_subagent("explore", "map the auth flow", CancellationToken::new())
+            .await;
+        registry
+            .finish_subagent(id, Ok("auth goes through goat-auth".to_owned()))
+            .await;
+        tokio::time::timeout(Duration::from_secs(5), wake.notified())
+            .await
+            .expect("a finished subagent must wake the agent");
+
+        let obs = registry.take_pending_observations().await;
+        let (_, observation) = obs.iter().find(|(o, _)| *o == id).expect("observed once");
+        assert_eq!(observation.kind, Kind::Subagent);
+        assert_eq!(observation.ok, Some(true));
+        assert!(observation.output.contains("goat-auth"));
+        assert!(observation.title.contains("explore"));
+
+        assert!(
+            registry.take_pending_observations().await.is_empty(),
+            "a report already delivered must not wake the agent again"
+        );
+    }
+
+    #[tokio::test]
+    async fn killed_subagent_does_not_wake() {
+        let (registry, _events, wake) = harness();
+        let cancel = CancellationToken::new();
+        let id = registry
+            .register_subagent("general", "", cancel.clone())
+            .await;
+
+        registry.kill(id, Some(Kind::Subagent)).await.unwrap();
+        assert!(cancel.is_cancelled(), "kill must cancel the subagent token");
+
+        registry
+            .finish_subagent(id, Err("agent interrupted".to_owned()))
+            .await;
+        let result = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
+        assert!(
+            result.is_err(),
+            "a subagent the agent killed itself must not wake it"
+        );
+        assert!(registry.take_pending_observations().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn kill_rejects_a_kind_mismatch() {
+        let (registry, _events, _wake) = harness();
+        let cwd = std::env::temp_dir();
+        let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+
+        let err = registry
+            .kill(started.id, Some(Kind::Subagent))
+            .await
+            .expect_err("a bash run is not killable as a subagent");
+        assert!(err.contains("bash run"), "got: {err}");
+
+        registry.kill(started.id, Some(Kind::Bash)).await.unwrap();
+        wait_until_exited(&registry, started.id).await;
+    }
+
+    #[tokio::test]
+    async fn roster_carries_both_kinds_and_hides_finished_runs() {
+        let (registry, _events, _wake) = harness();
+        let cwd = std::env::temp_dir();
+        let bash = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+        let agent = registry
+            .register_subagent("explore", "read the docs", CancellationToken::new())
+            .await;
+
+        let roster = registry.roster().await;
+        assert_eq!(roster.len(), 2);
+        assert_eq!(roster[0].kind, Kind::Bash);
+        assert_eq!(roster[1].kind, Kind::Subagent);
+        assert!(roster[1].title.contains("read the docs"));
+
+        assert_eq!(
+            registry.list().await.len(),
+            1,
+            "the process list stays bash-only so the tui does not double-count subagents"
+        );
+
+        registry.finish_subagent(agent, Ok(String::new())).await;
+        assert_eq!(registry.roster().await.len(), 1, "finished runs drop out");
+
+        registry.kill(bash.id, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn output_stays_readable_after_a_flood_clears_watch() {
+        let (registry, mut events, _wake) = harness();
+        tokio::spawn(async move { while events.recv().await.is_some() {} });
+        let cwd = std::env::temp_dir();
+        let started = registry
+            .spawn(plat::COUNT_TO_600, &cwd, true)
+            .await
+            .unwrap();
+        wait_until_exited(&registry, started.id).await;
+        wait_until_buffered(&registry, started.id, 600).await;
+
+        let roster = registry.roster().await;
+        assert!(
+            roster.is_empty(),
+            "an exited run leaves the roster regardless of watch"
+        );
+
+        let chunk = registry.read_new(started.id).await.expect("still readable");
+        assert!(
+            chunk.text.contains("600"),
+            "a flood that switched watch off must still be readable via BashOutput"
+        );
     }
 }
