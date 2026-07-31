@@ -10,7 +10,7 @@ use crate::{
 };
 
 use super::ImagePlacement;
-use super::item::{Item, ShellStatus, ToolStatus, Working};
+use super::item::{AgentGroupView, AgentMemberStatus, Item, ShellStatus, ToolStatus, Working};
 use super::tool_gist::ToolLineCtx;
 use super::tool_line::{ToolRowInput, tool_marker, tool_row};
 
@@ -107,7 +107,7 @@ fn user_panel_rows(mut rows: Vec<Line<'static>>, theme: Theme, width: u16) -> Ve
     rows
 }
 
-pub(super) fn format_elapsed(secs: u64) -> String {
+pub(crate) fn format_elapsed(secs: u64) -> String {
     if secs < 60 {
         format!("{secs}s")
     } else if secs < 3600 {
@@ -176,6 +176,12 @@ pub(super) struct ItemMemo {
     pub(super) rows: Vec<Line<'static>>,
 }
 
+pub(super) struct SpinnerPlacement {
+    pub(super) line: usize,
+    pub(super) span: usize,
+    pub(super) trailing_space: bool,
+}
+
 pub(super) fn build_static_lines(
     items: &[Item],
     theme: Theme,
@@ -183,32 +189,57 @@ pub(super) fn build_static_lines(
     hl: &dyn Highlighter,
     cwd: &str,
     memo: &mut Vec<ItemMemo>,
-) -> (Vec<Line<'static>>, Vec<usize>, Vec<ImagePlacement>) {
+) -> (
+    Vec<Line<'static>>,
+    Vec<SpinnerPlacement>,
+    Vec<ImagePlacement>,
+) {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut spinner_lines: Vec<usize> = Vec::new();
+    let mut spinner_lines: Vec<SpinnerPlacement> = Vec::new();
     let mut images: Vec<ImagePlacement> = Vec::new();
     if memo.len() > items.len() {
         memo.truncate(items.len());
     }
     for (i, item) in items.iter().enumerate() {
         if i > 0 {
-            let prev_is_tool = matches!(items.get(i - 1), Some(Item::Tool { .. }));
-            let cur_is_tool = matches!(item, Item::Tool { .. });
+            let prev_is_tool = matches!(
+                items.get(i - 1),
+                Some(Item::Tool { .. } | Item::AgentGroup(_))
+            );
+            let cur_is_tool = matches!(item, Item::Tool { .. } | Item::AgentGroup(_));
             if !(prev_is_tool && cur_is_tool) {
                 lines.push(Line::default());
             }
         }
-        if matches!(
-            item,
+        let item_start = lines.len();
+        match item {
             Item::Tool {
                 status: ToolStatus::Running,
                 ..
-            } | Item::Shell {
+            }
+            | Item::Shell {
                 status: ShellStatus::Running,
                 ..
-            } | Item::Process { running: true, .. }
-        ) {
-            spinner_lines.push(lines.len());
+            }
+            | Item::Process { running: true, .. } => spinner_lines.push(SpinnerPlacement {
+                line: item_start,
+                span: 0,
+                trailing_space: true,
+            }),
+            Item::AgentGroup(group) => {
+                spinner_lines.extend(group.members.iter().enumerate().filter_map(
+                    |(index, member)| {
+                        matches!(member.status, AgentMemberStatus::Running).then_some(
+                            SpinnerPlacement {
+                                line: item_start + index + 1,
+                                span: 1,
+                                trailing_space: false,
+                            },
+                        )
+                    },
+                ));
+            }
+            _ => {}
         }
         let sig = item_signature(item);
         let rows = match memo.get(i) {
@@ -311,6 +342,31 @@ pub(super) fn item_signature(item: &Item) -> u64 {
             tokens_before.hash(&mut hasher);
             tokens_after.hash(&mut hasher);
         }
+        Item::AgentGroup(group) => {
+            10u8.hash(&mut hasher);
+            group.parent.hash(&mut hasher);
+            group.group.hash(&mut hasher);
+            group.started_at.hash(&mut hasher);
+            group.finished_at.hash(&mut hasher);
+            for member in &group.members {
+                member.call.hash(&mut hasher);
+                member.agent_type.hash(&mut hasher);
+                member.label.hash(&mut hasher);
+                member.tools.hash(&mut hasher);
+                member.tokens.hash(&mut hasher);
+                member.started_at.hash(&mut hasher);
+                member.finished_at.hash(&mut hasher);
+                match &member.status {
+                    AgentMemberStatus::Pending => 0u8.hash(&mut hasher),
+                    AgentMemberStatus::Running => 1u8.hash(&mut hasher),
+                    AgentMemberStatus::Done(outcome) => {
+                        2u8.hash(&mut hasher);
+                        outcome.ok.hash(&mut hasher);
+                        outcome.summary.hash(&mut hasher);
+                    }
+                }
+            }
+        }
         Item::Tool {
             name,
             display,
@@ -409,6 +465,7 @@ pub(super) fn item_rows(
                 Span::styled("─".repeat(right), theme.muted()),
             ])]
         }
+        Item::AgentGroup(group) => agent_group_rows(group, theme, width),
         Item::Tool {
             name,
             display,
@@ -436,6 +493,97 @@ pub(super) fn item_rows(
             rows
         }
     }
+}
+
+fn agent_group_rows(group: &AgentGroupView, theme: Theme, width: u16) -> Vec<Line<'static>> {
+    let total = group.members.len();
+    let done = group
+        .members
+        .iter()
+        .filter(|member| matches!(member.status, AgentMemberStatus::Done(_)))
+        .count();
+    let failed = group
+        .members
+        .iter()
+        .filter(|member| {
+            matches!(
+                member.status,
+                AgentMemberStatus::Done(goat_protocol::ToolOutcome { ok: false, .. })
+            )
+        })
+        .count();
+    let tools = group
+        .members
+        .iter()
+        .fold(0u64, |sum, member| sum.saturating_add(member.tools));
+    let tokens = group
+        .members
+        .iter()
+        .fold(0u64, |sum, member| sum.saturating_add(member.tokens));
+    let mut parts = vec![format!("{total} agents")];
+    if done < total {
+        let state = if failed == 0 { "done" } else { "finished" };
+        parts.push(format!("{done}/{total} {state}"));
+        if failed > 0 {
+            parts.push(format!("{failed} failed"));
+        }
+    } else if failed > 0 {
+        parts.push(format!("{} done", total.saturating_sub(failed)));
+        parts.push(format!("{failed} failed"));
+    }
+    if tools > 0 {
+        parts.push(format!("{tools} tools"));
+    }
+    if tokens > 0 {
+        parts.push(format!("{} tok", format_tokens(tokens)));
+    }
+    if let (Some(started), Some(finished)) = (group.started_at, group.finished_at) {
+        let elapsed = finished.saturating_duration_since(started).as_secs();
+        parts.push(format_elapsed(elapsed));
+    }
+    let header = truncate_to_width(
+        &parts.join(symbols::ui::SEPARATOR),
+        usize::from(width.saturating_sub(2)),
+    );
+    let mut rows = vec![Line::from(vec![
+        Span::styled(symbols::marker::AGENT, theme.role_agent()),
+        Span::styled(header, theme.muted()),
+    ])];
+    for (index, member) in group.members.iter().enumerate() {
+        let connector = if index + 1 == total {
+            "  └─ "
+        } else {
+            "  ├─ "
+        };
+        let (marker, marker_style) = match &member.status {
+            AgentMemberStatus::Pending => (symbols::ui::DOT_EMPTY, theme.muted()),
+            AgentMemberStatus::Running => (symbols::SPINNER[0], theme.accent()),
+            AgentMemberStatus::Done(outcome) if outcome.ok => (symbols::ui::CHECK, theme.success()),
+            AgentMemberStatus::Done(_) => (symbols::ui::CROSS, theme.error()),
+        };
+        let content_width = usize::from(width.saturating_sub(7));
+        let agent_type = truncate_to_width(&member.agent_type, content_width);
+        let type_width = UnicodeWidthStr::width(agent_type.as_str());
+        let mut spans = vec![
+            Span::styled(connector, theme.muted()),
+            Span::styled(marker, marker_style),
+            Span::raw(" "),
+            Span::styled(agent_type, theme.tool_fn()),
+        ];
+        let label_budget = content_width.saturating_sub(type_width);
+        if !member.label.is_empty() && label_budget > symbols::ui::SEPARATOR.width() {
+            spans.push(Span::styled(symbols::ui::SEPARATOR, theme.muted()));
+            spans.push(Span::styled(
+                truncate_to_width(
+                    &member.label,
+                    label_budget.saturating_sub(symbols::ui::SEPARATOR.width()),
+                ),
+                theme.muted(),
+            ));
+        }
+        rows.push(Line::from(spans));
+    }
+    rows
 }
 
 pub(super) const SHELL_BLOCK_CAP: usize = 20;

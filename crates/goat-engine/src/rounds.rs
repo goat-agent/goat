@@ -247,9 +247,7 @@ pub(crate) async fn process_round_output(
     tool_ctx: &ToolContext,
     token: &CancellationToken,
 ) -> RoundOutcome {
-    if let Some(usage) = round.usage.clone()
-        && run.is_top()
-    {
+    if let Some(usage) = round.usage.clone() {
         let context_window = env.provider.context_window(&env.target.model);
         let compaction_threshold = context_window.map(crate::compaction::proactive_limit);
         let _ = ctx

@@ -1,6 +1,8 @@
 use std::{fmt::Write as _, sync::Arc, sync::atomic::Ordering};
 
-use goat_protocol::{Effort, Event, ModelTarget, TaskId, ToolDisplay};
+use goat_protocol::{
+    AgentGroupMember, Effort, Event, ModelTarget, TaskId, ToolCallId, ToolDisplay,
+};
 use goat_provider::{ContentBlock, Message, MessageRole, Provider, ToolDefinition};
 use tokio_util::sync::CancellationToken;
 
@@ -17,6 +19,12 @@ use crate::{
 
 pub(crate) const MAX_CONCURRENT_AGENTS: usize = 8;
 pub(crate) const AGENT_TOOL_NAME: &str = "Agent";
+
+#[derive(serde::Deserialize)]
+struct AgentInput {
+    agent_type: String,
+    prompt: String,
+}
 
 pub(crate) fn agent_tool_def(ctx: &Ctx<'_>) -> ToolDefinition {
     let names: Vec<String> = ctx.subagents.names();
@@ -47,12 +55,7 @@ pub(crate) fn agent_tool_def(ctx: &Ctx<'_>) -> ToolDefinition {
 }
 
 pub(crate) fn agent_call_display(input: &str) -> ToolDisplay {
-    #[derive(serde::Deserialize)]
-    struct Input {
-        agent_type: String,
-        prompt: String,
-    }
-    match serde_json::from_str::<Input>(input) {
+    match serde_json::from_str::<AgentInput>(input) {
         Ok(args) => {
             let prompt = goat_tool::display::flatten(&args.prompt);
             ToolDisplay::primary(goat_tool::display::call_sig(
@@ -61,6 +64,21 @@ pub(crate) fn agent_call_display(input: &str) -> ToolDisplay {
             ))
         }
         Err(_) => goat_tool::display::generic_named(AGENT_TOOL_NAME, input),
+    }
+}
+
+pub(crate) fn agent_group_member(call: ToolCallId, input: &str) -> AgentGroupMember {
+    match serde_json::from_str::<AgentInput>(input) {
+        Ok(args) => AgentGroupMember {
+            call,
+            agent_type: args.agent_type,
+            label: delegation_label(&args.prompt),
+        },
+        Err(_) => AgentGroupMember {
+            call,
+            agent_type: "agent".to_owned(),
+            label: String::new(),
+        },
     }
 }
 
@@ -103,14 +121,10 @@ pub(crate) async fn run_delegation(
     env: &LoopEnv<'_>,
     input_json: &str,
     parent: TaskId,
+    call: ToolCallId,
     token: &CancellationToken,
 ) -> Result<String, String> {
-    #[derive(serde::Deserialize)]
-    struct Input {
-        agent_type: String,
-        prompt: String,
-    }
-    let args: Input =
+    let args: AgentInput =
         serde_json::from_str(input_json).map_err(|err| format!("invalid Agent input: {err}"))?;
     let Some(spec) = ctx.subagents.get(&args.agent_type) else {
         return Err(format!("unknown agent_type: {}", args.agent_type));
@@ -141,6 +155,7 @@ pub(crate) async fn run_delegation(
         .send(Event::AgentStarted {
             id: child_id,
             parent,
+            call,
             agent_type: args.agent_type.clone(),
             label: delegation_label(&args.prompt),
         })
@@ -167,7 +182,7 @@ pub(crate) async fn run_delegation(
     .await;
     let result = match outcome {
         LoopOutcome::Completed => Ok(final_text(conversation.messages())),
-        LoopOutcome::Cancelled => Ok("(agent interrupted)".to_owned()),
+        LoopOutcome::Cancelled => Err("agent interrupted".to_owned()),
         LoopOutcome::Failed(message, _) => Err(message),
     };
     let _ = ctx

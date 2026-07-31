@@ -87,6 +87,22 @@ mod tests {
     }
 
     #[test]
+    fn agent_group_event_round_trips() {
+        let event = Event::AgentGroupStarted {
+            id: TaskId(3),
+            group: ToolCallId(1),
+            members: vec![crate::AgentGroupMember {
+                call: ToolCallId(1),
+                agent_type: "explore".to_owned(),
+                label: "map engine".to_owned(),
+            }],
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let back: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, event);
+    }
+
+    #[test]
     fn transcript_entry_user_serializes_with_type() {
         let entry = TranscriptEntry::User {
             text: "hello".to_owned(),

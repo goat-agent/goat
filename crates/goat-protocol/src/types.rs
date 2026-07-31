@@ -214,6 +214,19 @@ pub struct ToolCall {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentGroupMember {
+    pub call: ToolCallId,
+    pub agent_type: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentGroupEntry {
+    pub member: AgentGroupMember,
+    pub outcome: ToolOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ToolImageData {
     pub media_type: String,
     pub data: String,
@@ -333,6 +346,10 @@ pub enum TranscriptEntry {
     Tool {
         call: ToolCall,
         outcome: ToolOutcome,
+    },
+    AgentGroup {
+        group: ToolCallId,
+        members: Vec<AgentGroupEntry>,
     },
     Compaction {
         tokens_before: u32,

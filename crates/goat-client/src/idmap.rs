@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use goat_protocol::{Event, Op, TaskId};
 
+const INBOUND_ID_BASE: u64 = 1 << 63;
+
 pub(crate) struct IdMap {
     local_to_daemon: HashMap<u64, u64>,
     daemon_to_local: HashMap<u64, u64>,
@@ -13,17 +15,23 @@ impl IdMap {
         Self {
             local_to_daemon: HashMap::new(),
             daemon_to_local: HashMap::new(),
-            next_local: 1,
+            next_local: INBOUND_ID_BASE,
         }
     }
 
     pub(crate) fn reset(&mut self) {
         self.local_to_daemon.clear();
         self.daemon_to_local.clear();
-        self.next_local = 1;
+        self.next_local = INBOUND_ID_BASE;
     }
 
     fn bind(&mut self, local: u64, daemon: u64) {
+        if let Some(previous) = self.local_to_daemon.get(&local).copied() {
+            self.daemon_to_local.remove(&previous);
+        }
+        if let Some(previous) = self.daemon_to_local.get(&daemon).copied() {
+            self.local_to_daemon.remove(&previous);
+        }
         self.local_to_daemon.insert(local, daemon);
         self.daemon_to_local.insert(daemon, local);
         if local >= self.next_local {
@@ -79,6 +87,7 @@ fn event_ids_mut(event: &mut Event) -> Vec<&mut TaskId> {
         | Event::TextDone { id, .. }
         | Event::ToolStarted { id, .. }
         | Event::ToolDone { id, .. }
+        | Event::AgentGroupStarted { id, .. }
         | Event::ShellDone { id, .. }
         | Event::TaskDone { id, .. }
         | Event::ThinkingDelta { id, .. }
@@ -143,12 +152,36 @@ mod tests {
     }
 
     #[test]
+    fn inbound_ids_do_not_collide_with_local_correlations() {
+        let mut map = IdMap::new();
+        let mut child = Event::TaskDone {
+            id: TaskId(900),
+            interrupted: false,
+        };
+        map.translate_inbound(&mut child);
+        let Event::TaskDone { id: child_id, .. } = child else {
+            unreachable!()
+        };
+
+        map.record_correlation(1, TaskId(7));
+        let mut top = Event::TaskStarted { id: TaskId(7) };
+        map.translate_inbound(&mut top);
+        let Event::TaskStarted { id: top_id } = top else {
+            unreachable!()
+        };
+
+        assert_eq!(top_id, TaskId(1));
+        assert_ne!(child_id, top_id);
+    }
+
+    #[test]
     fn agent_started_translates_both_id_and_parent() {
         let mut map = IdMap::new();
         map.record_correlation(2, TaskId(7));
         let mut ev = Event::AgentStarted {
             id: TaskId(900),
             parent: TaskId(7),
+            call: goat_protocol::ToolCallId(3),
             agent_type: "explore".to_owned(),
             label: "x".to_owned(),
         };

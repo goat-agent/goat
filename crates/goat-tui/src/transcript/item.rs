@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use goat_protocol::{InputAttachment, TaskId, ToolCallId, ToolDisplay, ToolOutcome};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +28,34 @@ pub(crate) enum ShellStatus {
 }
 
 #[derive(Debug)]
+pub(crate) enum AgentMemberStatus {
+    Pending,
+    Running,
+    Done(ToolOutcome),
+}
+
+#[derive(Debug)]
+pub(crate) struct AgentGroupMemberView {
+    pub(crate) call: ToolCallId,
+    pub(crate) agent_type: String,
+    pub(crate) label: String,
+    pub(crate) status: AgentMemberStatus,
+    pub(crate) tools: u64,
+    pub(crate) tokens: u64,
+    pub(crate) started_at: Option<Instant>,
+    pub(crate) finished_at: Option<Instant>,
+}
+
+#[derive(Debug)]
+pub(crate) struct AgentGroupView {
+    pub(crate) parent: TaskId,
+    pub(crate) group: ToolCallId,
+    pub(crate) members: Vec<AgentGroupMemberView>,
+    pub(crate) started_at: Option<Instant>,
+    pub(crate) finished_at: Option<Instant>,
+}
+
+#[derive(Debug)]
 pub(crate) enum Item {
     User(UserMessage),
     Agent(String),
@@ -40,6 +70,7 @@ pub(crate) enum Item {
         status: ToolStatus,
         image: Option<Box<crate::screenshot::TranscriptImage>>,
     },
+    AgentGroup(AgentGroupView),
     Shell {
         id: TaskId,
         command: String,

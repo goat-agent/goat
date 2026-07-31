@@ -6,7 +6,9 @@ mod tool_line;
 
 use std::cell::RefCell;
 
-use goat_protocol::{InputAttachment, TaskId, ToolCall, ToolCallId, ToolOutcome};
+use goat_protocol::{
+    AgentGroupEntry, AgentGroupMember, InputAttachment, TaskId, ToolCall, ToolCallId, ToolOutcome,
+};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -17,7 +19,11 @@ use ratatui::{
 use crate::{highlight::Highlighter, markdown, symbols, theme::Theme};
 
 use gutter::hang;
-pub(crate) use item::{Item, ShellStatus, ToolStatus, UserMessage, Working};
+pub(crate) use item::{
+    AgentGroupMemberView, AgentGroupView, AgentMemberStatus, Item, ShellStatus, ToolStatus,
+    UserMessage, Working,
+};
+pub(crate) use render::format_elapsed;
 use render::{build_static_lines, is_blank, queued_rows, stable_prefix_len, working_rows};
 
 pub(crate) struct RenderCtx<'a> {
@@ -42,7 +48,7 @@ struct RenderCache {
     width: u16,
     version: u64,
     lines: Vec<Line<'static>>,
-    spinner_lines: Vec<usize>,
+    spinner_lines: Vec<render::SpinnerPlacement>,
     images: Vec<ImagePlacement>,
 }
 
@@ -266,6 +272,159 @@ impl Transcript {
         self.items.push(Item::Agent(text.to_owned()));
     }
 
+    pub fn push_agent_group(
+        &mut self,
+        parent: TaskId,
+        group: ToolCallId,
+        members: Vec<AgentGroupMember>,
+    ) {
+        self.flush_thinking();
+        self.bump_version();
+        let now = std::time::Instant::now();
+        self.items.push(Item::AgentGroup(AgentGroupView {
+            parent,
+            group,
+            members: members
+                .into_iter()
+                .map(|member| AgentGroupMemberView {
+                    call: member.call,
+                    agent_type: member.agent_type,
+                    label: member.label,
+                    status: AgentMemberStatus::Pending,
+                    tools: 0,
+                    tokens: 0,
+                    started_at: None,
+                    finished_at: None,
+                })
+                .collect(),
+            started_at: Some(now),
+            finished_at: None,
+        }));
+    }
+
+    pub fn push_restored_agent_group(&mut self, group: ToolCallId, members: Vec<AgentGroupEntry>) {
+        self.bump_version();
+        self.items.push(Item::AgentGroup(AgentGroupView {
+            parent: TaskId(0),
+            group,
+            members: members
+                .into_iter()
+                .map(|entry| AgentGroupMemberView {
+                    call: entry.member.call,
+                    agent_type: entry.member.agent_type,
+                    label: entry.member.label,
+                    status: AgentMemberStatus::Done(entry.outcome),
+                    tools: 0,
+                    tokens: 0,
+                    started_at: None,
+                    finished_at: None,
+                })
+                .collect(),
+            started_at: None,
+            finished_at: None,
+        }));
+    }
+
+    pub fn is_agent_group_call(&self, parent: TaskId, call: ToolCallId) -> bool {
+        self.items.iter().rev().any(|item| {
+            matches!(
+                item,
+                Item::AgentGroup(group)
+                    if group.parent == parent
+                        && group.members.iter().any(|member| member.call == call)
+            )
+        })
+    }
+
+    pub fn start_agent(&mut self, parent: TaskId, call: ToolCallId) {
+        self.bump_version();
+        for item in self.items.iter_mut().rev() {
+            let Item::AgentGroup(group) = item else {
+                continue;
+            };
+            if group.parent != parent {
+                continue;
+            }
+            if let Some(member) = group.members.iter_mut().find(|member| member.call == call) {
+                member.status = AgentMemberStatus::Running;
+                member.started_at = Some(std::time::Instant::now());
+                return;
+            }
+        }
+    }
+
+    pub fn add_agent_tool(&mut self, parent: TaskId, call: ToolCallId) {
+        self.bump_version();
+        for item in self.items.iter_mut().rev() {
+            let Item::AgentGroup(group) = item else {
+                continue;
+            };
+            if group.parent != parent {
+                continue;
+            }
+            if let Some(member) = group.members.iter_mut().find(|member| member.call == call) {
+                member.tools = member.tools.saturating_add(1);
+                return;
+            }
+        }
+    }
+
+    pub fn add_agent_tokens(&mut self, parent: TaskId, call: ToolCallId, tokens: u64) {
+        self.bump_version();
+        for item in self.items.iter_mut().rev() {
+            let Item::AgentGroup(group) = item else {
+                continue;
+            };
+            if group.parent != parent {
+                continue;
+            }
+            if let Some(member) = group.members.iter_mut().find(|member| member.call == call) {
+                member.tokens = member.tokens.saturating_add(tokens);
+                return;
+            }
+        }
+    }
+
+    pub fn finish_agent(&mut self, parent: TaskId, call: ToolCallId, outcome: ToolOutcome) {
+        self.bump_version();
+        for item in self.items.iter_mut().rev() {
+            let Item::AgentGroup(group) = item else {
+                continue;
+            };
+            if group.parent != parent {
+                continue;
+            }
+            let Some(member) = group.members.iter_mut().find(|member| member.call == call) else {
+                continue;
+            };
+            member.status = AgentMemberStatus::Done(outcome);
+            member.finished_at = Some(std::time::Instant::now());
+            if group
+                .members
+                .iter()
+                .all(|member| matches!(member.status, AgentMemberStatus::Done(_)))
+            {
+                group.finished_at = Some(std::time::Instant::now());
+            }
+            return;
+        }
+    }
+
+    pub fn has_running_agent_group(&self) -> bool {
+        self.items.iter().any(|item| {
+            matches!(
+                item,
+                Item::AgentGroup(group)
+                    if group.members.iter().any(|member| {
+                        matches!(
+                            member.status,
+                            AgentMemberStatus::Pending | AgentMemberStatus::Running
+                        )
+                    })
+            )
+        })
+    }
+
     pub fn push_tool(&mut self, call: ToolCall) {
         self.flush_thinking();
         self.bump_version();
@@ -406,6 +565,23 @@ impl Transcript {
                         summary: None,
                         image: None,
                     });
+                }
+                if let Item::AgentGroup(group) = item {
+                    let now = std::time::Instant::now();
+                    for member in &mut group.members {
+                        if matches!(
+                            member.status,
+                            AgentMemberStatus::Pending | AgentMemberStatus::Running
+                        ) {
+                            member.status = AgentMemberStatus::Done(ToolOutcome {
+                                ok: false,
+                                summary: None,
+                                image: None,
+                            });
+                            member.finished_at = Some(now);
+                        }
+                    }
+                    group.finished_at = Some(now);
                 }
                 if let Item::Shell { status, .. } = item
                     && matches!(status, ShellStatus::Running)
@@ -576,10 +752,15 @@ impl Transcript {
         let static_end = end.min(cache.lines.len());
         for i in start.min(static_end)..static_end {
             let mut line = cache.lines[i].clone();
-            if cache.spinner_lines.binary_search(&i).is_ok()
-                && let Some(span) = line.spans.first_mut()
+            if let Some(placement) = cache.spinner_lines.iter().find(|entry| entry.line == i)
+                && let Some(span) = line.spans.get_mut(placement.span)
             {
-                *span = Span::styled(format!("{} ", ctx.spinner), ctx.theme.accent());
+                let marker = if placement.trailing_space {
+                    format!("{} ", ctx.spinner)
+                } else {
+                    ctx.spinner.to_owned()
+                };
+                *span = Span::styled(marker, ctx.theme.accent());
             }
             visible.push(pad_left(line, ctx.left_pad, ctx.theme));
         }
@@ -1000,6 +1181,54 @@ mod tests {
             })
             .unwrap();
         assert!(buffer_row(&terminal, 0).starts_with(&format!("{} ", symbols::SPINNER[3])));
+    }
+
+    #[test]
+    fn agent_group_renders_compact_tree_with_live_spinner() {
+        let mut t = Transcript::default();
+        t.push_agent_group(
+            TaskId(1),
+            ToolCallId(1),
+            vec![
+                goat_protocol::AgentGroupMember {
+                    call: ToolCallId(1),
+                    agent_type: "explore".to_owned(),
+                    label: "map engine".to_owned(),
+                },
+                goat_protocol::AgentGroupMember {
+                    call: ToolCallId(2),
+                    agent_type: "critic".to_owned(),
+                    label: "review UI".to_owned(),
+                },
+            ],
+        );
+        t.start_agent(TaskId(1), ToolCallId(1));
+        let mut terminal = Terminal::new(TestBackend::new(60, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                t.render(
+                    frame,
+                    frame.area(),
+                    &super::RenderCtx {
+                        theme: Theme::dark(),
+                        scroll: 0,
+                        left_pad: 0,
+                        cwd: "/",
+                        spinner: symbols::SPINNER[3],
+                        working: None,
+                        queued: &[],
+                        hl: &PlainHighlighter,
+                        picker: None,
+                    },
+                );
+            })
+            .unwrap();
+        assert!(buffer_row(&terminal, 0).contains("2 agents · 0/2 done"));
+        assert!(
+            buffer_row(&terminal, 1)
+                .contains(&format!("├─ {} explore · map engine", symbols::SPINNER[3]))
+        );
+        assert!(buffer_row(&terminal, 2).contains("└─ ○ critic · review UI"));
     }
 
     fn cell_bg(terminal: &Terminal<TestBackend>, x: u16, y: u16) -> Option<ratatui::style::Color> {

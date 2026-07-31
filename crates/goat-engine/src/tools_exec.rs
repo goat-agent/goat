@@ -7,7 +7,9 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     Ctx, LoopEnv, Run,
     ask::{ASK_TOOL_NAME, ask_call_display, ask_tool_def, run_ask},
-    delegate::{AGENT_TOOL_NAME, agent_call_display, agent_tool_def, run_delegation},
+    delegate::{
+        AGENT_TOOL_NAME, agent_call_display, agent_group_member, agent_tool_def, run_delegation,
+    },
     persist::{create_tool_call_record, finish_tool_db},
     subagent::ToolSelection,
     websearch::{WEB_SEARCH_TOOL_NAME, run_web_search, web_search_display, web_search_tool_def},
@@ -147,9 +149,16 @@ async fn execute_tool(
         };
         match permit {
             Some(_permit) if !token.is_cancelled() => Some(
-                run_delegation(ctx, env, prep.input_json, run.id, token)
-                    .await
-                    .map(ToolOutput::text),
+                run_delegation(
+                    ctx,
+                    env,
+                    prep.input_json,
+                    run.id,
+                    ToolCallId(prep.tui_id),
+                    token,
+                )
+                .await
+                .map(ToolOutput::text),
             ),
             _ => None,
         }
@@ -225,29 +234,50 @@ pub(crate) async fn run_tool_batch(
     let mut prepared: Vec<Prepared> = Vec::with_capacity(pending_calls.len());
     for (vendor_id, name, input_json) in pending_calls {
         *call_seq += 1;
-        let tui_id = *call_seq;
+        prepared.push(Prepared {
+            vendor_id: vendor_id.as_str(),
+            name: name.as_str(),
+            input_json: input_json.as_str(),
+            tui_id: *call_seq,
+            db_id: None,
+        });
+    }
+    if env.allow_delegate
+        && prepared.len() > 1
+        && prepared.iter().all(|prep| prep.name == AGENT_TOOL_NAME)
+        && let Some(first) = prepared.first()
+    {
+        let members = prepared
+            .iter()
+            .map(|prep| agent_group_member(ToolCallId(prep.tui_id), prep.input_json))
+            .collect();
+        let _ = ctx
+            .events
+            .send(Event::AgentGroupStarted {
+                id: run.id,
+                group: ToolCallId(first.tui_id),
+                members,
+            })
+            .await;
+    }
+    for prep in &mut prepared {
         let _ = ctx
             .events
             .send(Event::ToolStarted {
                 id: run.id,
                 call: ToolCall {
-                    id: ToolCallId(tui_id),
-                    name: name.clone(),
-                    display: call_display(ctx.tools, name, input_json),
+                    id: ToolCallId(prep.tui_id),
+                    name: prep.name.to_owned(),
+                    display: call_display(ctx.tools, prep.name, prep.input_json),
                 },
             })
             .await;
-        let db_id = match run.ids() {
-            Some(ids) => create_tool_call_record(ctx, ids, vendor_id, name, input_json).await,
+        prep.db_id = match run.ids() {
+            Some(ids) => {
+                create_tool_call_record(ctx, ids, prep.vendor_id, prep.name, prep.input_json).await
+            }
             None => None,
         };
-        prepared.push(Prepared {
-            vendor_id: vendor_id.as_str(),
-            name: name.as_str(),
-            input_json: input_json.as_str(),
-            tui_id,
-            db_id,
-        });
     }
     let results = futures::future::join_all(
         prepared
