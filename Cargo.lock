@@ -3436,6 +3436,7 @@ dependencies = [
  "goat-sleep",
  "goat-store",
  "goat-types",
+ "goat-wire",
  "inventory",
  "serde_json",
  "tempfile",
