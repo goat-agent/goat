@@ -311,6 +311,9 @@ impl ProcessRegistry {
             } else {
                 natural
             };
+            if reason == ProcessExitReason::Killed {
+                entry.exit_observed = true;
+            }
             (!entry.exit_observed, reason, entry.db_id)
         };
         if let (Some(store), Some(db_id)) = (self.store.as_ref(), db_id) {
@@ -719,6 +722,25 @@ mod tests {
         assert_eq!(running[0].state, ProcessState::Running);
         registry.kill(started.id).await.unwrap();
         wait_until_exited(&registry, started.id).await;
+    }
+
+    #[tokio::test]
+    async fn killed_process_does_not_wake() {
+        let (registry, _events, wake) = harness();
+        let cwd = std::env::temp_dir();
+        let started = registry.spawn(plat::SLEEP_LONG, &cwd, true).await.unwrap();
+        registry.kill(started.id).await.unwrap();
+        wait_until_exited(&registry, started.id).await;
+        let result = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
+        assert!(
+            result.is_err(),
+            "a process the agent killed itself must not wake it"
+        );
+        let pending = registry.take_pending_observations().await;
+        assert!(
+            pending.is_empty(),
+            "a killed process must not be reported as an observation"
+        );
     }
 
     #[cfg(unix)]
