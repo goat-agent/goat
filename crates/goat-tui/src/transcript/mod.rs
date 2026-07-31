@@ -1189,7 +1189,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_group_renders_compact_tree_with_live_spinner() {
+    fn subagent_group_renders_compact_tree_with_live_spinner() {
         let mut t = Transcript::default();
         t.push_subagent_group(
             TaskId(1),

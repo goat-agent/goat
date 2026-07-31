@@ -1359,7 +1359,7 @@ mod tests {
         while let Some(event) = events.recv().await {
             match event {
                 Event::ToolStarted { call, .. } if call.name == "Subagent" => {
-                    subagent_started = true
+                    subagent_started = true;
                 }
                 Event::ToolDone { outcome, .. } => subagent_done_ok = outcome.ok,
                 Event::TextDone { text, .. } => final_text = text,
