@@ -26,7 +26,7 @@ struct AgentInput {
     prompt: String,
 }
 
-pub(crate) fn agent_tool_def(ctx: &Ctx<'_>) -> ToolDefinition {
+pub(crate) fn agent_tool_def(ctx: &Ctx) -> ToolDefinition {
     let names: Vec<String> = ctx.subagents.names();
     let mut description = String::from(
         "Delegate a self-contained task to a sub-agent that runs in its own context with a restricted tool set and returns only its final report. Prefer this for focused investigation or work that would otherwise flood the main context. Issue several Agent calls in one response to run them in parallel. Available agent_type values:",
@@ -83,13 +83,13 @@ pub(crate) fn agent_group_member(call: ToolCallId, input: &str) -> AgentGroupMem
 }
 
 fn resolve_agent_model(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     parent: &ModelTarget,
     spec: &SubagentSpec,
 ) -> Option<(Arc<dyn Provider>, String, Option<Effort>)> {
     if let Some(model_id) = &spec.model {
         if let Some(found) = ctx
-            .registry
+            .registry()
             .all()
             .iter()
             .find(|provider| provider.list_models().iter().any(|id| id == model_id))
@@ -117,8 +117,8 @@ fn resolve_agent_model(
 }
 
 pub(crate) async fn run_delegation(
-    ctx: &Ctx<'_>,
-    env: &LoopEnv<'_>,
+    ctx: &Ctx,
+    env: &LoopEnv,
     input_json: &str,
     parent: TaskId,
     call: ToolCallId,
@@ -129,7 +129,7 @@ pub(crate) async fn run_delegation(
     let Some(spec) = ctx.subagents.get(&args.agent_type) else {
         return Err(format!("unknown agent_type: {}", args.agent_type));
     };
-    let Some((provider, model, effort)) = resolve_agent_model(ctx, env.target, spec) else {
+    let Some((provider, model, effort)) = resolve_agent_model(ctx, &env.target, spec) else {
         return Err("could not resolve a model for the agent".to_owned());
     };
     let child_target = ModelTarget {
@@ -143,7 +143,7 @@ pub(crate) async fn run_delegation(
     conversation.push(
         Message::text(
             MessageRole::System,
-            compose_child_system(&spec.prompt, ctx.instructions),
+            compose_child_system(&spec.prompt, ctx.instructions.as_deref()),
         ),
         None,
     );
@@ -162,10 +162,10 @@ pub(crate) async fn run_delegation(
         .await;
     let run = Run::child(child_id);
     let child_env = LoopEnv {
-        provider: provider.as_ref(),
-        target: &child_target,
-        tool_defs: &tool_defs,
-        cwd: env.cwd,
+        provider,
+        target: child_target,
+        tool_defs,
+        cwd: env.cwd.clone(),
         allow_delegate: false,
         allow_ask: false,
         exec_policy: crate::subagent::tighter(&env.exec_policy, &spec.exec_policy),

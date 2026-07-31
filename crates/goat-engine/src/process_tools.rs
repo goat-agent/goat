@@ -151,8 +151,8 @@ struct WatchArgs {
 }
 
 pub(crate) async fn run_process_tool(
-    ctx: &Ctx<'_>,
-    env: &LoopEnv<'_>,
+    ctx: &Ctx,
+    env: &LoopEnv,
     name: &str,
     input_json: &str,
     token: &CancellationToken,
@@ -172,7 +172,7 @@ pub(crate) async fn run_process_tool(
     Some(result)
 }
 
-async fn start(ctx: &Ctx<'_>, env: &LoopEnv<'_>, input_json: &str) -> Result<ToolOutput, String> {
+async fn start(ctx: &Ctx, env: &LoopEnv, input_json: &str) -> Result<ToolOutput, String> {
     if !matches!(env.exec_policy, SandboxPolicy::Full) {
         return Err(
             "background processes are only available with full shell access, not while planning"
@@ -183,7 +183,7 @@ async fn start(ctx: &Ctx<'_>, env: &LoopEnv<'_>, input_json: &str) -> Result<Too
         serde_json::from_str(input_json).map_err(|err| format!("invalid input: {err}"))?;
     let started = ctx
         .processes
-        .spawn(&args.command, env.cwd, args.watch)
+        .spawn(&args.command, &env.cwd, args.watch)
         .await
         .map_err(|err| err.to_string())?;
     if let Some(pgid) = started.pgid {
@@ -212,7 +212,7 @@ fn start_reply(id: goat_protocol::ProcessId) -> String {
     )
 }
 
-async fn output(ctx: &Ctx<'_>, input_json: &str) -> Result<ToolOutput, String> {
+async fn output(ctx: &Ctx, input_json: &str) -> Result<ToolOutput, String> {
     let args: ProcessRef =
         serde_json::from_str(input_json).map_err(|err| format!("invalid input: {err}"))?;
     let chunk = ctx
@@ -245,7 +245,7 @@ fn output_reply(id: goat_protocol::ProcessId, chunk: &crate::process::ReadChunk)
     }
 }
 
-async fn input(ctx: &Ctx<'_>, input_json: &str) -> Result<ToolOutput, String> {
+async fn input(ctx: &Ctx, input_json: &str) -> Result<ToolOutput, String> {
     let args: InputArgs =
         serde_json::from_str(input_json).map_err(|err| format!("invalid input: {err}"))?;
     ctx.processes.write_stdin(args.process, &args.text).await?;
@@ -255,7 +255,7 @@ async fn input(ctx: &Ctx<'_>, input_json: &str) -> Result<ToolOutput, String> {
     )))
 }
 
-async fn kill(ctx: &Ctx<'_>, input_json: &str) -> Result<ToolOutput, String> {
+async fn kill(ctx: &Ctx, input_json: &str) -> Result<ToolOutput, String> {
     let args: ProcessRef =
         serde_json::from_str(input_json).map_err(|err| format!("invalid input: {err}"))?;
     ctx.processes.kill(args.process).await?;
@@ -265,7 +265,7 @@ async fn kill(ctx: &Ctx<'_>, input_json: &str) -> Result<ToolOutput, String> {
     )))
 }
 
-async fn watch(ctx: &Ctx<'_>, input_json: &str) -> Result<ToolOutput, String> {
+async fn watch(ctx: &Ctx, input_json: &str) -> Result<ToolOutput, String> {
     let args: WatchArgs =
         serde_json::from_str(input_json).map_err(|err| format!("invalid input: {err}"))?;
     ctx.processes.set_watch(args.process, args.on).await?;
@@ -276,7 +276,7 @@ async fn watch(ctx: &Ctx<'_>, input_json: &str) -> Result<ToolOutput, String> {
     )))
 }
 
-async fn list(ctx: &Ctx<'_>) -> ToolOutput {
+async fn list(ctx: &Ctx) -> ToolOutput {
     let processes = ctx.processes.list().await;
     if processes.is_empty() {
         return ToolOutput::text("No background processes.".to_owned());
@@ -296,7 +296,7 @@ async fn list(ctx: &Ctx<'_>) -> ToolOutput {
     ToolOutput::text(out)
 }
 
-pub(crate) async fn roster_message(ctx: &Ctx<'_>) -> Option<goat_provider::Message> {
+pub(crate) async fn roster_message(ctx: &Ctx) -> Option<goat_provider::Message> {
     let processes = ctx.processes.list().await;
     let running: Vec<_> = processes
         .iter()

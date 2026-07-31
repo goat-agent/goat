@@ -330,7 +330,7 @@ enum CollectFail {
 }
 
 async fn collect_with_retry(
-    ctx: &crate::Ctx<'_>,
+    ctx: &crate::Ctx,
     run: &crate::Run<'_>,
     provider: &dyn goat_provider::Provider,
     request: &goat_provider::Request,
@@ -379,9 +379,9 @@ async fn collect_with_retry(
 }
 
 pub(crate) async fn compact(
-    ctx: &crate::Ctx<'_>,
+    ctx: &crate::Ctx,
     run: &crate::Run<'_>,
-    env: &crate::LoopEnv<'_>,
+    env: &crate::LoopEnv,
     conversation: &mut crate::conversation::Conversation,
     tracker: &mut ContextTracker,
     instructions: Option<&str>,
@@ -391,7 +391,7 @@ pub(crate) async fn compact(
         .events
         .send(goat_protocol::Event::CompactionStarted { id: run.id })
         .await;
-    let tokens_before = tracker.estimate(conversation.messages(), env.tool_defs);
+    let tokens_before = tracker.estimate(conversation.messages(), &env.tool_defs);
     let result = compact_inner(ctx, run, env, conversation, tracker, instructions, token).await;
     let (ok, tokens_after, usage) = match &result {
         Ok(outcome) => (true, outcome.tokens_after, outcome.usage.clone()),
@@ -411,9 +411,9 @@ pub(crate) async fn compact(
 }
 
 async fn compact_inner(
-    ctx: &crate::Ctx<'_>,
+    ctx: &crate::Ctx,
     run: &crate::Run<'_>,
-    env: &crate::LoopEnv<'_>,
+    env: &crate::LoopEnv,
     conversation: &mut crate::conversation::Conversation,
     tracker: &mut ContextTracker,
     instructions: Option<&str>,
@@ -421,7 +421,7 @@ async fn compact_inner(
 ) -> Result<CompactionOutcome, CompactionError> {
     let messages = conversation.messages().to_vec();
     let db_ids = conversation.db_ids().to_vec();
-    let tokens_before = tracker.estimate(&messages, env.tool_defs);
+    let tokens_before = tracker.estimate(&messages, &env.tool_defs);
     let window = env.provider.context_window(&env.target.model);
     let mut budget = window.map_or_else(
         || (tokens_before / 2).max(MIN_SUMMARIZATION_BUDGET),
@@ -438,14 +438,14 @@ async fn compact_inner(
         let request = goat_provider::Request {
             model: env.target.model.clone(),
             messages: input,
-            tools: env.tool_defs.to_vec(),
+            tools: env.tool_defs.clone(),
             effort: None,
             tool_choice: goat_provider::ToolChoice::None,
             temperature: None,
             max_tokens: None,
             system: None,
         };
-        match collect_with_retry(ctx, run, env.provider, &request, token).await {
+        match collect_with_retry(ctx, run, env.provider.as_ref(), &request, token).await {
             Ok(collected) => break collected,
             Err(CollectFail::Cancelled) => return Err(CompactionError::Cancelled),
             Err(CollectFail::Overflow) => {
@@ -487,7 +487,7 @@ async fn compact_inner(
     }
     let new_messages: Vec<Message> = entries.iter().map(|(message, _)| message.clone()).collect();
     let tokens_after =
-        estimate_messages(&new_messages).saturating_add(estimate_tool_defs(env.tool_defs));
+        estimate_messages(&new_messages).saturating_add(estimate_tool_defs(&env.tool_defs));
     if let Some(ids) = run.ids()
         && let Some(thread) = ids.stored_thread
     {

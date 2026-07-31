@@ -86,7 +86,7 @@ pub(crate) fn summarize_line(text: &str) -> Option<String> {
 }
 
 async fn run_regular_tool(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     name: &str,
     input_json: &str,
     tool_ctx: &ToolContext,
@@ -121,9 +121,9 @@ pub(crate) fn cap_tool_result(mut content: String) -> String {
 }
 
 async fn execute_tool(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     run: &Run<'_>,
-    env: &LoopEnv<'_>,
+    env: &LoopEnv,
     prep: &Prepared<'_>,
     tool_ctx: &ToolContext,
     token: &CancellationToken,
@@ -223,9 +223,9 @@ async fn execute_tool(
 }
 
 pub(crate) async fn run_tool_batch(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     run: &Run<'_>,
-    env: &LoopEnv<'_>,
+    env: &LoopEnv,
     pending_calls: &[(String, String, String)],
     call_seq: &mut u64,
     tool_ctx: &ToolContext,
@@ -268,7 +268,7 @@ pub(crate) async fn run_tool_batch(
                 call: ToolCall {
                     id: ToolCallId(prep.tui_id),
                     name: prep.name.to_owned(),
-                    display: call_display(ctx.tools, prep.name, prep.input_json),
+                    display: call_display(&ctx.tools, prep.name, prep.input_json),
                 },
             })
             .await;
@@ -300,7 +300,7 @@ pub(crate) async fn run_tool_batch(
 }
 
 pub(crate) fn build_tool_defs(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     provider: &dyn Provider,
     selection: Option<&ToolSelection>,
     allow_delegate: bool,

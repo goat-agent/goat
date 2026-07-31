@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    path::Path,
     sync::{Arc, atomic::AtomicU64},
 };
 
@@ -113,27 +112,54 @@ impl Engine for GoatAgent {
     }
 }
 
-pub(crate) struct Ctx<'a> {
-    pub(crate) registry: &'a Registry,
-    pub(crate) account_registries: &'a std::sync::Mutex<HashMap<String, Arc<Registry>>>,
-    pub(crate) credentials: &'a CredentialStore,
-    pub(crate) user: &'a goat_config::UserProviders,
-    pub(crate) tools: &'a ToolRegistry,
-    pub(crate) subagents: &'a SubagentRegistry,
-    pub(crate) store: &'a Store,
-    pub(crate) events: &'a mpsc::Sender<Event>,
-    pub(crate) skills: &'a [SkillInfo],
-    pub(crate) instructions: Option<&'a str>,
-    pub(crate) semaphore: &'a Arc<Semaphore>,
-    pub(crate) child_ids: &'a AtomicU64,
-    pub(crate) wake_ids: &'a AtomicU64,
-    pub(crate) processes: &'a Arc<process::ProcessRegistry>,
-    pub(crate) asks: &'a Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>>,
-    pub(crate) rl_cache: &'a std::sync::Mutex<rate_limit_cache::RateLimitCache>,
-    pub(crate) rl_path: Option<&'a std::path::Path>,
-    pub(crate) meter: &'a Option<goat_proxy::Meter>,
-    pub(crate) cwd: &'a std::path::Path,
-    pub(crate) date: &'a str,
+pub(crate) struct Shared {
+    registry: std::sync::Mutex<Arc<Registry>>,
+    pub(crate) account_registries: std::sync::Mutex<HashMap<String, Arc<Registry>>>,
+    pub(crate) credentials: CredentialStore,
+    pub(crate) user: goat_config::UserProviders,
+    pub(crate) tools: ToolRegistry,
+    pub(crate) subagents: SubagentRegistry,
+    pub(crate) store: Store,
+    pub(crate) events: mpsc::Sender<Event>,
+    pub(crate) skills: Vec<SkillInfo>,
+    pub(crate) instructions: Option<String>,
+    pub(crate) semaphore: Arc<Semaphore>,
+    pub(crate) child_ids: AtomicU64,
+    pub(crate) wake_ids: AtomicU64,
+    pub(crate) processes: Arc<process::ProcessRegistry>,
+    pub(crate) asks: Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>>,
+    pub(crate) rl_cache: std::sync::Mutex<rate_limit_cache::RateLimitCache>,
+    pub(crate) rl_path: Option<PathBuf>,
+    pub(crate) meter: Option<goat_proxy::Meter>,
+    pub(crate) cwd: PathBuf,
+    pub(crate) date: String,
+}
+
+impl Shared {
+    pub(crate) fn registry(&self) -> Arc<Registry> {
+        self.registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_registry(&self, next: Registry) {
+        *self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(next);
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct Ctx(Arc<Shared>);
+
+impl std::ops::Deref for Ctx {
+    type Target = Shared;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 pub(crate) enum Flow {
@@ -219,11 +245,11 @@ impl<'a> Run<'a> {
     }
 }
 
-pub(crate) struct LoopEnv<'a> {
-    pub(crate) provider: &'a dyn Provider,
-    pub(crate) target: &'a ModelTarget,
-    pub(crate) tool_defs: &'a [ToolDefinition],
-    pub(crate) cwd: &'a Path,
+pub(crate) struct LoopEnv {
+    pub(crate) provider: Arc<dyn Provider>,
+    pub(crate) target: ModelTarget,
+    pub(crate) tool_defs: Vec<ToolDefinition>,
+    pub(crate) cwd: PathBuf,
     pub(crate) allow_delegate: bool,
     pub(crate) allow_ask: bool,
     pub(crate) exec_policy: SandboxPolicy,
@@ -232,7 +258,7 @@ pub(crate) struct LoopEnv<'a> {
 #[allow(clippy::too_many_lines)]
 async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender<Event>) {
     let GoatAgent {
-        mut registry,
+        registry,
         tools,
         store,
         credentials,
@@ -300,32 +326,28 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     let account_registries: std::sync::Mutex<HashMap<String, Arc<Registry>>> =
         std::sync::Mutex::new(HashMap::new());
 
-    macro_rules! ctx {
-        () => {
-            Ctx {
-                registry: &registry,
-                account_registries: &account_registries,
-                credentials: &credentials,
-                user: &user_providers,
-                tools: &tools,
-                subagents: &subagents,
-                store: &store,
-                events: &events,
-                skills: &skills,
-                instructions: project_instructions.as_deref(),
-                semaphore: &semaphore,
-                child_ids: &child_ids,
-                wake_ids: &wake_ids,
-                processes: &processes,
-                asks: &asks,
-                rl_cache: &rl_cache,
-                rl_path: rl_path.as_deref(),
-                meter: &meter,
-                cwd: &cwd,
-                date: &session_date,
-            }
-        };
-    }
+    let ctx = Ctx(Arc::new(Shared {
+        registry: std::sync::Mutex::new(Arc::new(registry)),
+        account_registries,
+        credentials,
+        user: user_providers,
+        tools,
+        subagents,
+        store,
+        events,
+        skills,
+        instructions: project_instructions,
+        semaphore,
+        child_ids,
+        wake_ids,
+        processes,
+        asks,
+        rl_cache,
+        rl_path,
+        meter,
+        cwd,
+        date: session_date,
+    }));
 
     loop {
         let op = tokio::select! {
@@ -335,7 +357,6 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                 None => break,
             },
             () = wake.notified() => {
-                let ctx = ctx!();
                 if let Flow::Shutdown =
                     turn::handle_wake(&ctx, &mut state, &mut ops).await
                 {
@@ -351,7 +372,6 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                 display,
                 attachments,
             } => {
-                let ctx = ctx!();
                 if let Flow::Shutdown =
                     turn::handle_turn(&ctx, id, text, display, attachments, &mut state, &mut ops)
                         .await
@@ -362,13 +382,12 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
             Op::Interrupt { .. } | Op::Answer { .. } | Op::DequeueMessage { .. } | Op::Clear {} => {
             }
             Op::ProcessKill { process } => {
-                let _ = processes.kill(process).await;
+                let _ = ctx.processes.kill(process).await;
             }
             Op::ProcessWatch { process, on } => {
-                let _ = processes.set_watch(process, on).await;
+                let _ = ctx.processes.set_watch(process, on).await;
             }
             Op::Compact { id, instructions } => {
-                let ctx = ctx!();
                 if let Flow::Shutdown =
                     turn::handle_compact(&ctx, id, instructions, &mut state, &mut ops).await
                 {
@@ -376,7 +395,6 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                 }
             }
             Op::SubmitShell { id, command } => {
-                let ctx = ctx!();
                 if let Flow::Shutdown =
                     turn::handle_shell(&ctx, id, &command, &mut state, &mut ops).await
                 {
@@ -386,12 +404,12 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
             Op::SelectModel { .. } => {
                 turn::handle_idle_op(
                     op,
-                    &store,
-                    &cwd,
+                    &ctx.store,
+                    &ctx.cwd,
                     state.thread_id,
                     &mut state.target,
-                    &events,
-                    &processes,
+                    &ctx.events,
+                    &ctx.processes,
                 )
                 .await;
             }
@@ -399,88 +417,46 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                 provider,
                 credential,
             } => {
-                let ctx = accounts::LoginCtx {
-                    credentials: &credentials,
-                    user: &user_providers,
-                    registry: &mut registry,
-                    events: &events,
-                };
                 accounts::handle_login(
-                    ctx,
+                    &ctx,
                     provider,
                     DEFAULT_ACCOUNT.to_owned(),
                     credential,
                     false,
                 )
                 .await;
-                accounts::clear_account_registries(&account_registries);
+                accounts::clear_account_registries(&ctx.account_registries);
             }
             Op::AddAccount {
                 provider,
                 name,
                 credential,
             } => {
-                let ctx = accounts::LoginCtx {
-                    credentials: &credentials,
-                    user: &user_providers,
-                    registry: &mut registry,
-                    events: &events,
-                };
-                accounts::handle_login(ctx, provider, name, credential, true).await;
-                accounts::clear_account_registries(&account_registries);
+                accounts::handle_login(&ctx, provider, name, credential, true).await;
+                accounts::clear_account_registries(&ctx.account_registries);
             }
             Op::RemoveAccount { provider, name } => {
-                accounts::handle_remove_account(
-                    provider,
-                    name,
-                    &credentials,
-                    &user_providers,
-                    &mut registry,
-                    &events,
-                )
-                .await;
-                accounts::clear_account_registries(&account_registries);
+                accounts::handle_remove_account(&ctx, provider, name).await;
+                accounts::clear_account_registries(&ctx.account_registries);
             }
             Op::ListThreads {} => {
-                threads::handle_list_threads(&store, &cwd, &events).await;
+                threads::handle_list_threads(&ctx.store, &ctx.cwd, &ctx.events).await;
             }
             Op::Resume { thread_id: tid } => {
-                threads::handle_resume(
-                    &store,
-                    &skills,
-                    &tools,
-                    project_instructions.as_deref(),
-                    &session_date,
-                    tid,
-                    &mut state,
-                    &events,
-                )
-                .await;
-                accounts::refresh_model_list(&events, &registry, &credentials, &user_providers)
-                    .await;
+                threads::handle_resume(&ctx, tid, &mut state).await;
+                accounts::refresh_model_list(&ctx).await;
             }
             Op::ResumeLatest {} => {
-                threads::handle_resume_latest(
-                    &store,
-                    &skills,
-                    &tools,
-                    project_instructions.as_deref(),
-                    &session_date,
-                    &cwd,
-                    &mut state,
-                    &events,
-                )
-                .await;
-                accounts::refresh_model_list(&events, &registry, &credentials, &user_providers)
-                    .await;
+                threads::handle_resume_latest(&ctx, &mut state).await;
+                accounts::refresh_model_list(&ctx).await;
             }
             Op::RenameThread { title } => {
-                threads::handle_rename(&store, state.thread_id, title, &events).await;
+                threads::handle_rename(&ctx.store, state.thread_id, title, &ctx.events).await;
             }
             Op::Shutdown {} => break,
         }
     }
-    processes.shutdown_all().await;
+    ctx.processes.shutdown_all().await;
     mcp.shutdown().await;
 }
 
