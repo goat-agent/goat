@@ -33,7 +33,7 @@ pub(crate) fn web_search_display(input: &str) -> ToolDisplay {
 }
 
 pub(crate) async fn run_web_search(
-    env: &LoopEnv<'_>,
+    env: &LoopEnv,
     input_json: &str,
     token: &CancellationToken,
 ) -> Result<String, String> {

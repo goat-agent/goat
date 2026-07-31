@@ -4,7 +4,6 @@ use goat_protocol::{
 };
 use goat_provider::{ContentBlock, Message, MessageRole};
 use goat_store::CodeStore as Store;
-use goat_tools::ToolRegistry;
 use tokio::sync::mpsc;
 
 use crate::{
@@ -30,7 +29,7 @@ pub(crate) fn parse_content_blocks(body: &str) -> Vec<ContentBlock> {
 }
 
 pub(crate) async fn resolve_thread_cwd(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     stored_thread: Option<i64>,
 ) -> std::path::PathBuf {
     match stored_thread {
@@ -42,8 +41,8 @@ pub(crate) async fn resolve_thread_cwd(
             .flatten()
             .map(|thread| thread.cwd)
             .filter(|cwd| !cwd.is_empty())
-            .map_or_else(|| ctx.cwd.to_path_buf(), std::path::PathBuf::from),
-        None => ctx.cwd.to_path_buf(),
+            .map_or_else(|| ctx.cwd.clone(), std::path::PathBuf::from),
+        None => ctx.cwd.clone(),
     }
 }
 
@@ -114,17 +113,13 @@ pub(crate) async fn handle_rename(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn handle_resume(
-    store: &Store,
-    skills: &[SkillInfo],
-    tools: &ToolRegistry,
-    instructions: Option<&str>,
-    date: &str,
-    tid: i64,
-    state: &mut crate::SessionState,
-    events: &mpsc::Sender<Event>,
-) {
+pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate::SessionState) {
+    let store = &ctx.store;
+    let skills: &[SkillInfo] = &ctx.skills;
+    let tools = &ctx.tools;
+    let instructions = ctx.instructions.as_deref();
+    let date = ctx.date.as_str();
+    let events = &ctx.events;
     let thread = match store.get_thread(tid).await {
         Ok(Some(thread)) => thread,
         Ok(None) => {
@@ -386,30 +381,13 @@ pub(crate) async fn handle_resume(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn handle_resume_latest(
-    store: &Store,
-    skills: &[SkillInfo],
-    tools: &ToolRegistry,
-    instructions: Option<&str>,
-    date: &str,
-    cwd: &std::path::Path,
-    state: &mut crate::SessionState,
-    events: &mpsc::Sender<Event>,
-) {
-    let cwd_key = cwd.display().to_string();
+pub(crate) async fn handle_resume_latest(ctx: &crate::Ctx, state: &mut crate::SessionState) {
+    let store = &ctx.store;
+    let events = &ctx.events;
+    let cwd_key = ctx.cwd.display().to_string();
     match store.latest_thread_in(cwd_key).await {
         Ok(Some(thread)) => {
-            handle_resume(
-                store,
-                skills,
-                tools,
-                instructions,
-                date,
-                thread.id,
-                state,
-                events,
-            )
-            .await;
+            handle_resume(ctx, thread.id, state).await;
         }
         Ok(None) => {
             let _ = events

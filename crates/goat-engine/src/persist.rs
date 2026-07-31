@@ -21,7 +21,7 @@ pub(crate) fn effort_string(effort: Option<Effort>) -> Option<String> {
 }
 
 pub(crate) async fn create_tool_call_record(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     ids: &TurnIds,
     vendor_id: &str,
     name: &str,
@@ -51,7 +51,7 @@ pub(crate) async fn create_tool_call_record(
     }
 }
 
-pub(crate) async fn finish_tool_db(ctx: &Ctx<'_>, db_id: Option<i64>, outcome: &ToolOutcome) {
+pub(crate) async fn finish_tool_db(ctx: &Ctx, db_id: Option<i64>, outcome: &ToolOutcome) {
     let Some(db) = db_id else {
         return;
     };
@@ -111,7 +111,7 @@ pub(crate) async fn ensure_thread(
 }
 
 pub(crate) async fn init_db_turn(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     id: TaskId,
     message: &Message,
     text: &str,
@@ -126,7 +126,7 @@ pub(crate) async fn init_db_turn(
     } else {
         thread_title(text)
     };
-    let stored_thread = ensure_thread(ctx.store, ctx.cwd, thread_id, target, title).await;
+    let stored_thread = ensure_thread(&ctx.store, &ctx.cwd, thread_id, target, title).await;
     if let Some(tid) = stored_thread {
         let _ = ctx.events.send(Event::ThreadBound { thread_id: tid }).await;
     }
@@ -174,11 +174,7 @@ pub(crate) async fn init_db_turn(
     }
 }
 
-pub(crate) async fn persist_message(
-    ctx: &Ctx<'_>,
-    ids: &TurnIds,
-    message: &Message,
-) -> Option<i64> {
+pub(crate) async fn persist_message(ctx: &Ctx, ids: &TurnIds, message: &Message) -> Option<i64> {
     let role = match message.role {
         MessageRole::System => return None,
         MessageRole::User => "user",
@@ -207,11 +203,7 @@ pub(crate) async fn persist_message(
     }
 }
 
-pub(crate) async fn persist_shell_message(
-    ctx: &Ctx<'_>,
-    thread_id: i64,
-    encoded: &str,
-) -> Option<i64> {
+pub(crate) async fn persist_shell_message(ctx: &Ctx, thread_id: i64, encoded: &str) -> Option<i64> {
     let body = serde_json::to_string(&vec![ContentBlock::Text {
         text: encoded.to_owned(),
     }])
@@ -235,7 +227,7 @@ pub(crate) async fn persist_shell_message(
     }
 }
 
-pub(crate) async fn finalize_turn(ctx: &Ctx<'_>, id: TaskId, outcome: &TurnEnd, ids: &TurnIds) {
+pub(crate) async fn finalize_turn(ctx: &Ctx, id: TaskId, outcome: &TurnEnd, ids: &TurnIds) {
     match outcome {
         TurnEnd::Done => {
             if let Some(turn) = ids.turn_db_id
