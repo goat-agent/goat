@@ -629,6 +629,7 @@ impl App {
             return vec![Op::Interrupt { id }];
         }
         if self.quit_arm.is_some() {
+            self.exit_requested = true;
             self.should_quit = true;
         } else {
             self.composer.discard();

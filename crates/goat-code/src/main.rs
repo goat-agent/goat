@@ -124,17 +124,87 @@ async fn run_tui(worktree_label: Option<String>, r#continue: bool) -> color_eyre
     };
 
     let attachment = connect_session(worktree_label, r#continue).await?;
+    let managed = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| goat_worktree::workspace(&cwd).ok())
+        .filter(|workspace| matches!(workspace.kind, goat_worktree::WorkspaceKind::Managed { .. }));
     let goat_client::Attachment {
         ops,
         events,
         presence,
-        pump,
+        mut pump,
         ..
     } = attachment;
 
-    goat_tui::run(ops, events, presence, theme, Vec::new()).await?;
-    pump.abort();
+    let exit = goat_tui::run(ops, events, presence, theme, Vec::new()).await?;
+    if tokio::time::timeout(std::time::Duration::from_secs(1), &mut pump)
+        .await
+        .is_err()
+    {
+        pump.abort();
+    }
+    if exit == goat_tui::ExitReason::Requested
+        && let Some(workspace) = managed
+    {
+        prompt_worktree_removal(workspace).await?;
+    }
     Ok(())
+}
+
+async fn prompt_worktree_removal(workspace: goat_worktree::Workspace) -> color_eyre::Result<()> {
+    let goat_worktree::WorkspaceKind::Managed { label } = &workspace.kind else {
+        return Ok(());
+    };
+    let choices = ["Keep worktree".to_owned(), "Delete worktree".to_owned()];
+    if ui::select_index(&format!("worktree `{label}`"), &choices)? != Some(1) {
+        return Ok(());
+    }
+
+    let Some(socket_path) = goat_config::socket_path() else {
+        ui::warning("keeping worktree because the daemon socket is unavailable");
+        return Ok(());
+    };
+    match worktree_has_live_sessions(&socket_path, &workspace.repo_root).await {
+        Ok(true) => {
+            ui::warning("keeping worktree because another code session is using it");
+            return Ok(());
+        }
+        Err(error) => {
+            ui::warning(&format!(
+                "keeping worktree because live sessions could not be checked: {error}"
+            ));
+            return Ok(());
+        }
+        Ok(false) => {}
+    }
+
+    std::env::set_current_dir(&workspace.owner_root)?;
+    match goat_worktree::remove(label) {
+        Ok(()) => ui::success(&format!("deleted worktree `{label}`")),
+        Err(error) => ui::warning(&format!("keeping worktree: {error}")),
+    }
+    Ok(())
+}
+
+async fn worktree_has_live_sessions(
+    socket_path: &std::path::Path,
+    root: &std::path::Path,
+) -> Result<bool, goat_client::ClientError> {
+    for attempt in 0..5 {
+        let sessions = goat_client::status(socket_path).await?;
+        let in_use = sessions.iter().any(|session| {
+            let cwd = std::path::Path::new(&session.cwd);
+            cwd.canonicalize()
+                .map_or_else(|_| cwd.starts_with(root), |cwd| cwd.starts_with(root))
+        });
+        if !in_use {
+            return Ok(false);
+        }
+        if attempt < 4 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+    Ok(true)
 }
 
 async fn run_headless(

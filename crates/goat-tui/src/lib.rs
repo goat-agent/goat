@@ -25,6 +25,6 @@ pub(crate) mod usage;
 mod view;
 mod wrap;
 
-pub use app::run;
+pub use app::{ExitReason, run};
 pub use theme::Theme;
 pub use tui::install_hooks;
