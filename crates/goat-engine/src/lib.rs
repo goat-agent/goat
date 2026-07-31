@@ -21,13 +21,13 @@ use tokio::{
 mod accounts;
 mod ask;
 mod background;
+mod bash_tools;
 mod compaction;
 mod conversation;
 mod delegate;
 mod instructions;
 mod mcp_tools;
 mod persist;
-mod process_tools;
 mod prompt;
 mod rate_limit_cache;
 mod retry;
