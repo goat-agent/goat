@@ -296,7 +296,7 @@ impl ProcessRegistry {
         code: Option<i32>,
         natural: ProcessExitReason,
     ) {
-        let (watched, reason, db_id) = {
+        let (wake, reason, db_id) = {
             let mut inner = self.inner.lock().await;
             let Some(entry) = inner.entries.get_mut(&id) else {
                 return;
@@ -311,7 +311,10 @@ impl ProcessRegistry {
             } else {
                 natural
             };
-            (entry.watched, reason, entry.db_id)
+            if reason == ProcessExitReason::Killed {
+                entry.exit_observed = true;
+            }
+            (!entry.exit_observed, reason, entry.db_id)
         };
         if let (Some(store), Some(db_id)) = (self.store.as_ref(), db_id) {
             let _ = store.finish_process(db_id, crate::persist::now_ms()).await;
@@ -325,7 +328,7 @@ impl ProcessRegistry {
             })
             .await;
         self.broadcast_list().await;
-        if watched {
+        if wake {
             self.wake.notify_one();
         }
     }
@@ -353,15 +356,12 @@ impl ProcessRegistry {
             let Some(entry) = inner.entries.get_mut(&id) else {
                 continue;
             };
-            if !entry.watched {
-                continue;
-            }
-            let has_new = entry.lines.len() > entry.seen_cursor;
+            let has_new = entry.watched && entry.lines.len() > entry.seen_cursor;
             let exited_unseen = entry.state == ProcessState::Exited && !entry.exit_observed;
             if !has_new && !exited_unseen {
                 continue;
             }
-            let text = collect_from(entry, entry.seen_cursor);
+            let text = collect_tail_from(entry, entry.seen_cursor);
             entry.seen_cursor = entry.lines.len();
             entry.exit_observed = true;
             out.push((
@@ -376,6 +376,12 @@ impl ProcessRegistry {
         }
         out.sort_by_key(|(id, _)| id.0);
         out
+    }
+
+    #[cfg(test)]
+    async fn buffered_lines(&self, id: ProcessId) -> usize {
+        let inner = self.inner.lock().await;
+        inner.entries.get(&id).map_or(0, |entry| entry.lines.len())
     }
 
     pub(crate) async fn write_stdin(&self, id: ProcessId, text: &str) -> Result<(), String> {
@@ -490,6 +496,17 @@ pub(crate) struct Observation {
     pub(crate) exit_code: Option<i32>,
 }
 
+fn collect_tail_from(entry: &Entry, cursor: usize) -> String {
+    let unread = entry.lines.len() - cursor;
+    if unread <= WATCH_FLOOD_LINES {
+        return collect_from(entry, cursor);
+    }
+    let dropped = unread - WATCH_FLOOD_LINES;
+    let mut out = format!("[{dropped} earlier lines dropped]\n");
+    out.push_str(&collect_from(entry, entry.lines.len() - WATCH_FLOOD_LINES));
+    out
+}
+
 fn collect_from(entry: &Entry, cursor: usize) -> String {
     let mut out = String::new();
     if cursor == 0 && entry.dropped > 0 {
@@ -569,6 +586,7 @@ mod tests {
         pub const SLEEP_LONG: &str = "sleep 30";
         pub const CAT: &str = "cat";
         pub const TRUE: &str = "true";
+        pub const COUNT_TO_600: &str = "seq 1 600";
     }
 
     #[cfg(windows)]
@@ -581,6 +599,7 @@ mod tests {
         pub const SLEEP_LONG: &str = "ping -n 31 127.0.0.1 >nul";
         pub const CAT: &str = "findstr \"^\"";
         pub const TRUE: &str = "type nul";
+        pub const COUNT_TO_600: &str = "for /L %i in (1,1,600) do @echo %i";
     }
 
     fn harness() -> (
@@ -684,13 +703,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unwatched_process_does_not_wake() {
+    async fn unwatched_process_does_not_wake_while_it_runs() {
+        let (registry, _events, wake) = harness();
+        let cwd = std::env::temp_dir();
+        let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+        let result = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
+        assert!(
+            result.is_err(),
+            "an unwatched process must not wake the agent for output"
+        );
+        registry.kill(started.id).await.unwrap();
+        wait_until_exited(&registry, started.id).await;
+    }
+
+    #[tokio::test]
+    async fn every_process_wakes_on_exit() {
         let (registry, _events, wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry.spawn(plat::ECHO_QUIET, &cwd, false).await.unwrap();
-        wait_until_exited(&registry, started.id).await;
-        let result = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
-        assert!(result.is_err(), "unwatched process must not wake the agent");
+        tokio::time::timeout(Duration::from_secs(5), wake.notified())
+            .await
+            .expect("an exit must wake the agent even without watch");
+        let obs = registry.take_pending_observations().await;
+        assert!(
+            obs.iter()
+                .any(|(id, o)| *id == started.id && o.state == ProcessState::Exited),
+            "the exit must be reported as an observation"
+        );
     }
 
     #[tokio::test]
@@ -702,6 +741,72 @@ mod tests {
         assert_eq!(running[0].state, ProcessState::Running);
         registry.kill(started.id).await.unwrap();
         wait_until_exited(&registry, started.id).await;
+    }
+
+    async fn wait_until_buffered(
+        registry: &ProcessRegistry,
+        id: goat_protocol::ProcessId,
+        n: usize,
+    ) {
+        for _ in 0..1000 {
+            if registry.buffered_lines(id).await >= n {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("process never buffered {n} lines");
+    }
+
+    #[tokio::test]
+    async fn a_flood_of_unread_output_is_observed_by_its_tail() {
+        let (registry, mut events, _wake) = harness();
+        tokio::spawn(async move { while events.recv().await.is_some() {} });
+        let cwd = std::env::temp_dir();
+        let started = registry
+            .spawn(plat::COUNT_TO_600, &cwd, false)
+            .await
+            .unwrap();
+        wait_until_exited(&registry, started.id).await;
+        wait_until_buffered(&registry, started.id, 600).await;
+
+        let obs = registry.take_pending_observations().await;
+        let (_, observation) = obs
+            .iter()
+            .find(|(id, _)| *id == started.id)
+            .expect("the exit must be observed");
+        assert!(
+            observation.output.contains("earlier lines dropped"),
+            "a flood must be trimmed, got {} bytes",
+            observation.output.len()
+        );
+        assert!(
+            observation.output.lines().count() <= super::WATCH_FLOOD_LINES + 2,
+            "the wake notice must not dump the whole ring buffer"
+        );
+        assert!(
+            observation.output.contains("600"),
+            "the tail is what matters, got: {}",
+            &observation.output[observation.output.len().saturating_sub(40)..]
+        );
+    }
+
+    #[tokio::test]
+    async fn killed_process_does_not_wake() {
+        let (registry, _events, wake) = harness();
+        let cwd = std::env::temp_dir();
+        let started = registry.spawn(plat::SLEEP_LONG, &cwd, true).await.unwrap();
+        registry.kill(started.id).await.unwrap();
+        wait_until_exited(&registry, started.id).await;
+        let result = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
+        assert!(
+            result.is_err(),
+            "a process the agent killed itself must not wake it"
+        );
+        let pending = registry.take_pending_observations().await;
+        assert!(
+            pending.is_empty(),
+            "a killed process must not be reported as an observation"
+        );
     }
 
     #[cfg(unix)]

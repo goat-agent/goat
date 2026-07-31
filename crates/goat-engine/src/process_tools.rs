@@ -29,19 +29,19 @@ pub(crate) fn tool_defs() -> Vec<goat_provider::ToolDefinition> {
     vec![
         def(
             PROCESS_START_TOOL_NAME,
-            "Start a long-running command in the background and return immediately with a process id. Use this for dev servers (pnpm dev, vite), watchers, or a poller that waits for a long task (e.g. `gh run watch`) instead of blocking on Bash. Output is buffered; read it later with ProcessOutput. If you want the result within this same turn, leave watch off and poll with ProcessOutput. Set watch=true only to be woken by a *future* event once this turn has already ended and you are idle: after it exits or prints new output you have not yet read, a fresh turn wakes you (pipe the command through grep to keep those wakes meaningful). Output you already read with ProcessOutput never wakes you again. The process keeps running across turns until it exits or you call ProcessKill.",
+            "Start a long-running command in the background and return immediately with a process id. Use this for dev servers (pnpm dev, vite), watchers, or a long task you should not block on (e.g. a full build or `gh run watch`). When it exits, a fresh turn wakes you with its output — so if you are only waiting for it, end your turn instead of calling ProcessOutput over and over. Output is buffered meanwhile; read a snapshot with ProcessOutput whenever you have other work in flight. Set watch=true to also be woken while it is still running, every time it prints output you have not read (log monitoring; pipe through grep to keep those wakes meaningful). The process keeps running across turns until it exits or you call ProcessKill.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "shell command to run in the background"},
-                    "watch": {"type": "boolean", "description": "wake the agent on new output and on exit (default false)"}
+                    "watch": {"type": "boolean", "description": "also wake the agent on new output, not just on exit (default false)"}
                 },
                 "required": ["command"]
             }),
         ),
         def(
             PROCESS_OUTPUT_TOOL_NAME,
-            "Read output produced by a background process since the last read (a moving cursor, not the whole history). Returns whether the process is still running or has exited with its code.",
+            "Read output produced by a background process since the last read (a moving cursor, not the whole history). Returns immediately with whatever is buffered, plus whether the process is still running or has exited with its code. This is a snapshot for when you have other work in flight — it does not wait. To wait for a result, end your turn: the process wakes you when it exits. Reading an exit here counts as seeing it, so it will not wake you again.",
             serde_json::json!({
                 "type": "object",
                 "properties": {"process": {"type": "string", "description": "process id from ProcessStart"}},
@@ -76,12 +76,12 @@ pub(crate) fn tool_defs() -> Vec<goat_provider::ToolDefinition> {
         ),
         def(
             PROCESS_WATCH_TOOL_NAME,
-            "Turn push observation on or off for a background process. When on, a future exit or unread new output wakes you in a fresh turn once you are idle — output you already read with ProcessOutput does not. When off, output is only buffered for ProcessOutput.",
+            "Turn output watching on or off for a running background process. When on, output you have not read wakes you in a fresh turn once you are idle; when off, it is only buffered for ProcessOutput. Its exit wakes you either way, so you do not need this just to wait for the process to finish.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "process": {"type": "string", "description": "process id from ProcessStart"},
-                    "on": {"type": "boolean", "description": "true to watch, false to stop watching"}
+                    "on": {"type": "boolean", "description": "true to wake on new output, false to stop"}
                 },
                 "required": ["process", "on"]
             }),
@@ -202,11 +202,14 @@ async fn start(ctx: &Ctx<'_>, env: &LoopEnv<'_>, input_json: &str) -> Result<Too
         }
     }
     let id = started.id;
-    let watched = if args.watch { " (watched)" } else { "" };
-    Ok(ToolOutput::text(format!(
-        "Started process #{id}{watched}. Read output with ProcessOutput(process={id}); stop with ProcessKill(process={id})."
-    ))
-    .with_summary(format!("#{id} {}", process_start_summary(&args.command))))
+    Ok(ToolOutput::text(start_reply(id))
+        .with_summary(format!("#{id} {}", process_start_summary(&args.command))))
+}
+
+fn start_reply(id: goat_protocol::ProcessId) -> String {
+    format!(
+        "Started process #{id}. A fresh turn will wake you when it exits, so if you are only waiting for it, end your turn now instead of calling ProcessOutput. Read buffered output any time with ProcessOutput(process={id}); stop it with ProcessKill(process={id})."
+    )
 }
 
 async fn output(ctx: &Ctx<'_>, input_json: &str) -> Result<ToolOutput, String> {
@@ -217,6 +220,10 @@ async fn output(ctx: &Ctx<'_>, input_json: &str) -> Result<ToolOutput, String> {
         .read_new(args.process)
         .await
         .ok_or_else(|| format!("no process #{}", args.process))?;
+    Ok(ToolOutput::text(output_reply(args.process, &chunk)))
+}
+
+fn output_reply(id: goat_protocol::ProcessId, chunk: &crate::process::ReadChunk) -> String {
     let status = match chunk.state {
         goat_protocol::ProcessState::Running => "running".to_owned(),
         goat_protocol::ProcessState::Exited => match chunk.exit_code {
@@ -224,16 +231,18 @@ async fn output(ctx: &Ctx<'_>, input_json: &str) -> Result<ToolOutput, String> {
             None => "exited".to_owned(),
         },
     };
-    let body = if chunk.text.trim().is_empty() {
-        format!("[no new output] process #{} is {status}", args.process)
-    } else {
-        format!(
-            "{}\n[process #{} is {status}]",
-            chunk.text.trim_end(),
-            args.process
-        )
+    let waiting = match chunk.state {
+        goat_protocol::ProcessState::Exited => "",
+        goat_protocol::ProcessState::Running => {
+            " — a fresh turn will wake you when it exits, so end your turn rather than reading it again to wait"
+        }
     };
-    Ok(ToolOutput::text(crate::tools_exec::cap_tool_result(body)))
+    if chunk.text.trim().is_empty() {
+        format!("[no new output] process #{id} is {status}{waiting}")
+    } else {
+        let body = crate::tools_exec::cap_tool_result(chunk.text.trim_end().to_owned());
+        format!("{body}\n[process #{id} is {status}{waiting}]")
+    }
 }
 
 async fn input(ctx: &Ctx<'_>, input_json: &str) -> Result<ToolOutput, String> {
@@ -308,4 +317,80 @@ pub(crate) async fn roster_message(ctx: &Ctx<'_>) -> Option<goat_provider::Messa
         goat_provider::MessageRole::User,
         text,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{output_reply, start_reply, tool_defs};
+    use crate::process::ReadChunk;
+    use goat_protocol::{ProcessId, ProcessState};
+
+    fn chunk(text: &str, state: ProcessState) -> ReadChunk {
+        ReadChunk {
+            text: text.to_owned(),
+            state,
+            exit_code: match state {
+                ProcessState::Exited => Some(0),
+                ProcessState::Running => None,
+            },
+        }
+    }
+
+    #[test]
+    fn start_reply_sends_a_waiting_agent_to_end_its_turn() {
+        let reply = start_reply(ProcessId(3));
+        assert!(reply.contains("end your turn"), "got: {reply}");
+        assert!(
+            !reply.contains("ProcessWatch"),
+            "waiting must not require watching, got: {reply}"
+        );
+    }
+
+    #[test]
+    fn running_process_reply_always_points_away_from_polling() {
+        let quiet = output_reply(ProcessId(3), &chunk("", ProcessState::Running));
+        assert!(quiet.contains("[no new output]"), "got: {quiet}");
+        assert!(quiet.contains("end your turn"), "got: {quiet}");
+
+        let chatty = output_reply(
+            ProcessId(3),
+            &chunk("compiling...\n", ProcessState::Running),
+        );
+        assert!(chatty.contains("compiling..."), "got: {chatty}");
+        assert!(
+            chatty.contains("end your turn"),
+            "a process that keeps printing must still steer the agent away from polling, got: {chatty}"
+        );
+    }
+
+    #[test]
+    fn exited_process_reply_carries_no_waiting_advice() {
+        let reply = output_reply(ProcessId(3), &chunk("done\n", ProcessState::Exited));
+        assert!(reply.contains("exited (code 0)"), "got: {reply}");
+        assert!(!reply.contains("end your turn"), "got: {reply}");
+    }
+
+    #[test]
+    fn huge_output_keeps_its_status_marker() {
+        let text = "x".repeat(200 * 1024);
+        let reply = output_reply(ProcessId(3), &chunk(&text, ProcessState::Running));
+        assert!(reply.contains("[output truncated]"), "should be capped");
+        assert!(
+            reply.trim_end().ends_with("to wait]"),
+            "capping must not eat the status marker, tail was: {}",
+            &reply[reply.len().saturating_sub(120)..]
+        );
+    }
+
+    #[test]
+    fn no_tool_description_tells_the_agent_to_poll() {
+        for def in tool_defs() {
+            assert!(
+                !def.description.to_lowercase().contains("poll with"),
+                "{} still instructs polling: {}",
+                def.name,
+                def.description
+            );
+        }
+    }
 }
