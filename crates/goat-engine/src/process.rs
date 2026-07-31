@@ -87,7 +87,7 @@ impl std::fmt::Display for SpawnError {
         match self {
             Self::TooMany => write!(
                 f,
-                "too many background processes are already running (limit {MAX_LIVE_PROCESSES}); stop one with ProcessKill first"
+                "too many background runs are already going (limit {MAX_LIVE_PROCESSES}); stop one with BashKill first"
             ),
             Self::Spawn(msg) => write!(f, "failed to start process: {msg}"),
         }
@@ -393,7 +393,7 @@ impl ProcessRegistry {
                 .ok_or_else(|| format!("no process #{id}"))?;
             if entry.state == ProcessState::Exited {
                 return Err(format!(
-                    "process #{id} has exited; start it again with ProcessStart"
+                    "run #{id} has exited; start it again with Bash(background=true)"
                 ));
             }
             entry

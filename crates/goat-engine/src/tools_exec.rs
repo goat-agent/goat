@@ -67,8 +67,11 @@ pub(crate) fn call_display(tools: &ToolRegistry, name: &str, input: &str) -> Too
         AGENT_TOOL_NAME => agent_call_display(input),
         ASK_TOOL_NAME => ask_call_display(input),
         WEB_SEARCH_TOOL_NAME => web_search_display(input),
-        _ if crate::process_tools::is_process_tool(name) => {
+        _ if crate::process_tools::is_bash_run_tool(name) => {
             crate::process_tools::call_display(name, input)
+        }
+        crate::process_tools::BASH_TOOL_NAME if crate::process_tools::wants_background(input) => {
+            crate::process_tools::background_start_display(input)
         }
         _ => tools.get(name).map_or_else(
             || goat_tool::display::generic_named(name, input),
@@ -137,8 +140,13 @@ async fn execute_tool(
                 .await
                 .map(ToolOutput::text),
         )
-    } else if crate::process_tools::is_process_tool(prep.name) && env.allow_delegate {
-        crate::process_tools::run_process_tool(ctx, env, prep.name, prep.input_json, token).await
+    } else if crate::process_tools::is_bash_run_tool(prep.name) && env.allow_delegate {
+        crate::process_tools::run_bash_run_tool(ctx, prep.name, prep.input_json, token).await
+    } else if prep.name == crate::process_tools::BASH_TOOL_NAME
+        && env.allow_delegate
+        && crate::process_tools::wants_background(prep.input_json)
+    {
+        crate::process_tools::start_background(ctx, env, prep.input_json, token).await
     } else if prep.name == ASK_TOOL_NAME && env.allow_ask {
         Some(run_ask(ctx, run, prep.input_json, ToolCallId(prep.tui_id), token).await)
     } else if prep.name == AGENT_TOOL_NAME && env.allow_delegate {
@@ -320,6 +328,13 @@ pub(crate) fn build_tool_defs(
             input_schema: spec.parameters,
         })
         .collect();
+    if allow_delegate
+        && let Some(bash) = defs
+            .iter_mut()
+            .find(|def| def.name == crate::process_tools::BASH_TOOL_NAME)
+    {
+        crate::process_tools::augment_bash(bash);
+    }
     if provider.supports_web_search() && ctx.tools.get(WEB_SEARCH_TOOL_NAME).is_none() {
         defs.push(web_search_tool_def());
     }
