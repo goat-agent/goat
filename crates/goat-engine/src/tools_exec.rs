@@ -65,6 +65,7 @@ fn outcome_image(content: &ToolContent) -> Option<ToolImageData> {
 pub(crate) fn call_display(tools: &ToolRegistry, name: &str, input: &str) -> ToolDisplay {
     match name {
         AGENT_TOOL_NAME => agent_call_display(input),
+        crate::delegate::AGENT_KILL_TOOL_NAME => crate::delegate::agent_kill_display(input),
         ASK_TOOL_NAME => ask_call_display(input),
         WEB_SEARCH_TOOL_NAME => web_search_display(input),
         _ if crate::process_tools::is_bash_run_tool(name) => {
@@ -149,14 +150,15 @@ async fn execute_tool(
         crate::process_tools::start_background(ctx, env, prep.input_json, token).await
     } else if prep.name == ASK_TOOL_NAME && env.allow_ask {
         Some(run_ask(ctx, run, prep.input_json, ToolCallId(prep.tui_id), token).await)
+    } else if prep.name == crate::delegate::AGENT_KILL_TOOL_NAME && env.allow_delegate {
+        Some(
+            crate::delegate::run_agent_kill(ctx, prep.input_json)
+                .await
+                .map(ToolOutput::text),
+        )
     } else if prep.name == AGENT_TOOL_NAME && env.allow_delegate {
-        let permit = tokio::select! {
-            biased;
-            () = token.cancelled() => None,
-            acquired = ctx.semaphore.acquire() => acquired.ok(),
-        };
-        match permit {
-            Some(_permit) if !token.is_cancelled() => Some(
+        if crate::delegate::wants_background(prep.input_json) {
+            Some(
                 run_delegation(
                     ctx,
                     env,
@@ -167,8 +169,28 @@ async fn execute_tool(
                 )
                 .await
                 .map(ToolOutput::text),
-            ),
-            _ => None,
+            )
+        } else {
+            let permit = tokio::select! {
+                biased;
+                () = token.cancelled() => None,
+                acquired = ctx.semaphore.acquire() => acquired.ok(),
+            };
+            match permit {
+                Some(_permit) if !token.is_cancelled() => Some(
+                    run_delegation(
+                        ctx,
+                        env,
+                        prep.input_json,
+                        run.id,
+                        ToolCallId(prep.tui_id),
+                        token,
+                    )
+                    .await
+                    .map(ToolOutput::text),
+                ),
+                _ => None,
+            }
         }
     } else {
         run_regular_tool(ctx, prep.name, prep.input_json, tool_ctx, token).await
@@ -341,6 +363,7 @@ pub(crate) fn build_tool_defs(
     if allow_delegate {
         if !ctx.subagents.is_empty() {
             defs.push(agent_tool_def(ctx));
+            defs.push(crate::delegate::agent_kill_tool_def());
         }
         defs.extend(crate::process_tools::tool_defs());
     }
