@@ -126,32 +126,32 @@ impl JsonSchema for ToolCallId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ProcessId(pub u64);
+pub struct RunId(pub u64);
 
-impl Serialize for ProcessId {
+impl Serialize for RunId {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         id_serde::serialize(&self.0, s)
     }
 }
 
-impl<'de> Deserialize<'de> for ProcessId {
+impl<'de> Deserialize<'de> for RunId {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         id_serde::deserialize(d).map(Self)
     }
 }
 
-impl fmt::Display for ProcessId {
+impl fmt::Display for RunId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl JsonSchema for ProcessId {
+impl JsonSchema for RunId {
     fn schema_name() -> std::borrow::Cow<'static, str> {
-        "ProcessId".into()
+        "RunId".into()
     }
     fn schema_id() -> std::borrow::Cow<'static, str> {
-        concat!(module_path!(), "::ProcessId").into()
+        concat!(module_path!(), "::RunId").into()
     }
     fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
         id_json_schema(generator)
@@ -176,7 +176,7 @@ pub enum ProcessExitReason {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ProcessInfo {
-    pub id: ProcessId,
+    pub id: RunId,
     pub command: String,
     pub state: ProcessState,
     pub watched: bool,

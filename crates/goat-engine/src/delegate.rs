@@ -31,7 +31,7 @@ struct SubagentInput {
 
 #[derive(serde::Deserialize)]
 struct KillInput {
-    run: goat_protocol::ProcessId,
+    run: goat_protocol::RunId,
 }
 
 pub(crate) fn subagent_tool_def(ctx: &Ctx) -> ToolDefinition {

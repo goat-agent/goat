@@ -224,9 +224,7 @@ async fn pump_op(
     }
 }
 
-fn wake_notice(
-    observations: &[(goat_protocol::ProcessId, crate::background::Observation)],
-) -> String {
+fn wake_notice(observations: &[(goat_protocol::RunId, crate::background::Observation)]) -> String {
     let mut body = String::from(
         "<environment-notice>\nAutomated runtime signal — this is NOT a message from the user. Do not reply to it conversationally, do not acknowledge or thank it, and do not repeat an earlier waiting reply. Background work finished or produced output you had not read; act only if it now needs action (read it, fix it, or move on), otherwise produce no user-facing text and continue what you were doing.\n",
     );
@@ -785,11 +783,11 @@ async fn run_one_turn(
 mod tests {
     use super::wake_notice;
     use crate::background::{Kind, Observation};
-    use goat_protocol::{ProcessId, ProcessState};
+    use goat_protocol::{ProcessState, RunId};
 
-    fn bash(title: &str, output: &str, code: i32) -> (ProcessId, Observation) {
+    fn bash(title: &str, output: &str, code: i32) -> (RunId, Observation) {
         (
-            ProcessId(3),
+            RunId(3),
             Observation {
                 kind: Kind::Bash,
                 title: title.to_owned(),
@@ -801,9 +799,9 @@ mod tests {
         )
     }
 
-    fn subagent(title: &str, report: &str, ok: bool) -> (ProcessId, Observation) {
+    fn subagent(title: &str, report: &str, ok: bool) -> (RunId, Observation) {
         (
-            ProcessId(7),
+            RunId(7),
             Observation {
                 kind: Kind::Subagent,
                 title: title.to_owned(),

@@ -1,5 +1,5 @@
 use goat_protocol::{
-    Event as EngineEvent, NotifyKind, Op, ProcessExitReason, ProcessId, ProcessInfo, ProcessState,
+    Event as EngineEvent, NotifyKind, Op, ProcessExitReason, ProcessInfo, ProcessState, RunId,
     TaskId, TranscriptEntry,
 };
 
@@ -461,7 +461,7 @@ impl App {
         self.subagent_runs.iter().position(|run| run.id == id)
     }
 
-    fn ensure_process_run(&mut self, id: ProcessId, command: &str) {
+    fn ensure_process_run(&mut self, id: RunId, command: &str) {
         if self.process_runs.iter().any(|run| run.id == id) {
             return;
         }

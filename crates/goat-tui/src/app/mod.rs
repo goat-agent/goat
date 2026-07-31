@@ -50,7 +50,7 @@ pub(crate) struct SubagentRunView {
 }
 
 pub(crate) struct ProcessRunView {
-    pub(crate) id: goat_protocol::ProcessId,
+    pub(crate) id: goat_protocol::RunId,
     pub(crate) command: String,
     pub(crate) state: goat_protocol::ProcessState,
     pub(crate) exit_code: Option<i32>,
@@ -61,13 +61,13 @@ pub(crate) struct ProcessRunView {
 pub(crate) enum MainView {
     Live,
     Subagent(TaskId),
-    Process(goat_protocol::ProcessId),
+    Process(goat_protocol::RunId),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunTarget {
     Subagent(TaskId),
-    Process(goat_protocol::ProcessId),
+    Process(goat_protocol::RunId),
 }
 
 impl RunTarget {
@@ -3051,14 +3051,14 @@ mod tests {
         app.on_engine(EngineEvent::ProcessListChanged {
             processes: vec![
                 goat_protocol::ProcessInfo {
-                    id: goat_protocol::ProcessId(1),
+                    id: goat_protocol::RunId(1),
                     command: "pnpm dev".to_owned(),
                     state: goat_protocol::ProcessState::Running,
                     watched: false,
                     exit_code: None,
                 },
                 goat_protocol::ProcessInfo {
-                    id: goat_protocol::ProcessId(2),
+                    id: goat_protocol::RunId(2),
                     command: "gh run watch".to_owned(),
                     state: goat_protocol::ProcessState::Exited,
                     watched: true,
@@ -3076,7 +3076,7 @@ mod tests {
 
     fn process_started(app: &mut App, id: u64, command: &str) {
         app.on_engine(EngineEvent::ProcessStarted {
-            process: goat_protocol::ProcessId(id),
+            process: goat_protocol::RunId(id),
             command: command.to_owned(),
             watched: false,
         });
@@ -3088,7 +3088,7 @@ mod tests {
         process_started(&mut app, 1, "pnpm dev");
         assert_eq!(app.process_runs().len(), 1);
         app.on_engine(EngineEvent::ProcessOutput {
-            process: goat_protocol::ProcessId(1),
+            process: goat_protocol::RunId(1),
             chunk: "listening on :3000".to_owned(),
         });
         let item = app.process_runs()[0]
@@ -3107,11 +3107,11 @@ mod tests {
     fn output_before_started_creates_run_lazily() {
         let mut app = App::new(Theme::dark());
         app.on_engine(EngineEvent::ProcessOutput {
-            process: goat_protocol::ProcessId(7),
+            process: goat_protocol::RunId(7),
             chunk: "early line".to_owned(),
         });
         assert_eq!(app.process_runs().len(), 1);
-        assert_eq!(app.process_runs()[0].id, goat_protocol::ProcessId(7));
+        assert_eq!(app.process_runs()[0].id, goat_protocol::RunId(7));
     }
 
     #[test]
@@ -3156,7 +3156,7 @@ mod tests {
         let mut app = App::new(Theme::dark());
         process_started(&mut app, 1, "pnpm dev");
         app.on_engine(EngineEvent::ProcessExited {
-            process: goat_protocol::ProcessId(1),
+            process: goat_protocol::RunId(1),
             code: Some(1),
             reason: goat_protocol::ProcessExitReason::Natural,
         });
@@ -3167,7 +3167,7 @@ mod tests {
         );
         app.on_engine(EngineEvent::ProcessListChanged {
             processes: vec![goat_protocol::ProcessInfo {
-                id: goat_protocol::ProcessId(1),
+                id: goat_protocol::RunId(1),
                 command: "pnpm dev".to_owned(),
                 state: goat_protocol::ProcessState::Exited,
                 watched: false,
