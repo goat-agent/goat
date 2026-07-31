@@ -145,6 +145,7 @@ pub struct App {
         Vec<goat_protocol::InputAttachment>,
     )>,
     pub(crate) should_quit: bool,
+    pub(crate) exit_requested: bool,
     pub(crate) dirty: bool,
     pub(crate) scroll: usize,
     pub(crate) follow: bool,
@@ -251,6 +252,7 @@ impl App {
             branch_poll: BRANCH_POLL_TICKS,
             queued: Vec::new(),
             should_quit: false,
+            exit_requested: false,
             dirty: true,
             scroll: 0,
             follow: true,
@@ -530,6 +532,7 @@ impl App {
             }
             CommandEffect::Noop => Vec::new(),
             CommandEffect::Quit => {
+                self.exit_requested = true;
                 self.should_quit = true;
                 Vec::new()
             }
@@ -1545,13 +1548,19 @@ pub(crate) fn shorten_home(path: &Path) -> String {
     display
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitReason {
+    Requested,
+    Disconnected,
+}
+
 pub async fn run(
     ops: Sender<Op>,
     mut events: Receiver<EngineEvent>,
     mut presence: Receiver<usize>,
     theme: Theme,
     initial_ops: Vec<Op>,
-) -> color_eyre::Result<()> {
+) -> color_eyre::Result<ExitReason> {
     let mut app = App::new(theme);
     let (mut terminal, picker, background) = tui::init(app.mouse_capture)?;
     app.picker = picker;
@@ -1577,7 +1586,7 @@ async fn event_loop(
     presence: &mut Receiver<usize>,
     mut app: App,
     initial_ops: Vec<Op>,
-) -> color_eyre::Result<()> {
+) -> color_eyre::Result<ExitReason> {
     let mut input = EventStream::new();
     let mut ticker = tokio::time::interval(TICK);
 
@@ -1663,7 +1672,11 @@ async fn event_loop(
             terminal.draw(|frame| view::render(frame, &mut app))?;
         }
     }
-    Ok(())
+    Ok(if app.exit_requested {
+        ExitReason::Requested
+    } else {
+        ExitReason::Disconnected
+    })
 }
 
 fn copy_to_terminal_clipboard(text: &str) {
@@ -1968,6 +1981,7 @@ mod tests {
         assert!(!app.should_quit);
         app.on_ctrl_c();
         assert!(app.should_quit);
+        assert!(app.exit_requested);
     }
 
     #[test]
