@@ -193,6 +193,12 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
 - `code_messages` is insert-only; compactions live in `code_compactions`. `/resume` rebuilds engine
   history from the **latest compaction alone**, while the transcript replays full scrollback with a
   marker per compaction.
+- **Every background process wakes the agent when it exits — `watch` only adds wakes for output
+  while it still runs.** Waiting is therefore never a reason to set `watch`, and the process tools'
+  descriptions send a waiting agent to end its turn rather than re-read `ProcessOutput`; that is the
+  whole anti-polling design, so do not reintroduce a blocking read or a wait timeout. A wake is
+  suppressed exactly when the agent already knows: `exit_observed` (it read the exit through
+  `ProcessOutput`) or the agent's own `ProcessKill`.
 - Providers classify wire failures into `StreamError`; the engine decides — retry with jittered
   backoff, reactive compaction on `ContextOverflow`, or abort. Callers never inspect error strings.
 - The MCP handshake tries one protocol era and, only when the failure could be the era itself,
