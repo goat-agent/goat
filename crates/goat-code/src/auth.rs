@@ -183,7 +183,7 @@ pub async fn run_provider(command: ProviderCommand) -> color_eyre::Result<()> {
             key,
             account,
         } => add_custom(&store, &user, name, endpoint, key, account).await,
-        ProviderCommand::Remove { name } => remove_custom(&store, &user, &name),
+        ProviderCommand::Remove { name } => remove_custom(&store, &user, &name).await,
         ProviderCommand::List => {
             list_providers(&store, &user);
             Ok(())
@@ -263,10 +263,25 @@ async fn add_custom(
     };
     ui::success(&format!("{verb} provider {name}"));
     verify(store, user, &name, &account).await;
+    apply_to_daemon().await;
     Ok(())
 }
 
-fn remove_custom(
+async fn apply_to_daemon() {
+    let Some(socket_path) = goat_config::socket_path() else {
+        return;
+    };
+    if !goat_wire::transport::probe_alive(&socket_path) {
+        return;
+    }
+    if let Err(e) = goat_client::reload(&socket_path, None).await {
+        ui::note(&format!(
+            "could not apply to the running daemon: {e}; run `goat reload`"
+        ));
+    }
+}
+
+async fn remove_custom(
     store: &CredentialStore,
     user: &goat_config::UserProviders,
     name: &str,
@@ -293,6 +308,7 @@ fn remove_custom(
         }
     }
     ui::success(&format!("removed provider {name}"));
+    apply_to_daemon().await;
     Ok(())
 }
 

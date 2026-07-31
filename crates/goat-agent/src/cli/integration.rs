@@ -37,9 +37,17 @@ pub enum ConnectCmd {
 pub async fn run_connect(cmd: ConnectCmd) -> Result<()> {
     let paths = GoatPaths::default_layout()?;
     match cmd {
-        ConnectCmd::Add { kind } => connect_add(&paths, kind).await,
+        ConnectCmd::Add { kind } => {
+            connect_add(&paths, kind).await?;
+            super::apply::config_changed(None).await;
+            Ok(())
+        }
         ConnectCmd::List => connect_list(&paths),
-        ConnectCmd::Remove { kind } => connect_remove(&paths, &kind),
+        ConnectCmd::Remove { kind } => {
+            connect_remove(&paths, &kind)?;
+            super::apply::config_changed(None).await;
+            Ok(())
+        }
     }
 }
 
@@ -240,9 +248,18 @@ pub async fn run(cmd: Cmd) -> Result<()> {
             kind,
             agent,
             no_verify,
-        } => bind_add(&paths, kind, agent, no_verify).await,
+        } => {
+            let slug = agent.clone();
+            bind_add(&paths, kind, agent, no_verify).await?;
+            super::apply::config_changed(slug.as_deref()).await;
+            Ok(())
+        }
         Cmd::List { agent } => bind_list(&paths, agent.as_deref()),
-        Cmd::Remove { kind, agent } => bind_remove(&paths, &kind, agent.as_deref()),
+        Cmd::Remove { kind, agent } => {
+            bind_remove(&paths, &kind, agent.as_deref())?;
+            super::apply::config_changed(agent.as_deref()).await;
+            Ok(())
+        }
     }
 }
 
@@ -278,7 +295,6 @@ async fn bind_add(
 
         super::agent::upsert_section_config(&dir, SECTION, &kind, json!({}))?;
         ui::pair("file", &dir.join("config.json").display().to_string());
-        ui::line(&ui::dim("takes effect after the daemon restarts"));
         Ok(Footer::Ok("Bound"))
     })
     .await
