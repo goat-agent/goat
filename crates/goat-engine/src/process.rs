@@ -361,7 +361,7 @@ impl ProcessRegistry {
             if !has_new && !exited_unseen {
                 continue;
             }
-            let text = collect_from(entry, entry.seen_cursor);
+            let text = collect_tail_from(entry, entry.seen_cursor);
             entry.seen_cursor = entry.lines.len();
             entry.exit_observed = true;
             out.push((
@@ -376,6 +376,12 @@ impl ProcessRegistry {
         }
         out.sort_by_key(|(id, _)| id.0);
         out
+    }
+
+    #[cfg(test)]
+    async fn buffered_lines(&self, id: ProcessId) -> usize {
+        let inner = self.inner.lock().await;
+        inner.entries.get(&id).map_or(0, |entry| entry.lines.len())
     }
 
     pub(crate) async fn write_stdin(&self, id: ProcessId, text: &str) -> Result<(), String> {
@@ -490,6 +496,17 @@ pub(crate) struct Observation {
     pub(crate) exit_code: Option<i32>,
 }
 
+fn collect_tail_from(entry: &Entry, cursor: usize) -> String {
+    let unread = entry.lines.len() - cursor;
+    if unread <= WATCH_FLOOD_LINES {
+        return collect_from(entry, cursor);
+    }
+    let dropped = unread - WATCH_FLOOD_LINES;
+    let mut out = format!("[{dropped} earlier lines dropped]\n");
+    out.push_str(&collect_from(entry, entry.lines.len() - WATCH_FLOOD_LINES));
+    out
+}
+
 fn collect_from(entry: &Entry, cursor: usize) -> String {
     let mut out = String::new();
     if cursor == 0 && entry.dropped > 0 {
@@ -569,6 +586,7 @@ mod tests {
         pub const SLEEP_LONG: &str = "sleep 30";
         pub const CAT: &str = "cat";
         pub const TRUE: &str = "true";
+        pub const COUNT_TO_600: &str = "seq 1 600";
     }
 
     #[cfg(windows)]
@@ -581,6 +599,7 @@ mod tests {
         pub const SLEEP_LONG: &str = "ping -n 31 127.0.0.1 >nul";
         pub const CAT: &str = "findstr \"^\"";
         pub const TRUE: &str = "type nul";
+        pub const COUNT_TO_600: &str = "for /L %i in (1,1,600) do @echo %i";
     }
 
     fn harness() -> (
@@ -722,6 +741,53 @@ mod tests {
         assert_eq!(running[0].state, ProcessState::Running);
         registry.kill(started.id).await.unwrap();
         wait_until_exited(&registry, started.id).await;
+    }
+
+    async fn wait_until_buffered(
+        registry: &ProcessRegistry,
+        id: goat_protocol::ProcessId,
+        n: usize,
+    ) {
+        for _ in 0..1000 {
+            if registry.buffered_lines(id).await >= n {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("process never buffered {n} lines");
+    }
+
+    #[tokio::test]
+    async fn a_flood_of_unread_output_is_observed_by_its_tail() {
+        let (registry, mut events, _wake) = harness();
+        tokio::spawn(async move { while events.recv().await.is_some() {} });
+        let cwd = std::env::temp_dir();
+        let started = registry
+            .spawn(plat::COUNT_TO_600, &cwd, false)
+            .await
+            .unwrap();
+        wait_until_exited(&registry, started.id).await;
+        wait_until_buffered(&registry, started.id, 600).await;
+
+        let obs = registry.take_pending_observations().await;
+        let (_, observation) = obs
+            .iter()
+            .find(|(id, _)| *id == started.id)
+            .expect("the exit must be observed");
+        assert!(
+            observation.output.contains("earlier lines dropped"),
+            "a flood must be trimmed, got {} bytes",
+            observation.output.len()
+        );
+        assert!(
+            observation.output.lines().count() <= super::WATCH_FLOOD_LINES + 2,
+            "the wake notice must not dump the whole ring buffer"
+        );
+        assert!(
+            observation.output.contains("600"),
+            "the tail is what matters, got: {}",
+            &observation.output[observation.output.len().saturating_sub(40)..]
+        );
     }
 
     #[tokio::test]
