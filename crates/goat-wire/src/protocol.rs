@@ -4,7 +4,7 @@ use goat_protocol::{
     AccountEntry, Event, ModelEntry, ModelTarget, Op, RateLimitSnapshot, SkillInfo, TranscriptEntry,
 };
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 fn id_json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
     <String as schemars::JsonSchema>::json_schema(generator)

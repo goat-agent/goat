@@ -590,6 +590,59 @@ mod tests {
         }
     }
 
+    struct ParallelScriptedProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ParallelScriptedProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::from("mock")
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                tools: true,
+                auth: AuthMethod::None,
+                images: true,
+            }
+        }
+
+        async fn stream(&self, _req: Request) -> Result<ChunkStream, StreamError> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Box::pin(async_stream::try_stream! {
+                if n == 0 {
+                    yield StreamChunk::ToolCall {
+                        id: "call-1".to_owned(),
+                        name: "Agent".to_owned(),
+                        input: "{\"agent_type\":\"explore\",\"prompt\":\"map engine\"}"
+                            .to_owned(),
+                    };
+                    yield StreamChunk::ToolCall {
+                        id: "call-2".to_owned(),
+                        name: "Agent".to_owned(),
+                        input: "{\"agent_type\":\"critic\",\"prompt\":\"review UI\"}"
+                            .to_owned(),
+                    };
+                } else if n < 3 {
+                    yield StreamChunk::TextDelta {
+                        text: format!("child findings {n}"),
+                    };
+                } else {
+                    yield StreamChunk::TextDelta {
+                        text: "final answer".to_owned(),
+                    };
+                }
+            }))
+        }
+
+        fn discover(&self, out: mpsc::Sender<Model>) -> JoinHandle<()> {
+            tokio::spawn(async move {
+                drop(out);
+            })
+        }
+    }
+
     struct SeqTextProvider {
         calls: Arc<std::sync::atomic::AtomicUsize>,
         delay_ms: u64,
@@ -1344,6 +1397,79 @@ mod tests {
         assert!(agent_done_ok, "expected the Agent delegation to succeed");
         assert_eq!(final_text, "final answer");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn parallel_agents_emit_one_group_before_tool_rows() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider = ParallelScriptedProvider {
+            calls: calls.clone(),
+        };
+        let registry = Registry::from_providers(vec![Arc::new(provider)]);
+        let store = Store::open_in_memory().await.unwrap();
+        let credentials =
+            CredentialStore::new(std::env::temp_dir().join("goat-agent-parallel-delegate.json"));
+        let agent = GoatAgent::new(
+            registry,
+            store,
+            credentials,
+            test_user_providers(),
+            Some(target("mock")),
+            std::env::temp_dir(),
+            None,
+        )
+        .await;
+        let session = Session::spawn(agent);
+        let (ops, mut events, _handle) = session.into_parts();
+        ops.send(Op::SubmitMessage {
+            id: TaskId(1),
+            text: "do both".to_owned(),
+            display: None,
+            attachments: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        let mut index = 0usize;
+        let mut group_index = None;
+        let mut first_agent_tool_index = None;
+        let mut members = Vec::new();
+        let mut started_calls = Vec::new();
+        while let Some(event) = events.recv().await {
+            match event {
+                Event::AgentGroupStarted {
+                    group,
+                    members: grouped,
+                    ..
+                } => {
+                    group_index = Some(index);
+                    assert_eq!(group, goat_protocol::ToolCallId(1));
+                    members = grouped;
+                }
+                Event::ToolStarted { call, .. } if call.name == "Agent" => {
+                    first_agent_tool_index.get_or_insert(index);
+                }
+                Event::AgentStarted { call, .. } => started_calls.push(call),
+                Event::TaskDone { interrupted, .. } => {
+                    assert!(!interrupted);
+                    break;
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].agent_type, "explore");
+        assert_eq!(members[0].label, "map engine");
+        assert_eq!(members[1].agent_type, "critic");
+        assert_eq!(members[1].label, "review UI");
+        assert!(group_index < first_agent_tool_index);
+        started_calls.sort_unstable();
+        assert_eq!(
+            started_calls,
+            vec![goat_protocol::ToolCallId(1), goat_protocol::ToolCallId(2)]
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 use goat_protocol::{
-    Effort, Event, ModelTarget, NotifyKind, SkillInfo, ThreadSummary, ToolCall, ToolCallId,
-    ToolOutcome, TranscriptEntry,
+    AgentGroupEntry, AgentGroupMember, Effort, Event, ModelTarget, NotifyKind, SkillInfo,
+    ThreadSummary, ToolCall, ToolCallId, ToolOutcome, TranscriptEntry,
 };
 use goat_provider::{ContentBlock, Message, MessageRole};
 use goat_store::CodeStore as Store;
@@ -9,9 +9,17 @@ use tokio::sync::mpsc;
 
 use crate::{
     Ctx,
+    delegate::{AGENT_TOOL_NAME, agent_group_member},
     prompt::build_system_prompt,
     tools_exec::{call_display, summarize_line},
 };
+
+struct RestoredToolUse {
+    call: ToolCall,
+    member: Option<AgentGroupMember>,
+    group: Option<ToolCallId>,
+    group_size: usize,
+}
 
 pub(crate) fn parse_content_blocks(body: &str) -> Vec<ContentBlock> {
     serde_json::from_str::<Vec<ContentBlock>>(body).unwrap_or_else(|_| {
@@ -174,7 +182,9 @@ pub(crate) async fn handle_resume(
     };
     let mut parsed: Vec<(i64, MessageRole, Vec<ContentBlock>)> = Vec::new();
     let mut entries: Vec<TranscriptEntry> = Vec::new();
-    let mut tool_uses: std::collections::HashMap<String, (String, String)> =
+    let mut tool_uses: std::collections::HashMap<String, RestoredToolUse> =
+        std::collections::HashMap::new();
+    let mut agent_groups: std::collections::HashMap<ToolCallId, Vec<AgentGroupEntry>> =
         std::collections::HashMap::new();
     let mut tool_seq: u64 = 0;
     let mut next_compaction = 0usize;
@@ -211,6 +221,20 @@ pub(crate) async fn handle_resume(
             _ => continue,
         };
         let content = parse_content_blocks(&stored.body);
+        let tool_count = content
+            .iter()
+            .filter(|block| matches!(block, ContentBlock::ToolUse { .. }))
+            .count();
+        let agent_group_size = if role == MessageRole::Assistant
+            && tool_count > 1
+            && content.iter().all(|block| {
+                !matches!(block, ContentBlock::ToolUse { name, .. } if name != AGENT_TOOL_NAME)
+            }) {
+            tool_count
+        } else {
+            0
+        };
+        let mut agent_group = None;
         for block in &content {
             match block {
                 ContentBlock::Text { text } => match role {
@@ -236,33 +260,58 @@ pub(crate) async fn handle_resume(
                     MessageRole::System => {}
                 },
                 ContentBlock::ToolUse { id, name, input } => {
-                    tool_uses.insert(id.clone(), (name.clone(), input.to_string()));
+                    tool_seq += 1;
+                    let call_id = ToolCallId(tool_seq);
+                    let input = input.to_string();
+                    let group = if agent_group_size > 0 {
+                        Some(*agent_group.get_or_insert(call_id))
+                    } else {
+                        None
+                    };
+                    let member = group.map(|_| agent_group_member(call_id, &input));
+                    tool_uses.insert(
+                        id.clone(),
+                        RestoredToolUse {
+                            call: ToolCall {
+                                id: call_id,
+                                name: name.clone(),
+                                display: call_display(tools, name, &input),
+                            },
+                            member,
+                            group,
+                            group_size: agent_group_size,
+                        },
+                    );
                 }
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
                     is_error,
                 } => {
-                    if let Some((name, input)) = tool_uses.remove(tool_use_id) {
-                        tool_seq += 1;
-                        let display = call_display(tools, &name, &input);
+                    if let Some(restored) = tool_uses.remove(tool_use_id) {
                         let summary = if *is_error {
                             summarize_line(&ContentBlock::tool_result_text(content))
                         } else {
                             None
                         };
-                        entries.push(TranscriptEntry::Tool {
-                            call: ToolCall {
-                                id: ToolCallId(tool_seq),
-                                name,
-                                display,
-                            },
-                            outcome: ToolOutcome {
-                                ok: !is_error,
-                                summary,
-                                image: None,
-                            },
-                        });
+                        let outcome = ToolOutcome {
+                            ok: !is_error,
+                            summary,
+                            image: None,
+                        };
+                        if let (Some(group), Some(member)) = (restored.group, restored.member) {
+                            let grouped = agent_groups.entry(group).or_default();
+                            grouped.push(AgentGroupEntry { member, outcome });
+                            if grouped.len() == restored.group_size {
+                                let members = agent_groups.remove(&group).unwrap_or_default();
+                                entries.push(TranscriptEntry::AgentGroup { group, members });
+                            }
+                        } else {
+                            entries.push(TranscriptEntry::Tool {
+                                call: restored.call,
+                                outcome,
+                            });
+                        }
                     }
                 }
                 ContentBlock::Thinking { text, .. } => {

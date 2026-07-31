@@ -39,8 +39,14 @@ pub(crate) struct AgentRunView {
     pub(crate) agent_type: String,
     pub(crate) label: String,
     pub(crate) id: TaskId,
+    pub(crate) parent: TaskId,
+    pub(crate) call: ToolCallId,
     pub(crate) transcript: Transcript,
     pub(crate) done: Option<bool>,
+    pub(crate) tools: u64,
+    pub(crate) tokens: u64,
+    pub(crate) started_at: std::time::Instant,
+    pub(crate) finished_at: Option<std::time::Instant>,
 }
 
 pub(crate) struct ProcessRunView {
@@ -1241,11 +1247,18 @@ impl App {
         if !self.is_busy() {
             return None;
         }
+        let grouped_agents = self.transcript.has_running_agent_group();
         let label = self
             .retry_status()
             .or_else(|| self.compacting_status())
-            .or_else(|| self.agent_status());
-        if label.is_none() && self.transcript_has_running_activity() {
+            .or_else(|| {
+                if grouped_agents {
+                    None
+                } else {
+                    self.agent_status()
+                }
+            });
+        if label.is_none() && (self.transcript_has_running_activity() || grouped_agents) {
             return None;
         }
         Some(crate::transcript::Working {
@@ -2718,6 +2731,7 @@ mod tests {
         app.on_engine(EngineEvent::AgentStarted {
             id: child,
             parent: top,
+            call: ToolCallId(1),
             agent_type: "explore".to_owned(),
             label: "look into it".to_owned(),
         });
@@ -2758,6 +2772,107 @@ mod tests {
         app.close_run_selector();
         assert!(matches!(app.main_view, super::MainView::Live));
         assert_eq!(app.transcript().items.len(), 2);
+    }
+
+    #[test]
+    fn parallel_agent_group_replaces_tool_rows_and_aggregates_metrics() {
+        use goat_protocol::{AgentGroupMember, ToolCall, ToolCallId, ToolOutcome, Usage};
+
+        let mut app = App::new(Theme::dark());
+        let top = TaskId(4);
+        app.on_engine(EngineEvent::TaskStarted { id: top });
+        app.on_engine(EngineEvent::AgentGroupStarted {
+            id: top,
+            group: ToolCallId(1),
+            members: vec![
+                AgentGroupMember {
+                    call: ToolCallId(1),
+                    agent_type: "explore".to_owned(),
+                    label: "map engine".to_owned(),
+                },
+                AgentGroupMember {
+                    call: ToolCallId(2),
+                    agent_type: "critic".to_owned(),
+                    label: "review UI".to_owned(),
+                },
+            ],
+        });
+        for id in [1, 2] {
+            app.on_engine(EngineEvent::ToolStarted {
+                id: top,
+                call: ToolCall {
+                    id: ToolCallId(id),
+                    name: "Agent".to_owned(),
+                    display: goat_protocol::ToolDisplay::primary("Agent"),
+                },
+            });
+        }
+        assert_eq!(app.transcript.items.len(), 1);
+        assert!(app.working_state().is_none());
+
+        let child = TaskId(8);
+        app.on_engine(EngineEvent::AgentStarted {
+            id: child,
+            parent: top,
+            call: ToolCallId(1),
+            agent_type: "explore".to_owned(),
+            label: "map engine".to_owned(),
+        });
+        app.on_engine(EngineEvent::ToolStarted {
+            id: child,
+            call: ToolCall {
+                id: ToolCallId(1),
+                name: "Read".to_owned(),
+                display: goat_protocol::ToolDisplay::primary("Read(a.rs)"),
+            },
+        });
+        app.on_engine(EngineEvent::Usage {
+            id: child,
+            provider: "mock".to_owned(),
+            account: "default".to_owned(),
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                ..Usage::default()
+            },
+            context_window: Some(1000),
+            compaction_threshold: Some(900),
+        });
+        app.on_engine(EngineEvent::ToolDone {
+            id: top,
+            call: ToolCallId(1),
+            outcome: ToolOutcome {
+                ok: true,
+                summary: None,
+                image: None,
+            },
+        });
+        app.on_engine(EngineEvent::ToolDone {
+            id: top,
+            call: ToolCallId(2),
+            outcome: ToolOutcome {
+                ok: false,
+                summary: Some("failed".to_owned()),
+                image: None,
+            },
+        });
+
+        let crate::transcript::Item::AgentGroup(group) = &app.transcript.items[0] else {
+            panic!("expected agent group")
+        };
+        assert_eq!(group.members[0].tools, 1);
+        assert_eq!(group.members[0].tokens, 15);
+        assert!(matches!(
+            group.members[0].status,
+            crate::transcript::AgentMemberStatus::Done(ref outcome) if outcome.ok
+        ));
+        assert!(matches!(
+            group.members[1].status,
+            crate::transcript::AgentMemberStatus::Done(ref outcome) if !outcome.ok
+        ));
+        assert!(group.finished_at.is_some());
+        assert_eq!(app.usage.turn_tokens, 0);
+        assert!(app.usage.last.is_empty());
     }
 
     #[test]
@@ -2993,6 +3108,7 @@ mod tests {
         app.on_engine(EngineEvent::AgentStarted {
             id: TaskId(9),
             parent: TaskId(0),
+            call: goat_protocol::ToolCallId(1),
             agent_type: "explore".to_owned(),
             label: String::new(),
         });

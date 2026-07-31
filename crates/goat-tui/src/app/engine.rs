@@ -71,6 +71,9 @@ impl App {
                             self.transcript
                                 .finish_tool(id, outcome, self.picker.as_ref());
                         }
+                        TranscriptEntry::AgentGroup { group, members } => {
+                            self.transcript.push_restored_agent_group(group, members);
+                        }
                         TranscriptEntry::Compaction {
                             tokens_before,
                             tokens_after,
@@ -161,9 +164,14 @@ impl App {
             } => {
                 if let Some(i) = self.agent_index(id) {
                     if ok {
-                        self.agent_runs[i]
-                            .transcript
-                            .push_compaction(tokens_before, tokens_after);
+                        let tokens = u64::from(usage.input_tokens) + u64::from(usage.output_tokens);
+                        let (parent, call) = {
+                            let run = &mut self.agent_runs[i];
+                            run.tokens = run.tokens.saturating_add(tokens);
+                            run.transcript.push_compaction(tokens_before, tokens_after);
+                            (run.parent, run.call)
+                        };
+                        self.transcript.add_agent_tokens(parent, call, tokens);
                     }
                 } else {
                     self.turn.compacting = false;
@@ -292,14 +300,23 @@ impl App {
                     self.transcript.commit_text(&text);
                 }
             }
+            EngineEvent::AgentGroupStarted { id, group, members } => {
+                self.transcript.push_agent_group(id, group, members);
+            }
             EngineEvent::ToolStarted { id, call } => {
                 self.turn.thinking = false;
                 if self.agent_index(id).is_none() {
                     self.turn.retry = None;
                 }
                 if let Some(i) = self.agent_index(id) {
-                    self.agent_runs[i].transcript.push_tool(call);
-                } else {
+                    let (parent, parent_call) = {
+                        let run = &mut self.agent_runs[i];
+                        run.tools = run.tools.saturating_add(1);
+                        run.transcript.push_tool(call);
+                        (run.parent, run.call)
+                    };
+                    self.transcript.add_agent_tool(parent, parent_call);
+                } else if !self.transcript.is_agent_group_call(id, call.id) {
                     self.transcript.push_tool(call);
                 }
             }
@@ -308,6 +325,8 @@ impl App {
                     self.agent_runs[i]
                         .transcript
                         .finish_tool(call, outcome, self.picker.as_ref());
+                } else if self.transcript.is_agent_group_call(id, call) {
+                    self.transcript.finish_agent(id, call, outcome);
                 } else {
                     self.transcript
                         .finish_tool(call, outcome, self.picker.as_ref());
@@ -318,21 +337,30 @@ impl App {
             }
             EngineEvent::AgentStarted {
                 id,
+                parent,
+                call,
                 agent_type,
                 label,
-                ..
             } => {
+                self.transcript.start_agent(parent, call);
                 self.agent_runs.push(super::AgentRunView {
                     id,
+                    parent,
+                    call,
                     agent_type,
                     label,
                     transcript: crate::transcript::Transcript::default(),
                     done: None,
+                    tools: 0,
+                    tokens: 0,
+                    started_at: std::time::Instant::now(),
+                    finished_at: None,
                 });
             }
             EngineEvent::AgentDone { id, ok } => {
                 if let Some(i) = self.agent_index(id) {
                     self.agent_runs[i].done = Some(ok);
+                    self.agent_runs[i].finished_at = Some(std::time::Instant::now());
                     self.agent_runs[i].transcript.complete(!ok);
                 }
             }
@@ -381,25 +409,34 @@ impl App {
                 }
             }
             EngineEvent::Usage {
-                id: _,
+                id,
                 provider,
                 account,
                 usage,
                 context_window,
                 compaction_threshold,
             } => {
-                self.usage.turn_tokens +=
-                    u64::from(usage.input_tokens) + u64::from(usage.output_tokens);
-                let key = (provider, account);
-                let total = self.usage.total.entry(key.clone()).or_default();
-                total.0 += u64::from(usage.input_tokens);
-                total.1 += u64::from(usage.output_tokens);
-                if let Some(w) = context_window {
-                    self.context_window.insert(key.clone(), w);
-                }
-                self.usage.last.insert(key, usage);
-                if compaction_threshold.is_some() {
-                    self.compaction_threshold = compaction_threshold;
+                let tokens = u64::from(usage.input_tokens) + u64::from(usage.output_tokens);
+                if let Some(i) = self.agent_index(id) {
+                    let (parent, call) = {
+                        let run = &mut self.agent_runs[i];
+                        run.tokens = run.tokens.saturating_add(tokens);
+                        (run.parent, run.call)
+                    };
+                    self.transcript.add_agent_tokens(parent, call, tokens);
+                } else {
+                    self.usage.turn_tokens = self.usage.turn_tokens.saturating_add(tokens);
+                    let key = (provider, account);
+                    let total = self.usage.total.entry(key.clone()).or_default();
+                    total.0 += u64::from(usage.input_tokens);
+                    total.1 += u64::from(usage.output_tokens);
+                    if let Some(w) = context_window {
+                        self.context_window.insert(key.clone(), w);
+                    }
+                    self.usage.last.insert(key, usage);
+                    if compaction_threshold.is_some() {
+                        self.compaction_threshold = compaction_threshold;
+                    }
                 }
                 self.dirty = true;
             }

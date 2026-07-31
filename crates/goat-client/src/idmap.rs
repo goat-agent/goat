@@ -87,6 +87,7 @@ fn event_ids_mut(event: &mut Event) -> Vec<&mut TaskId> {
         | Event::TextDone { id, .. }
         | Event::ToolStarted { id, .. }
         | Event::ToolDone { id, .. }
+        | Event::AgentGroupStarted { id, .. }
         | Event::ShellDone { id, .. }
         | Event::TaskDone { id, .. }
         | Event::ThinkingDelta { id, .. }
@@ -180,6 +181,7 @@ mod tests {
         let mut ev = Event::AgentStarted {
             id: TaskId(900),
             parent: TaskId(7),
+            call: goat_protocol::ToolCallId(3),
             agent_type: "explore".to_owned(),
             label: "x".to_owned(),
         };

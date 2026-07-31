@@ -303,12 +303,31 @@ fn render_run_panel(frame: &mut Frame, area: Rect, app: &App, theme: Theme, curs
             left.push(Span::styled(symbols::ui::SEPARATOR, theme.muted()));
             left.push(Span::styled(run.label.clone(), theme.muted()));
         }
+        let metrics = if inner_width >= 72 {
+            let mut parts = Vec::new();
+            if run.tools > 0 {
+                parts.push(format!("{} tools", run.tools));
+            }
+            if run.tokens > 0 {
+                parts.push(format!("{} tok", crate::layout::format_tokens(run.tokens)));
+            }
+            let finished = run.finished_at.unwrap_or_else(std::time::Instant::now);
+            parts.push(crate::transcript::format_elapsed(
+                finished.saturating_duration_since(run.started_at).as_secs(),
+            ));
+            Some(Span::styled(
+                parts.join(symbols::ui::SEPARATOR),
+                theme.muted(),
+            ))
+        } else {
+            None
+        };
         rows.push(overlay::selection_row(
             theme,
             selected,
             inner_width,
             left,
-            None,
+            metrics,
         ));
         index += 1;
     }
