@@ -220,9 +220,7 @@ async fn output(ctx: &Ctx<'_>, input_json: &str) -> Result<ToolOutput, String> {
         .read_new(args.process)
         .await
         .ok_or_else(|| format!("no process #{}", args.process))?;
-    Ok(ToolOutput::text(crate::tools_exec::cap_tool_result(
-        output_reply(args.process, &chunk),
-    )))
+    Ok(ToolOutput::text(output_reply(args.process, &chunk)))
 }
 
 fn output_reply(id: goat_protocol::ProcessId, chunk: &crate::process::ReadChunk) -> String {
@@ -242,10 +240,8 @@ fn output_reply(id: goat_protocol::ProcessId, chunk: &crate::process::ReadChunk)
     if chunk.text.trim().is_empty() {
         format!("[no new output] process #{id} is {status}{waiting}")
     } else {
-        format!(
-            "{}\n[process #{id} is {status}{waiting}]",
-            chunk.text.trim_end()
-        )
+        let body = crate::tools_exec::cap_tool_result(chunk.text.trim_end().to_owned());
+        format!("{body}\n[process #{id} is {status}{waiting}]")
     }
 }
 
@@ -372,6 +368,18 @@ mod tests {
         let reply = output_reply(ProcessId(3), &chunk("done\n", ProcessState::Exited));
         assert!(reply.contains("exited (code 0)"), "got: {reply}");
         assert!(!reply.contains("end your turn"), "got: {reply}");
+    }
+
+    #[test]
+    fn huge_output_keeps_its_status_marker() {
+        let text = "x".repeat(200 * 1024);
+        let reply = output_reply(ProcessId(3), &chunk(&text, ProcessState::Running));
+        assert!(reply.contains("[output truncated]"), "should be capped");
+        assert!(
+            reply.trim_end().ends_with("to wait]"),
+            "capping must not eat the status marker, tail was: {}",
+            &reply[reply.len().saturating_sub(120)..]
+        );
     }
 
     #[test]
