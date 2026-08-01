@@ -1,7 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::WorktreeError;
-use crate::git::{git_output, git_worktrees, os, repo_root};
 
 const GOAT_DIR: &str = ".goat";
 const WORKTREES_DIR: &str = "worktrees";
@@ -22,8 +21,8 @@ pub enum WorkspaceKind {
 }
 
 pub fn workspace(cwd: &Path) -> Result<Workspace, WorktreeError> {
-    let repo_root = repo_root(cwd)?;
-    let worktrees = git_worktrees(&repo_root)?;
+    let repo_root = goat_git::repo_root(cwd)?;
+    let worktrees = goat_git::worktrees(&repo_root)?;
     let owner_root = owner_root(&repo_root, &worktrees);
     let bucket = owner_root.join(GOAT_DIR).join(WORKTREES_DIR);
     let kind = if let Some(label) = managed_label(cwd, &bucket) {
@@ -47,23 +46,11 @@ pub fn workspace(cwd: &Path) -> Result<Workspace, WorktreeError> {
 
 impl Workspace {
     pub fn head_branch(&self) -> Option<String> {
-        let head = self.repo_root.join(".git").join("HEAD");
-        parse_head(&std::fs::read_to_string(head).ok()?)
+        goat_git::head_branch(&self.repo_root.join(".git"))
     }
 }
 
-fn parse_head(content: &str) -> Option<String> {
-    let content = content.trim();
-    if let Some(branch) = content.strip_prefix("ref: refs/heads/") {
-        return Some(branch.to_owned());
-    }
-    if !content.is_empty() && content.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Some(content.chars().take(7).collect());
-    }
-    None
-}
-
-fn owner_root(current_root: &Path, worktrees: &[crate::git::GitWorktree]) -> PathBuf {
+fn owner_root(current_root: &Path, worktrees: &[goat_git::Worktree]) -> PathBuf {
     for worktree in worktrees {
         let bucket = worktree.path.join(GOAT_DIR).join(WORKTREES_DIR);
         if current_root.starts_with(&bucket) {
@@ -91,42 +78,24 @@ fn managed_label(cwd: &Path, bucket: &Path) -> Option<String> {
 }
 
 fn current_branch(cwd: &Path) -> Result<String, WorktreeError> {
-    let output = git_output(cwd, &[os("branch"), os("--show-current")])?;
+    let output = goat_git::output(cwd, &["branch", "--show-current"])?;
     Ok(output.stdout.trim().to_owned())
 }
 
 fn short_head(cwd: &Path) -> Result<String, WorktreeError> {
-    let output = git_output(cwd, &[os("rev-parse"), os("--short"), os("HEAD")])?;
+    let output = goat_git::output(cwd, &["rev-parse", "--short", "HEAD"])?;
     Ok(output.stdout.trim().to_owned())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::git::parse_worktrees;
+    use super::{PathBuf, owner_root};
 
     #[test]
     fn owner_root_from_managed_path() {
         let input = "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /repo/.goat/worktrees/plan\nHEAD def\nbranch refs/heads/worktree-plan\n\n";
-        let worktrees = parse_worktrees(input);
+        let worktrees = goat_git::parse_worktrees(input);
         let plan = PathBuf::from("/repo/.goat/worktrees/plan");
         assert_eq!(owner_root(&plan, &worktrees), PathBuf::from("/repo"));
-    }
-
-    #[test]
-    fn parse_head_symbolic_and_detached() {
-        assert_eq!(
-            parse_head("ref: refs/heads/main\n").as_deref(),
-            Some("main")
-        );
-        assert_eq!(
-            parse_head("ref: refs/heads/feature/foo\n").as_deref(),
-            Some("feature/foo")
-        );
-        assert_eq!(
-            parse_head("5894a7d0deadbeef1234\n").as_deref(),
-            Some("5894a7d")
-        );
-        assert_eq!(parse_head("\n"), None);
     }
 }

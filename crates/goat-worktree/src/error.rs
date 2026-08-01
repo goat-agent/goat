@@ -2,10 +2,8 @@ use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorktreeError {
-    #[error("git is required for --worktree but was not found")]
-    GitMissing,
-    #[error("--worktree requires running goat inside a git repository")]
-    NotGitRepository,
+    #[error(transparent)]
+    Git(#[from] goat_git::GitError),
     #[error("invalid worktree label '{label}': {reason}")]
     InvalidLabel { label: String, reason: &'static str },
     #[error("failed to get current directory: {source}")]
@@ -19,15 +17,6 @@ pub enum WorktreeError {
     Io {
         path: PathBuf,
         source: std::io::Error,
-    },
-    #[error("failed to spawn git: {source}")]
-    Spawn { source: std::io::Error },
-    #[error("git command failed ({command}) with status {status:?}: {stderr}{stdout}")]
-    GitFailed {
-        command: String,
-        status: Option<i32>,
-        stdout: String,
-        stderr: String,
     },
     #[error("worktree path already exists and is not a managed worktree: {path}")]
     PathCollision { path: PathBuf },

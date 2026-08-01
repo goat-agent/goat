@@ -53,6 +53,7 @@ goat-command-help = { path = "crates/goat-command-help" }
 goat-command-app = { path = "crates/goat-command-app" }
 goat-commands = { path = "crates/goat-commands" }
 goat-worktree = { path = "crates/goat-worktree" }
+goat-git = { path = "crates/goat-git" }
 goat-github = { path = "crates/goat-github" }
 goat-wire = { path = "crates/goat-wire" }
 goat-daemon = { path = "crates/goat-daemon" }
