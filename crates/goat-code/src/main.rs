@@ -499,14 +499,14 @@ fn remote_settings() -> color_eyre::Result<Option<goat_daemon::RemoteSettings>> 
         return Ok(None);
     };
     let bind = config
-        .remote
+        .devices
         .bind
         .parse()
-        .map_err(|e| color_eyre::eyre::eyre!("invalid remote bind address: {e}"))?;
+        .map_err(|e| color_eyre::eyre::eyre!("invalid device bind address: {e}"))?;
     Ok(Some(goat_daemon::RemoteSettings {
         remote_dir,
         bind,
-        advertised: config.remote.advertised,
+        advertised: config.devices.advertised,
     }))
 }
 

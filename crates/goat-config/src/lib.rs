@@ -16,8 +16,8 @@ pub use paths::{
     socket_path, subagents_dir, update_dir,
 };
 pub use settings::{
-    Config, RemoteConfig, SearchAccountConfig, SearchConfig, SettingsError, ThemeChoice,
-    UserProviderConfig, UserProviders, WebFetchConfig,
+    Config, DeviceConfig, LOCAL_REMOTE, RemoteEntry, SearchAccountConfig, SearchConfig,
+    SettingsError, ThemeChoice, UserProviderConfig, UserProviders, WebFetchConfig,
 };
 
 use goat_agent_config::AgentConfig;
