@@ -86,7 +86,7 @@ pub fn service() -> McpService {
         describe: parse::version,
     })
     .defaults(watch::defaults)
-    .compile(watch::compile)
+    .watch(&VOCABULARY, watch::compile)
 }
 
 #[derive(Debug, Default, Deserialize)]

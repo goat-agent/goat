@@ -290,6 +290,22 @@ impl Brain {
         }
     }
 
+    fn agent_definition(&self) -> String {
+        match std::fs::read_to_string(&self.personality.source_path) {
+            Ok(raw) if !raw.trim().is_empty() => raw.trim().to_owned(),
+            Ok(_) => self.personality.system_prompt.clone(),
+            Err(e) => {
+                warn!(
+                    agent = %self.agent,
+                    path = %self.personality.source_path.display(),
+                    error = ?e,
+                    "re-reading agent.md failed; using the copy loaded at boot",
+                );
+                self.personality.system_prompt.clone()
+            }
+        }
+    }
+
     pub async fn run(
         self: Arc<Self>,
         bus: EventBus,
@@ -740,7 +756,7 @@ impl Brain {
              Resolve any user time reference against this clock.\n\
              </current_time>",
             compose_system_prompt(
-                &self.personality.system_prompt,
+                &self.agent_definition(),
                 skill_prompt.as_deref(),
                 summary.as_deref(),
                 memory_section.as_deref(),

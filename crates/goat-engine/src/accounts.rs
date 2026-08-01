@@ -75,22 +75,16 @@ pub(crate) async fn emit_accounts_changed(
         .await;
 }
 
-pub(crate) async fn handle_remove_account(
-    provider: String,
-    name: String,
-    credentials: &CredentialStore,
-    user: &UserProviders,
-    registry: &mut Registry,
-    events: &mpsc::Sender<Event>,
-) {
+pub(crate) async fn handle_remove_account(ctx: &Ctx, provider: String, name: String) {
     let key = CredentialKey::model(provider.clone(), name.clone());
-    if let Err(err) = credentials.remove(&key) {
+    if let Err(err) = ctx.credentials.remove(&key) {
         tracing::warn!(%err, "failed to remove account");
     }
-    *registry = Registry::new(credentials, user);
-    let entries = discover_ready(registry, credentials, user).await;
-    let _ = events.send(Event::ModelListChanged { entries }).await;
-    emit_accounts_changed(events, registry, credentials).await;
+    ctx.set_registry(Registry::new(&ctx.credentials, &ctx.user));
+    let registry = ctx.registry();
+    let entries = discover_ready(&registry, &ctx.credentials, &ctx.user).await;
+    let _ = ctx.events.send(Event::ModelListChanged { entries }).await;
+    emit_accounts_changed(&ctx.events, &registry, &ctx.credentials).await;
 }
 
 pub(crate) fn build_account_entries(
@@ -180,13 +174,6 @@ pub(crate) async fn announce_startup(
     }
 }
 
-pub(crate) struct LoginCtx<'a> {
-    pub(crate) credentials: &'a CredentialStore,
-    pub(crate) user: &'a UserProviders,
-    pub(crate) registry: &'a mut Registry,
-    pub(crate) events: &'a mpsc::Sender<Event>,
-}
-
 async fn login_succeeded(provider: &str, events: &mpsc::Sender<Event>) {
     let _ = events
         .send(Event::Notify {
@@ -259,7 +246,7 @@ async fn run_self_oauth(
 }
 
 async fn finalize_login(
-    ctx: LoginCtx<'_>,
+    ctx: &Ctx,
     provider: String,
     name: String,
     key: CredentialKey,
@@ -270,29 +257,29 @@ async fn finalize_login(
         .store(&key, resolved)
         .map_err(|err| err.to_string())
     {
-        login_failed(&provider, ctx.events, message).await;
-        emit_accounts_changed(ctx.events, ctx.registry, ctx.credentials).await;
+        login_failed(&provider, &ctx.events, message).await;
+        emit_accounts_changed(&ctx.events, &ctx.registry(), &ctx.credentials).await;
         return;
     }
-    *ctx.registry = Registry::new(ctx.credentials, ctx.user);
-    if let Err(message) = validate_stored(ctx.credentials, ctx.user, &provider, &name).await {
+    ctx.set_registry(Registry::new(&ctx.credentials, &ctx.user));
+    if let Err(message) = validate_stored(&ctx.credentials, &ctx.user, &provider, &name).await {
         let _ = ctx.credentials.remove(&key);
-        *ctx.registry = Registry::new(ctx.credentials, ctx.user);
-        login_failed(&provider, ctx.events, message).await;
-        emit_accounts_changed(ctx.events, ctx.registry, ctx.credentials).await;
+        ctx.set_registry(Registry::new(&ctx.credentials, &ctx.user));
+        login_failed(&provider, &ctx.events, message).await;
+        emit_accounts_changed(&ctx.events, &ctx.registry(), &ctx.credentials).await;
         return;
     }
-    let stored_but_unverified = Registry::load(ctx.credentials, ctx.user, &name)
+    let stored_but_unverified = Registry::load(&ctx.credentials, &ctx.user, &name)
         .get(&goat_provider::ProviderId::from(provider.as_str()))
         .is_some_and(|target| !target.verifies_credentials());
-    let entries = discover_ready(ctx.registry, ctx.credentials, ctx.user).await;
+    let entries = discover_ready(&ctx.registry(), &ctx.credentials, &ctx.user).await;
     let _ = ctx.events.send(Event::ModelListChanged { entries }).await;
     if stored_but_unverified {
-        login_stored_unverified(&provider, ctx.events).await;
+        login_stored_unverified(&provider, &ctx.events).await;
     } else {
-        login_succeeded(&provider, ctx.events).await;
+        login_succeeded(&provider, &ctx.events).await;
     }
-    emit_accounts_changed(ctx.events, ctx.registry, ctx.credentials).await;
+    emit_accounts_changed(&ctx.events, &ctx.registry(), &ctx.credentials).await;
 }
 
 async fn validate_stored(
@@ -311,7 +298,7 @@ async fn validate_stored(
 }
 
 pub(crate) async fn handle_login(
-    ctx: LoginCtx<'_>,
+    ctx: &Ctx,
     provider: String,
     name: String,
     credential: LoginCredential,
@@ -327,7 +314,7 @@ pub(crate) async fn handle_login(
     {
         login_failed(
             &provider,
-            ctx.events,
+            &ctx.events,
             format!("account '{name}' already exists"),
         )
         .await;
@@ -336,11 +323,11 @@ pub(crate) async fn handle_login(
     let resolved = match credential {
         LoginCredential::ApiKey { key: secret } => Credential::ApiKey(SecretString::from(secret)),
         LoginCredential::OAuth {} => {
-            match run_self_oauth(&provider, ctx.events, ctx.registry).await {
+            match run_self_oauth(&provider, &ctx.events, &ctx.registry()).await {
                 Ok(tokens) => Credential::OAuth(tokens),
                 Err(message) => {
-                    login_failed(&provider, ctx.events, message).await;
-                    emit_accounts_changed(ctx.events, ctx.registry, ctx.credentials).await;
+                    login_failed(&provider, &ctx.events, message).await;
+                    emit_accounts_changed(&ctx.events, &ctx.registry(), &ctx.credentials).await;
                     return;
                 }
             }
@@ -567,14 +554,9 @@ pub(crate) async fn discover_ready(
     model_list_entries(&providers, credentials, user).await
 }
 
-pub(crate) async fn refresh_model_list(
-    events: &mpsc::Sender<Event>,
-    registry: &Registry,
-    credentials: &CredentialStore,
-    user: &UserProviders,
-) {
-    let entries = discover_ready(registry, credentials, user).await;
-    let _ = events.send(Event::ModelListChanged { entries }).await;
+pub(crate) async fn refresh_model_list(ctx: &Ctx) {
+    let entries = discover_ready(&ctx.registry(), &ctx.credentials, &ctx.user).await;
+    let _ = ctx.events.send(Event::ModelListChanged { entries }).await;
 }
 
 pub(crate) fn clear_account_registries(cache: &std::sync::Mutex<HashMap<String, Arc<Registry>>>) {
@@ -585,12 +567,12 @@ pub(crate) fn clear_account_registries(cache: &std::sync::Mutex<HashMap<String, 
 }
 
 pub(crate) fn provider_for(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     account: &str,
     id: &goat_provider::ProviderId,
 ) -> Option<Arc<dyn Provider>> {
     if account == DEFAULT_ACCOUNT {
-        return ctx.registry.get(id);
+        return ctx.registry().get(id);
     }
     let mut cache = ctx
         .account_registries
@@ -600,8 +582,8 @@ pub(crate) fn provider_for(
         .entry(account.to_owned())
         .or_insert_with(|| {
             Arc::new(Registry::load_metered(
-                ctx.credentials,
-                ctx.user,
+                &ctx.credentials,
+                &ctx.user,
                 account,
                 ctx.meter.clone(),
             ))

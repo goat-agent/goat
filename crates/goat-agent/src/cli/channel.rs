@@ -60,9 +60,18 @@ pub async fn run(cmd: Cmd) -> Result<()> {
             kind,
             agent,
             no_verify,
-        } => channel_add(&paths, kind, agent, no_verify).await,
+        } => {
+            let slug = agent.clone();
+            channel_add(&paths, kind, agent, no_verify).await?;
+            super::apply::config_changed(slug.as_deref()).await;
+            Ok(())
+        }
         Cmd::List { agent } => channel_list(&paths, agent.as_deref()),
-        Cmd::Remove { kind, agent } => channel_remove(&paths, &kind, agent.as_deref()),
+        Cmd::Remove { kind, agent } => {
+            channel_remove(&paths, &kind, agent.as_deref())?;
+            super::apply::config_changed(agent.as_deref()).await;
+            Ok(())
+        }
     }
 }
 

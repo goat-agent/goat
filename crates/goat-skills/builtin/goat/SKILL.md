@@ -38,4 +38,8 @@ Nightly consolidation (04:00) distills each day into notes and a journal on its 
 
 ## Coding
 
-Hand coding work to the code engine through the code tool; it runs in-process and reports back. Anything beyond a trivial command belongs there, not in ad-hoc shell edits.
+Hand coding work to the code engine through the code tool. Anything beyond a trivial command belongs there, not in ad-hoc shell edits. The tool hands the work off and returns immediately: it does not stream progress and it never reports the result back to you, so say that you have started the work rather than that you have finished it, and look at the repository yourself when you need to know how it went.
+
+## Changing yourself
+
+Your model, tools, channels, integrations, and watch policy are files under `~/.goat`, and you can edit them. Activate the `configuring-goat` skill before you do — a written file changes nothing until it is validated and applied.

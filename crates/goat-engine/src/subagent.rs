@@ -44,7 +44,7 @@ pub struct SubagentRegistry {
 impl SubagentRegistry {
     pub fn load(cwd: &Path) -> Self {
         let mut subagents: BTreeMap<String, SubagentSpec> = BTreeMap::new();
-        for spec in builtin_agents() {
+        for spec in builtin_subagents() {
             subagents.insert(spec.name.clone(), spec);
         }
         let mut dirs: Vec<PathBuf> = Vec::new();
@@ -83,7 +83,7 @@ const GENERAL_PROMPT: &str = "You are a general-purpose agent handling a delegat
 
 const CRITIC_PROMPT: &str = "You are a read-only plan reviewer. You are given a plan and a perspective to review it from (for code work: architecture, quality, or security; for a new project: product or problem framing; for design work: trade-offs or alternatives). Read the relevant code to ground your review, then critique the plan only from your assigned perspective. Flag concrete problems: wrong or risky decisions, missed edge cases, unconsidered alternatives, gaps between the plan and reality, and unstated assumptions that would bite during implementation. You only FLAG — you never edit the plan and never modify any file; the author resolves your findings with the user. Return a short list of findings, each with why it matters and how severe it is, and say plainly if you found nothing material. Do not restate the plan, do not nitpick style, and do not flag what you cannot ground in evidence.";
 
-fn builtin_agents() -> Vec<SubagentSpec> {
+fn builtin_subagents() -> Vec<SubagentSpec> {
     vec![
         SubagentSpec {
             name: "explore".to_owned(),

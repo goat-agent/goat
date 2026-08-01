@@ -28,18 +28,19 @@ pub(crate) enum ShellStatus {
 }
 
 #[derive(Debug)]
-pub(crate) enum AgentMemberStatus {
+pub(crate) enum SubagentMemberStatus {
     Pending,
     Running,
     Done(ToolOutcome),
 }
 
 #[derive(Debug)]
-pub(crate) struct AgentGroupMemberView {
+pub(crate) struct SubagentGroupMemberView {
     pub(crate) call: ToolCallId,
-    pub(crate) agent_type: String,
+    pub(crate) subagent_type: String,
     pub(crate) label: String,
-    pub(crate) status: AgentMemberStatus,
+    pub(crate) background: bool,
+    pub(crate) status: SubagentMemberStatus,
     pub(crate) tools: u64,
     pub(crate) tokens: u64,
     pub(crate) started_at: Option<Instant>,
@@ -47,10 +48,10 @@ pub(crate) struct AgentGroupMemberView {
 }
 
 #[derive(Debug)]
-pub(crate) struct AgentGroupView {
+pub(crate) struct SubagentGroupView {
     pub(crate) parent: TaskId,
     pub(crate) group: ToolCallId,
-    pub(crate) members: Vec<AgentGroupMemberView>,
+    pub(crate) members: Vec<SubagentGroupMemberView>,
     pub(crate) started_at: Option<Instant>,
     pub(crate) finished_at: Option<Instant>,
 }
@@ -76,7 +77,7 @@ pub(crate) enum Item {
         image: Option<Box<crate::screenshot::TranscriptImage>>,
         git: Option<GitRun>,
     },
-    AgentGroup(AgentGroupView),
+    SubagentGroup(SubagentGroupView),
     Shell {
         id: TaskId,
         command: String,

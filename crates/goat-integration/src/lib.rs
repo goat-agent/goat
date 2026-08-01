@@ -160,6 +160,10 @@ pub trait Integration: Send + Sync + 'static {
         Vec::new()
     }
 
+    fn watch_vocabulary(&self) -> Option<&'static query::WatchVocabulary> {
+        None
+    }
+
     fn compile_watch(
         &self,
         binding: &IntegrationBinding,

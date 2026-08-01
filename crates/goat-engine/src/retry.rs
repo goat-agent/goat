@@ -116,9 +116,9 @@ pub(crate) fn exhausted_message(message: &str, attempts: u32, started: Instant) 
 }
 
 pub(crate) async fn run_round_with_retry(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     run: &Run<'_>,
-    env: &LoopEnv<'_>,
+    env: &LoopEnv,
     messages: &[goat_provider::Message],
     token: &CancellationToken,
 ) -> RoundResult {
@@ -128,14 +128,14 @@ pub(crate) async fn run_round_with_retry(
         let request = Request {
             model: env.target.model.clone(),
             messages: messages.to_vec(),
-            tools: env.tool_defs.to_vec(),
+            tools: env.tool_defs.clone(),
             effort: env.target.effort,
             tool_choice: goat_provider::ToolChoice::Auto,
             temperature: None,
             max_tokens: None,
             system: None,
         };
-        let result = run_round(ctx, run, env.provider, request, token).await;
+        let result = run_round(ctx, run, env.provider.as_ref(), request, token).await;
         let RoundEnd::Failed(error) = &result.end else {
             return result;
         };

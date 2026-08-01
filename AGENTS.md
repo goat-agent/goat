@@ -115,10 +115,17 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
   everything; a present section replaces defaults, never merges. The grammar lives in
   `goat-integration::query` and is closed — leaves own only a static `WatchVocabulary` (which keys
   they understand) and a `compile_watch` hook that turns a resolved query into a `CompiledWatch`.
+  Both are declared together: a leaf implementing `Integration` overrides `watch_vocabulary`, and a
+  hosted-MCP leaf passes the pair to `McpService::watch(&VOCABULARY, compile)` — there is no way to
+  set one without the other, which is what keeps `goat_runtime::validate_watch` honest. That
+  validator resolves a query against the vocabulary alone, so it needs no store, bus, or network and
+  runs anywhere (`goat doctor`, the config-writing CLIs, `goat reload`); `compile_watch` stays
+  authoritative and runs only when a plan is actually built.
   `Residue::Keep` leaves (github, sentry, slack, langfuse) forward unrecognized tokens verbatim to
-  the service's native search language; `Residue::Reject` leaves (linear, notion, tiro) hard-error
-  on unknown keys at boot. `limit:` is resolver-reserved, `@me` is the one self-reference, and
-  stream names key persisted `WatchState`, so default stream names never change.
+  the service's native search language — including bare terms, so their `TermPolicy` never fires;
+  `Residue::Reject` leaves (linear, notion, tiro) hard-error on unknown keys, and only there does
+  `TermPolicy::Reject` refuse free text. `limit:` is resolver-reserved, `@me` is the one
+  self-reference, and stream names key persisted `WatchState`, so default stream names never change.
 - Connections are global; `IntegrationAuth` decides how one is established — a pasted `Secret`, an
   `OAuth` round trip, or `External`, meaning a host tool such as `gh` owns the credential and the
   `config.json` entry is itself the connection marker. Per-agent binding lives in the agent's
@@ -186,6 +193,25 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
 
 ## Non-obvious behavior
 
+- **Config is applied by `goat reload`, not by writing the file.** A `Supervisor` in `goat-runtime`
+  owns one `CancellationToken` child per agent plus that agent's `config.json` fingerprint, so a
+  reload re-reads config, validates it, and respawns only the agents whose own config changed. When
+  the top-level `config.json` changed its `integrations` or `providers`, the shared world — provider
+  registry, connections, integration tools — is rebuilt and every agent respawns, because the
+  `ToolRegistry` handed to each `Brain` is immutable once built. Validation failure replaces nothing:
+  the running agents keep the settings they already had. That guarantee is why the reload asks the
+  filesystem which agents exist rather than trusting `scan_agents`, which silently drops an agent
+  whose `config.json` stopped parsing — a directory that still holds an `agent.md` is a load failure
+  to report, not a removal to act on. The trigger is a local-only `ClientFrame::ReloadAgents`, and
+  every CLI that writes config calls it after writing, so nothing tells the user to restart the
+  daemon any more. Only a new binary still needs one.
+- An agent respawn does not kill the turn in flight. `Brain::run` awaits `handle_turn` inside a
+  `tokio::select!` arm body, and a chosen arm runs to completion — cancelling the token is only
+  observed on the next loop. What a respawn does interrupt is the channel pump, so inbound messages
+  during the swap can be lost.
+- `agent.md` and skills are re-read on every turn (`Brain::agent_definition`,
+  `SkillIndex::discover_root`), so neither is part of a reload. The `AgentCard` loaded at boot is
+  only the fallback for a read that fails.
 - `Engine`'s only method takes `self` by value, so it is not callable through a trait object;
   nothing uses `dyn Engine`. Decoupling comes from generics plus bounded `tokio::mpsc` channels
   (32 ops, 512 events) carrying `goat-protocol`. The trait avoids `async_trait` and `Stream` —
@@ -193,6 +219,40 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
 - `code_messages` is insert-only; compactions live in `code_compactions`. `/resume` rebuilds engine
   history from the **latest compaction alone**, while the transcript replays full scrollback with a
   marker per compaction.
+- **Backgrounding is a flag on the tool that starts the work, not a tool family.**
+  `Bash(background=true)` and `Subagent(background=true)` each return a run id instead of their result;
+  there is no `ProcessStart`. The engine intercepts the backgrounded `Bash` call in `tools_exec` —
+  `goat-tool-shell` stays a plain synchronous leaf that knows nothing about the registry — and
+  `build_tool_defs` adds the `background`/`watch` switches to the `Bash` schema only when
+  `allow_delegate`, so a subagent is never offered them. The remaining verbs are
+  `BashOutput` / `BashInput` / `BashKill` and `SubagentKill`. There is deliberately **no list tool**:
+  `roster_message` injects the running set every top-level round, so a list would only turn something
+  the agent is already told into something it must remember to ask for.
+- **`background::Runs` is one registry over two kinds**, `Kind::{Bash, Subagent}`, sharing one id
+  space so `#3` is unambiguous. Only the generic half — ids, state, the wake trigger, the
+  already-seen bookkeeping, `roster`, `kill`, `shutdown_all` — is shared; the ring buffer, stdin and
+  process group live in `Detail::Bash`, and the report plus its `CancellationToken` in
+  `Detail::Subagent`. `Event::ProcessListChanged` stays **bash-only**: a background subagent already
+  reaches the TUI as `SubagentStarted`/`SubagentDone`, so putting it in the process list would
+  double-count it. The roster and the wake read `roster()` / `take_pending_observations()`, which
+  cover both. The `Event::Process*` family keeps its name on purpose — those events really do carry a
+  pgid, an exit code and stdout/stderr — but the id they share with subagent runs is `RunId`, not
+  `ProcessId`.
+- **A detached subagent outlives its turn by construction.** `delegate::detach` takes no
+  `CancellationToken` parameter at all — it mints a fresh one owned by the registry entry — so an
+  interrupt on the parent turn cannot reach it; only `SubagentKill` and `shutdown_all` can. The
+  `MAX_CONCURRENT_SUBAGENTS` permit is acquired *inside* the spawned task, not before detaching, so a
+  full pool delays a background run instead of blocking the turn that started it. `run_child` returns
+  an explicitly boxed `Send` future because `run_delegation → detach → run_child → core_loop →
+  run_delegation` is a cycle that `Send` inference cannot close on its own.
+- **Every background run wakes the agent when it finishes — `watch` only adds wakes for output
+  while a bash run is still going.** Waiting is therefore never a reason to set `watch`, and the tool
+  descriptions send a waiting agent to end its turn rather than re-read `BashOutput`; that is the
+  whole anti-polling design, so do not reintroduce a blocking read or a wait timeout. A wake is
+  suppressed exactly when the agent already knows: it read the exit through `BashOutput`, or it
+  stopped the run itself with `BashKill` / `SubagentKill`. `BashOutput` cannot be dropped in favour of
+  the wake: a run that never exits (`pnpm dev`) never fires one, and a `watch` flood auto-clears
+  `watched` (`WATCH_FLOOD_LINES`), which would otherwise leave its output unreachable.
 - Providers classify wire failures into `StreamError`; the engine decides — retry with jittered
   backoff, reactive compaction on `ContextOverflow`, or abort. Callers never inspect error strings.
 - The MCP handshake tries one protocol era and, only when the failure could be the era itself,

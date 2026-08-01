@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use goat_wire::transport;
 use tokio_util::sync::CancellationToken;
 
-pub use crate::manager::Manager;
+pub use crate::manager::{Manager, ReloadRequest};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {

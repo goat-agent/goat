@@ -109,7 +109,13 @@ pub struct ActivatedSkill {
     pub resources: Vec<SkillResource>,
 }
 
-const BUILTIN_SKILLS: &[(&str, &str)] = &[("goat", include_str!("../builtin/goat/SKILL.md"))];
+const BUILTIN_SKILLS: &[(&str, &str)] = &[
+    ("goat", include_str!("../builtin/goat/SKILL.md")),
+    (
+        "configuring-goat",
+        include_str!("../builtin/configuring-goat/SKILL.md"),
+    ),
+];
 
 #[derive(Clone, Debug, Default)]
 pub struct SkillIndex {

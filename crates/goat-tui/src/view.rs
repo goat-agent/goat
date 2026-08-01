@@ -286,7 +286,7 @@ fn render_run_panel(frame: &mut Frame, area: Rect, app: &App, theme: Theme, curs
     let inner_width = usize::from(area.width);
     let mut rows: Vec<Line> = Vec::new();
     let mut index = 0usize;
-    for run in app.agent_runs() {
+    for run in app.subagent_runs() {
         let selected = index == cursor;
         let (marker, marker_style) = match run.done {
             None => (spinner, theme.accent()),
@@ -297,7 +297,7 @@ fn render_run_panel(frame: &mut Frame, area: Rect, app: &App, theme: Theme, curs
         let mut left = vec![
             Span::styled(marker, marker_style),
             Span::raw(" "),
-            Span::styled(run.agent_type.clone(), name_style),
+            Span::styled(run.subagent_type.clone(), name_style),
         ];
         if !run.label.is_empty() {
             left.push(Span::styled(symbols::ui::SEPARATOR, theme.muted()));
@@ -374,7 +374,8 @@ fn render_run_footer(frame: &mut Frame, area: Rect, theme: Theme) {
     frame.render_widget(
         Paragraph::new(overlay::hint_line(
             &[
-                (symbols::key::ARROWS_UPDOWN, "select"),
+                (symbols::key::ARROWS_UPDOWN, "move"),
+                (symbols::key::ENTER, "open"),
                 (symbols::key::ESC, "back"),
             ],
             theme,

@@ -106,6 +106,9 @@ pub enum ClientFrame {
         device: String,
     },
     StopDaemon {},
+    ReloadAgents {
+        agent: Option<String>,
+    },
     Goodbye {},
 }
 
@@ -186,6 +189,23 @@ pub enum ServerFrame {
     VersionMismatch {
         daemon_version: u32,
     },
+    Reloaded {
+        report: ReloadReport,
+    },
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ReloadReport {
+    pub reloaded: Vec<String>,
+    pub unchanged: Vec<String>,
+    pub failed: Vec<ReloadFailure>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ReloadFailure {
+    pub agent: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -114,14 +114,15 @@ mod tests {
     }
 
     #[test]
-    fn agent_group_event_round_trips() {
-        let event = Event::AgentGroupStarted {
+    fn subagent_group_event_round_trips() {
+        let event = Event::SubagentGroupStarted {
             id: TaskId(3),
             group: ToolCallId(1),
-            members: vec![crate::AgentGroupMember {
+            members: vec![crate::SubagentGroupMember {
                 call: ToolCallId(1),
-                agent_type: "explore".to_owned(),
+                subagent_type: "explore".to_owned(),
                 label: "map engine".to_owned(),
+                background: false,
             }],
         };
         let json = serde_json::to_string(&event).unwrap();
@@ -188,16 +189,13 @@ mod tests {
 
     #[test]
     fn process_id_serializes_as_string() {
-        assert_eq!(
-            serde_json::to_string(&super::ProcessId(7)).unwrap(),
-            r#""7""#
-        );
+        assert_eq!(serde_json::to_string(&super::RunId(7)).unwrap(), r#""7""#);
     }
 
     #[test]
     fn op_process_kill_roundtrips() {
         let op = Op::ProcessKill {
-            process: super::ProcessId(3),
+            process: super::RunId(3),
         };
         let json = serde_json::to_string(&op).unwrap();
         assert_eq!(json, r#"{"type":"ProcessKill","process":"3"}"#);
@@ -208,7 +206,7 @@ mod tests {
     #[test]
     fn op_process_watch_roundtrips() {
         let op = Op::ProcessWatch {
-            process: super::ProcessId(4),
+            process: super::RunId(4),
             on: true,
         };
         let json = serde_json::to_string(&op).unwrap();
@@ -219,7 +217,7 @@ mod tests {
     #[test]
     fn event_process_started_roundtrips() {
         let ev = Event::ProcessStarted {
-            process: super::ProcessId(1),
+            process: super::RunId(1),
             command: "pnpm dev".to_owned(),
             watched: false,
         };
@@ -231,7 +229,7 @@ mod tests {
     #[test]
     fn event_process_exited_omits_code_when_absent() {
         let ev = Event::ProcessExited {
-            process: super::ProcessId(1),
+            process: super::RunId(1),
             code: None,
             reason: super::ProcessExitReason::Killed,
         };

@@ -72,7 +72,7 @@ pub(crate) fn ask_call_display(input: &str) -> ToolDisplay {
 }
 
 pub(crate) async fn run_ask(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     run: &Run<'_>,
     input_json: &str,
     call_id: ToolCallId,

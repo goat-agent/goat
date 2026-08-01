@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{InputAttachment, LoginCredential, ModelTarget, ProcessId, TaskId, ToolCallId};
+use crate::{InputAttachment, LoginCredential, ModelTarget, RunId, TaskId, ToolCallId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type")]
@@ -58,10 +58,10 @@ pub enum Op {
         id: TaskId,
     },
     ProcessKill {
-        process: ProcessId,
+        process: RunId,
     },
     ProcessWatch {
-        process: ProcessId,
+        process: RunId,
         on: bool,
     },
     Shutdown {},

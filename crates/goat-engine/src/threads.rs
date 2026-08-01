@@ -1,22 +1,21 @@
 use goat_protocol::{
-    AgentGroupEntry, AgentGroupMember, Effort, Event, ModelTarget, NotifyKind, SkillInfo,
+    Effort, Event, ModelTarget, NotifyKind, SkillInfo, SubagentGroupEntry, SubagentGroupMember,
     ThreadSummary, ToolCall, ToolCallId, ToolOutcome, TranscriptEntry,
 };
 use goat_provider::{ContentBlock, Message, MessageRole};
 use goat_store::CodeStore as Store;
-use goat_tools::ToolRegistry;
 use tokio::sync::mpsc;
 
 use crate::{
     Ctx,
-    delegate::{AGENT_TOOL_NAME, agent_group_member},
+    delegate::{SUBAGENT_TOOL_NAME, subagent_group_member},
     prompt::build_system_prompt,
     tools_exec::{call_display, summarize_line},
 };
 
 struct RestoredToolUse {
     call: ToolCall,
-    member: Option<AgentGroupMember>,
+    member: Option<SubagentGroupMember>,
     group: Option<ToolCallId>,
     group_size: usize,
 }
@@ -30,7 +29,7 @@ pub(crate) fn parse_content_blocks(body: &str) -> Vec<ContentBlock> {
 }
 
 pub(crate) async fn resolve_thread_cwd(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     stored_thread: Option<i64>,
 ) -> std::path::PathBuf {
     match stored_thread {
@@ -42,8 +41,8 @@ pub(crate) async fn resolve_thread_cwd(
             .flatten()
             .map(|thread| thread.cwd)
             .filter(|cwd| !cwd.is_empty())
-            .map_or_else(|| ctx.cwd.to_path_buf(), std::path::PathBuf::from),
-        None => ctx.cwd.to_path_buf(),
+            .map_or_else(|| ctx.cwd.clone(), std::path::PathBuf::from),
+        None => ctx.cwd.clone(),
     }
 }
 
@@ -114,17 +113,13 @@ pub(crate) async fn handle_rename(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn handle_resume(
-    store: &Store,
-    skills: &[SkillInfo],
-    tools: &ToolRegistry,
-    instructions: Option<&str>,
-    date: &str,
-    tid: i64,
-    state: &mut crate::SessionState,
-    events: &mpsc::Sender<Event>,
-) {
+pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate::SessionState) {
+    let store = &ctx.store;
+    let skills: &[SkillInfo] = &ctx.skills;
+    let tools = &ctx.tools;
+    let instructions = ctx.instructions.as_deref();
+    let date = ctx.date.as_str();
+    let events = &ctx.events;
     let thread = match store.get_thread(tid).await {
         Ok(Some(thread)) => thread,
         Ok(None) => {
@@ -184,7 +179,7 @@ pub(crate) async fn handle_resume(
     let mut entries: Vec<TranscriptEntry> = Vec::new();
     let mut tool_uses: std::collections::HashMap<String, RestoredToolUse> =
         std::collections::HashMap::new();
-    let mut agent_groups: std::collections::HashMap<ToolCallId, Vec<AgentGroupEntry>> =
+    let mut agent_groups: std::collections::HashMap<ToolCallId, Vec<SubagentGroupEntry>> =
         std::collections::HashMap::new();
     let mut tool_seq: u64 = 0;
     let mut next_compaction = 0usize;
@@ -228,13 +223,13 @@ pub(crate) async fn handle_resume(
         let agent_group_size = if role == MessageRole::Assistant
             && tool_count > 1
             && content.iter().all(|block| {
-                !matches!(block, ContentBlock::ToolUse { name, .. } if name != AGENT_TOOL_NAME)
+                !matches!(block, ContentBlock::ToolUse { name, .. } if name != SUBAGENT_TOOL_NAME)
             }) {
             tool_count
         } else {
             0
         };
-        let mut agent_group = None;
+        let mut subagent_group = None;
         for block in &content {
             match block {
                 ContentBlock::Text { text } => match role {
@@ -264,11 +259,11 @@ pub(crate) async fn handle_resume(
                     let call_id = ToolCallId(tool_seq);
                     let input = input.to_string();
                     let group = if agent_group_size > 0 {
-                        Some(*agent_group.get_or_insert(call_id))
+                        Some(*subagent_group.get_or_insert(call_id))
                     } else {
                         None
                     };
-                    let member = group.map(|_| agent_group_member(call_id, &input));
+                    let member = group.map(|_| subagent_group_member(call_id, &input));
                     tool_uses.insert(
                         id.clone(),
                         RestoredToolUse {
@@ -302,10 +297,10 @@ pub(crate) async fn handle_resume(
                         };
                         if let (Some(group), Some(member)) = (restored.group, restored.member) {
                             let grouped = agent_groups.entry(group).or_default();
-                            grouped.push(AgentGroupEntry { member, outcome });
+                            grouped.push(SubagentGroupEntry { member, outcome });
                             if grouped.len() == restored.group_size {
                                 let members = agent_groups.remove(&group).unwrap_or_default();
-                                entries.push(TranscriptEntry::AgentGroup { group, members });
+                                entries.push(TranscriptEntry::SubagentGroup { group, members });
                             }
                         } else {
                             entries.push(TranscriptEntry::Tool {
@@ -387,30 +382,13 @@ pub(crate) async fn handle_resume(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn handle_resume_latest(
-    store: &Store,
-    skills: &[SkillInfo],
-    tools: &ToolRegistry,
-    instructions: Option<&str>,
-    date: &str,
-    cwd: &std::path::Path,
-    state: &mut crate::SessionState,
-    events: &mpsc::Sender<Event>,
-) {
-    let cwd_key = cwd.display().to_string();
+pub(crate) async fn handle_resume_latest(ctx: &crate::Ctx, state: &mut crate::SessionState) {
+    let store = &ctx.store;
+    let events = &ctx.events;
+    let cwd_key = ctx.cwd.display().to_string();
     match store.latest_thread_in(cwd_key).await {
         Ok(Some(thread)) => {
-            handle_resume(
-                store,
-                skills,
-                tools,
-                instructions,
-                date,
-                thread.id,
-                state,
-                events,
-            )
-            .await;
+            handle_resume(ctx, thread.id, state).await;
         }
         Ok(None) => {
             let _ = events

@@ -37,7 +37,7 @@ pub fn service() -> McpService {
     McpService::new("notion", "Notion", ServiceUrl::Fixed(MCP_URL), SETUP)
         .tools(ToolPolicy::all(PREFIX))
         .truncation_hint("narrow the view, or request a smaller page")
-        .compile(watch::compile)
+        .watch(&VOCABULARY, watch::compile)
 }
 
 #[derive(Debug, Default, Deserialize)]
