@@ -87,7 +87,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_group_event_round_trips() {
+    fn subagent_group_event_round_trips() {
         let event = Event::SubagentGroupStarted {
             id: TaskId(3),
             group: ToolCallId(1),
@@ -95,6 +95,7 @@ mod tests {
                 call: ToolCallId(1),
                 subagent_type: "explore".to_owned(),
                 label: "map engine".to_owned(),
+                background: false,
             }],
         };
         let json = serde_json::to_string(&event).unwrap();

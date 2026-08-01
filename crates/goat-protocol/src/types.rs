@@ -218,6 +218,7 @@ pub struct SubagentGroupMember {
     pub call: ToolCallId,
     pub subagent_type: String,
     pub label: String,
+    pub background: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

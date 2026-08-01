@@ -253,6 +253,10 @@ async fn execute_tool(
     }
 }
 
+fn groups_into_one_row(prepared: &[Prepared<'_>]) -> bool {
+    prepared.len() > 1 && prepared.iter().all(|prep| prep.name == SUBAGENT_TOOL_NAME)
+}
+
 pub(crate) async fn run_tool_batch(
     ctx: &Ctx,
     run: &Run<'_>,
@@ -274,8 +278,7 @@ pub(crate) async fn run_tool_batch(
         });
     }
     if env.allow_delegate
-        && prepared.len() > 1
-        && prepared.iter().all(|prep| prep.name == SUBAGENT_TOOL_NAME)
+        && groups_into_one_row(&prepared)
         && let Some(first) = prepared.first()
     {
         let members = prepared
@@ -404,5 +407,30 @@ mod tests {
         let outcome = tool_outcome(&Err("boom".to_owned()));
         assert!(!outcome.ok);
         assert!(outcome.image.is_none());
+    }
+
+    fn prep<'a>(name: &'a str, input: &'a str) -> super::Prepared<'a> {
+        super::Prepared {
+            vendor_id: "v",
+            name,
+            input_json: input,
+            tui_id: 1,
+            db_id: None,
+        }
+    }
+
+    const BLOCKING: &str = r#"{"subagent_type":"explore","name":"n","prompt":"p"}"#;
+
+    #[test]
+    fn a_parallel_blocking_batch_collapses_into_one_row() {
+        let batch = vec![prep("Subagent", BLOCKING), prep("Subagent", BLOCKING)];
+        assert!(super::groups_into_one_row(&batch));
+    }
+
+    #[test]
+    fn a_lone_call_and_a_foreign_tool_never_group() {
+        assert!(!super::groups_into_one_row(&[prep("Subagent", BLOCKING)]));
+        let mixed = vec![prep("Subagent", BLOCKING), prep("Bash", "{}")];
+        assert!(!super::groups_into_one_row(&mixed));
     }
 }
