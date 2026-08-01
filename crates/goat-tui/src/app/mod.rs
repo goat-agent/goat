@@ -2701,6 +2701,7 @@ mod tests {
                         ok: true,
                         summary: Some("done".to_owned()),
                         image: None,
+                        git: None,
                     },
                 },
             ],
@@ -2765,6 +2766,7 @@ mod tests {
                 ok: true,
                 summary: None,
                 image: None,
+                git: None,
             },
         });
 
@@ -2859,6 +2861,7 @@ mod tests {
                 ok: true,
                 summary: None,
                 image: None,
+                git: None,
             },
         });
         app.on_engine(EngineEvent::ToolDone {
@@ -2868,6 +2871,7 @@ mod tests {
                 ok: false,
                 summary: Some("failed".to_owned()),
                 image: None,
+                git: None,
             },
         });
 

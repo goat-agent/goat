@@ -564,6 +564,7 @@ impl Transcript {
                         ok: false,
                         summary: None,
                         image: None,
+                        git: None,
                     });
                 }
                 if let Item::AgentGroup(group) = item {
@@ -577,6 +578,7 @@ impl Transcript {
                                 ok: false,
                                 summary: None,
                                 image: None,
+                                git: None,
                             });
                             member.finished_at = Some(now);
                         }
@@ -830,6 +832,7 @@ mod tests {
             ok: true,
             summary: None,
             image: None,
+            git: None,
         }
     }
 
@@ -838,6 +841,7 @@ mod tests {
             ok: false,
             summary: Some(summary.to_owned()),
             image: None,
+            git: None,
         }
     }
 

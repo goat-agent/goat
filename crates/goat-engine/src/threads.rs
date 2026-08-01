@@ -298,6 +298,7 @@ pub(crate) async fn handle_resume(
                             ok: !is_error,
                             summary,
                             image: None,
+                            git: None,
                         };
                         if let (Some(group), Some(member)) = (restored.group, restored.member) {
                             let grouped = agent_groups.entry(group).or_default();
