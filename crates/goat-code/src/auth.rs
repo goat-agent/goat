@@ -274,7 +274,10 @@ async fn apply_to_daemon() {
     if !goat_wire::transport::probe_alive(&socket_path) {
         return;
     }
-    if let Err(e) = goat_client::reload(&socket_path, None).await {
+    let Ok(link) = crate::remote::local() else {
+        return;
+    };
+    if let Err(e) = goat_client::reload(&link, None).await {
         ui::note(&format!(
             "could not apply to the running daemon: {e}; run `goat reload`"
         ));
@@ -860,6 +863,11 @@ fn logout(
         CredentialService::Channel => {
             return Err(color_eyre::eyre::eyre!(
                 "channel secrets are scoped to one agent and one slot; remove them with `goat agent channel rm {provider}`"
+            ));
+        }
+        CredentialService::Remote => {
+            return Err(color_eyre::eyre::eyre!(
+                "device key material belongs to a remote; remove it with `goat remote rm {provider}`"
             ));
         }
     };

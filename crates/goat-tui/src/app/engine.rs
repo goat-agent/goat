@@ -42,6 +42,14 @@ impl App {
                 },
                 None => {}
             },
+            EngineEvent::FilesListed { entries } => {
+                self.files = entries;
+                self.files_loaded = true;
+                if let Overlay::Files(menu) = &mut self.overlay {
+                    let query = self.composer.at_query().unwrap_or_default();
+                    menu.fill(self.files.clone(), &query);
+                }
+            }
             EngineEvent::ConversationRestored {
                 target,
                 entries,

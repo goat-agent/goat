@@ -17,6 +17,7 @@ goat-tui = { workspace = true }
 goat-config = { workspace = true }
 goat-daemon = { workspace = true }
 goat-client = { workspace = true }
+goat-remote = { workspace = true }
 goat-wire = { workspace = true }
 goat-protocol = { workspace = true }
 goat-provider = { workspace = true }

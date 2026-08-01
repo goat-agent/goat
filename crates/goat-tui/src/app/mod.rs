@@ -184,6 +184,9 @@ pub struct App {
     pub(crate) notification_pending: Option<crate::notification::Notification>,
     pub(crate) picker: Option<ratatui_image::picker::Picker>,
     pub(crate) processes: Vec<goat_protocol::ProcessInfo>,
+    pub(crate) files: Vec<String>,
+    pub(crate) files_loaded: bool,
+    pub(crate) outbox: Vec<Op>,
 }
 
 #[derive(Default)]
@@ -211,6 +214,26 @@ pub(crate) struct TurnStatus {
     pub(crate) compacting: bool,
 }
 
+pub struct Origin {
+    pub cwd: String,
+    pub remote: Option<String>,
+}
+
+impl Origin {
+    #[must_use]
+    pub fn local(cwd: String) -> Self {
+        Self { cwd, remote: None }
+    }
+
+    #[must_use]
+    pub fn remote(cwd: String, name: String) -> Self {
+        Self {
+            cwd,
+            remote: Some(name),
+        }
+    }
+}
+
 pub(crate) struct RetryState {
     pub(crate) attempt: u32,
     pub(crate) max_attempts: u32,
@@ -228,14 +251,15 @@ impl App {
         }
     }
 
-    pub(crate) fn new(theme: Theme) -> Self {
-        let cwd = std::env::current_dir()
-            .ok()
-            .map(|p| shorten_home(&p))
-            .unwrap_or_default();
-        let git_workspace = std::env::current_dir()
-            .ok()
-            .and_then(|p| goat_worktree::workspace(&p).ok());
+    pub(crate) fn new(theme: Theme, origin: &Origin) -> Self {
+        let remote = origin.remote.is_some();
+        let cwd = match &origin.remote {
+            Some(name) => format!("{name}:{}", origin.cwd),
+            None => shorten_home(std::path::Path::new(&origin.cwd)),
+        };
+        let git_workspace = (!remote)
+            .then(|| goat_worktree::workspace(std::path::Path::new(&origin.cwd)).ok())
+            .flatten();
         let cfg = goat_config::Config::load();
         Self {
             theme,
@@ -249,7 +273,7 @@ impl App {
             pr_branch: None,
             pr_inflight: false,
             pr_poll: 0,
-            pr_enabled: goat_github::gh_available(),
+            pr_enabled: !remote && goat_github::gh_available(),
             next_task: 1,
             window_count: 1,
             spinner: 0,
@@ -291,10 +315,19 @@ impl App {
             notification_pending: None,
             picker: None,
             processes: Vec::new(),
+            files: Vec::new(),
+            files_loaded: false,
+            outbox: Vec::new(),
         }
     }
 
     pub(crate) fn update(&mut self, event: AppEvent) -> Vec<Op> {
+        let mut ops = self.reduce(event);
+        ops.append(&mut self.outbox);
+        ops
+    }
+
+    fn reduce(&mut self, event: AppEvent) -> Vec<Op> {
         match event {
             AppEvent::Tick => {
                 if self.turn.active.is_some() {
@@ -872,8 +905,14 @@ impl App {
             if let Overlay::Files(menu) = &mut self.overlay {
                 menu.update(&query);
             } else {
-                let root = std::path::PathBuf::from(&self.cwd);
-                self.overlay = Overlay::Files(FileMenu::new(&root, &query));
+                if !self.files_loaded {
+                    self.outbox.push(Op::ListFiles {});
+                }
+                self.overlay = Overlay::Files(FileMenu::new(
+                    self.files.clone(),
+                    !self.files_loaded,
+                    &query,
+                ));
             }
             return;
         }
@@ -1576,9 +1615,10 @@ pub async fn run(
     mut events: Receiver<EngineEvent>,
     mut presence: Receiver<usize>,
     theme: Theme,
+    origin: Origin,
     initial_ops: Vec<Op>,
 ) -> color_eyre::Result<ExitReason> {
-    let mut app = App::new(theme);
+    let mut app = App::new(theme, &origin);
     let (mut terminal, picker, background) = tui::init(app.mouse_capture)?;
     app.picker = picker;
     app.set_terminal_bg(background);
@@ -1763,8 +1803,27 @@ mod tests {
         RateWindow, TaskId, Usage,
     };
 
-    use super::{App, Overlay};
+    use super::{App, Origin, Overlay};
     use crate::theme::Theme;
+
+    fn test_origin() -> Origin {
+        Origin::local(
+            std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+        )
+    }
+
+    #[test]
+    fn a_remote_origin_hides_local_git_chrome() {
+        let app = App::new(
+            Theme::dark(),
+            &Origin::remote("/srv/work".to_owned(), "box".to_owned()),
+        );
+        assert_eq!(app.cwd(), "box:/srv/work");
+        assert!(!app.pr_enabled);
+        assert!(app.git_workspace.is_none());
+    }
 
     #[test]
     fn paste_passes_through_when_overlay_captures_text() {
@@ -1808,7 +1867,7 @@ mod tests {
 
     #[test]
     fn submit_then_interrupt_emit_ops() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.composer.insert_str("hi");
         let started = app.submit();
         assert!(matches!(started.as_slice(), [Op::SubmitMessage { .. }]));
@@ -1833,7 +1892,7 @@ mod tests {
 
     #[test]
     fn sender_first_message_renders_once_on_echo() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.submit_text("hello".to_owned());
         let id = submit_id(&ops);
         assert_eq!(user_lines(&app), 0, "no optimistic render");
@@ -1854,7 +1913,7 @@ mod tests {
 
     #[test]
     fn peer_message_renders_from_echo_and_resets() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         assert!(app.turn.active.is_none());
         app.on_engine(EngineEvent::UserMessage {
             id: TaskId(42),
@@ -1868,7 +1927,7 @@ mod tests {
 
     #[test]
     fn steering_echo_does_not_reset_agents() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::TaskStarted { id: TaskId(1) });
         app.follow = false;
         app.on_engine(EngineEvent::UserMessage {
@@ -1883,7 +1942,7 @@ mod tests {
 
     #[test]
     fn in_flight_first_message_excluded_from_queued_labels() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.submit_text("hello".to_owned());
         let _ = submit_id(&ops);
         assert!(app.queued_labels().is_empty());
@@ -1891,7 +1950,7 @@ mod tests {
 
     #[test]
     fn queued_steering_message_shows_label() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::TaskStarted { id: TaskId(100) });
         let _ = app.submit_text("next up".to_owned());
         assert_eq!(app.queued_labels(), vec!["next up".to_owned()]);
@@ -1899,7 +1958,7 @@ mod tests {
 
     #[test]
     fn first_message_then_immediate_interrupt_does_not_double_render() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.submit_text("hello".to_owned());
         let id = submit_id(&ops);
         app.on_engine(EngineEvent::UserMessage {
@@ -1919,7 +1978,7 @@ mod tests {
 
     #[test]
     fn task_done_queues_notification_only_when_unfocused() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::TaskDone {
             id: TaskId(1),
             interrupted: false,
@@ -1948,7 +2007,7 @@ mod tests {
     fn ask_started_queues_attention_notification_only_when_unfocused() {
         use goat_protocol::{AskQuestion, ToolCallId};
 
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::AskStarted {
             id: TaskId(1),
             call: ToolCallId(1),
@@ -1978,7 +2037,7 @@ mod tests {
 
     #[test]
     fn ctrl_c_while_active_arms_quit_not_interrupt() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.composer.insert_str("hi");
         app.submit();
         let ops = app.on_ctrl_c();
@@ -1991,7 +2050,7 @@ mod tests {
 
     #[test]
     fn ctrl_c_when_idle_arms_then_quits() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         assert!(!app.quit_armed());
         app.on_ctrl_c();
         assert!(app.quit_armed());
@@ -2003,7 +2062,7 @@ mod tests {
 
     #[test]
     fn bang_on_empty_enters_shell_mode() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('!'), KeyModifiers::SHIFT));
         assert!(app.composer.shell());
         assert!(app.composer.is_empty());
@@ -2011,7 +2070,7 @@ mod tests {
 
     #[test]
     fn bang_mid_text_is_literal() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('l'), KeyModifiers::NONE));
         app.on_key(press(KeyCode::Char('!'), KeyModifiers::SHIFT));
         assert!(!app.composer.shell());
@@ -2020,7 +2079,7 @@ mod tests {
 
     #[test]
     fn backspace_on_empty_exits_shell_mode() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('!'), KeyModifiers::NONE));
         app.on_key(press(KeyCode::Backspace, KeyModifiers::NONE));
         assert!(!app.composer.shell());
@@ -2028,7 +2087,7 @@ mod tests {
 
     #[test]
     fn esc_on_empty_exits_shell_mode() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('!'), KeyModifiers::NONE));
         app.on_key(press(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!app.composer.shell());
@@ -2036,7 +2095,7 @@ mod tests {
 
     #[test]
     fn shell_submit_emits_submit_shell() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('!'), KeyModifiers::NONE));
         app.composer.insert_str("echo hi");
         let ops = app.submit();
@@ -2053,7 +2112,7 @@ mod tests {
 
     #[test]
     fn shell_mode_slash_text_is_not_a_command() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('!'), KeyModifiers::NONE));
         app.on_key(press(KeyCode::Char('/'), KeyModifiers::NONE));
         assert!(!matches!(app.overlay, Overlay::Commands(_)));
@@ -2066,7 +2125,7 @@ mod tests {
 
     #[test]
     fn whitespace_shell_submit_keeps_mode() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('!'), KeyModifiers::NONE));
         app.composer.insert_str("   ");
         let ops = app.submit();
@@ -2077,7 +2136,7 @@ mod tests {
 
     #[test]
     fn ctrl_c_during_shell_run_interrupts() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('!'), KeyModifiers::NONE));
         app.composer.insert_str("sleep 5");
         app.submit();
@@ -2089,7 +2148,7 @@ mod tests {
 
     #[test]
     fn shell_run_suppresses_working_line() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('!'), KeyModifiers::NONE));
         app.composer.insert_str("sleep 5");
         app.submit();
@@ -2099,7 +2158,7 @@ mod tests {
 
     #[test]
     fn shell_done_completes_cell_and_clears_state() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('!'), KeyModifiers::NONE));
         app.composer.insert_str("echo hi");
         let ops = app.submit();
@@ -2127,7 +2186,7 @@ mod tests {
 
     #[test]
     fn shell_history_recall_restores_mode() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('!'), KeyModifiers::NONE));
         app.composer.insert_str("echo 1");
         app.submit();
@@ -2143,7 +2202,7 @@ mod tests {
 
     #[test]
     fn shell_submit_while_active_denies() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.composer.insert_str("hi");
         app.submit();
         app.on_key(press(KeyCode::Char('!'), KeyModifiers::NONE));
@@ -2160,7 +2219,7 @@ mod tests {
 
     #[test]
     fn esc_idle_arms_then_clears() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.composer.insert_str("hello");
         app.on_key(press(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.clear_armed(), "first Esc must arm clear");
@@ -2172,7 +2231,7 @@ mod tests {
 
     #[test]
     fn ctrl_c_dubeolsik_arms_then_quits() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         assert!(!app.quit_armed());
         app.on_key(press(KeyCode::Char('ㅊ'), KeyModifiers::CONTROL));
         assert!(app.quit_armed());
@@ -2183,21 +2242,21 @@ mod tests {
 
     #[test]
     fn plain_dubeolsik_inserts_into_composer() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('ㅊ'), KeyModifiers::NONE));
         assert!(!app.composer.is_empty());
     }
 
     #[test]
     fn ctrl_other_key_does_not_insert() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('ㄴ'), KeyModifiers::CONTROL));
         assert!(app.composer.is_empty());
     }
 
     #[test]
     fn scroll_follow_resets_on_submit() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.follow = false;
         app.composer.insert_str("hello");
         app.submit();
@@ -2205,7 +2264,7 @@ mod tests {
     }
 
     fn filled_app() -> App {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         for i in 0..30 {
             app.transcript.push_user(format!("message {i}"));
         }
@@ -2283,7 +2342,7 @@ mod tests {
 
     #[test]
     fn clear_command_empties_transcript_and_emits_clear() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.transcript.push_user("earlier message");
         app.scroll = 9;
         app.follow = false;
@@ -2297,7 +2356,7 @@ mod tests {
 
     #[test]
     fn clear_command_rebinds_even_while_active() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.turn.active = Some(TaskId(1));
         app.transcript.push_user("in flight");
         let ops = app.dispatch_slash_command("/clear");
@@ -2308,7 +2367,7 @@ mod tests {
 
     #[test]
     fn slash_model_opens_picker_without_op() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.composer.insert_str("/model");
         let ops = app.submit();
         assert!(ops.is_empty());
@@ -2317,7 +2376,7 @@ mod tests {
 
     #[test]
     fn picker_esc_closes() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.composer.insert_str("/model");
         app.submit();
         app.on_key(press(KeyCode::Esc, KeyModifiers::NONE));
@@ -2326,7 +2385,7 @@ mod tests {
 
     #[test]
     fn picker_enter_selects_and_emits_op() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::ModelListChanged {
             entries: vec![single_entry("openai", "gpt")],
         });
@@ -2339,7 +2398,7 @@ mod tests {
 
     #[test]
     fn picker_filter_then_select() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::ModelListChanged {
             entries: vec![
                 single_entry("openai", "gpt"),
@@ -2359,7 +2418,7 @@ mod tests {
 
     #[test]
     fn picker_empty_state_keeps_open_on_enter() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.composer.insert_str("/model");
         app.submit();
         let ops = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
@@ -2369,7 +2428,7 @@ mod tests {
 
     #[test]
     fn unknown_slash_command_submits_as_message() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.composer.insert_str("/bogus");
         let ops = app.submit();
         assert!(matches!(ops.as_slice(), [Op::SubmitMessage { text, .. }] if text == "/bogus"));
@@ -2379,7 +2438,7 @@ mod tests {
 
     #[test]
     fn absolute_path_starting_with_slash_submits_as_message() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.composer.insert_str("/var/folders/image.png");
         let ops = app.submit();
         assert!(
@@ -2391,7 +2450,7 @@ mod tests {
 
     #[test]
     fn slash_help_opens_overlay() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.composer.insert_str("/help");
         let ops = app.submit();
         assert!(ops.is_empty());
@@ -2402,7 +2461,7 @@ mod tests {
 
     #[test]
     fn skills_changed_registers_invokable_command() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::SkillsChanged {
             skills: vec![goat_protocol::SkillInfo {
                 name: "demo".to_owned(),
@@ -2418,7 +2477,7 @@ mod tests {
 
     #[test]
     fn unknown_skill_command_submits_as_message() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.composer.insert_str("/demo");
         let ops = app.submit();
         assert!(matches!(ops.as_slice(), [Op::SubmitMessage { text, .. }] if text == "/demo"));
@@ -2449,7 +2508,7 @@ mod tests {
 
     #[test]
     fn effort_without_model_opens_empty_picker() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.dispatch_slash_command("/effort");
         assert!(ops.is_empty());
         match &app.overlay {
@@ -2462,7 +2521,7 @@ mod tests {
     #[test]
     fn effort_picker_opens_and_selects() {
         use goat_protocol::Effort;
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::ModelListChanged {
             entries: vec![entry_with_efforts(
                 "openai",
@@ -2485,7 +2544,7 @@ mod tests {
     #[test]
     fn effort_arg_sets_supported_level() {
         use goat_protocol::Effort;
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::ModelListChanged {
             entries: vec![entry_with_efforts(
                 "openai",
@@ -2503,7 +2562,7 @@ mod tests {
     #[test]
     fn effort_arg_rejects_unsupported_level() {
         use goat_protocol::Effort;
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::ModelListChanged {
             entries: vec![entry_with_efforts("openai", "gpt", vec![Effort::Low])],
         });
@@ -2516,7 +2575,7 @@ mod tests {
 
     #[test]
     fn model_arg_selects_unique_match() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::ModelListChanged {
             entries: vec![
                 single_entry("openai", "gpt"),
@@ -2531,7 +2590,7 @@ mod tests {
     #[test]
     fn effort_menu_typed_choice_runs_without_modal() {
         use goat_protocol::Effort;
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::ModelListChanged {
             entries: vec![entry_with_efforts(
                 "openai",
@@ -2553,7 +2612,7 @@ mod tests {
 
     #[test]
     fn model_menu_typed_choice_selects_without_modal() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::ModelListChanged {
             entries: vec![
                 single_entry("openai", "gpt"),
@@ -2573,7 +2632,7 @@ mod tests {
 
     #[test]
     fn model_menu_multi_account_opens_light_account_panel() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::ModelListChanged {
             entries: vec![multi_account_entry("openai", "gpt", &["work", "personal"])],
         });
@@ -2620,7 +2679,7 @@ mod tests {
 
     #[test]
     fn model_menu_slashed_model_id_selects_without_modal() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::ModelListChanged {
             entries: vec![single_entry("openrouter", "anthropic/claude")],
         });
@@ -2638,7 +2697,7 @@ mod tests {
     #[test]
     fn resume_requests_list_then_opens_picker() {
         use goat_protocol::ThreadSummary;
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.dispatch_slash_command("/resume");
         assert!(matches!(ops.as_slice(), [Op::ListThreads {}]));
         let ops = app.on_engine(EngineEvent::ThreadsListed {
@@ -2657,7 +2716,7 @@ mod tests {
     #[test]
     fn resume_index_resolves_to_resume_op() {
         use goat_protocol::ThreadSummary;
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.dispatch_slash_command("/resume 1");
         assert!(matches!(ops.as_slice(), [Op::ListThreads {}]));
         let ops = app.on_engine(EngineEvent::ThreadsListed {
@@ -2676,7 +2735,7 @@ mod tests {
     #[test]
     fn conversation_restored_rebuilds_transcript() {
         use goat_protocol::{ToolCall, ToolCallId, ToolOutcome, TranscriptEntry};
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.transcript.push_user("stale");
         app.on_engine(EngineEvent::ConversationRestored {
             target: ModelTarget {
@@ -2728,7 +2787,7 @@ mod tests {
     #[test]
     fn agent_events_route_and_drill_in() {
         use goat_protocol::{ToolCall, ToolCallId, ToolOutcome};
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.composer.insert_str("go");
         app.submit();
         let top = app.turn.active.unwrap();
@@ -2798,7 +2857,7 @@ mod tests {
     fn parallel_agent_group_replaces_tool_rows_and_aggregates_metrics() {
         use goat_protocol::{SubagentGroupMember, ToolCall, ToolCallId, ToolOutcome, Usage};
 
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         let top = TaskId(4);
         app.on_engine(EngineEvent::TaskStarted { id: top });
         app.on_engine(EngineEvent::SubagentGroupStarted {
@@ -2901,7 +2960,7 @@ mod tests {
 
     #[test]
     fn error_during_compaction_clears_compacting_status() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::CompactionStarted { id: TaskId(1) });
         assert!(app.compacting_status().is_some());
         app.on_engine(EngineEvent::Error {
@@ -2916,7 +2975,7 @@ mod tests {
     #[test]
     fn ask_defers_while_modal_open_then_promotes_on_close() {
         use goat_protocol::{AskQuestion, ToolCallId};
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.overlay = Overlay::Help;
         app.on_engine(EngineEvent::AskStarted {
             id: TaskId(1),
@@ -2938,7 +2997,7 @@ mod tests {
 
     #[test]
     fn ctx_and_rate_limit_indicators_use_active_model() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.model = Some(ModelTarget {
             provider: "anthropic".to_owned(),
             model: "sonnet".to_owned(),
@@ -2993,7 +3052,7 @@ mod tests {
 
     #[test]
     fn usage_attributes_to_event_model_not_current() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.model = Some(ModelTarget {
             provider: "anthropic".to_owned(),
             model: "sonnet".to_owned(),
@@ -3035,7 +3094,7 @@ mod tests {
 
     #[test]
     fn presence_updates_window_count_and_marks_dirty() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.take_dirty();
         assert_eq!(app.window_count, 1);
 
@@ -3047,7 +3106,7 @@ mod tests {
 
     #[test]
     fn presence_with_same_count_is_not_dirty() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.update(super::AppEvent::Presence(2));
         app.take_dirty();
 
@@ -3058,7 +3117,7 @@ mod tests {
 
     #[test]
     fn process_list_updates_summary_and_ignores_exited() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         assert!(app.process_summary().is_none());
         app.on_engine(EngineEvent::ProcessListChanged {
             processes: vec![
@@ -3096,7 +3155,7 @@ mod tests {
 
     #[test]
     fn process_output_is_captured_into_a_process_run() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         process_started(&mut app, 1, "pnpm dev");
         assert_eq!(app.process_runs().len(), 1);
         app.on_engine(EngineEvent::ProcessOutput {
@@ -3117,7 +3176,7 @@ mod tests {
 
     #[test]
     fn output_before_started_creates_run_lazily() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::ProcessOutput {
             process: goat_protocol::RunId(7),
             chunk: "early line".to_owned(),
@@ -3128,7 +3187,7 @@ mod tests {
 
     #[test]
     fn selector_lists_agents_then_processes() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::SubagentStarted {
             id: TaskId(9),
             parent: TaskId(0),
@@ -3145,7 +3204,7 @@ mod tests {
 
     #[test]
     fn selecting_a_process_swaps_the_main_view() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         process_started(&mut app, 1, "pnpm dev");
         app.open_run(0);
         assert!(matches!(app.main_view, super::MainView::Process(_)));
@@ -3155,7 +3214,7 @@ mod tests {
 
     #[test]
     fn reset_agents_keeps_process_runs_and_view() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         process_started(&mut app, 1, "pnpm dev");
         app.open_run(0);
         app.reset_subagents();
@@ -3165,7 +3224,7 @@ mod tests {
 
     #[test]
     fn exit_keeps_run_and_marks_exited() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         process_started(&mut app, 1, "pnpm dev");
         app.on_engine(EngineEvent::ProcessExited {
             process: goat_protocol::RunId(1),
@@ -3191,7 +3250,7 @@ mod tests {
 
     #[test]
     fn reconcile_drops_absent_unviewed_run() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         process_started(&mut app, 1, "pnpm dev");
         app.on_engine(EngineEvent::ProcessListChanged { processes: vec![] });
         assert!(app.process_runs().is_empty());
@@ -3199,7 +3258,7 @@ mod tests {
 
     #[test]
     fn reconcile_retains_viewed_run_even_if_absent() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         process_started(&mut app, 1, "pnpm dev");
         app.open_run(0);
         app.on_engine(EngineEvent::ProcessListChanged { processes: vec![] });
@@ -3221,7 +3280,7 @@ mod tests {
 
     #[test]
     fn arrows_move_the_highlight_without_swapping_the_view() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         subagent_started(&mut app, 1, "explore");
         process_started(&mut app, 1, "pnpm dev");
 
@@ -3246,7 +3305,7 @@ mod tests {
 
     #[test]
     fn reset_agents_keeps_a_still_running_agent() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         let running = subagent_started(&mut app, 1, "explore");
         let finished = subagent_started(&mut app, 2, "general");
         app.on_engine(EngineEvent::SubagentDone {
@@ -3266,7 +3325,7 @@ mod tests {
 
     #[test]
     fn reset_agents_leaves_the_view_when_the_shown_run_is_dropped() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         let finished = subagent_started(&mut app, 1, "explore");
         app.on_engine(EngineEvent::SubagentDone {
             id: finished,
@@ -3285,7 +3344,7 @@ mod tests {
     fn a_detached_group_member_completes_on_its_report_not_on_the_tool_row() {
         use crate::transcript::SubagentMemberStatus;
 
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         let top = TaskId(1);
         app.on_engine(EngineEvent::SubagentGroupStarted {
             id: top,
