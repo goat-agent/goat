@@ -14,6 +14,7 @@ goat-commands = { workspace = true }
 goat-tool = { workspace = true }
 goat-config = { workspace = true }
 goat-worktree = { workspace = true }
+goat-git = { workspace = true }
 goat-github = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }

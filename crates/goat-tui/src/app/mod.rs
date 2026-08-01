@@ -1184,6 +1184,12 @@ impl App {
         self.pr_poll = 0;
         self.dirty = true;
     }
+    pub(crate) fn forget_pull_request(&mut self) {
+        self.pr = None;
+        self.pr_branch = None;
+        self.pr_poll = 0;
+        self.dirty = true;
+    }
     pub(crate) fn current_pr(&self) -> Option<&goat_github::PrInfo> {
         let ws = self.git_workspace.as_ref()?;
         if self.pr_branch.as_deref() == Some(ws.git_branch.as_str()) {
@@ -2699,6 +2705,7 @@ mod tests {
                         ok: true,
                         summary: Some("done".to_owned()),
                         image: None,
+                        git: None,
                     },
                 },
             ],
@@ -2763,6 +2770,7 @@ mod tests {
                 ok: true,
                 summary: None,
                 image: None,
+                git: None,
             },
         });
 
@@ -2859,6 +2867,7 @@ mod tests {
                 ok: true,
                 summary: None,
                 image: None,
+                git: None,
             },
         });
         app.on_engine(EngineEvent::ToolDone {
@@ -2868,6 +2877,7 @@ mod tests {
                 ok: false,
                 summary: Some("failed".to_owned()),
                 image: None,
+                git: None,
             },
         });
 
@@ -3295,6 +3305,7 @@ mod tests {
                 ok: true,
                 summary: None,
                 image: None,
+                git: None,
             },
         });
         assert!(

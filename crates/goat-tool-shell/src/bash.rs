@@ -1,8 +1,13 @@
 use std::{
-    ffi::OsString, fmt::Write as _, path::PathBuf, process::Stdio, sync::OnceLock, time::Duration,
+    ffi::OsString,
+    fmt::Write as _,
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::OnceLock,
+    time::Duration,
 };
 
-use goat_protocol::ToolDisplay;
+use goat_protocol::{GitFacts, ToolDisplay};
 use goat_tool::{SandboxPolicy, Tool, ToolContext, ToolError, ToolFuture, ToolOutput, display};
 use serde::Deserialize;
 use tokio::{io::AsyncReadExt, process::Command, time};
@@ -165,18 +170,66 @@ impl Tool for BashTool {
             };
 
             let code = status.ok().and_then(|s| s.code());
-            Ok(build_output(
-                &stdout,
-                &stderr,
-                code,
-                ctx.max_output_bytes,
-                read_only,
-            ))
+            let output = build_output(&stdout, &stderr, code, ctx.max_output_bytes, read_only);
+            let Some(facts) = git_facts(&args.command, &ctx.cwd, &stdout, code).await else {
+                return Ok(output);
+            };
+            Ok(output.with_git(facts))
         })
     }
 }
 
 const SUMMARY_LINE_THRESHOLD: usize = 5;
+
+async fn git_facts(
+    command: &str,
+    cwd: &Path,
+    stdout: &[u8],
+    code: Option<i32>,
+) -> Option<GitFacts> {
+    if code != Some(0) {
+        return None;
+    }
+    let ops = goat_git::classify(command)?;
+    let cwd = cwd.to_path_buf();
+    let wants_head = ops.iter().any(|op| op.verb.moves_head());
+    let observed = tokio::task::spawn_blocking(move || observe(&cwd, wants_head))
+        .await
+        .ok()??;
+    let mut facts = observed;
+    if ops.iter().any(|op| op.verb == goat_git::GitVerb::PrCreate)
+        && let Some(url) = pull_request_url(&String::from_utf8_lossy(stdout))
+    {
+        facts.pr = pull_request_number(&url);
+        facts.pr_url = Some(url);
+    }
+    Some(facts)
+}
+
+fn observe(cwd: &Path, wants_head: bool) -> Option<GitFacts> {
+    let snapshot = goat_git::snapshot(cwd).ok()?;
+    let mut facts = GitFacts {
+        branch: snapshot.branch,
+        upstream: snapshot.upstream,
+        ..GitFacts::default()
+    };
+    if wants_head && let Ok((head, subject)) = goat_git::head_subject(cwd) {
+        facts.head = Some(head);
+        facts.subject = Some(subject);
+    }
+    Some(facts)
+}
+
+fn pull_request_url(stdout: &str) -> Option<String> {
+    stdout
+        .split_whitespace()
+        .find(|token| token.starts_with("https://") && token.contains("/pull/"))
+        .map(str::to_owned)
+}
+
+fn pull_request_number(url: &str) -> Option<u64> {
+    url.rsplit('/').next()?.parse().ok()
+}
 
 async fn read_capped<R>(reader: &mut R, buf: &mut Vec<u8>, cap: usize) -> std::io::Result<()>
 where
@@ -258,11 +311,135 @@ fn build_summary(body: &str, code: Option<i32>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::BashTool;
+    use super::{BashTool, pull_request_number, pull_request_url};
     use goat_tool::{Tool, ToolContext, ToolError};
+    use std::{path::Path, process::Command};
 
     fn ctx() -> ToolContext {
         ToolContext::new(&std::env::temp_dir()).unwrap()
+    }
+
+    fn git(repo: &Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .is_ok_and(|out| out.status.success());
+        assert!(ok, "git {args:?} failed");
+    }
+
+    fn repo() -> Option<(tempfile::TempDir, ToolContext)> {
+        let ready = Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success());
+        if !ready {
+            return None;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-b", "main"]);
+        git(dir.path(), &["config", "user.email", "t@example.invalid"]);
+        git(dir.path(), &["config", "user.name", "Test"]);
+        let ctx = ToolContext::new(dir.path()).unwrap();
+        Some((dir, ctx))
+    }
+
+    #[tokio::test]
+    async fn a_commit_chain_reports_the_sha_and_subject_it_produced() {
+        let Some((dir, ctx)) = repo() else {
+            return;
+        };
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        let out = BashTool
+            .run(
+                r#"{"command":"git add -A && git commit -m \"feat: first\""}"#,
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let facts = out.git.expect("git facts");
+        assert_eq!(facts.subject.as_deref(), Some("feat: first"));
+        assert_eq!(facts.branch.as_deref(), Some("main"));
+        assert!(facts.head.is_some_and(|head| !head.is_empty()));
+        assert_eq!(facts.upstream, None);
+    }
+
+    #[tokio::test]
+    async fn a_failed_git_command_reports_no_facts() {
+        let Some((_dir, ctx)) = repo() else {
+            return;
+        };
+        let out = BashTool
+            .run(r#"{"command":"git commit -m \"nothing staged\""}"#, &ctx)
+            .await
+            .unwrap();
+        assert!(out.git.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_non_git_command_reports_no_facts() {
+        let Some((_dir, ctx)) = repo() else {
+            return;
+        };
+        let out = BashTool
+            .run(r#"{"command":"echo hello"}"#, &ctx)
+            .await
+            .unwrap();
+        assert!(out.git.is_none());
+        assert_eq!(out.summary.as_deref(), Some("hello"));
+    }
+
+    #[tokio::test]
+    async fn a_branch_switch_reports_the_branch_it_landed_on() {
+        let Some((dir, ctx)) = repo() else {
+            return;
+        };
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        git(dir.path(), &["add", "-A"]);
+        git(dir.path(), &["commit", "-m", "init"]);
+        let out = BashTool
+            .run(r#"{"command":"git switch -c feat/git-ui"}"#, &ctx)
+            .await
+            .unwrap();
+        let facts = out.git.expect("git facts");
+        assert_eq!(facts.branch.as_deref(), Some("feat/git-ui"));
+        assert_eq!(facts.head, None);
+    }
+
+    #[tokio::test]
+    async fn a_push_reports_the_upstream_it_now_tracks() {
+        let Some((dir, ctx)) = repo() else {
+            return;
+        };
+        let remote = dir.path().join("remote.git");
+        assert!(
+            Command::new("git")
+                .args(["init", "--bare", remote.to_str().unwrap()])
+                .output()
+                .is_ok_and(|out| out.status.success())
+        );
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        git(dir.path(), &["add", "-A"]);
+        git(dir.path(), &["commit", "-m", "init"]);
+        git(
+            dir.path(),
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        let out = BashTool
+            .run(r#"{"command":"git push -u origin main"}"#, &ctx)
+            .await
+            .unwrap();
+        let facts = out.git.expect("git facts");
+        assert_eq!(facts.upstream.as_deref(), Some("origin/main"));
+        assert_eq!(facts.branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn a_pull_request_url_yields_its_number() {
+        let stdout = "https://github.com/goat-agent/goat/pull/59\n";
+        let url = pull_request_url(stdout).unwrap();
+        assert_eq!(pull_request_number(&url), Some(59));
+        assert_eq!(pull_request_url("nothing here"), None);
     }
 
     #[tokio::test]

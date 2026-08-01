@@ -1,5 +1,5 @@
 [package]
-name = "goat-worktree"
+name = "goat-git"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,10 +9,6 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
-goat-git = { workspace = true }
-ignore = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

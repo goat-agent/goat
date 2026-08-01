@@ -160,7 +160,7 @@ async fn connect_session(
     r#continue: bool,
 ) -> color_eyre::Result<goat_client::Attachment> {
     let cwd = if let Some(label) = worktree_label.as_deref() {
-        goat_worktree::enter(label)?
+        goat_worktree::enter(label).map_err(ui::worktree_entry)?
     } else {
         std::env::current_dir()?
     };
