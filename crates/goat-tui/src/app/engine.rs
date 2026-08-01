@@ -328,8 +328,12 @@ impl App {
                 } else if self.transcript.is_agent_group_call(id, call) {
                     self.transcript.finish_agent(id, call, outcome);
                 } else {
+                    let touched = outcome.ok && self.transcript.touches_pull_request(call);
                     self.transcript
                         .finish_tool(call, outcome, self.picker.as_ref());
+                    if touched {
+                        self.forget_pull_request();
+                    }
                 }
             }
             EngineEvent::ShellDone { id, output } => {

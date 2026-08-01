@@ -451,6 +451,18 @@ impl Transcript {
         Some(GitRun { ops })
     }
 
+    pub fn touches_pull_request(&self, call_id: ToolCallId) -> bool {
+        self.items.iter().rev().any(|item| match item {
+            Item::Tool {
+                id,
+                git: Some(run),
+                status: ToolStatus::Running,
+                ..
+            } => *id == call_id && run.ops.iter().any(|op| op.verb.touches_pull_request()),
+            _ => false,
+        })
+    }
+
     fn drop_running_git_runs(&mut self) -> bool {
         let mut found = false;
         for item in &mut self.items {

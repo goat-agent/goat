@@ -1184,6 +1184,12 @@ impl App {
         self.pr_poll = 0;
         self.dirty = true;
     }
+    pub(crate) fn forget_pull_request(&mut self) {
+        self.pr = None;
+        self.pr_branch = None;
+        self.pr_poll = 0;
+        self.dirty = true;
+    }
     pub(crate) fn current_pr(&self) -> Option<&goat_github::PrInfo> {
         let ws = self.git_workspace.as_ref()?;
         if self.pr_branch.as_deref() == Some(ws.git_branch.as_str()) {
