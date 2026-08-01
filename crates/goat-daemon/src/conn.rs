@@ -53,7 +53,15 @@ pub(crate) async fn serve_connection<Si, St>(
     let mut sink = Box::pin(sink);
 
     match source.next().await {
-        Some(Ok(ClientFrame::Hello { version })) if version == PROTOCOL_VERSION => {}
+        Some(Ok(ClientFrame::Hello { version, build })) if version == PROTOCOL_VERSION => {
+            if build != goat_wire::BUILD {
+                tracing::warn!(
+                    client = %build,
+                    daemon = %goat_wire::BUILD,
+                    "client and daemon builds differ"
+                );
+            }
+        }
         Some(Ok(ClientFrame::Hello { .. })) => {
             let _ = sink
                 .send(ServerFrame::VersionMismatch {
@@ -79,6 +87,7 @@ pub(crate) async fn serve_connection<Si, St>(
     if sink
         .send(ServerFrame::Welcome {
             version: PROTOCOL_VERSION,
+            build: goat_wire::BUILD.to_owned(),
             client_id,
         })
         .await
@@ -141,8 +150,10 @@ async fn dispatch(
         ClientFrame::OpenSession { cwd, resume } => {
             let cwd_path = PathBuf::from(&cwd);
             match manager.open_or_attach(cwd_path, resume).await {
-                Ok(session) => {
-                    let _ = out_tx.send(ServerFrame::SessionOpened { session }).await;
+                Ok((session, cwd)) => {
+                    let _ = out_tx
+                        .send(ServerFrame::SessionOpened { session, cwd })
+                        .await;
                     let _ = manager.subscribe(session, client_id, out_tx.clone()).await;
                 }
                 Err(message) => {
@@ -206,8 +217,8 @@ async fn dispatch(
             let _ = out_tx.send(ServerFrame::Threads { threads }).await;
             Disposition::Continue
         }
-        ClientFrame::ListDirectory { path } => {
-            match Manager::list_directory(&path) {
+        ClientFrame::ListDirectory { path, recursive } => {
+            match Manager::list_directory(&path, recursive) {
                 Ok(children) => {
                     let _ = out_tx.send(ServerFrame::Directory { path, children }).await;
                 }

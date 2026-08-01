@@ -378,8 +378,11 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                     break;
                 }
             }
-            Op::Interrupt { .. } | Op::Answer { .. } | Op::DequeueMessage { .. } | Op::Clear {} => {
-            }
+            Op::Interrupt { .. }
+            | Op::Answer { .. }
+            | Op::DequeueMessage { .. }
+            | Op::Clear {}
+            | Op::ListFiles {} => {}
             Op::ProcessKill { process } => {
                 let _ = ctx.background.kill(process, None).await;
             }

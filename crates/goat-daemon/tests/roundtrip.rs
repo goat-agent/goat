@@ -2,7 +2,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use goat_wire::transport::{self, Stream};
-use goat_wire::{ClientConn, ClientFrame, PROTOCOL_VERSION, ResumeMode, ServerFrame, WireConn};
+use goat_wire::{
+    BUILD, ClientConn, ClientFrame, PROTOCOL_VERSION, ResumeMode, ServerFrame, WireConn,
+};
 
 async fn start_daemon(dir: &std::path::Path) -> PathBuf {
     let socket = dir.join("d.sock");
@@ -32,6 +34,7 @@ async fn connect(socket: &std::path::Path) -> ClientConn<Stream> {
     let mut conn: ClientConn<Stream> = WireConn::new(stream);
     conn.send(&ClientFrame::Hello {
         version: PROTOCOL_VERSION,
+        build: BUILD.to_owned(),
     })
     .await
     .unwrap();
@@ -264,7 +267,7 @@ async fn rebind_moves_one_window_leaving_others() {
     .unwrap();
     let moved = loop {
         match tokio::time::timeout(Duration::from_secs(5), b.recv()).await {
-            Ok(Ok(ServerFrame::SessionOpened { session })) => break session,
+            Ok(Ok(ServerFrame::SessionOpened { session, .. })) => break session,
             Ok(Ok(_)) => {}
             other => panic!("expected SessionOpened, got {other:?}"),
         }
@@ -336,7 +339,7 @@ async fn daemon_intercepts_clear_as_rebind() {
                 assert_eq!(session, first);
                 detached = true;
             }
-            Ok(Ok(ServerFrame::SessionOpened { session })) => {
+            Ok(Ok(ServerFrame::SessionOpened { session, .. })) => {
                 opened = Some(session);
                 break;
             }

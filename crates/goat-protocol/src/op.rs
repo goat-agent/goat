@@ -38,6 +38,7 @@ pub enum Op {
         name: String,
     },
     ListThreads {},
+    ListFiles {},
     Resume {
         thread_id: i64,
     },
