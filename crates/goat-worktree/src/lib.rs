@@ -619,6 +619,20 @@ mod tests {
     }
 
     #[test]
+    fn head_branch_tracks_checkout_inside_a_managed_worktree() {
+        let Some(dir) = git_repo_with_origin() else {
+            return;
+        };
+        let repo = dir.path().join("repo");
+        let launch = prepare_from_cwd("plan", &repo).unwrap();
+        assert!(launch.path.join(".git").is_file());
+        let ws = workspace(&launch.path).unwrap();
+        assert_eq!(ws.head_branch().as_deref(), Some("worktree-plan"));
+        run(&launch.path, &["checkout", "-b", "feature-y"]);
+        assert_eq!(ws.head_branch().as_deref(), Some("feature-y"));
+    }
+
+    #[test]
     fn workspace_managed_from_worktree_path() {
         let Some(dir) = git_repo_with_origin() else {
             return;

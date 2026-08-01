@@ -9,6 +9,7 @@ const WORKTREES_DIR: &str = "worktrees";
 pub struct Workspace {
     pub owner_root: PathBuf,
     pub repo_root: PathBuf,
+    pub git_dir: PathBuf,
     pub git_branch: String,
     pub kind: WorkspaceKind,
 }
@@ -22,6 +23,7 @@ pub enum WorkspaceKind {
 
 pub fn workspace(cwd: &Path) -> Result<Workspace, WorktreeError> {
     let repo_root = goat_git::repo_root(cwd)?;
+    let git_dir = goat_git::git_dir(&repo_root)?;
     let worktrees = goat_git::worktrees(&repo_root)?;
     let owner_root = owner_root(&repo_root, &worktrees);
     let bucket = owner_root.join(GOAT_DIR).join(WORKTREES_DIR);
@@ -39,6 +41,7 @@ pub fn workspace(cwd: &Path) -> Result<Workspace, WorktreeError> {
     Ok(Workspace {
         owner_root,
         repo_root,
+        git_dir,
         git_branch,
         kind,
     })
@@ -46,7 +49,7 @@ pub fn workspace(cwd: &Path) -> Result<Workspace, WorktreeError> {
 
 impl Workspace {
     pub fn head_branch(&self) -> Option<String> {
-        goat_git::head_branch(&self.repo_root.join(".git"))
+        goat_git::head_branch(&self.git_dir)
     }
 }
 
