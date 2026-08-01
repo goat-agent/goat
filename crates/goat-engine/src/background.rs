@@ -189,6 +189,7 @@ impl Runs {
     pub(crate) async fn spawn(
         self: &Arc<Self>,
         command: &str,
+        name: Option<&str>,
         cwd: &Path,
         watched: bool,
     ) -> Result<Started, SpawnError> {
@@ -240,7 +241,7 @@ impl Runs {
             inner.entries.insert(
                 id,
                 Entry {
-                    title: command.to_owned(),
+                    title: name.unwrap_or(command).to_owned(),
                     state: ProcessState::Running,
                     observed: false,
                     kill_pending: false,
@@ -273,20 +274,11 @@ impl Runs {
         Ok(Started { id, pgid })
     }
 
-    pub(crate) async fn register_subagent(
-        &self,
-        subagent_type: &str,
-        label: &str,
-        cancel: CancellationToken,
-    ) -> RunId {
+    pub(crate) async fn register_subagent(&self, name: &str, cancel: CancellationToken) -> RunId {
         let mut inner = self.inner.lock().await;
         let id = RunId(inner.next_id);
         inner.next_id += 1;
-        let title = if label.is_empty() {
-            subagent_type.to_owned()
-        } else {
-            format!("{subagent_type} — {label}")
-        };
+        let title = name.to_owned();
         inner.entries.insert(
             id,
             Entry {
@@ -849,7 +841,7 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::TWO_ECHOES, &cwd, false)
+            .spawn(plat::TWO_ECHOES, None, &cwd, false)
             .await
             .unwrap_or_else(|e| panic!("spawn failed: {e}"));
         wait_until_exited(&registry, started.id).await;
@@ -864,7 +856,10 @@ mod tests {
     async fn read_new_is_cursor_based() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::ECHO_ONE, &cwd, false).await.unwrap();
+        let started = registry
+            .spawn(plat::ECHO_ONE, None, &cwd, false)
+            .await
+            .unwrap();
         wait_until_exited(&registry, started.id).await;
         let first = registry.read_new(started.id).await.unwrap();
         assert!(first.text.contains("one"));
@@ -880,7 +875,7 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::ECHO_STDERR, &cwd, false)
+            .spawn(plat::ECHO_STDERR, None, &cwd, false)
             .await
             .unwrap();
         wait_until_exited(&registry, started.id).await;
@@ -892,7 +887,10 @@ mod tests {
     async fn watched_run_wakes_on_output() {
         let (registry, _events, wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::ECHO_PING, &cwd, true).await.unwrap();
+        let started = registry
+            .spawn(plat::ECHO_PING, None, &cwd, true)
+            .await
+            .unwrap();
         tokio::time::timeout(Duration::from_secs(5), wake.notified())
             .await
             .expect("should wake");
@@ -912,7 +910,10 @@ mod tests {
     async fn unwatched_run_does_not_wake_while_it_runs() {
         let (registry, _events, wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+        let started = registry
+            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .await
+            .unwrap();
         let result = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
         assert!(
             result.is_err(),
@@ -926,7 +927,10 @@ mod tests {
     async fn every_run_wakes_on_exit() {
         let (registry, _events, wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::ECHO_QUIET, &cwd, false).await.unwrap();
+        let started = registry
+            .spawn(plat::ECHO_QUIET, None, &cwd, false)
+            .await
+            .unwrap();
         tokio::time::timeout(Duration::from_secs(5), wake.notified())
             .await
             .expect("an exit must wake the agent even without watch");
@@ -942,7 +946,10 @@ mod tests {
     async fn kill_terminates_running_run() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+        let started = registry
+            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .await
+            .unwrap();
         let running = registry.list().await;
         assert_eq!(running[0].state, ProcessState::Running);
         registry.kill(started.id, None).await.unwrap();
@@ -965,7 +972,7 @@ mod tests {
         tokio::spawn(async move { while events.recv().await.is_some() {} });
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::COUNT_TO_600, &cwd, false)
+            .spawn(plat::COUNT_TO_600, None, &cwd, false)
             .await
             .unwrap();
         wait_until_exited(&registry, started.id).await;
@@ -996,7 +1003,10 @@ mod tests {
     async fn killed_run_does_not_wake() {
         let (registry, _events, wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::SLEEP_LONG, &cwd, true).await.unwrap();
+        let started = registry
+            .spawn(plat::SLEEP_LONG, None, &cwd, true)
+            .await
+            .unwrap();
         registry.kill(started.id, None).await.unwrap();
         wait_until_exited(&registry, started.id).await;
         let result = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
@@ -1016,7 +1026,7 @@ mod tests {
     async fn stdin_write_reaches_run() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::CAT, &cwd, false).await.unwrap();
+        let started = registry.spawn(plat::CAT, None, &cwd, false).await.unwrap();
         registry.write_stdin(started.id, "typed\n").await.unwrap();
         let mut echoed = String::new();
         let mut got = false;
@@ -1039,7 +1049,7 @@ mod tests {
     async fn stdin_write_succeeds() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::CAT, &cwd, false).await.unwrap();
+        let started = registry.spawn(plat::CAT, None, &cwd, false).await.unwrap();
         registry.write_stdin(started.id, "typed\n").await.unwrap();
         registry.kill(started.id, None).await.unwrap();
         wait_until_exited(&registry, started.id).await;
@@ -1049,7 +1059,7 @@ mod tests {
     async fn write_to_exited_run_errors() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::TRUE, &cwd, false).await.unwrap();
+        let started = registry.spawn(plat::TRUE, None, &cwd, false).await.unwrap();
         wait_until_exited(&registry, started.id).await;
         let result = registry.write_stdin(started.id, "x\n").await;
         assert!(result.is_err());
@@ -1059,7 +1069,10 @@ mod tests {
     async fn watch_can_be_toggled() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+        let started = registry
+            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .await
+            .unwrap();
         registry.set_watch(started.id, true).await.unwrap();
         registry.write_stdin(started.id, "").await.ok();
         registry.set_watch(started.id, false).await.unwrap();
@@ -1070,7 +1083,10 @@ mod tests {
     async fn reading_output_leaves_no_pending_observation() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::ECHO_PING, &cwd, true).await.unwrap();
+        let started = registry
+            .spawn(plat::ECHO_PING, None, &cwd, true)
+            .await
+            .unwrap();
         wait_until_exited(&registry, started.id).await;
 
         let chunk = registry.read_new(started.id).await.unwrap();
@@ -1092,7 +1108,10 @@ mod tests {
     async fn unread_output_still_observed_after_exit() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::ECHO_PING, &cwd, true).await.unwrap();
+        let started = registry
+            .spawn(plat::ECHO_PING, None, &cwd, true)
+            .await
+            .unwrap();
         wait_until_exited(&registry, started.id).await;
 
         let pending = registry.take_pending_observations().await;
@@ -1108,8 +1127,14 @@ mod tests {
     async fn shutdown_all_terminates_running_runs() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let a = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
-        let b = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+        let a = registry
+            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .await
+            .unwrap();
+        let b = registry
+            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .await
+            .unwrap();
         assert_eq!(registry.list().await.len(), 2);
 
         registry.shutdown_all().await;
@@ -1124,7 +1149,10 @@ mod tests {
     async fn shutdown_all_leaves_no_live_group() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+        let started = registry
+            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .await
+            .unwrap();
         let pgid = started.pgid.expect("spawned run has a group");
         assert!(goat_process::group_is_alive(pgid));
 
@@ -1138,7 +1166,10 @@ mod tests {
     async fn kill_reaps_the_whole_group() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+        let started = registry
+            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .await
+            .unwrap();
         let pgid = started.pgid.expect("spawned run has a group");
 
         registry.kill(started.id, None).await.unwrap();
@@ -1151,7 +1182,7 @@ mod tests {
     async fn kill_after_natural_exit_signals_nothing() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::TRUE, &cwd, false).await.unwrap();
+        let started = registry.spawn(plat::TRUE, None, &cwd, false).await.unwrap();
         wait_until_exited(&registry, started.id).await;
 
         registry.kill(started.id, None).await.unwrap();
@@ -1161,7 +1192,7 @@ mod tests {
     async fn finished_subagent_wakes_once_with_its_report() {
         let (registry, _events, wake) = harness();
         let id = registry
-            .register_subagent("explore", "map the auth flow", CancellationToken::new())
+            .register_subagent("map the auth flow", CancellationToken::new())
             .await;
         registry
             .finish_subagent(id, Ok("auth goes through goat-auth".to_owned()))
@@ -1175,7 +1206,7 @@ mod tests {
         assert_eq!(observation.kind, Kind::Subagent);
         assert_eq!(observation.ok, Some(true));
         assert!(observation.output.contains("goat-auth"));
-        assert!(observation.title.contains("explore"));
+        assert_eq!(observation.title, "map the auth flow");
 
         assert!(
             registry.take_pending_observations().await.is_empty(),
@@ -1187,9 +1218,7 @@ mod tests {
     async fn killed_subagent_does_not_wake() {
         let (registry, _events, wake) = harness();
         let cancel = CancellationToken::new();
-        let id = registry
-            .register_subagent("general", "", cancel.clone())
-            .await;
+        let id = registry.register_subagent("general", cancel.clone()).await;
 
         registry.kill(id, Some(Kind::Subagent)).await.unwrap();
         assert!(cancel.is_cancelled(), "kill must cancel the subagent token");
@@ -1209,7 +1238,10 @@ mod tests {
     async fn kill_rejects_a_kind_mismatch() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+        let started = registry
+            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .await
+            .unwrap();
 
         let err = registry
             .kill(started.id, Some(Kind::Subagent))
@@ -1225,16 +1257,19 @@ mod tests {
     async fn roster_carries_both_kinds_and_hides_finished_runs() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let bash = registry.spawn(plat::SLEEP_LONG, &cwd, false).await.unwrap();
+        let bash = registry
+            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .await
+            .unwrap();
         let agent = registry
-            .register_subagent("explore", "read the docs", CancellationToken::new())
+            .register_subagent("read the docs", CancellationToken::new())
             .await;
 
         let roster = registry.roster().await;
         assert_eq!(roster.len(), 2);
         assert_eq!(roster[0].kind, Kind::Bash);
         assert_eq!(roster[1].kind, Kind::Subagent);
-        assert!(roster[1].title.contains("read the docs"));
+        assert_eq!(roster[1].title, "read the docs");
 
         assert_eq!(
             registry.list().await.len(),
@@ -1254,7 +1289,7 @@ mod tests {
         tokio::spawn(async move { while events.recv().await.is_some() {} });
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::COUNT_TO_600, &cwd, true)
+            .spawn(plat::COUNT_TO_600, None, &cwd, true)
             .await
             .unwrap();
         wait_until_exited(&registry, started.id).await;

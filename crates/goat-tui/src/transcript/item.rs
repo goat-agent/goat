@@ -39,6 +39,7 @@ pub(crate) struct SubagentGroupMemberView {
     pub(crate) call: ToolCallId,
     pub(crate) subagent_type: String,
     pub(crate) label: String,
+    pub(crate) background: bool,
     pub(crate) status: SubagentMemberStatus,
     pub(crate) tools: u64,
     pub(crate) tokens: u64,

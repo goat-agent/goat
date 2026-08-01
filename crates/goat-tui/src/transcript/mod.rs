@@ -291,6 +291,7 @@ impl Transcript {
                     call: member.call,
                     subagent_type: member.subagent_type,
                     label: member.label,
+                    background: member.background,
                     status: SubagentMemberStatus::Pending,
                     tools: 0,
                     tokens: 0,
@@ -318,6 +319,7 @@ impl Transcript {
                     call: entry.member.call,
                     subagent_type: entry.member.subagent_type,
                     label: entry.member.label,
+                    background: entry.member.background,
                     status: SubagentMemberStatus::Done(entry.outcome),
                     tools: 0,
                     tokens: 0,
@@ -388,6 +390,17 @@ impl Transcript {
                 return;
             }
         }
+    }
+
+    pub fn detached_group_member(&self, parent: TaskId, call: ToolCallId) -> bool {
+        self.items.iter().rev().any(|item| {
+            matches!(
+                item,
+                Item::SubagentGroup(group)
+                    if group.parent == parent
+                        && group.members.iter().any(|member| member.call == call && member.background)
+            )
+        })
     }
 
     pub fn finish_subagent(&mut self, parent: TaskId, call: ToolCallId, outcome: ToolOutcome) {
@@ -1199,11 +1212,13 @@ mod tests {
                     call: ToolCallId(1),
                     subagent_type: "explore".to_owned(),
                     label: "map engine".to_owned(),
+                    background: false,
                 },
                 goat_protocol::SubagentGroupMember {
                     call: ToolCallId(2),
                     subagent_type: "critic".to_owned(),
                     label: "review UI".to_owned(),
+                    background: false,
                 },
             ],
         );
