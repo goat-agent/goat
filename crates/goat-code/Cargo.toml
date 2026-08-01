@@ -27,6 +27,7 @@ goat-store = { workspace = true }
 goat-tool-search = { workspace = true }
 goat-auth = { workspace = true }
 goat-worktree = { workspace = true }
+goat-git = { workspace = true }
 goat-console = { workspace = true }
 goat-agent = { workspace = true }
 goat-runtime = { workspace = true }

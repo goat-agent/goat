@@ -336,10 +336,16 @@ impl App {
                         self.picker.as_ref(),
                     );
                 } else if self.transcript.is_subagent_group_call(id, call) {
-                    self.transcript.finish_subagent(id, call, outcome);
+                    if !self.transcript.detached_group_member(id, call) {
+                        self.transcript.finish_subagent(id, call, outcome);
+                    }
                 } else {
+                    let touched = outcome.ok && self.transcript.touches_pull_request(call);
                     self.transcript
                         .finish_tool(call, outcome, self.picker.as_ref());
+                    if touched {
+                        self.forget_pull_request();
+                    }
                 }
             }
             EngineEvent::ShellDone { id, output } => {
@@ -372,6 +378,19 @@ impl App {
                     self.subagent_runs[i].done = Some(ok);
                     self.subagent_runs[i].finished_at = Some(std::time::Instant::now());
                     self.subagent_runs[i].transcript.complete(!ok);
+                    let (parent, call) = (self.subagent_runs[i].parent, self.subagent_runs[i].call);
+                    if self.transcript.detached_group_member(parent, call) {
+                        self.transcript.finish_subagent(
+                            parent,
+                            call,
+                            goat_protocol::ToolOutcome {
+                                ok,
+                                summary: None,
+                                image: None,
+                                git: None,
+                            },
+                        );
+                    }
                 }
             }
             EngineEvent::TaskDone { interrupted, .. } => {

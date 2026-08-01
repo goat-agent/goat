@@ -9,7 +9,8 @@ pub use types::*;
 #[cfg(test)]
 mod tests {
     use super::{
-        Event, LoginCredential, Op, TaskId, ToolCallId, ToolImageData, ToolOutcome, TranscriptEntry,
+        Event, GitFacts, LoginCredential, Op, TaskId, ToolCallId, ToolImageData, ToolOutcome,
+        TranscriptEntry,
     };
 
     #[test]
@@ -21,6 +22,7 @@ mod tests {
                 media_type: "image/png".to_owned(),
                 data: "AAAA".to_owned(),
             }),
+            git: None,
         };
         let json = serde_json::to_string(&outcome).unwrap();
         let back: ToolOutcome = serde_json::from_str(&json).unwrap();
@@ -33,11 +35,36 @@ mod tests {
             ok: false,
             summary: None,
             image: None,
+            git: None,
         };
         let json = serde_json::to_string(&outcome).unwrap();
         assert!(!json.contains("image"));
+        assert!(!json.contains("git"));
         let back: ToolOutcome = serde_json::from_str(&json).unwrap();
         assert_eq!(outcome, back);
+    }
+
+    #[test]
+    fn tool_outcome_git_facts_round_trip_and_tolerate_older_payloads() {
+        let outcome = ToolOutcome {
+            ok: true,
+            summary: None,
+            image: None,
+            git: Some(Box::new(GitFacts {
+                head: Some("a1b2c3d".to_owned()),
+                subject: Some("feat: git-aware transcript rows".to_owned()),
+                branch: Some("feat/git-ui".to_owned()),
+                upstream: Some("origin/feat/git-ui".to_owned()),
+                pr: Some(59),
+                pr_url: Some("https://github.com/goat-agent/goat/pull/59".to_owned()),
+            })),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        let back: ToolOutcome = serde_json::from_str(&json).unwrap();
+        assert_eq!(outcome, back);
+
+        let older: ToolOutcome = serde_json::from_str(r#"{"ok":true,"summary":null}"#).unwrap();
+        assert_eq!(older.git, None);
     }
 
     #[test]
@@ -87,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_group_event_round_trips() {
+    fn subagent_group_event_round_trips() {
         let event = Event::SubagentGroupStarted {
             id: TaskId(3),
             group: ToolCallId(1),
@@ -95,6 +122,7 @@ mod tests {
                 call: ToolCallId(1),
                 subagent_type: "explore".to_owned(),
                 label: "map engine".to_owned(),
+                background: false,
             }],
         };
         let json = serde_json::to_string(&event).unwrap();

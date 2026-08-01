@@ -1223,6 +1223,12 @@ impl App {
         self.pr_poll = 0;
         self.dirty = true;
     }
+    pub(crate) fn forget_pull_request(&mut self) {
+        self.pr = None;
+        self.pr_branch = None;
+        self.pr_poll = 0;
+        self.dirty = true;
+    }
     pub(crate) fn current_pr(&self) -> Option<&goat_github::PrInfo> {
         let ws = self.git_workspace.as_ref()?;
         if self.pr_branch.as_deref() == Some(ws.git_branch.as_str()) {
@@ -2758,6 +2764,7 @@ mod tests {
                         ok: true,
                         summary: Some("done".to_owned()),
                         image: None,
+                        git: None,
                     },
                 },
             ],
@@ -2822,6 +2829,7 @@ mod tests {
                 ok: true,
                 summary: None,
                 image: None,
+                git: None,
             },
         });
 
@@ -2860,11 +2868,13 @@ mod tests {
                     call: ToolCallId(1),
                     subagent_type: "explore".to_owned(),
                     label: "map engine".to_owned(),
+                    background: false,
                 },
                 SubagentGroupMember {
                     call: ToolCallId(2),
                     subagent_type: "critic".to_owned(),
                     label: "review UI".to_owned(),
+                    background: false,
                 },
             ],
         });
@@ -2916,6 +2926,7 @@ mod tests {
                 ok: true,
                 summary: None,
                 image: None,
+                git: None,
             },
         });
         app.on_engine(EngineEvent::ToolDone {
@@ -2925,6 +2936,7 @@ mod tests {
                 ok: false,
                 summary: Some("failed".to_owned()),
                 image: None,
+                git: None,
             },
         });
 
@@ -3326,5 +3338,69 @@ mod tests {
 
         assert!(app.subagent_runs().is_empty());
         assert!(matches!(app.main_view, super::MainView::Live));
+    }
+
+    #[test]
+    fn a_detached_group_member_completes_on_its_report_not_on_the_tool_row() {
+        use crate::transcript::SubagentMemberStatus;
+
+        let mut app = App::new(Theme::dark(), &test_origin());
+        let top = TaskId(1);
+        app.on_engine(EngineEvent::SubagentGroupStarted {
+            id: top,
+            group: goat_protocol::ToolCallId(1),
+            members: vec![goat_protocol::SubagentGroupMember {
+                call: goat_protocol::ToolCallId(1),
+                subagent_type: "explore".to_owned(),
+                label: "auth flow investigation".to_owned(),
+                background: true,
+            }],
+        });
+
+        app.on_engine(EngineEvent::ToolDone {
+            id: top,
+            call: goat_protocol::ToolCallId(1),
+            outcome: goat_protocol::ToolOutcome {
+                ok: true,
+                summary: None,
+                image: None,
+                git: None,
+            },
+        });
+        assert!(
+            matches!(member_status(&app), SubagentMemberStatus::Pending),
+            "detaching is not finishing — the tool row completing must not mark the member done"
+        );
+
+        let child = TaskId(1 << 32);
+        app.on_engine(EngineEvent::SubagentStarted {
+            id: child,
+            parent: top,
+            call: goat_protocol::ToolCallId(1),
+            subagent_type: "explore".to_owned(),
+            label: "auth flow investigation".to_owned(),
+        });
+        assert!(matches!(member_status(&app), SubagentMemberStatus::Running));
+
+        app.on_engine(EngineEvent::SubagentDone {
+            id: child,
+            ok: true,
+        });
+        assert!(
+            matches!(member_status(&app), SubagentMemberStatus::Done(_)),
+            "the report is what finishes a detached member"
+        );
+    }
+
+    fn member_status(app: &App) -> &crate::transcript::SubagentMemberStatus {
+        use crate::transcript::Item;
+        app.transcript()
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::SubagentGroup(group) => Some(&group.members[0].status),
+                _ => None,
+            })
+            .expect("the group is in the transcript")
     }
 }

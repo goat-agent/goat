@@ -543,7 +543,7 @@ mod tests {
                         yield StreamChunk::ToolCall {
                             id: "call-1".to_owned(),
                             name: "Subagent".to_owned(),
-                            input: "{\"subagent_type\":\"explore\",\"prompt\":\"look into it\"}"
+                            input: "{\"subagent_type\":\"explore\",\"name\":\"look into it\",\"prompt\":\"look into it\"}"
                                 .to_owned(),
                         };
                     }
@@ -593,13 +593,13 @@ mod tests {
                     yield StreamChunk::ToolCall {
                         id: "call-1".to_owned(),
                         name: "Subagent".to_owned(),
-                        input: "{\"subagent_type\":\"explore\",\"prompt\":\"map engine\"}"
+                        input: "{\"subagent_type\":\"explore\",\"name\":\"map engine\",\"prompt\":\"map engine\"}"
                             .to_owned(),
                     };
                     yield StreamChunk::ToolCall {
                         id: "call-2".to_owned(),
                         name: "Subagent".to_owned(),
-                        input: "{\"subagent_type\":\"critic\",\"prompt\":\"review UI\"}"
+                        input: "{\"subagent_type\":\"critic\",\"name\":\"review UI\",\"prompt\":\"review UI\"}"
                             .to_owned(),
                     };
                 } else if n < 3 {

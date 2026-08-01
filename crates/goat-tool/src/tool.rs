@@ -1,6 +1,6 @@
 use std::{future::Future, pin::Pin};
 
-use goat_protocol::ToolDisplay;
+use goat_protocol::{GitFacts, ToolDisplay};
 
 use crate::{context::ToolContext, display, error::ToolError};
 
@@ -17,6 +17,7 @@ pub enum ToolContent {
 pub struct ToolOutput {
     pub content: ToolContent,
     pub summary: Option<String>,
+    pub git: Option<Box<GitFacts>>,
 }
 
 impl ToolOutput {
@@ -24,6 +25,7 @@ impl ToolOutput {
         Self {
             content: ToolContent::Text(s.into()),
             summary: None,
+            git: None,
         }
     }
 
@@ -34,6 +36,7 @@ impl ToolOutput {
                 data: data.into(),
             }),
             summary: None,
+            git: None,
         }
     }
 
@@ -41,12 +44,19 @@ impl ToolOutput {
         Self {
             content: ToolContent::Image(image),
             summary: None,
+            git: None,
         }
     }
 
     #[must_use]
     pub fn with_summary(mut self, summary: impl Into<String>) -> Self {
         self.summary = Some(summary.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_git(mut self, git: GitFacts) -> Self {
+        self.git = Some(Box::new(git));
         self
     }
 

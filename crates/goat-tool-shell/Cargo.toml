@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 goat-process = { workspace = true }
+goat-git = { workspace = true }
 goat-protocol = { workspace = true }
 goat-tool = { workspace = true }
 goat-sandbox = { workspace = true }

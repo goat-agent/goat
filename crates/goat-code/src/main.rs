@@ -188,7 +188,7 @@ fn session_cwd(
 ) -> color_eyre::Result<std::path::PathBuf> {
     if link.is_local() {
         return match args.worktree.as_deref() {
-            Some(label) => goat_worktree::enter(label).map_err(color_eyre::Report::from),
+            Some(label) => goat_worktree::enter(label).map_err(ui::worktree_entry),
             None => std::env::current_dir().map_err(color_eyre::Report::from),
         };
     }

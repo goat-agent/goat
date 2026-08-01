@@ -43,6 +43,13 @@ pub(crate) fn augment_bash(def: &mut goat_provider::ToolDefinition) {
             "description": "with background, also wake on new output, not just on exit (default false)"
         }),
     );
+    properties.insert(
+        "name".to_owned(),
+        serde_json::json!({
+            "type": "string",
+            "description": "with background, a short name for the run — give one when the command is long or opaque, otherwise the command names itself"
+        }),
+    );
 }
 
 pub(crate) fn wants_background(input_json: &str) -> bool {
@@ -125,6 +132,8 @@ fn run_id_arg(input: &str) -> Option<u64> {
 struct StartInput {
     command: String,
     #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
     background: bool,
     #[serde(default)]
     watch: bool,
@@ -182,7 +191,7 @@ async fn start(ctx: &Ctx, env: &LoopEnv, input_json: &str) -> Result<ToolOutput,
         serde_json::from_str(input_json).map_err(|err| format!("invalid input: {err}"))?;
     let started = ctx
         .background
-        .spawn(&args.command, &env.cwd, args.watch)
+        .spawn(&args.command, args.name.as_deref(), &env.cwd, args.watch)
         .await
         .map_err(|err| err.to_string())?;
     if let Some(pgid) = started.pgid {

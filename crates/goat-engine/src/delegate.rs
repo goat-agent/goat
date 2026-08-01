@@ -24,6 +24,7 @@ pub(crate) const SUBAGENT_KILL_TOOL_NAME: &str = "SubagentKill";
 #[derive(serde::Deserialize)]
 struct SubagentInput {
     subagent_type: String,
+    name: String,
     prompt: String,
     #[serde(default)]
     background: bool,
@@ -52,6 +53,10 @@ pub(crate) fn subagent_tool_def(ctx: &Ctx) -> ToolDefinition {
                     "type": "string",
                     "enum": names,
                 },
+                "name": {
+                    "type": "string",
+                    "description": "A short name for this run, a few words naming the job rather than restating the instruction — it is what every view of the run is labelled with.",
+                },
                 "prompt": {
                     "type": "string",
                     "description": "A complete, self-contained instruction for the subagent. It does not see the conversation, so include all needed context.",
@@ -61,7 +66,7 @@ pub(crate) fn subagent_tool_def(ctx: &Ctx) -> ToolDefinition {
                     "description": "detach it and return a run id instead of waiting for the report (default false)",
                 },
             },
-            "required": ["subagent_type", "prompt"],
+            "required": ["subagent_type", "name", "prompt"],
         }),
     }
 }
@@ -99,11 +104,13 @@ pub(crate) fn subagent_kill_display(input: &str) -> ToolDisplay {
 pub(crate) fn subagent_call_display(input: &str) -> ToolDisplay {
     match serde_json::from_str::<SubagentInput>(input) {
         Ok(args) => {
-            let prompt = goat_tool::display::flatten(&args.prompt);
-            ToolDisplay::primary(goat_tool::display::call_sig(
-                SUBAGENT_TOOL_NAME,
-                &[args.subagent_type.as_str(), prompt.as_str()],
-            ))
+            let mut parts = Vec::with_capacity(3);
+            if args.background {
+                parts.push("background");
+            }
+            parts.push(args.subagent_type.as_str());
+            parts.push(args.name.as_str());
+            ToolDisplay::primary(goat_tool::display::call_sig(SUBAGENT_TOOL_NAME, &parts))
         }
         Err(_) => goat_tool::display::generic_named(SUBAGENT_TOOL_NAME, input),
     }
@@ -118,12 +125,14 @@ pub(crate) fn subagent_group_member(call: ToolCallId, input: &str) -> SubagentGr
         Ok(args) => SubagentGroupMember {
             call,
             subagent_type: args.subagent_type,
-            label: delegation_label(&args.prompt),
+            label: args.name,
+            background: args.background,
         },
         Err(_) => SubagentGroupMember {
             call,
             subagent_type: "subagent".to_owned(),
-            label: String::new(),
+            label: "subagent".to_owned(),
+            background: false,
         },
     }
 }
@@ -210,11 +219,7 @@ async fn detach(
     let subagent_type = args.subagent_type.clone();
     let run_id = ctx
         .background
-        .register_subagent(
-            &subagent_type,
-            &delegation_label(&args.prompt),
-            cancel.clone(),
-        )
+        .register_subagent(&args.name, cancel.clone())
         .await;
     let ctx = ctx.clone();
     tokio::spawn(async move {
@@ -285,7 +290,7 @@ async fn run_child_inner(
             parent,
             call,
             subagent_type: args.subagent_type.clone(),
-            label: delegation_label(&args.prompt),
+            label: args.name.clone(),
         })
         .await;
     let run = Run::child(child_id);
@@ -322,11 +327,6 @@ async fn run_child_inner(
     result
 }
 
-fn delegation_label(prompt: &str) -> String {
-    let line = prompt.lines().next().unwrap_or("").trim();
-    goat_tool::display::truncate_chars(line, 50)
-}
-
 fn final_text(history: &[Message]) -> String {
     for message in history.iter().rev() {
         if message.role == MessageRole::Assistant {
@@ -346,17 +346,8 @@ fn final_text(history: &[Message]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{delegation_label, final_text};
+    use super::final_text;
     use goat_provider::{Message, MessageRole};
-
-    #[test]
-    fn label_uses_first_line_and_truncates() {
-        assert_eq!(delegation_label("hello\nworld"), "hello");
-        let long = "x".repeat(60);
-        let label = delegation_label(&long);
-        assert_eq!(label.chars().count(), 51);
-        assert!(label.ends_with('…'));
-    }
 
     #[test]
     fn final_text_picks_last_nonempty_assistant() {

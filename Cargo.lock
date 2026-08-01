@@ -2718,6 +2718,7 @@ dependencies = [
  "goat-config",
  "goat-console",
  "goat-daemon",
+ "goat-git",
  "goat-integration-github",
  "goat-integration-langfuse",
  "goat-integration-linear",
@@ -2911,6 +2912,14 @@ dependencies = [
  "tokio-util",
  "tracing",
  "unicode-width 0.2.2",
+]
+
+[[package]]
+name = "goat-git"
+version = "0.1.27"
+dependencies = [
+ "tempfile",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -3674,6 +3683,7 @@ dependencies = [
 name = "goat-tool-shell"
 version = "0.1.27"
 dependencies = [
+ "goat-git",
  "goat-process",
  "goat-protocol",
  "goat-sandbox",
@@ -3743,6 +3753,7 @@ dependencies = [
  "futures",
  "goat-commands",
  "goat-config",
+ "goat-git",
  "goat-github",
  "goat-protocol",
  "goat-tool",
@@ -3791,6 +3802,7 @@ dependencies = [
 name = "goat-worktree"
 version = "0.1.27"
 dependencies = [
+ "goat-git",
  "ignore",
  "serde",
  "serde_json",
