@@ -1,6 +1,7 @@
 mod intent;
 mod refs;
 mod run;
+mod snapshot;
 
 pub use intent::{GitOp, GitVerb, classify};
 pub use refs::{
@@ -8,3 +9,4 @@ pub use refs::{
     parse_head, parse_worktrees, repo_root, validate_branch_name, worktrees,
 };
 pub use run::{Capture, GitError, Output, capture, output, path_arg};
+pub use snapshot::{Snapshot, head_subject, snapshot};
