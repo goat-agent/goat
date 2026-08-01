@@ -20,7 +20,7 @@ use crate::{highlight::Highlighter, markdown, symbols, theme::Theme};
 
 use gutter::hang;
 pub(crate) use item::{
-    AgentGroupMemberView, AgentGroupView, AgentMemberStatus, Item, ShellStatus, ToolStatus,
+    AgentGroupMemberView, AgentGroupView, AgentMemberStatus, GitRun, Item, ShellStatus, ToolStatus,
     UserMessage, Working,
 };
 pub(crate) use render::format_elapsed;
@@ -428,13 +428,43 @@ impl Transcript {
     pub fn push_tool(&mut self, call: ToolCall) {
         self.flush_thinking();
         self.bump_version();
+        let git = self.claim_git_run(&call);
         self.items.push(Item::Tool {
             id: call.id,
             name: call.name,
             display: call.display,
             status: ToolStatus::Running,
             image: None,
+            git,
         });
+    }
+
+    fn claim_git_run(&mut self, call: &ToolCall) -> Option<GitRun> {
+        if call.name != "Bash" {
+            return None;
+        }
+        let args = goat_tool::gist::call_args(&call.name, &call.display.primary);
+        let ops = goat_git::classify(args.first()?)?;
+        if self.drop_running_git_runs() {
+            return None;
+        }
+        Some(GitRun { ops })
+    }
+
+    fn drop_running_git_runs(&mut self) -> bool {
+        let mut found = false;
+        for item in &mut self.items {
+            if let Item::Tool {
+                status: ToolStatus::Running,
+                git: git @ Some(_),
+                ..
+            } = item
+            {
+                *git = None;
+                found = true;
+            }
+        }
+        found
     }
 
     pub fn finish_tool(
@@ -849,6 +879,57 @@ mod tests {
         t.commit_text(text);
     }
 
+    fn bash(id: u64, command: &str) -> ToolCall {
+        call(
+            id,
+            "Bash",
+            &goat_tool::display::call_sig("Bash", &[command]),
+        )
+    }
+
+    fn git_ok(facts: goat_protocol::GitFacts) -> ToolOutcome {
+        ToolOutcome {
+            ok: true,
+            summary: None,
+            image: None,
+            git: Some(Box::new(facts)),
+        }
+    }
+
+    fn landed() -> goat_protocol::GitFacts {
+        goat_protocol::GitFacts {
+            head: Some("a1b2c3d".to_owned()),
+            subject: Some("feat: git-aware transcript rows".to_owned()),
+            branch: Some("feat/git-ui".to_owned()),
+            upstream: Some("origin/feat/git-ui".to_owned()),
+            pr: None,
+            pr_url: None,
+        }
+    }
+
+    fn git_lines(t: &Transcript, width: u16) -> Vec<String> {
+        let (lines, _, _) = build_static_lines(
+            &t.items,
+            Theme::dark(),
+            width,
+            &PlainHighlighter,
+            "/",
+            &mut Vec::new(),
+        );
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .filter(|line| !line.is_empty())
+            .collect()
+    }
+
     fn height(t: &Transcript, width: u16) -> usize {
         t.content_height(width, Theme::dark(), &PlainHighlighter, "/", None, &[])
     }
@@ -888,6 +969,7 @@ mod tests {
                 display: goat_protocol::ToolDisplay::primary("Read(a.txt)"),
                 status: ToolStatus::Running,
                 image: None,
+                git: None,
             },
         ];
         let mut memo = Vec::new();
@@ -1474,5 +1556,196 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(render_text(&incremental), render_text(&full));
+    }
+
+    #[test]
+    fn a_running_git_call_is_one_row_naming_the_whole_chain() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"git add -A && git commit -m "x" && git push"#));
+        assert_eq!(
+            git_lines(&t, 80),
+            vec![format!("{} Committing and pushing…", symbols::SPINNER[0])]
+        );
+    }
+
+    #[test]
+    fn a_running_row_shows_only_what_the_command_itself_said() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, "git push -u origin feat/git-ui"));
+        assert_eq!(
+            git_lines(&t, 80),
+            vec![format!(
+                "{} Pushing feat/git-ui to origin…",
+                symbols::SPINNER[0]
+            )]
+        );
+    }
+
+    #[test]
+    fn a_successful_git_call_expands_to_one_row_per_operation() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"git add -A && git commit -m "x" && git push"#));
+        t.finish_tool(ToolCallId(1), git_ok(landed()), None);
+        assert_eq!(
+            git_lines(&t, 80),
+            vec![
+                "✓ Committed a1b2c3d · feat: git-aware transcript rows".to_owned(),
+                "✓ Pushed feat/git-ui to origin".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_git_call_stays_one_row_and_carries_the_reason() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"git add -A && git commit -m "x" && git push"#));
+        t.finish_tool(
+            ToolCallId(1),
+            failed("exit 1 · ! [rejected] main -> main (fetch first)"),
+            None,
+        );
+        assert_eq!(
+            git_lines(&t, 80),
+            vec![
+                "✗ Failed to commit and push · ! [rejected] main -> main (fetch first)".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pull_request_row_carries_its_number_and_branch() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"gh pr create --title "feat: x""#));
+        let facts = goat_protocol::GitFacts {
+            head: None,
+            subject: None,
+            branch: Some("feat/git-ui".to_owned()),
+            upstream: None,
+            pr: Some(59),
+            pr_url: Some("https://github.com/goat-agent/goat/pull/59".to_owned()),
+        };
+        t.finish_tool(ToolCallId(1), git_ok(facts), None);
+        assert_eq!(git_lines(&t, 80), vec!["✓ Opened PR #59".to_owned()]);
+    }
+
+    #[test]
+    fn long_verbs_keep_one_space_and_the_column_stays_put() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, "git push --force"));
+        t.finish_tool(ToolCallId(1), git_ok(landed()), None);
+        t.push_tool(bash(2, "git switch main"));
+        t.finish_tool(ToolCallId(2), git_ok(landed()), None);
+        assert_eq!(
+            git_lines(&t, 80),
+            vec![
+                "✓ Force-pushed feat/git-ui to origin".to_owned(),
+                "✓ Switched to main".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_narrow_terminal_clips_instead_of_wrapping() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"git commit -m "x""#));
+        t.finish_tool(ToolCallId(1), git_ok(landed()), None);
+        let lines = git_lines(&t, 40);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("✓ Committed a1b2c3d · feat"));
+        assert!(lines[0].ends_with('…'));
+    }
+
+    #[test]
+    fn facts_arriving_with_the_outcome_invalidate_the_memoized_row() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"git commit -m "x""#));
+        let mut memo = Vec::new();
+        let before = build_static_lines(
+            &t.items,
+            Theme::dark(),
+            80,
+            &PlainHighlighter,
+            "/",
+            &mut memo,
+        )
+        .0;
+        t.finish_tool(ToolCallId(1), git_ok(landed()), None);
+        let after = build_static_lines(
+            &t.items,
+            Theme::dark(),
+            80,
+            &PlainHighlighter,
+            "/",
+            &mut memo,
+        )
+        .0;
+        assert_ne!(
+            before[0].spans.len() + before[0].spans[0].content.len(),
+            after[0].spans.len() + after[0].spans[0].content.len()
+        );
+        let text: String = after[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.contains("a1b2c3d"), "{text}");
+    }
+
+    #[test]
+    fn a_second_concurrent_git_call_degrades_both_to_plain_tool_rows() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"git commit -m "a""#));
+        t.push_tool(bash(2, "git push"));
+        let lines = git_lines(&t, 80);
+        assert!(lines.iter().all(|line| line.contains("Bash(")), "{lines:?}");
+    }
+
+    #[test]
+    fn each_verb_reads_as_a_sentence() {
+        let cases = [
+            ("git switch -c feat/git-ui", "✓ Created branch feat/git-ui"),
+            ("git merge origin/main", "✓ Merged origin/main"),
+            ("git rebase main", "✓ Rebased onto main"),
+            ("git pull origin", "✓ Pulled from origin"),
+            ("git tag v1.2.0", "✓ Tagged v1.2.0"),
+            ("git stash", "✓ Stashed changes"),
+            (
+                "git reset --hard origin/main",
+                "✓ Hard reset to origin/main",
+            ),
+            ("git cherry-pick a1b2c3d", "✓ Cherry-picked a1b2c3d"),
+            ("gh pr merge 58 --squash", "✓ Merged PR #58"),
+            ("gh pr close 58", "✓ Closed PR #58"),
+        ];
+        for (index, (command, expected)) in cases.iter().enumerate() {
+            let mut t = Transcript::default();
+            let id = u64::try_from(index).unwrap() + 1;
+            t.push_tool(bash(id, command));
+            t.finish_tool(ToolCallId(id), ok(), None);
+            assert_eq!(git_lines(&t, 80), vec![(*expected).to_owned()], "{command}");
+        }
+    }
+
+    #[test]
+    fn a_pull_request_without_a_number_still_reads() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"gh pr create --title "feat: x""#));
+        assert_eq!(
+            git_lines(&t, 80),
+            vec![format!("{} Opening a pull request…", symbols::SPINNER[0])]
+        );
+        t.finish_tool(ToolCallId(1), ok(), None);
+        assert_eq!(
+            git_lines(&t, 80),
+            vec!["✓ Opened the pull request".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_restored_git_call_without_evidence_still_renders() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"git commit -m "x""#));
+        t.finish_tool(ToolCallId(1), ok(), None);
+        assert_eq!(git_lines(&t, 80), vec!["✓ Committed".to_owned()]);
     }
 }
