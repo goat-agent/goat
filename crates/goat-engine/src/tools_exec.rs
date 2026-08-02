@@ -207,7 +207,19 @@ async fn execute_tool(
             }
         }
     } else {
-        run_regular_tool(ctx, prep.name, prep.input_json, tool_ctx, token).await
+        let checkpointed = matches!(prep.name, "Write" | "Edit");
+        if checkpointed {
+            match ctx
+                .checkpoints
+                .capture_tool_path(prep.input_json, tool_ctx)
+                .await
+            {
+                Ok(()) => run_regular_tool(ctx, prep.name, prep.input_json, tool_ctx, token).await,
+                Err(err) => Some(Err(format!("could not checkpoint file before edit: {err}"))),
+            }
+        } else {
+            run_regular_tool(ctx, prep.name, prep.input_json, tool_ctx, token).await
+        }
     };
     let Some(result) = step else {
         let outcome = ToolOutcome {

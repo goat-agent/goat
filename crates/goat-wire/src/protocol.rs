@@ -4,7 +4,7 @@ use goat_protocol::{
     AccountEntry, Event, ModelEntry, ModelTarget, Op, RateLimitSnapshot, SkillInfo, TranscriptEntry,
 };
 
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 pub const BUILD: &str = env!("CARGO_PKG_VERSION");
 
 fn id_json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {

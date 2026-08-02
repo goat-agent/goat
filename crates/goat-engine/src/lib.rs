@@ -22,6 +22,7 @@ mod accounts;
 mod ask;
 mod background;
 mod bash_tools;
+mod checkpoint;
 mod compaction;
 mod conversation;
 mod delegate;
@@ -146,6 +147,7 @@ pub(crate) struct Shared {
     pub(crate) rl_cache: std::sync::Mutex<rate_limit_cache::RateLimitCache>,
     pub(crate) rl_path: Option<PathBuf>,
     pub(crate) meter: Option<goat_proxy::Meter>,
+    pub(crate) checkpoints: checkpoint::CheckpointTracker,
     pub(crate) cwd: PathBuf,
     pub(crate) date: String,
 }
@@ -212,6 +214,7 @@ pub(crate) struct UserInput {
     pub(crate) text: String,
     pub(crate) display: Option<String>,
     pub(crate) attachments: Vec<goat_protocol::InputAttachment>,
+    pub(crate) checkpoint: bool,
 }
 
 pub(crate) type SteeringQueue = std::sync::Mutex<std::collections::VecDeque<UserInput>>;
@@ -337,6 +340,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     let wake = Arc::new(tokio::sync::Notify::new());
     let processes = background::Runs::new(events.clone(), wake.clone(), Some(store.clone()));
     let asks: Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>> = Mutex::new(HashMap::new());
+    let checkpoints = checkpoint::CheckpointTracker::new(store.clone());
     let _ = events
         .send(Event::SkillsChanged {
             skills: skills.clone(),
@@ -385,6 +389,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
         rl_cache,
         rl_path,
         meter,
+        checkpoints,
         cwd,
         date: session_date,
     }));
@@ -483,11 +488,22 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
             Op::ListThreads {} => {
                 threads::handle_list_threads(&ctx.store, &ctx.cwd, &ctx.events).await;
             }
+            Op::ListRewindPoints {} => {
+                threads::handle_list_rewind_points(&ctx, state.thread_id).await;
+            }
+            Op::Rewind {
+                checkpoint_id,
+                scope,
+            } => {
+                threads::handle_rewind(&ctx, checkpoint_id, scope, &mut state).await;
+            }
             Op::Resume { thread_id: tid } => {
+                ctx.checkpoints.clear();
                 threads::handle_resume(&ctx, tid, &mut state).await;
                 accounts::refresh_model_list(&ctx).await;
             }
             Op::ResumeLatest {} => {
+                ctx.checkpoints.clear();
                 threads::handle_resume_latest(&ctx, &mut state).await;
                 accounts::refresh_model_list(&ctx).await;
             }

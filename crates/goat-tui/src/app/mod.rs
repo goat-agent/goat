@@ -21,7 +21,7 @@ use crate::{
     config::{Config, ConfigOutcome},
     files::FileMenu,
     highlight::SyntectHighlighter,
-    picker::{EffortPicker, Picker, ThreadPicker},
+    picker::{EffortPicker, Picker, RewindPicker, ThreadPicker},
     symbols,
     theme::Theme,
     transcript::Transcript,
@@ -85,6 +85,7 @@ pub(crate) enum Overlay {
     Account(AccountMenu),
     Effort(EffortPicker),
     Thread(ThreadPicker),
+    Rewind(RewindPicker),
     Config(Config),
     Commands(CommandMenu),
     Files(FileMenu),
@@ -144,6 +145,7 @@ pub struct App {
     pub(crate) spinner: usize,
     pub(crate) quit_arm: Option<u16>,
     pub(crate) clear_arm: Option<u16>,
+    pub(crate) rewind_arm: Option<u16>,
     branch_poll: u16,
     pub(crate) queued: Vec<(
         TaskId,
@@ -282,6 +284,7 @@ impl App {
             spinner: 0,
             quit_arm: None,
             clear_arm: None,
+            rewind_arm: None,
             branch_poll: BRANCH_POLL_TICKS,
             queued: Vec::new(),
             should_quit: false,
@@ -350,6 +353,13 @@ impl App {
                     *ticks = ticks.saturating_sub(1);
                     if *ticks == 0 {
                         self.clear_arm = None;
+                        self.dirty = true;
+                    }
+                }
+                if let Some(ticks) = &mut self.rewind_arm {
+                    *ticks = ticks.saturating_sub(1);
+                    if *ticks == 0 {
+                        self.rewind_arm = None;
                         self.dirty = true;
                     }
                 }
@@ -532,6 +542,7 @@ impl App {
                 self.pending.resume = Some(ResumeIntent::Index(index));
                 vec![Op::ListThreads {}]
             }
+            CommandEffect::OpenRewind => self.request_rewind(),
             CommandEffect::OpenConfig => {
                 self.overlay = Overlay::Config(Config::new(
                     self.account_entries.clone(),
@@ -591,6 +602,19 @@ impl App {
                 self.should_quit = true;
                 Vec::new()
             }
+        }
+    }
+
+    pub(crate) fn request_rewind(&mut self) -> Vec<Op> {
+        self.rewind_arm = None;
+        if self.turn.active.is_some() || !self.queued.is_empty() {
+            self.push_toast(
+                NotifyKind::Info,
+                "finish or interrupt the current task before rewinding".to_owned(),
+            );
+            Vec::new()
+        } else {
+            vec![Op::ListRewindPoints {}]
         }
     }
 
@@ -1282,6 +1306,10 @@ impl App {
         self.clear_arm.is_some()
     }
 
+    pub(crate) fn rewind_armed(&self) -> bool {
+        self.rewind_arm.is_some()
+    }
+
     pub(crate) fn push_toast(&mut self, kind: NotifyKind, message: String) {
         self.toasts.push(crate::toast::Toast::new(kind, message));
         self.dirty = true;
@@ -1825,7 +1853,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use goat_protocol::{
         AccountChoice, Event as EngineEvent, ModelEntry, ModelTarget, Op, RateLimitSnapshot,
-        RateWindow, TaskId, Usage,
+        RateWindow, RewindDraft, RewindPoint, RewindScope, TaskId, Usage,
     };
 
     use super::{App, Origin, Overlay};
@@ -2378,6 +2406,59 @@ mod tests {
         app.on_key(press(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!app.clear_armed(), "second Esc must disarm");
         assert!(app.composer.is_empty(), "second Esc must clear composer");
+    }
+
+    #[test]
+    fn double_esc_on_empty_composer_requests_rewind_points() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        let first = app.on_key(press(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(first.is_empty());
+        assert!(app.rewind_armed());
+
+        let second = app.on_key(press(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(second, vec![Op::ListRewindPoints {}]);
+        assert!(!app.rewind_armed());
+    }
+
+    #[test]
+    fn rewind_picker_selects_code_and_conversation() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        app.on_engine(EngineEvent::RewindPointsListed {
+            points: vec![RewindPoint {
+                checkpoint_id: 7,
+                prompt: "change it".into(),
+                created_at: 1,
+                code_changes: true,
+            }],
+        });
+        assert!(matches!(app.overlay, Overlay::Rewind(_)));
+
+        let choose_point = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(choose_point.is_empty());
+        let choose_action = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            choose_action,
+            vec![Op::Rewind {
+                checkpoint_id: 7,
+                scope: RewindScope::CodeAndConversation,
+            }]
+        );
+        assert!(matches!(app.overlay, Overlay::None));
+    }
+
+    #[test]
+    fn conversation_rewind_restores_prompt_to_composer() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        app.composer.insert_str("discard me");
+
+        app.on_engine(EngineEvent::ConversationRewound {
+            draft: RewindDraft {
+                text: "restored prompt".into(),
+                attachments: Vec::new(),
+            },
+        });
+
+        assert_eq!(app.composer.text(), "restored prompt");
     }
 
     #[test]

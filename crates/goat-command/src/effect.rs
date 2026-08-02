@@ -5,6 +5,7 @@ pub enum CommandEffect {
     SelectEffort(String),
     OpenThreadPicker,
     ResumeIndex(usize),
+    OpenRewind,
     OpenConfig,
     ShowHelp,
     ClearConversation,

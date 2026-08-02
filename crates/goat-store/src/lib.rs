@@ -14,7 +14,8 @@ pub use goat_sqlite_vec::register as register_sqlite_vec;
 
 mod code;
 pub use code::{
-    CodeResult, CodeStore, CodeStoreError, Compaction, NewCompaction, NewMessage, NewProcess,
+    CheckpointFileVersion, CodeCheckpoint, CodeResult, CodeStore, CodeStoreError, Compaction,
+    CreatedMessage, NewCheckpointFile, NewCodeCheckpoint, NewCompaction, NewMessage, NewProcess,
     NewThread, NewToolCall, NewTurn, OpenPrompt, OrphanProcess, StoredMessage, Thread,
 };
 

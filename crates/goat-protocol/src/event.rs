@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AccountEntry, InputAttachment, LoginProvider, Mode, ModelEntry, ModelTarget, ProcessExitReason,
-    ProcessInfo, RateLimitSnapshot, RunId, SkillInfo, SubagentGroupMember, TaskId, ThreadSummary,
-    ToolCall, ToolCallId, ToolOutcome, TranscriptEntry, Usage,
+    ProcessInfo, RateLimitSnapshot, RewindDraft, RewindPoint, RunId, SkillInfo,
+    SubagentGroupMember, TaskId, ThreadSummary, ToolCall, ToolCallId, ToolOutcome, TranscriptEntry,
+    Usage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -80,6 +81,12 @@ pub enum Event {
     },
     ThreadsListed {
         threads: Vec<ThreadSummary>,
+    },
+    RewindPointsListed {
+        points: Vec<RewindPoint>,
+    },
+    ConversationRewound {
+        draft: RewindDraft,
     },
     FilesListed {
         entries: Vec<String>,
