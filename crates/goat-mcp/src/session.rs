@@ -12,9 +12,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+use crate::McpError;
 use crate::handshake::{self, Era, Failed};
 use crate::result::McpToolResult;
-use crate::{McpError, ServerConfig};
 
 pub const CALL_TIMEOUT: Duration = Duration::from_mins(2);
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
@@ -77,10 +77,12 @@ pub struct McpSession {
 impl McpSession {
     pub async fn connect_stdio(
         server_name: String,
-        config: ServerConfig,
+        command: String,
+        args: Vec<String>,
+        env: HashMap<String, String>,
         cwd: &Path,
     ) -> Result<(Self, Vec<McpTool>), McpError> {
-        let (transport, mut pid) = spawn_child(&server_name, &config, cwd)?;
+        let (transport, mut pid) = spawn_child(&server_name, &command, &args, &env, cwd)?;
         let client = match handshake::open(handshake::PREFERRED, transport).await {
             Ok(client) => client,
             Err(failure) => {
@@ -90,7 +92,7 @@ impl McpSession {
                 if let Some(stale) = pid.take() {
                     kill_process_group(&server_name, stale);
                 }
-                let (transport, respawned) = spawn_child(&server_name, &config, cwd)?;
+                let (transport, respawned) = spawn_child(&server_name, &command, &args, &env, cwd)?;
                 pid = respawned;
                 handshake::open(era, transport)
                     .await
@@ -251,14 +253,13 @@ fn exhausted(server_name: &str, first: &Failed, retried: &Failed) -> McpError {
 
 fn spawn_child(
     server_name: &str,
-    config: &ServerConfig,
+    executable: &str,
+    args: &[String],
+    env: &HashMap<String, String>,
     cwd: &Path,
 ) -> Result<(TokioChildProcess, Option<u32>), McpError> {
-    let mut command = Command::new(&config.command);
-    command
-        .args(&config.args)
-        .envs(&config.env)
-        .current_dir(cwd);
+    let mut command = Command::new(executable);
+    command.args(args).envs(env).current_dir(cwd);
     let (transport, stderr) = TokioChildProcess::builder(command.configure(|cmd| {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())

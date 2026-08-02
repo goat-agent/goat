@@ -870,6 +870,11 @@ fn logout(
                 "device key material belongs to a remote; remove it with `goat remote rm {provider}`"
             ));
         }
+        CredentialService::Mcp => {
+            return Err(color_eyre::eyre::eyre!(
+                "MCP credentials are scoped to one server; remove them with `goat mcp logout {provider}`"
+            ));
+        }
     };
     if store.remove(&key).map_err(storage_error)? {
         ui::success(&format!("disconnected {provider} ({account})"));
