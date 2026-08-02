@@ -45,8 +45,6 @@ pub async fn run(force: bool) -> color_eyre::Result<()> {
         return Ok(());
     }
 
-    drain_daemon(force).await?;
-
     let archive_name = format!("goat-{target}.tar.gz");
     let archive_url = asset_url(&release, &archive_name)?;
     let checksums_url = asset_url(&release, "SHA256SUMS")?;
@@ -68,43 +66,49 @@ pub async fn run(force: bool) -> color_eyre::Result<()> {
 
     let bin_path = install_bin_path()?;
     pair("install", &bin_path.display().to_string());
+
+    let was_running = drain_daemon(force).await?;
     replace_binary(&bin_path, &staged_bin)?;
-    pair_styled(
-        "installed",
-        "restart goat to run the new version",
-        Palette::Success,
-    );
+    pair_styled("installed", &latest.to_string(), Palette::Success);
+
+    if was_running {
+        restart_daemon(&bin_path).await;
+    }
     Ok(())
 }
 
-async fn drain_daemon(force: bool) -> color_eyre::Result<()> {
+async fn drain_daemon(force: bool) -> color_eyre::Result<bool> {
     let Some(socket) = goat_config::socket_path() else {
-        return Ok(());
+        return Ok(false);
     };
-    if !socket.exists() {
-        return Ok(());
-    }
-    let Ok(sessions) = goat_client::status(&socket).await else {
-        return Ok(());
+    let busy = match goat_client::greet(&socket).await {
+        goat_client::Daemon::Absent => return Ok(false),
+        goat_client::Daemon::Silent => {
+            return Err(eyre!(
+                "a process is holding the daemon socket and is not answering; kill it with `pkill -f 'goat daemon serve'`, then retry"
+            ));
+        }
+        goat_client::Daemon::Reachable(them) => them.busy,
     };
-    let active = sessions
-        .iter()
-        .filter(|s| {
-            matches!(
-                s.state,
-                goat_wire::SessionLiveState::Active {}
-                    | goat_wire::SessionLiveState::WaitingOnAsk {}
-            )
-        })
-        .count();
-    if active > 0 && !force {
+    if !busy.is_idle() && !force {
         return Err(eyre!(
-            "{active} session(s) are still running in the daemon. Finish them or run `goat daemon stop`, then retry (or use `goat update --force`)."
+            "the daemon is busy ({} agent turn(s), {} live coding session(s)). Finish them or run `goat daemon stop`, then retry (or use `goat update --force`).",
+            busy.turns,
+            busy.sessions
         ));
     }
-    println!("Stopping the running daemon before update...");
     let _ = goat_client::stop(&socket).await;
-    Ok(())
+    Ok(true)
+}
+
+async fn restart_daemon(bin_path: &Path) {
+    let Some(socket) = goat_config::socket_path() else {
+        return;
+    };
+    match goat_client::start(&socket, bin_path).await {
+        Ok(_) => pair_styled("daemon", "restarted", Palette::Success),
+        Err(err) => pair_styled("daemon", &format!("not restarted: {err}"), Palette::Warning),
+    }
 }
 
 async fn fetch_latest_release(client: &reqwest::Client) -> color_eyre::Result<Release> {
