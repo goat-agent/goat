@@ -1,15 +1,15 @@
 use std::time::Duration;
 
 use goat_auth::{
-    Credential, CredentialKey, CredentialStore, Pkce, TokenSet, capture_loopback_code,
-    ensure_valid, now_secs, random_state,
+    Credential, CredentialKey, CredentialStore, Pkce, TokenSet, capture_loopback, ensure_valid,
+    now_secs, random_state,
 };
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
 const CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
-const SCOPE: &str = "openid profile email offline_access grok-cli:access api:access";
+const SCOPE: &str = "openid agent email offline_access grok-cli:access api:access";
 const DISCOVERY_URL: &str = "https://auth.x.ai/.well-known/openid-configuration";
 const CALLBACK_PORT: u16 = 56121;
 const REDIRECT_URI: &str = "http://127.0.0.1:56121/callback";
@@ -313,7 +313,7 @@ async fn login_browser(status: &mpsc::Sender<String>) -> Result<TokenSet, XaiOAu
     if open::that(&url).is_err() {
         return Err(XaiOAuthError::NoBrowser);
     }
-    let code = capture_loopback_code(CALLBACK_PORT, &state).await?;
+    let code = capture_loopback(CALLBACK_PORT, &state).await?.code;
     exchange_authorization_code(&discovery.token_endpoint, &code, &pkce).await
 }
 

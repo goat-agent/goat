@@ -1,0 +1,217 @@
+provider openai
+  auth api_key tools true images true web_search true verifies true source catalog
+  env Some("OPENAI_API_KEY") validation "network" endpoint None oauth Some("not supported")
+  login_endpoint none
+  model gpt-5.6 ctx Some(1050000) images true efforts off,low,medium,high,xhigh,max
+  model gpt-5.6-sol ctx Some(1050000) images true efforts off,low,medium,high,xhigh,max
+  model gpt-5.6-terra ctx Some(1050000) images true efforts off,low,medium,high,xhigh,max
+  model gpt-5.6-luna ctx Some(1050000) images true efforts off,low,medium,high,xhigh,max
+  model gpt-5.5 ctx Some(1050000) images true efforts off,low,medium,high,xhigh,max
+  model gpt-5.4 ctx Some(1050000) images true efforts off,low,medium,high,xhigh,max
+  model gpt-5.4-mini ctx Some(1050000) images true efforts off,low,medium,high,xhigh,max
+  model gpt-4.1 ctx Some(1047576) images true efforts -
+  model o3 ctx Some(200000) images true efforts low,medium,high
+  model o4-mini ctx Some(200000) images true efforts low,medium,high
+provider openai-codex
+  auth oauth tools true images true web_search true verifies true source catalog
+  env None validation "oauth" endpoint None oauth Some("browser or device")
+  login_endpoint none
+  model gpt-5.6-sol ctx Some(272000) images true efforts off,low,medium,high,xhigh,max
+  model gpt-5.6-terra ctx Some(272000) images true efforts off,low,medium,high,xhigh,max
+  model gpt-5.6-luna ctx Some(272000) images true efforts off,low,medium,high,xhigh,max
+  model gpt-5.5 ctx Some(272000) images true efforts off,low,medium,high,xhigh,max
+  model gpt-5.3-codex-spark ctx Some(128000) images true efforts off,low,medium,high,xhigh,max
+  model gpt-5.4 ctx Some(272000) images true efforts off,low,medium,high,xhigh,max
+  model gpt-5.4-mini ctx Some(272000) images true efforts off,low,medium,high,xhigh,max
+provider anthropic
+  auth api_key_or_oauth tools true images true web_search true verifies true source catalog
+  env Some("ANTHROPIC_API_KEY") validation "network" endpoint None oauth Some("browser")
+  login_endpoint none
+  model claude-fable-5 ctx Some(1000000) images true efforts low,medium,high,xhigh,max
+  model claude-opus-5 ctx Some(1000000) images true efforts low,medium,high,xhigh,max
+  model claude-opus-4-8 ctx Some(1000000) images true efforts low,medium,high,xhigh,max
+  model claude-sonnet-5 ctx Some(1000000) images true efforts low,medium,high,xhigh,max
+  model claude-sonnet-4-6 ctx Some(1000000) images true efforts low,medium,high,max
+  model claude-haiku-4-5-20251001 ctx Some(200000) images true efforts off,low,medium,high
+  model claude-opus-4-7 ctx Some(1000000) images true efforts low,medium,high,xhigh,max
+  model claude-opus-4-6 ctx Some(1000000) images true efforts low,medium,high,max
+  model claude-opus-4-5-20251101 ctx Some(200000) images true efforts off,low,medium,high
+  model claude-sonnet-4-5-20250929 ctx Some(200000) images true efforts off,low,medium,high
+  model claude-opus-4-1-20250805 ctx Some(200000) images true efforts off,low,medium,high
+provider gemini
+  auth api_key_or_oauth tools true images true web_search true verifies true source catalog
+  env Some("GEMINI_API_KEY") validation "network" endpoint None oauth Some("browser")
+  login_endpoint none
+  model gemini-3.6-flash ctx Some(1048576) images true efforts off,low,medium,high
+  model gemini-3.5-flash ctx Some(1048576) images true efforts off,low,medium,high
+  model gemini-3.5-flash-lite ctx Some(1048576) images true efforts off,low,medium,high
+  model gemini-3.1-pro-preview ctx Some(1048576) images true efforts low,medium,high,max
+  model gemini-3.1-flash-lite ctx Some(1048576) images true efforts off,low,medium,high
+  model gemini-2.5-pro ctx Some(1048576) images true efforts low,medium,high,max
+  model gemini-2.5-flash ctx Some(1048576) images true efforts off,low,medium,high
+  model gemini-2.5-flash-lite ctx Some(1048576) images true efforts off,low,medium,high
+provider openrouter
+  auth api_key tools true images true web_search false verifies true source discover
+  env Some("OPENROUTER_API_KEY") validation "network" endpoint None oauth Some("not supported")
+  login_endpoint none
+  model anthropic/claude-opus-5 ctx Some(1000000) images true efforts -
+  model anthropic/claude-sonnet-5 ctx Some(1000000) images true efforts -
+  model openai/gpt-5.6 ctx Some(1050000) images false efforts -
+  model google/gemini-3.6-flash ctx Some(1000000) images true efforts -
+  model z-ai/glm-5.2 ctx Some(1000000) images false efforts -
+  model moonshotai/kimi-k3 ctx Some(1000000) images false efforts -
+  model deepseek/deepseek-v4-pro ctx Some(1000000) images false efforts -
+  model minimax/minimax-m3 ctx Some(1000000) images false efforts -
+  model qwen/qwen3-coder ctx Some(1000000) images false efforts -
+provider groq
+  auth api_key tools true images false web_search false verifies true source catalog
+  env Some("GROQ_API_KEY") validation "network" endpoint None oauth Some("not supported")
+  login_endpoint none
+  model openai/gpt-oss-120b ctx Some(131072) images false efforts -
+  model openai/gpt-oss-20b ctx Some(131072) images false efforts -
+  model openai/gpt-oss-safeguard-20b ctx Some(131072) images false efforts -
+  model qwen/qwen3.6-27b ctx Some(131072) images false efforts -
+  model llama-3.3-70b-versatile ctx Some(131072) images false efforts -
+  model llama-3.1-8b-instant ctx Some(131072) images false efforts -
+  model groq/compound ctx Some(131072) images false efforts -
+  model groq/compound-mini ctx Some(131072) images false efforts -
+provider deepseek
+  auth api_key tools true images false web_search false verifies true source catalog
+  env Some("DEEPSEEK_API_KEY") validation "network" endpoint None oauth Some("not supported")
+  login_endpoint none
+  model deepseek-v4-pro ctx Some(1000000) images false efforts -
+  model deepseek-v4-flash ctx Some(1000000) images false efforts -
+provider xai
+  auth api_key_or_oauth tools true images true web_search false verifies true source catalog
+  env Some("XAI_API_KEY") validation "network" endpoint None oauth Some("browser or device code (SuperGrok / X Premium+)")
+  login_endpoint none
+  setup xAI Grok provider (API key or SuperGrok / X Premium+ OAuth).
+  setup API key: `goat provider login xai --key xai-...` or `XAI_API_KEY`.
+  setup OAuth: `goat provider login xai` (browser or device code; no API key).
+  setup OAuth coding models (Composer, Grok Build) use the same api.x.ai Responses API.
+  model grok-composer-2.5-fast ctx Some(200000) images false efforts -
+  model grok-4.5 ctx Some(500000) images true efforts -
+  model grok-4.3 ctx Some(1000000) images true efforts low,medium,high
+  model grok-build-0.1 ctx Some(256000) images false efforts -
+  model grok-4.20-0309-reasoning ctx Some(1000000) images true efforts -
+  model grok-4.20-0309-non-reasoning ctx Some(1000000) images true efforts -
+  model grok-4.20-multi-agent-0309 ctx Some(1000000) images true efforts -
+provider mistral
+  auth api_key tools true images true web_search false verifies true source catalog
+  env Some("MISTRAL_API_KEY") validation "network" endpoint None oauth Some("not supported")
+  login_endpoint none
+  model mistral-large-latest ctx Some(262144) images true efforts -
+  model mistral-medium-latest ctx Some(262144) images true efforts -
+  model mistral-small-latest ctx Some(262144) images true efforts -
+  model ministral-3-14b-latest ctx Some(262144) images false efforts -
+  model ministral-3-8b-latest ctx Some(262144) images false efforts -
+  model ministral-3-3b-latest ctx Some(262144) images false efforts -
+  model codestral-latest ctx Some(262144) images false efforts -
+provider zai
+  auth api_key tools true images true web_search false verifies false source catalog
+  env Some("ZAI_API_KEY") validation "catalog-only" endpoint None oauth Some("not supported by Z.AI API docs")
+  login_endpoint none
+  model glm-5.2 ctx Some(1000000) images false efforts off,low,medium,high,xhigh,max
+  model glm-5.1 ctx Some(204800) images false efforts -
+  model glm-5-turbo ctx Some(204800) images false efforts -
+  model glm-5 ctx Some(204800) images false efforts -
+  model glm-4.7 ctx Some(204800) images false efforts -
+  model glm-4.7-flash ctx Some(204800) images false efforts -
+  model glm-4.6 ctx Some(204800) images false efforts -
+  model glm-4.5 ctx Some(131072) images false efforts -
+  model glm-4.5-air ctx Some(131072) images false efforts -
+  model glm-4-32b-0414-128k ctx Some(131072) images false efforts -
+  model glm-5v-turbo ctx Some(204800) images true efforts -
+provider zai-coding
+  auth api_key tools true images true web_search false verifies false source catalog
+  env Some("ZAI_CODING_API_KEY") validation "catalog-only" endpoint Some("https://api.z.ai/api/coding/paas/v4") oauth Some("not OAuth; uses Z.AI Coding Plan API key")
+  login_endpoint none
+  setup Z.AI Coding Plan API-key provider.
+  setup Use `ZAI_CODING_API_KEY` or `goat provider login zai-coding --key sk-...`.
+  setup This is not OAuth and does not reuse the standard `zai` credential.
+  model glm-5.2 ctx Some(1000000) images false efforts off,low,medium,high,xhigh,max
+  model glm-5.1 ctx Some(204800) images false efforts -
+  model glm-5-turbo ctx Some(204800) images false efforts -
+  model glm-4.7 ctx Some(204800) images false efforts -
+provider kimi
+  auth api_key tools true images true web_search false verifies false source catalog
+  env Some("MOONSHOT_API_KEY") validation "catalog-only" endpoint None oauth Some("Kimi Code OAuth is provider id kimi-code")
+  login_endpoint none
+  setup Kimi Platform API key provider.
+  setup For Kimi Code OAuth, use `goat provider login kimi-code`.
+  setup API-key setup: `goat provider login kimi --key sk-...`.
+  model kimi-k3 ctx Some(1000000) images true efforts low,high,max
+  model kimi-k2.7-code ctx Some(262144) images false efforts -
+  model kimi-k2.7-code-highspeed ctx Some(262144) images false efforts -
+  model kimi-k2.6 ctx Some(262144) images true efforts -
+  model kimi-k2.5 ctx Some(262144) images false efforts -
+  model moonshot-v1-128k ctx Some(128000) images false efforts -
+  model moonshot-v1-32k ctx Some(32000) images false efforts -
+  model moonshot-v1-8k ctx Some(8000) images false efforts -
+  model moonshot-v1-128k-vision-preview ctx Some(128000) images true efforts -
+  model moonshot-v1-32k-vision-preview ctx Some(32000) images true efforts -
+  model moonshot-v1-8k-vision-preview ctx Some(8000) images true efforts -
+provider kimi-code
+  auth oauth tools true images false web_search false verifies true source catalog
+  env None validation "network" endpoint Some("https://api.kimi.com/coding/v1") oauth Some("device code")
+  login_endpoint none
+  setup Kimi Code OAuth device-code login.
+  setup Run `goat provider login kimi-code`, open the URL, and enter the code.
+  model k3 ctx Some(1048576) images false efforts low,high,max
+  model k3-256k ctx Some(262144) images false efforts low,high,max
+  model kimi-for-coding ctx Some(262144) images false efforts -
+  model kimi-for-coding-highspeed ctx Some(262144) images false efforts -
+provider qwen
+  auth api_key tools true images true web_search false verifies true source catalog
+  env Some("DASHSCOPE_API_KEY") validation "network" endpoint Some("required for non-US DashScope workspaces") oauth Some("Qwen OAuth enrollment discontinued")
+  login_endpoint env Some("QWEN_BASE_URL") default Some("https://dashscope-us.aliyuncs.com/compatible-mode/v1") validate true
+  setup Qwen DashScope API-key provider.
+  setup Default endpoint: https://dashscope-us.aliyuncs.com/compatible-mode/v1
+  setup Non-US workspaces: `goat provider login qwen --endpoint <url> --key sk-...`.
+  setup Qwen OAuth enrollment is discontinued upstream.
+  model qwen3.7-max ctx Some(1000000) images true efforts -
+  model qwen3.7-plus ctx Some(1000000) images true efforts -
+  model qwen3.6-flash ctx Some(1000000) images false efforts -
+  model qwen3-coder-plus ctx Some(1000000) images false efforts -
+  model qwen3-coder-flash ctx Some(1000000) images false efforts -
+provider minimax
+  auth api_key tools true images false web_search false verifies false source catalog
+  env Some("MINIMAX_API_KEY") validation "catalog-only" endpoint Some("https://api.minimax.io/v1") oauth Some("not supported")
+  login_endpoint none
+  setup MiniMax open platform API-key provider.
+  setup Use `MINIMAX_API_KEY` or `goat provider login minimax --key ...`.
+  setup Keys from platform.minimax.io are region-scoped; the China platform uses a different host.
+  model MiniMax-M3 ctx Some(1000000) images false efforts -
+  model MiniMax-M2.7 ctx Some(204800) images false efforts -
+  model MiniMax-M2.7-highspeed ctx Some(204800) images false efforts -
+  model MiniMax-M2.5 ctx Some(204800) images false efforts -
+  model MiniMax-M2.5-highspeed ctx Some(204800) images false efforts -
+  model MiniMax-M2.1 ctx Some(204800) images false efforts -
+  model MiniMax-M2.1-highspeed ctx Some(204800) images false efforts -
+  model MiniMax-M2 ctx Some(204800) images false efforts -
+provider vercel
+  auth api_key tools true images true web_search false verifies true source discover
+  env Some("AI_GATEWAY_API_KEY") validation "network" endpoint Some("https://ai-gateway.vercel.sh/v1") oauth Some("not supported")
+  login_endpoint none
+  setup Vercel AI Gateway: one key fronting every upstream provider.
+  setup Use `AI_GATEWAY_API_KEY` or `goat provider login vercel --key vck_...`.
+  setup Models are addressed as `creator/model`, for example `anthropic/claude-opus-5`.
+  model anthropic/claude-opus-5 ctx Some(1000000) images true efforts -
+  model anthropic/claude-sonnet-5 ctx Some(1000000) images true efforts -
+  model openai/gpt-5.6 ctx Some(1050000) images false efforts -
+  model google/gemini-3.6-flash ctx Some(1048576) images true efforts -
+  model zai/glm-5.2 ctx Some(1000000) images false efforts -
+  model moonshotai/kimi-k3 ctx Some(1000000) images false efforts -
+  model xai/grok-4.5 ctx Some(500000) images true efforts -
+provider ollama
+  auth none tools true images true web_search false verifies true source discover
+  env None validation "local" endpoint Some("http://localhost:11434/v1") oauth None
+  login_endpoint none
+provider lmstudio
+  auth none tools true images true web_search false verifies true source discover
+  env None validation "local" endpoint Some("http://localhost:1234/v1") oauth None
+  login_endpoint none
+provider llama-cpp
+  auth none tools true images true web_search false verifies true source discover
+  env None validation "local" endpoint Some("http://localhost:8080/v1") oauth None
+  login_endpoint none

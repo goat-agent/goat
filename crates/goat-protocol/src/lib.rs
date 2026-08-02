@@ -9,7 +9,8 @@ pub use types::*;
 #[cfg(test)]
 mod tests {
     use super::{
-        Event, LoginCredential, Op, TaskId, ToolCallId, ToolImageData, ToolOutcome, TranscriptEntry,
+        Event, GitFacts, LoginCredential, Op, TaskId, ToolCallId, ToolImageData, ToolOutcome,
+        TranscriptEntry,
     };
 
     #[test]
@@ -21,6 +22,7 @@ mod tests {
                 media_type: "image/png".to_owned(),
                 data: "AAAA".to_owned(),
             }),
+            git: None,
         };
         let json = serde_json::to_string(&outcome).unwrap();
         let back: ToolOutcome = serde_json::from_str(&json).unwrap();
@@ -33,11 +35,36 @@ mod tests {
             ok: false,
             summary: None,
             image: None,
+            git: None,
         };
         let json = serde_json::to_string(&outcome).unwrap();
         assert!(!json.contains("image"));
+        assert!(!json.contains("git"));
         let back: ToolOutcome = serde_json::from_str(&json).unwrap();
         assert_eq!(outcome, back);
+    }
+
+    #[test]
+    fn tool_outcome_git_facts_round_trip_and_tolerate_older_payloads() {
+        let outcome = ToolOutcome {
+            ok: true,
+            summary: None,
+            image: None,
+            git: Some(Box::new(GitFacts {
+                head: Some("a1b2c3d".to_owned()),
+                subject: Some("feat: git-aware transcript rows".to_owned()),
+                branch: Some("feat/git-ui".to_owned()),
+                upstream: Some("origin/feat/git-ui".to_owned()),
+                pr: Some(59),
+                pr_url: Some("https://github.com/goat-agent/goat/pull/59".to_owned()),
+            })),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        let back: ToolOutcome = serde_json::from_str(&json).unwrap();
+        assert_eq!(outcome, back);
+
+        let older: ToolOutcome = serde_json::from_str(r#"{"ok":true,"summary":null}"#).unwrap();
+        assert_eq!(older.git, None);
     }
 
     #[test]
@@ -87,6 +114,23 @@ mod tests {
     }
 
     #[test]
+    fn subagent_group_event_round_trips() {
+        let event = Event::SubagentGroupStarted {
+            id: TaskId(3),
+            group: ToolCallId(1),
+            members: vec![crate::SubagentGroupMember {
+                call: ToolCallId(1),
+                subagent_type: "explore".to_owned(),
+                label: "map engine".to_owned(),
+                background: false,
+            }],
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let back: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, event);
+    }
+
+    #[test]
     fn transcript_entry_user_serializes_with_type() {
         let entry = TranscriptEntry::User {
             text: "hello".to_owned(),
@@ -122,6 +166,75 @@ mod tests {
     }
 
     #[test]
+    fn op_set_mode_roundtrips() {
+        let op = Op::SetMode {
+            mode: super::Mode::Plan,
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert_eq!(json, r#"{"type":"SetMode","mode":"plan"}"#);
+        let back: Op = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, op);
+    }
+
+    #[test]
+    fn plan_decision_unit_variant_serializes_as_type_object() {
+        let op = Op::ResolvePlan {
+            call: ToolCallId(3),
+            decision: super::PlanDecision::Approve {},
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains(r#""decision":{"type":"Approve"}"#));
+        let back: Op = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, op);
+    }
+
+    #[test]
+    fn plan_decision_reject_carries_feedback() {
+        let op = Op::ResolvePlan {
+            call: ToolCallId(4),
+            decision: super::PlanDecision::Reject {
+                feedback: "too big".to_owned(),
+            },
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        let back: Op = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, op);
+    }
+
+    #[test]
+    fn mode_changed_omits_absent_plan_path() {
+        let ev = Event::ModeChanged {
+            mode: super::Mode::Normal,
+            plan_path: None,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(!json.contains("plan_path"));
+        let back: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ev);
+    }
+
+    #[test]
+    fn plan_proposed_roundtrips() {
+        let ev = Event::PlanProposed {
+            id: TaskId(1),
+            call: ToolCallId(2),
+            plan: "# Plan".to_owned(),
+            path: "/plans/1-demo.md".to_owned(),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ev);
+    }
+
+    #[test]
+    fn mode_toggles_and_defaults_to_normal() {
+        assert_eq!(super::Mode::default(), super::Mode::Normal);
+        assert!(!super::Mode::Normal.is_plan());
+        assert!(super::Mode::Normal.toggled().is_plan());
+        assert!(!super::Mode::Plan.toggled().is_plan());
+    }
+
+    #[test]
     fn task_id_serializes_as_string() {
         assert_eq!(serde_json::to_string(&TaskId(42)).unwrap(), r#""42""#);
     }
@@ -145,16 +258,13 @@ mod tests {
 
     #[test]
     fn process_id_serializes_as_string() {
-        assert_eq!(
-            serde_json::to_string(&super::ProcessId(7)).unwrap(),
-            r#""7""#
-        );
+        assert_eq!(serde_json::to_string(&super::RunId(7)).unwrap(), r#""7""#);
     }
 
     #[test]
     fn op_process_kill_roundtrips() {
         let op = Op::ProcessKill {
-            process: super::ProcessId(3),
+            process: super::RunId(3),
         };
         let json = serde_json::to_string(&op).unwrap();
         assert_eq!(json, r#"{"type":"ProcessKill","process":"3"}"#);
@@ -165,7 +275,7 @@ mod tests {
     #[test]
     fn op_process_watch_roundtrips() {
         let op = Op::ProcessWatch {
-            process: super::ProcessId(4),
+            process: super::RunId(4),
             on: true,
         };
         let json = serde_json::to_string(&op).unwrap();
@@ -176,7 +286,7 @@ mod tests {
     #[test]
     fn event_process_started_roundtrips() {
         let ev = Event::ProcessStarted {
-            process: super::ProcessId(1),
+            process: super::RunId(1),
             command: "pnpm dev".to_owned(),
             watched: false,
         };
@@ -188,7 +298,7 @@ mod tests {
     #[test]
     fn event_process_exited_omits_code_when_absent() {
         let ev = Event::ProcessExited {
-            process: super::ProcessId(1),
+            process: super::RunId(1),
             code: None,
             reason: super::ProcessExitReason::Killed,
         };

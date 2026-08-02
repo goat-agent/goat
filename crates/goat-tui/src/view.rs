@@ -178,7 +178,8 @@ fn render_main(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
     render_full_body_overlay(frame, body, app, theme);
     render_panel(frame, panel_area, app, theme, &panel);
     render_composer_preview(frame, preview_area, app, theme);
-    app.composer().render(frame, composer_area, theme, focused);
+    app.composer()
+        .render(frame, composer_area, theme, focused, app.plan_mode());
     render_hint(frame, footer_area, app, theme, &panel);
 }
 
@@ -233,6 +234,7 @@ fn is_full_body_overlay(app: &App) -> bool {
             | Overlay::Rewind(_)
             | Overlay::Usage
             | Overlay::Help
+            | Overlay::Plan(_)
     )
 }
 
@@ -255,6 +257,9 @@ fn render_full_body_overlay(frame: &mut Frame, body: Rect, app: &mut App, theme:
         }
         Overlay::Help => crate::help::render(frame, body, theme),
         _ => {}
+    }
+    if let Overlay::Plan(sheet) = app.overlay_mut() {
+        sheet.render(frame, body, theme);
     }
 }
 
@@ -288,7 +293,7 @@ fn render_run_panel(frame: &mut Frame, area: Rect, app: &App, theme: Theme, curs
     let inner_width = usize::from(area.width);
     let mut rows: Vec<Line> = Vec::new();
     let mut index = 0usize;
-    for run in app.agent_runs() {
+    for run in app.subagent_runs() {
         let selected = index == cursor;
         let (marker, marker_style) = match run.done {
             None => (spinner, theme.accent()),
@@ -299,18 +304,37 @@ fn render_run_panel(frame: &mut Frame, area: Rect, app: &App, theme: Theme, curs
         let mut left = vec![
             Span::styled(marker, marker_style),
             Span::raw(" "),
-            Span::styled(run.agent_type.clone(), name_style),
+            Span::styled(run.subagent_type.clone(), name_style),
         ];
         if !run.label.is_empty() {
             left.push(Span::styled(symbols::ui::SEPARATOR, theme.muted()));
             left.push(Span::styled(run.label.clone(), theme.muted()));
         }
+        let metrics = if inner_width >= 72 {
+            let mut parts = Vec::new();
+            if run.tools > 0 {
+                parts.push(format!("{} tools", run.tools));
+            }
+            if run.tokens > 0 {
+                parts.push(format!("{} tok", crate::layout::format_tokens(run.tokens)));
+            }
+            let finished = run.finished_at.unwrap_or_else(std::time::Instant::now);
+            parts.push(crate::transcript::format_elapsed(
+                finished.saturating_duration_since(run.started_at).as_secs(),
+            ));
+            Some(Span::styled(
+                parts.join(symbols::ui::SEPARATOR),
+                theme.muted(),
+            ))
+        } else {
+            None
+        };
         rows.push(overlay::selection_row(
             theme,
             selected,
             inner_width,
             left,
-            None,
+            metrics,
         ));
         index += 1;
     }
@@ -357,7 +381,8 @@ fn render_run_footer(frame: &mut Frame, area: Rect, theme: Theme) {
     frame.render_widget(
         Paragraph::new(overlay::hint_line(
             &[
-                (symbols::key::ARROWS_UPDOWN, "select"),
+                (symbols::key::ARROWS_UPDOWN, "move"),
+                (symbols::key::ENTER, "open"),
                 (symbols::key::ESC, "back"),
             ],
             theme,
@@ -961,6 +986,7 @@ mod tests {
         let ws = goat_worktree::Workspace {
             owner_root: std::path::PathBuf::from("/x/goat-code"),
             repo_root: std::path::PathBuf::from("/x/goat-code"),
+            git_dir: std::path::PathBuf::from("/x/goat-code/.git"),
             git_branch: "main".to_owned(),
             kind: WorkspaceKind::Main,
         };
@@ -972,6 +998,7 @@ mod tests {
         let ws = goat_worktree::Workspace {
             owner_root: std::path::PathBuf::from("/x/goat-code"),
             repo_root: std::path::PathBuf::from("/x/goat-code/.goat/worktrees/plan"),
+            git_dir: std::path::PathBuf::from("/x/goat-code/.goat/worktrees/plan/.git"),
             git_branch: "worktree-plan".to_owned(),
             kind: WorkspaceKind::Managed {
                 label: "plan".to_owned(),

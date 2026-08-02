@@ -23,6 +23,20 @@ pub fn fail_hint(message: impl Into<String>, hint: impl Into<String>) -> Result<
     Err(report_hint(message, hint))
 }
 
+pub fn worktree_entry(err: goat_worktree::WorktreeError) -> Report {
+    match &err {
+        goat_worktree::WorktreeError::Git(goat_git::GitError::Missing) => report_hint(
+            "git was not found on PATH",
+            "--worktree needs git installed",
+        ),
+        goat_worktree::WorktreeError::Git(goat_git::GitError::NotARepository) => report_hint(
+            "not a git repository",
+            "--worktree must run inside a git repository",
+        ),
+        _ => Report::from(err),
+    }
+}
+
 pub enum AuthPick {
     OAuth,
     ApiKey,
@@ -138,6 +152,14 @@ fn prompt_account_name(provider: &str, default: Option<&str>) -> Result<Option<S
 
 pub fn prompt_api_key(provider: &str) -> Result<Option<String>> {
     Ok(secret(&format!("api key for {provider}"))?)
+}
+
+pub fn prompt_optional_api_key(provider: &str) -> Result<Option<String>> {
+    Ok(secret(&format!("api key for {provider} (enter for none)"))?)
+}
+
+pub fn prompt_provider_name() -> Result<Option<String>> {
+    Ok(prompt("provider name", None)?)
 }
 
 pub fn prompt_endpoint(default: Option<&str>) -> Result<Option<String>> {

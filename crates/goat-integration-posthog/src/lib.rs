@@ -1,165 +1,134 @@
-mod mcp;
-mod tool;
-
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use goat_agent_tool::{ToolName, ToolRegistry};
-use goat_auth::CredentialStore;
-use goat_integration::{
-    BindingMap, Integration, IntegrationAuth, IntegrationError, IntegrationFactory,
-    IntegrationMetadata, IntegrationResult, IntegrationRuntime,
-};
+use goat_integration::{IntegrationFactory, IntegrationResult};
+use goat_integration_mcp::{McpService, NameRule, ServiceUrl, ToolPolicy};
 use goat_types::IntegrationId;
+use serde::Deserialize;
 use serde_json::Value;
 
 pub const ID: IntegrationId = IntegrationId::from_static("posthog");
+pub const PREFIX: &str = "posthog_";
+
+const MCP_URL: &str = "https://mcp.posthog.com/mcp";
+const ENV_VAR: &str = "GOAT_POSTHOG_API_KEY";
+const PROJECT_HEADER: &str = "x-posthog-project-id";
+const ORGANIZATION_HEADER: &str = "x-posthog-organization-id";
 
 const SETUP: &str = "connects to PostHog's hosted MCP server; a browser window will ask you to approve access.\n\
      this integration adds `posthog_*` tools — it does not watch PostHog or brief you on its own.\n\
      to run headless, or to recover if the browser flow fails, set GOAT_POSTHOG_API_KEY to a PostHog personal API key (phx-…).\n\
      with more than one project, add `\"project_id\": \"<id>\"` to the agent's posthog binding in ~/.goat/agents/<slug>/config.json";
 
-pub struct PosthogIntegration;
+pub const SCOPES: &[&str] = &[
+    "openid",
+    "profile",
+    "email",
+    "organization:read",
+    "project:read",
+    "user:read",
+    "query:read",
+    "insight:read",
+    "dashboard:read",
+    "error_tracking:read",
+    "error_tracking:write",
+    "feature_flag:read",
+    "feature_flag:write",
+    "experiment:read",
+    "logs:read",
+    "annotation:read",
+    "annotation:write",
+    "llm_analytics:read",
+];
 
-#[async_trait]
-impl Integration for PosthogIntegration {
-    fn id(&self) -> IntegrationId {
-        ID
+pub const ENABLED_TOOLS: &[&str] = &[
+    "execute-sql",
+    "insight-query",
+    "docs-search",
+    "project-get",
+    "organization-get",
+    "query-error-tracking-issues-list",
+    "query-error-tracking-issue",
+    "query-error-tracking-issue-events",
+    "feature-flag-get-all",
+    "feature-flag-get-definition",
+    "feature-flag-get-definition-by-key",
+    "feature-flags-status-retrieve",
+    "create-feature-flag",
+    "update-feature-flag",
+    "query-logs",
+    "logs-count",
+    "logs-patterns",
+    "dashboards-get-all",
+    "dashboard-get",
+    "dashboard-insights-run",
+    "annotations-list",
+    "annotation-create",
+    "get-llm-total-costs-for-project",
+    "llma-personal-spend",
+    "experiment-get-all",
+    "experiment-get",
+    "experiment-results-get",
+];
+
+pub const DENY: &[NameRule] = &[NameRule::Suffix("-delete"), NameRule::Suffix("-destroy")];
+
+pub fn service() -> McpService {
+    McpService::new("posthog", "PostHog", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .oauth(SCOPES)
+        .env_var(ENV_VAR)
+        .headers(scope_headers)
+        .tools(ToolPolicy::only(PREFIX, ENABLED_TOOLS).deny(DENY))
+        .truncation_hint(
+            "add a LIMIT, select fewer columns, or narrow the date range and call again",
+        )
+}
+
+fn scope_headers(config: &Value) -> HashMap<String, String> {
+    let settings = PosthogBinding::read(config);
+    let mut headers = HashMap::new();
+    if let Some(project) = settings.project_id {
+        headers.insert(PROJECT_HEADER.to_owned(), project);
     }
-
-    fn metadata(&self) -> IntegrationMetadata {
-        IntegrationMetadata {
-            id: "posthog",
-            display: "PostHog",
-            auth: IntegrationAuth::OAuth,
-            secret_label: "PostHog personal API key (phx-…)",
-            env_var: Some(mcp::ENV_VAR),
-            setup: SETUP,
-            has_watcher: false,
-        }
+    if let Some(organization) = settings.organization_id {
+        headers.insert(ORGANIZATION_HEADER.to_owned(), organization);
     }
+    headers
+}
 
-    async fn register_tools(
-        &self,
-        registry: &mut ToolRegistry,
-        runtime: &IntegrationRuntime,
-        bindings: Arc<BindingMap>,
-    ) -> Vec<ToolName> {
-        tool::register(registry, runtime, bindings).await
-    }
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PosthogBinding {
+    #[serde(default, deserialize_with = "meaningful")]
+    pub project_id: Option<String>,
+    #[serde(default, deserialize_with = "meaningful")]
+    pub organization_id: Option<String>,
+}
 
-    async fn verify(
-        &self,
-        config: &Value,
-        credentials: &CredentialStore,
-    ) -> IntegrationResult<String> {
-        let account = config
-            .get("account")
-            .and_then(Value::as_str)
-            .unwrap_or("default");
-        let client_id = config.get("client_id").and_then(Value::as_str);
-        let auth = mcp::resolve_auth(credentials, account, client_id)?;
-        let scope = mcp::ProjectScope::from_config(config);
-        let session = mcp::connect(&auth, &scope).await?;
-        let name = session.server_name();
-        mcp::persist_tokens(credentials, account, &session).await;
-        session.close().await;
-        Ok(name)
-    }
-
-    async fn oauth_login(
-        &self,
-        credentials: &CredentialStore,
-        account: &str,
-        present_url: &(dyn for<'a> Fn(&'a str) + Send + Sync),
-    ) -> IntegrationResult<serde_json::Value> {
-        use rmcp::transport::auth::{AuthorizationRequest, OAuthState};
-
-        let (listener, port) = goat_auth::bind_loopback()
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        let redirect = format!("http://127.0.0.1:{port}/callback");
-
-        let mut oauth = OAuthState::new(mcp::MCP_URL, None)
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        oauth
-            .start_authorization(
-                AuthorizationRequest::new(&redirect)
-                    .with_client_name("goat")
-                    .with_scopes(mcp::SCOPES.iter().copied()),
-            )
-            .await
-            .map_err(|e| IntegrationError::Auth(format!("authorization start failed: {e}")))?;
-        let auth_url = oauth
-            .get_authorization_url()
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        let state = url::Url::parse(&auth_url)
-            .ok()
-            .and_then(|u| {
-                u.query_pairs()
-                    .find(|(k, _)| k == "state")
-                    .map(|(_, v)| v.to_string())
-            })
-            .ok_or_else(|| IntegrationError::Auth("authorization url missing state".into()))?;
-
-        present_url(&auth_url);
-        let code = goat_auth::capture_on(listener, &state)
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        oauth
-            .handle_callback(&code, &state)
-            .await
-            .map_err(|e| IntegrationError::Auth(format!("token exchange failed: {e}")))?;
-
-        let (client_id, tokens) = oauth
-            .get_credentials()
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        let tokens =
-            tokens.ok_or_else(|| IntegrationError::Auth("no tokens after authorization".into()))?;
-        credentials
-            .store(
-                &goat_auth::CredentialKey::integration("posthog", account),
-                goat_auth::Credential::OAuth(mcp::token_set_from_response(&tokens)?),
-            )
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        Ok(serde_json::json!({ "client_id": client_id }))
+impl PosthogBinding {
+    pub(crate) fn read(config: &Value) -> Self {
+        goat_integration_mcp::read_binding(config)
     }
 }
 
+fn meaningful<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<String> = Option::deserialize(deserializer)?;
+    Ok(raw
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty()))
+}
+
 fn validate_config(config: &Value) -> IntegrationResult<()> {
-    let obj = config
-        .as_object()
-        .ok_or_else(|| IntegrationError::Config("posthog binding must be an object".into()))?;
-    for key in ["account", "project_id", "organization_id", "client_id"] {
-        if let Some(value) = obj.get(key)
-            && !value.is_string()
-        {
-            return Err(IntegrationError::Config(format!(
-                "`{key}` must be a string"
-            )));
-        }
-    }
-    if let Some(value) = obj.get("deny_suffixes") {
-        let all_strings = value
-            .as_array()
-            .is_some_and(|values| values.iter().all(Value::is_string));
-        if !all_strings {
-            return Err(IntegrationError::Config(
-                "`deny_suffixes` must be an array of strings".into(),
-            ));
-        }
-    }
-    Ok(())
+    goat_integration_mcp::validate_binding::<PosthogBinding>("posthog", config)
 }
 
 inventory::submit! {
     IntegrationFactory {
         id: ID,
-        ctor: || Arc::new(PosthogIntegration),
+        ctor: || Arc::new(service().build()),
         validate_config,
     }
 }
@@ -167,18 +136,19 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goat_integration::{Integration, IntegrationAuth};
+    use goat_integration_mcp::Enable;
     use serde_json::json;
 
     #[test]
-    fn validate_config_accepts_valid_and_rejects_invalid() {
+    fn the_binding_is_typo_checked() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "project_id": "12345" })).is_ok());
+        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "project_id": "1", "organization_id": "2" })).is_ok());
         assert!(validate_config(&json!({ "deny_suffixes": ["-delete"] })).is_ok());
-        assert!(validate_config(&json!({ "organization_id": "o", "client_id": "c" })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());
         assert!(validate_config(&json!({ "project_id": 3 })).is_err());
-        assert!(validate_config(&json!({ "deny_suffixes": "-delete" })).is_err());
-        assert!(validate_config(&json!({ "deny_suffixes": [1] })).is_err());
+        assert!(validate_config(&json!({ "projectid": "1" })).is_err());
     }
 
     #[test]
@@ -189,18 +159,47 @@ mod tests {
     }
 
     #[test]
-    fn metadata_declares_oauth_and_no_watcher() {
-        let meta = PosthogIntegration.metadata();
-        assert!(matches!(meta.auth, IntegrationAuth::OAuth));
+    fn metadata_says_this_integration_only_brings_tools() {
+        let meta = service().build().metadata();
+        assert_eq!(meta.id, "posthog");
+        assert_eq!(meta.display, "PostHog");
+        assert_eq!(meta.auth, IntegrationAuth::OAuth);
         assert_eq!(meta.env_var, Some("GOAT_POSTHOG_API_KEY"));
-        assert!(!meta.has_watcher);
+        assert!(service().compile.is_none());
+        assert!(service().defaults.is_none());
+        assert!(meta.setup.contains("does not watch PostHog"));
     }
 
     #[test]
-    fn setup_states_the_scope_limit_and_both_auth_paths() {
-        let meta = PosthogIntegration.metadata();
-        assert!(meta.setup.contains("does not watch"));
-        assert!(meta.setup.contains("GOAT_POSTHOG_API_KEY"));
-        assert!(meta.setup.contains("project_id"));
+    fn scope_headers_are_sent_only_when_configured() {
+        assert!(scope_headers(&json!({})).is_empty());
+        let headers = scope_headers(&json!({ "project_id": " 12345 ", "organization_id": "org" }));
+        assert_eq!(
+            headers.get(PROJECT_HEADER).map(String::as_str),
+            Some("12345")
+        );
+        assert_eq!(
+            headers.get(ORGANIZATION_HEADER).map(String::as_str),
+            Some("org")
+        );
+    }
+
+    #[test]
+    fn the_requested_scopes_are_declared_on_the_descriptor() {
+        assert!(service().credential.scopes.contains(&"query:read"));
+        assert!(service().credential.scopes.len() > 10);
+    }
+
+    #[test]
+    fn the_tool_policy_keeps_the_curated_allowlist_and_denies_destruction() {
+        let policy = service().tools;
+        assert_eq!(policy.prefix, PREFIX);
+        let Enable::Only(wanted) = policy.enable else {
+            panic!("posthog should enable a curated list");
+        };
+        assert!(wanted.contains(&"execute-sql"));
+        assert!(wanted.len() > 20);
+        assert!(policy.deny.contains(&NameRule::Suffix("-delete")));
+        assert!(policy.deny.contains(&NameRule::Suffix("-destroy")));
     }
 }

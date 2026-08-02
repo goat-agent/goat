@@ -19,11 +19,52 @@ pub struct Config {
     pub computer_use_enabled: bool,
     pub browser_enabled: bool,
     pub mouse_capture_enabled: bool,
-    pub remote: RemoteConfig,
+    #[serde(alias = "remote")]
+    pub devices: DeviceConfig,
+    pub remotes: std::collections::BTreeMap<String, RemoteEntry>,
+    pub default_remote: Option<String>,
     pub search: SearchConfig,
     pub web_fetch: WebFetchConfig,
     pub proxy: ProxyConfig,
     pub integrations: std::collections::BTreeMap<String, serde_json::Value>,
+    pub providers: std::collections::BTreeMap<String, UserProviderConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserProviderConfig {
+    pub endpoint: String,
+}
+
+#[derive(Clone)]
+pub struct UserProviders {
+    path: Option<std::path::PathBuf>,
+}
+
+impl UserProviders {
+    #[must_use]
+    pub fn detect() -> Self {
+        Self {
+            path: config_path(),
+        }
+    }
+
+    #[must_use]
+    pub fn at(path: std::path::PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    #[must_use]
+    pub fn load(&self) -> std::collections::BTreeMap<String, UserProviderConfig> {
+        let Some(path) = &self.path else {
+            return std::collections::BTreeMap::new();
+        };
+        let Ok(raw) = fs::read_to_string(path) else {
+            return std::collections::BTreeMap::new();
+        };
+        serde_json::from_str::<Config>(&raw)
+            .map(|config| config.providers)
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -55,18 +96,28 @@ pub use goat_search_provider::SearchAccountConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct RemoteConfig {
+pub struct DeviceConfig {
     pub bind: String,
     pub advertised: Vec<String>,
 }
 
-impl Default for RemoteConfig {
+impl Default for DeviceConfig {
     fn default() -> Self {
         Self {
             bind: "0.0.0.0:4317".to_owned(),
             advertised: Vec::new(),
         }
     }
+}
+
+pub const LOCAL_REMOTE: &str = "local";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteEntry {
+    pub host: String,
+    pub fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,11 +143,14 @@ impl Default for Config {
             computer_use_enabled: false,
             browser_enabled: false,
             mouse_capture_enabled: true,
-            remote: RemoteConfig::default(),
+            devices: DeviceConfig::default(),
+            remotes: std::collections::BTreeMap::new(),
+            default_remote: None,
             search: SearchConfig::default(),
             web_fetch: WebFetchConfig::default(),
             proxy: ProxyConfig::default(),
             integrations: std::collections::BTreeMap::new(),
+            providers: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -143,7 +197,35 @@ pub enum SettingsError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, ProxyConfig, RemoteConfig, SearchConfig, ThemeChoice, WebFetchConfig};
+    use super::{
+        Config, DeviceConfig, ProxyConfig, RemoteEntry, SearchConfig, ThemeChoice, UserProviders,
+        WebFetchConfig,
+    };
+
+    #[test]
+    fn parses_user_providers() {
+        let cfg = Config::from_json(
+            r#"{ "providers": { "my-proxy": { "endpoint": "https://llm.corp/v1" } } }"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.providers["my-proxy"].endpoint, "https://llm.corp/v1");
+    }
+
+    #[test]
+    fn user_providers_reads_fresh_from_disk() {
+        let path = std::env::temp_dir().join("goat-config-user-providers.json");
+        let _ = std::fs::remove_file(&path);
+        let user = UserProviders::at(path.clone());
+        assert!(user.load().is_empty());
+        std::fs::write(
+            &path,
+            r#"{ "providers": { "my-proxy": { "endpoint": "http://localhost:9/v1" } } }"#,
+        )
+        .unwrap();
+        assert_eq!(user.load()["my-proxy"].endpoint, "http://localhost:9/v1");
+        std::fs::write(&path, "{}").unwrap();
+        assert!(user.load().is_empty());
+    }
 
     #[test]
     fn defaults_to_dark() {
@@ -201,13 +283,36 @@ mod tests {
             computer_use_enabled: false,
             browser_enabled: true,
             mouse_capture_enabled: false,
-            remote: RemoteConfig::default(),
+            devices: DeviceConfig::default(),
+            remotes: std::collections::BTreeMap::from([(
+                "box".to_owned(),
+                RemoteEntry {
+                    host: "1.2.3.4:4317".to_owned(),
+                    fingerprint: "abcdef".to_owned(),
+                    last_dir: Some("/srv/work".to_owned()),
+                },
+            )]),
+            default_remote: Some("box".to_owned()),
             search: SearchConfig::default(),
             web_fetch: WebFetchConfig::default(),
             proxy: ProxyConfig::default(),
             integrations: std::collections::BTreeMap::new(),
+            providers: std::collections::BTreeMap::new(),
         };
         let raw = serde_json::to_string(&cfg).unwrap();
         assert_eq!(Config::from_json(&raw).unwrap(), cfg);
+    }
+
+    #[test]
+    fn the_old_remote_key_still_configures_the_listener() {
+        let cfg = Config::from_json(r#"{ "remote": { "bind": "0.0.0.0:5000" } }"#).unwrap();
+        assert_eq!(cfg.devices.bind, "0.0.0.0:5000");
+    }
+
+    #[test]
+    fn no_default_remote_means_local() {
+        let cfg = Config::default();
+        assert!(cfg.default_remote.is_none());
+        assert!(cfg.remotes.is_empty());
     }
 }

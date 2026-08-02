@@ -1,34 +1,25 @@
 [package]
 name = "goat-providers"
 version.workspace = true
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+authors.workspace = true
+publish.workspace = true
 
 [dependencies]
 goat-provider = { workspace = true }
 goat-auth = { workspace = true }
+goat-config = { workspace = true }
 goat-proxy = { workspace = true }
 tokio = { workspace = true }
-goat-provider-openai = { workspace = true }
+goat-provider-builtin = { workspace = true }
 goat-provider-openai-codex = { workspace = true }
 goat-provider-anthropic = { workspace = true }
 goat-provider-gemini = { workspace = true }
-goat-provider-local = { workspace = true }
-goat-provider-openrouter = { workspace = true }
-goat-provider-groq = { workspace = true }
-goat-provider-deepseek = { workspace = true }
-goat-provider-mistral = { workspace = true }
-goat-provider-zai = { workspace = true }
-goat-provider-zai-coding = { workspace = true }
-goat-provider-kimi = { workspace = true }
 goat-provider-kimi-code = { workspace = true }
-goat-provider-qwen = { workspace = true }
 goat-provider-xai = { workspace = true }
-goat-provider-minimax = { workspace = true }
-goat-provider-vercel = { workspace = true }
 
 [lints]
 workspace = true

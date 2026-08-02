@@ -6,14 +6,16 @@ use rmcp::service::ServiceError;
 use serde::Deserialize;
 
 pub mod auth;
+mod handshake;
 mod names;
 mod result;
 mod session;
 
+pub use handshake::START_TIMEOUT;
 pub use names::sanitize_component;
 pub use result::{McpContent, McpImage, McpToolResult};
 pub use rmcp::model::Tool as McpTool;
-pub use session::{CALL_TIMEOUT, HttpEndpoint, McpSession, START_TIMEOUT, http_client};
+pub use session::{CALL_TIMEOUT, HttpEndpoint, McpSession, http_client};
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

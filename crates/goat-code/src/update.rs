@@ -84,7 +84,8 @@ async fn drain_daemon(force: bool) -> color_eyre::Result<()> {
     if !socket.exists() {
         return Ok(());
     }
-    let Ok(sessions) = goat_client::status(&socket).await else {
+    let link = crate::remote::local()?;
+    let Ok(sessions) = goat_client::status(&link).await else {
         return Ok(());
     };
     let active = sessions
@@ -103,7 +104,7 @@ async fn drain_daemon(force: bool) -> color_eyre::Result<()> {
         ));
     }
     println!("Stopping the running daemon before update...");
-    let _ = goat_client::stop(&socket).await;
+    let _ = goat_client::stop(&link).await;
     Ok(())
 }
 

@@ -1,4 +1,5 @@
 pub mod diff;
+pub mod query;
 pub mod schema;
 pub mod watch;
 
@@ -6,6 +7,7 @@ pub mod watch;
 pub mod test_support;
 
 pub use schema::drop_placeholder_args;
+pub use watch::{CompiledWatch, WatchSpec};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,9 +17,8 @@ use goat_agent_tool::{ToolName, ToolRegistry};
 use goat_auth::CredentialStore;
 use goat_bus::EventBus;
 use goat_store::{NewObservation, Store, StoreError};
-use goat_types::{Event, IntegrationId, ProfileId};
+use goat_types::{AgentId, Event, IntegrationId};
 use thiserror::Error;
-use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 #[derive(Debug, Error)]
@@ -52,7 +53,7 @@ impl IntegrationBinding {
     }
 }
 
-pub type BindingMap = HashMap<ProfileId, IntegrationBinding>;
+pub type BindingMap = HashMap<AgentId, IntegrationBinding>;
 
 #[derive(Clone)]
 pub struct IntegrationRuntime {
@@ -64,34 +65,34 @@ pub struct IntegrationRuntime {
 impl IntegrationRuntime {
     pub async fn load_state(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         integration: &IntegrationId,
         account: &str,
         stream: &str,
     ) -> IntegrationResult<Option<String>> {
         self.store
-            .integration_state(persona, integration.as_str(), account, stream)
+            .integration_state(agent, integration.as_str(), account, stream)
             .await
             .map_err(|e| store_err(&e))
     }
 
     pub async fn save_state(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         integration: &IntegrationId,
         account: &str,
         stream: &str,
         state: &str,
     ) -> IntegrationResult<()> {
         self.store
-            .set_integration_state(persona, integration.as_str(), account, stream, state)
+            .set_integration_state(agent, integration.as_str(), account, stream, state)
             .await
             .map_err(|e| store_err(&e))
     }
 
     pub async fn record_observation(
         &self,
-        persona: ProfileId,
+        agent: AgentId,
         integration: &IntegrationId,
         account: &str,
         external_ref: &str,
@@ -100,7 +101,7 @@ impl IntegrationRuntime {
     ) -> IntegrationResult<i64> {
         self.store
             .record_observation(NewObservation {
-                persona,
+                agent,
                 integration: integration.as_str().to_string(),
                 account: account.to_string(),
                 external_ref: external_ref.to_string(),
@@ -139,7 +140,6 @@ pub struct IntegrationMetadata {
     pub secret_label: &'static str,
     pub env_var: Option<&'static str>,
     pub setup: &'static str,
-    pub has_watcher: bool,
 }
 
 #[async_trait]
@@ -155,15 +155,26 @@ pub trait Integration: Send + Sync + 'static {
         bindings: Arc<BindingMap>,
     ) -> Vec<ToolName>;
 
-    fn spawn_watcher(
-        &self,
-        persona: ProfileId,
-        binding: IntegrationBinding,
-        runtime: IntegrationRuntime,
-        cancel: CancellationToken,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        let _ = (persona, binding, runtime, cancel);
+    fn default_watch(&self, binding: &IntegrationBinding) -> Vec<WatchSpec> {
+        let _ = binding;
+        Vec::new()
+    }
+
+    fn watch_vocabulary(&self) -> Option<&'static query::WatchVocabulary> {
         None
+    }
+
+    fn compile_watch(
+        &self,
+        binding: &IntegrationBinding,
+        runtime: &IntegrationRuntime,
+        spec: &WatchSpec,
+    ) -> IntegrationResult<CompiledWatch> {
+        let _ = (binding, runtime, spec);
+        Err(IntegrationError::Config(format!(
+            "{} does not support watch queries",
+            self.id()
+        )))
     }
 
     async fn verify(
@@ -243,14 +254,11 @@ mod tests {
     #[tokio::test]
     async fn observation_round_trip_through_runtime() {
         let (_d, rt) = runtime().await;
-        let persona = ProfileId::from_slug("test");
-        rt.store
-            .ensure_persona(persona, "test", "test")
-            .await
-            .unwrap();
+        let agent = AgentId::from_slug("test");
+        rt.store.ensure_agent(agent, "test", "test").await.unwrap();
         let id = rt
             .record_observation(
-                persona,
+                agent,
                 &IntegrationId::from_static("linear"),
                 "default",
                 "linear/default:issue:US-1",
@@ -267,24 +275,21 @@ mod tests {
     #[tokio::test]
     async fn state_round_trip_through_runtime() {
         let (_d, rt) = runtime().await;
-        let persona = ProfileId::from_slug("test");
-        rt.store
-            .ensure_persona(persona, "test", "test")
-            .await
-            .unwrap();
+        let agent = AgentId::from_slug("test");
+        rt.store.ensure_agent(agent, "test", "test").await.unwrap();
         let id = IntegrationId::from_static("linear");
 
         assert!(
-            rt.load_state(persona, &id, "default", "assigned")
+            rt.load_state(agent, &id, "default", "assigned")
                 .await
                 .unwrap()
                 .is_none()
         );
-        rt.save_state(persona, &id, "default", "assigned", "{\"w\":1}")
+        rt.save_state(agent, &id, "default", "assigned", "{\"w\":1}")
             .await
             .unwrap();
         assert_eq!(
-            rt.load_state(persona, &id, "default", "assigned")
+            rt.load_state(agent, &id, "default", "assigned")
                 .await
                 .unwrap()
                 .as_deref(),

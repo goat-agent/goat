@@ -11,6 +11,9 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
+pub const REMOTE_HELP: &str =
+    "Daemon to talk to; `local` is this machine. Defaults to `goat remote use`";
+
 #[derive(clap::Args, Debug, Default)]
 #[command(about = "`goat code`: launch the coding TUI, or run one of its subcommands.")]
 pub struct CodeArgs {
@@ -19,6 +22,16 @@ pub struct CodeArgs {
 
     #[arg(long, short = 'w', value_name = "NAME")]
     pub worktree: Option<String>,
+
+    #[arg(long, value_name = "NAME", help = REMOTE_HELP)]
+    pub remote: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Directory to open on the daemon host; remembered per remote"
+    )]
+    pub dir: Option<String>,
 
     #[arg(long, short = 'c')]
     pub r#continue: bool,
@@ -66,31 +79,82 @@ pub enum Command {
   goat provider list
   goat provider info <provider>
   goat provider login <provider> --key <key>
+  goat provider add <name> --endpoint <url> [--key <key>]
   goat provider logout <provider> <account>"
     )]
     Provider(ProviderCommand),
+    #[command(
+        about = "Apply config changes to the running daemon",
+        after_help = "Edit the files under ~/.goat, then run this. Config is validated first: \
+when it does not check out nothing is replaced and the running agents keep their old settings."
+    )]
+    Reload {
+        #[arg(long, short, help = "Reload only this agent")]
+        agent: Option<String>,
+    },
     #[command(about = "Update goat")]
     Update {
         #[arg(long)]
         force: bool,
     },
-    #[command(subcommand, about = "Manage the local daemon")]
-    Daemon(DaemonCommand),
-    #[command(subcommand, about = "Manage paired remote devices")]
+    #[command(about = "Manage the daemon")]
+    Daemon {
+        #[arg(long, value_name = "NAME", help = REMOTE_HELP)]
+        remote: Option<String>,
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
+    #[command(
+        subcommand,
+        about = "Manage devices allowed to reach this daemon",
+        after_help = "Run these on the machine the daemon runs on."
+    )]
+    Device(DeviceCommand),
+    #[command(
+        subcommand,
+        about = "Manage the daemons this machine connects to",
+        after_help = "`local` always exists and names the daemon on this machine.
+
+Common flow:
+  goat device add laptop      (on the server; prints a code and a fingerprint)
+  goat remote add box --host <ip>:4317 --fingerprint <fp> --code <code>
+  goat remote use local       (go back to the local daemon)"
+    )]
     Remote(RemoteCommand),
 }
 
-#[derive(Subcommand)]
-pub enum RemoteCommand {
-    #[command(about = "Pair a remote device")]
-    Pair {
-        #[arg(long, short)]
+#[derive(Subcommand, Debug)]
+pub enum DeviceCommand {
+    #[command(about = "Mint a pairing code for a new device")]
+    Add {
+        #[arg(help = "Label to remember the device by")]
         label: Option<String>,
     },
-    #[command(visible_alias = "ls", about = "List paired remote devices")]
+    #[command(visible_alias = "ls", about = "List paired devices")]
     List,
-    #[command(visible_alias = "rm", about = "Revoke a remote device")]
-    Revoke { device: String },
+    #[command(visible_alias = "rm", about = "Revoke a paired device")]
+    Remove { device: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RemoteCommand {
+    #[command(about = "Pair with a daemon and remember it under a name")]
+    Add {
+        #[arg(help = "Name to remember this daemon by")]
+        name: String,
+        #[arg(long, value_name = "HOST:PORT", help = "Address the daemon listens on")]
+        host: String,
+        #[arg(long, help = "Server fingerprint printed by `goat device add`")]
+        fingerprint: String,
+        #[arg(long, help = "Pairing code printed by `goat device add`")]
+        code: String,
+    },
+    #[command(visible_alias = "ls", about = "List known daemons")]
+    List,
+    #[command(visible_alias = "rm", about = "Forget a daemon")]
+    Remove { name: String },
+    #[command(about = "Make a daemon the default for this machine")]
+    Use { name: String },
 }
 
 #[derive(Subcommand)]
@@ -128,6 +192,28 @@ pub enum ProviderCommand {
         key: Option<String>,
         #[arg(long, value_name = "URL", help = "Provider endpoint override")]
         endpoint: Option<String>,
+    },
+    #[command(
+        about = "Add a custom OpenAI-compatible provider",
+        after_help = "Examples:
+  goat provider add my-proxy --endpoint https://llm.corp/v1 --key sk-...
+  goat provider add my-vllm --endpoint http://192.168.1.5:8000/v1
+  goat provider add"
+    )]
+    Add {
+        #[arg(help = "Provider name")]
+        name: Option<String>,
+        #[arg(long, value_name = "URL", help = "OpenAI-compatible base URL")]
+        endpoint: Option<String>,
+        #[arg(long, help = "API key; omit for keyless endpoints")]
+        key: Option<String>,
+        #[arg(long, short, help = "Account name to store, default: default")]
+        account: Option<String>,
+    },
+    #[command(about = "Remove a custom provider and its credentials")]
+    Remove {
+        #[arg(help = "Custom provider name")]
+        name: String,
     },
     #[command(about = "Show setup details for one provider")]
     Info { provider: String },
@@ -446,7 +532,57 @@ mod tests {
         let cli = Cli::try_parse_from(["goat", "daemon", "ls"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Command::Daemon(DaemonCommand::List))
+            Some(Command::Daemon {
+                remote: None,
+                command: DaemonCommand::List
+            })
+        ));
+    }
+
+    #[test]
+    fn daemon_takes_a_remote_target() {
+        let cli = Cli::try_parse_from(["goat", "daemon", "--remote", "box", "ls"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Daemon { remote: Some(name), command: DaemonCommand::List }) if name == "box"
+        ));
+    }
+
+    #[test]
+    fn device_commands_take_no_remote_target() {
+        assert!(Cli::try_parse_from(["goat", "device", "--remote", "box", "ls"]).is_err());
+    }
+
+    #[test]
+    fn code_takes_a_remote_target_and_a_dir() {
+        let cli =
+            Cli::try_parse_from(["goat", "code", "--remote", "box", "--dir", "/srv/w"]).unwrap();
+        let Some(Command::Code(args)) = cli.command else {
+            panic!("expected code");
+        };
+        assert_eq!(args.remote.as_deref(), Some("box"));
+        assert_eq!(args.dir.as_deref(), Some("/srv/w"));
+    }
+
+    #[test]
+    fn remote_add_needs_host_fingerprint_and_code() {
+        assert!(Cli::try_parse_from(["goat", "remote", "add", "box"]).is_err());
+        let cli = Cli::try_parse_from([
+            "goat",
+            "remote",
+            "add",
+            "box",
+            "--host",
+            "1.2.3.4:4317",
+            "--fingerprint",
+            "abc",
+            "--code",
+            "xyz",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Remote(RemoteCommand::Add { name, .. })) if name == "box"
         ));
     }
 

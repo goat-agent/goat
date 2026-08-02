@@ -1,17 +1,25 @@
 use goat_protocol::{
     Effort, Event, ModelTarget, NotifyKind, RewindDraft, RewindPoint, RewindScope, SkillInfo,
-    ThreadSummary, ToolCall, ToolCallId, ToolOutcome, TranscriptEntry,
+    SubagentGroupEntry, SubagentGroupMember, ThreadSummary, ToolCall, ToolCallId, ToolOutcome,
+    TranscriptEntry,
 };
 use goat_provider::{ContentBlock, Message, MessageRole};
 use goat_store::CodeStore as Store;
-use goat_tools::ToolRegistry;
 use tokio::sync::mpsc;
 
 use crate::{
     Ctx,
+    delegate::{SUBAGENT_TOOL_NAME, subagent_group_member},
     prompt::build_system_prompt,
     tools_exec::{call_display, summarize_line},
 };
+
+struct RestoredToolUse {
+    call: ToolCall,
+    member: Option<SubagentGroupMember>,
+    group: Option<ToolCallId>,
+    group_size: usize,
+}
 
 pub(crate) fn parse_content_blocks(body: &str) -> Vec<ContentBlock> {
     serde_json::from_str::<Vec<ContentBlock>>(body).unwrap_or_else(|_| {
@@ -22,7 +30,7 @@ pub(crate) fn parse_content_blocks(body: &str) -> Vec<ContentBlock> {
 }
 
 pub(crate) async fn resolve_thread_cwd(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     stored_thread: Option<i64>,
 ) -> std::path::PathBuf {
     match stored_thread {
@@ -34,8 +42,8 @@ pub(crate) async fn resolve_thread_cwd(
             .flatten()
             .map(|thread| thread.cwd)
             .filter(|cwd| !cwd.is_empty())
-            .map_or_else(|| ctx.cwd.to_path_buf(), std::path::PathBuf::from),
-        None => ctx.cwd.to_path_buf(),
+            .map_or_else(|| ctx.cwd.clone(), std::path::PathBuf::from),
+        None => ctx.cwd.clone(),
     }
 }
 
@@ -106,18 +114,15 @@ pub(crate) async fn handle_rename(
     }
 }
 
-pub(crate) async fn handle_list_rewind_points(
-    checkpoints: &crate::checkpoint::CheckpointTracker,
-    thread_id: Option<i64>,
-    events: &mpsc::Sender<Event>,
-) {
+pub(crate) async fn handle_list_rewind_points(ctx: &Ctx, thread_id: Option<i64>) {
+    let events = &ctx.events;
     let Some(thread_id) = thread_id else {
         let _ = events
             .send(Event::RewindPointsListed { points: Vec::new() })
             .await;
         return;
     };
-    let stored = match checkpoints.points(thread_id).await {
+    let stored = match ctx.checkpoints.points(thread_id).await {
         Ok(points) => points,
         Err(err) => {
             tracing::warn!(%err, "failed to list rewind checkpoints");
@@ -146,24 +151,18 @@ pub(crate) async fn handle_list_rewind_points(
     let _ = events.send(Event::RewindPointsListed { points }).await;
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_rewind(
-    store: &Store,
-    checkpoints: &crate::checkpoint::CheckpointTracker,
-    skills: &[SkillInfo],
-    tools: &ToolRegistry,
-    instructions: Option<&str>,
-    date: &str,
+    ctx: &Ctx,
     checkpoint_id: i64,
     scope: RewindScope,
     state: &mut crate::SessionState,
-    events: &mpsc::Sender<Event>,
 ) {
+    let events = &ctx.events;
     let Some(thread_id) = state.thread_id else {
         rewind_error(events, "no active conversation to rewind").await;
         return;
     };
-    let points = match checkpoints.points(thread_id).await {
+    let points = match ctx.checkpoints.points(thread_id).await {
         Ok(points) => points,
         Err(err) => {
             tracing::warn!(%err, "failed to read rewind checkpoint");
@@ -190,11 +189,12 @@ pub(crate) async fn handle_rewind(
     );
     let mut report = None;
     if restore_code {
-        let Some(thread) = store.get_thread(thread_id).await.ok().flatten() else {
+        let Some(thread) = ctx.store.get_thread(thread_id).await.ok().flatten() else {
             rewind_error(events, "could not resolve the checkpoint workspace").await;
             return;
         };
-        match checkpoints
+        match ctx
+            .checkpoints
             .restore(thread_id, checkpoint_id, std::path::Path::new(&thread.cwd))
             .await
         {
@@ -207,7 +207,8 @@ pub(crate) async fn handle_rewind(
         }
     }
     if restore_conversation {
-        if let Err(err) = store
+        if let Err(err) = ctx
+            .store
             .set_thread_head(
                 thread_id,
                 checkpoint.parent_message_id,
@@ -219,18 +220,8 @@ pub(crate) async fn handle_rewind(
             rewind_error(events, "could not restore the conversation").await;
             return;
         }
-        checkpoints.clear();
-        handle_resume(
-            store,
-            skills,
-            tools,
-            instructions,
-            date,
-            thread_id,
-            state,
-            events,
-        )
-        .await;
+        ctx.checkpoints.clear();
+        handle_resume(ctx, thread_id, state).await;
         let _ = events
             .send(Event::ConversationRewound {
                 draft: RewindDraft {
@@ -275,17 +266,13 @@ async fn rewind_error(events: &mpsc::Sender<Event>, message: &str) {
         .await;
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn handle_resume(
-    store: &Store,
-    skills: &[SkillInfo],
-    tools: &ToolRegistry,
-    instructions: Option<&str>,
-    date: &str,
-    tid: i64,
-    state: &mut crate::SessionState,
-    events: &mpsc::Sender<Event>,
-) {
+pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate::SessionState) {
+    let store = &ctx.store;
+    let skills: &[SkillInfo] = &ctx.skills;
+    let tools = &ctx.tools;
+    let instructions = ctx.instructions.as_deref();
+    let date = ctx.date.as_str();
+    let events = &ctx.events;
     let thread = match store.get_thread(tid).await {
         Ok(Some(thread)) => thread,
         Ok(None) => {
@@ -352,7 +339,9 @@ pub(crate) async fn handle_resume(
         .collect();
     let mut parsed: Vec<(i64, MessageRole, Vec<ContentBlock>)> = Vec::new();
     let mut entries: Vec<TranscriptEntry> = Vec::new();
-    let mut tool_uses: std::collections::HashMap<String, (String, String)> =
+    let mut tool_uses: std::collections::HashMap<String, RestoredToolUse> =
+        std::collections::HashMap::new();
+    let mut agent_groups: std::collections::HashMap<ToolCallId, Vec<SubagentGroupEntry>> =
         std::collections::HashMap::new();
     let mut tool_seq: u64 = 0;
     let mut next_compaction = 0usize;
@@ -389,6 +378,20 @@ pub(crate) async fn handle_resume(
             _ => continue,
         };
         let content = parse_content_blocks(&stored.body);
+        let tool_count = content
+            .iter()
+            .filter(|block| matches!(block, ContentBlock::ToolUse { .. }))
+            .count();
+        let agent_group_size = if role == MessageRole::Assistant
+            && tool_count > 1
+            && content.iter().all(|block| {
+                !matches!(block, ContentBlock::ToolUse { name, .. } if name != SUBAGENT_TOOL_NAME)
+            }) {
+            tool_count
+        } else {
+            0
+        };
+        let mut subagent_group = None;
         for block in &content {
             match block {
                 ContentBlock::Text { text } => match role {
@@ -414,33 +417,59 @@ pub(crate) async fn handle_resume(
                     MessageRole::System => {}
                 },
                 ContentBlock::ToolUse { id, name, input } => {
-                    tool_uses.insert(id.clone(), (name.clone(), input.to_string()));
+                    tool_seq += 1;
+                    let call_id = ToolCallId(tool_seq);
+                    let input = input.to_string();
+                    let group = if agent_group_size > 0 {
+                        Some(*subagent_group.get_or_insert(call_id))
+                    } else {
+                        None
+                    };
+                    let member = group.map(|_| subagent_group_member(call_id, &input));
+                    tool_uses.insert(
+                        id.clone(),
+                        RestoredToolUse {
+                            call: ToolCall {
+                                id: call_id,
+                                name: name.clone(),
+                                display: call_display(tools, name, &input),
+                            },
+                            member,
+                            group,
+                            group_size: agent_group_size,
+                        },
+                    );
                 }
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
                     is_error,
                 } => {
-                    if let Some((name, input)) = tool_uses.remove(tool_use_id) {
-                        tool_seq += 1;
-                        let display = call_display(tools, &name, &input);
+                    if let Some(restored) = tool_uses.remove(tool_use_id) {
                         let summary = if *is_error {
                             summarize_line(&ContentBlock::tool_result_text(content))
                         } else {
                             None
                         };
-                        entries.push(TranscriptEntry::Tool {
-                            call: ToolCall {
-                                id: ToolCallId(tool_seq),
-                                name,
-                                display,
-                            },
-                            outcome: ToolOutcome {
-                                ok: !is_error,
-                                summary,
-                                image: None,
-                            },
-                        });
+                        let outcome = ToolOutcome {
+                            ok: !is_error,
+                            summary,
+                            image: None,
+                            git: None,
+                        };
+                        if let (Some(group), Some(member)) = (restored.group, restored.member) {
+                            let grouped = agent_groups.entry(group).or_default();
+                            grouped.push(SubagentGroupEntry { member, outcome });
+                            if grouped.len() == restored.group_size {
+                                let members = agent_groups.remove(&group).unwrap_or_default();
+                                entries.push(TranscriptEntry::SubagentGroup { group, members });
+                            }
+                        } else {
+                            entries.push(TranscriptEntry::Tool {
+                                call: restored.call,
+                                outcome,
+                            });
+                        }
                     }
                 }
                 ContentBlock::Thinking { text, .. } => {
@@ -469,6 +498,7 @@ pub(crate) async fn handle_resume(
                 skills,
                 instructions,
                 date,
+                None,
             ),
         ),
         None,
@@ -515,30 +545,13 @@ pub(crate) async fn handle_resume(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn handle_resume_latest(
-    store: &Store,
-    skills: &[SkillInfo],
-    tools: &ToolRegistry,
-    instructions: Option<&str>,
-    date: &str,
-    cwd: &std::path::Path,
-    state: &mut crate::SessionState,
-    events: &mpsc::Sender<Event>,
-) {
-    let cwd_key = cwd.display().to_string();
+pub(crate) async fn handle_resume_latest(ctx: &crate::Ctx, state: &mut crate::SessionState) {
+    let store = &ctx.store;
+    let events = &ctx.events;
+    let cwd_key = ctx.cwd.display().to_string();
     match store.latest_thread_in(cwd_key).await {
         Ok(Some(thread)) => {
-            handle_resume(
-                store,
-                skills,
-                tools,
-                instructions,
-                date,
-                thread.id,
-                state,
-                events,
-            )
-            .await;
+            handle_resume(ctx, thread.id, state).await;
         }
         Ok(None) => {
             let _ = events

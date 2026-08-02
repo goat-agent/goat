@@ -202,11 +202,11 @@ fn fence_for(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goat_types::{ChannelId, InstanceId, ProfileId, ThreadId};
+    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
 
     fn ctx(root: PathBuf) -> ToolContext {
         ToolContext {
-            persona: ProfileId::new(),
+            agent: AgentId::new(),
             thread: ThreadId::new(ChannelId::new("test"), InstanceId::new(), "x"),
             goat_root: root,
             read_state: Arc::default(),

@@ -2,11 +2,13 @@
 
 goat is a single-user, single-host personal AI product in Rust with two capabilities:
 
-- **agent** — an autonomous actor holding a resident Discord gateway connection. It reacts to
+- **agent** — an autonomous actor holding a resident chat connection (Discord gateway, Slack Socket
+  Mode). It reacts to
   messages, runs `once`/`cron` tasks it registers for itself through the `schedule` tool,
   consolidates memory nightly at 04:00, and delegates coding to the code engine in-process.
 - **code** — a terminal coding agent rendered as a full-screen TUI, always spoken to through the
-  resident daemon.
+  resident daemon. The daemon it speaks to need not be on this machine: `goat remote` names other
+  hosts' daemons and `goat code --remote <name>` attaches to one over mTLS.
 
 One binary (`goat`), one daemon, one database (`~/.goat/goat.db`), one config tree (`~/.goat/`).
 `CLAUDE.md` imports this file. When a crate grows its own conventions, add
@@ -44,7 +46,7 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
 - **Log output goes to a rolling file, never stdout/stderr** — stdout corrupts the full-screen TUI.
   Use `tracing`; `GOAT_LOG` sets the filter and is the only environment variable the product reads.
   Deliberate CLI output on non-TUI paths goes through `goat-console`, not `tracing`.
-- `ProfileId` is explicit, constructor-injected, never ambient. `ProfileId::from_slug` must stay
+- `AgentId` is explicit, constructor-injected, never ambient. `AgentId::from_slug` must stay
   deterministic; the `GOAT_NAMESPACE` constant (a fixed `Uuid`, not an environment variable) must
   never change — it keys every stored id.
 - `goat-console` is the only styling and prompt system. Do not add a second, and do not push domain
@@ -57,38 +59,93 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
 
 ## Extension boundaries
 
-- Providers live in `goat-provider-<name>`, channels in `goat-channel-<name>`, integrations in
-  `goat-integration-<name>`, search backends in `goat-search-provider-<name>`. Shared crates must
-  never know a concrete name (`openai`, `discord`, …).
+- Data-only LLM providers are `Row` consts in `goat-provider-builtin`; a `goat-provider-<name>`
+  crate exists only when the provider needs code — its own wire format (anthropic, gemini), an
+  OAuth flow or runtime headers (openai-codex, kimi-code), or credential-kind dispatch (xai).
+  Channels live in `goat-channel-<name>`, integrations in `goat-integration-<name>`, search
+  backends in `goat-search-provider-<name>`. Shared crates must never know a concrete name
+  (`openai`, `discord`, …) — the provider table and `Registry::load_metered` are the two places
+  provider names may appear.
 - Provider-specific request bodies, streaming, auth, and error mapping stay inside each provider
   crate. No shared provider "quirks" flags.
 - **Registration is not uniform — check before assuming `inventory` picks your crate up:**
-  - channels and integrations: `inventory` + `pub const ID` via `from_static(...)`.
+  - channels and integrations: `inventory` + `pub const ID` via `from_static(...)`. A channel's
+    `ChannelFactory` also carries `metadata: fn() -> ChannelMetadata`, which is how it declares its
+    display name, its setup text, and one `SecretSpec` per secret it needs — the CLI drives its
+    prompts off that list, so a channel that forgets it gets asked for nothing.
+    An integration's `ctor` returns `service().build()`, not a hand-written type: every hosted-MCP
+    integration is a `McpService` descriptor and `McpIntegration` is the only `impl Integration`
+    among them. `goat-integration-github` is the exception — no MCP, so it implements the trait
+    itself and uses only the watch driver.
   - agent commands: `inventory`, but the constant is a plain `pub const ID: &str`.
   - agent tools: `inventory` + `pub const NAME: ToolName` for `fs`/`shell`/`skill` only. `goal`,
     `memory`, `pty`, `code`, and `schedule` need injected runtime deps and are wired by explicit
     `register()` calls in `goat-runtime`.
-  - LLM providers and search providers: **no `inventory` at all.** `Registry::load_metered` and
-    `goat-search-providers::metadata` build hardcoded lists, and identity is a runtime
-    `ProviderId::from("…")`. Adding a provider means editing that list by hand.
+  - LLM providers and search providers: **no `inventory` at all.** `Registry::load_metered` is one
+    ordered list mixing `goat_provider_builtin::build(&rows::…)` calls (data-only providers) with
+    the five code-provider crates, and identity is a runtime `ProviderId::from("…")`. Adding a
+    data-only provider means adding a `Row` const and one registry line. The registry's observable
+    surface is frozen by `goat-providers`' fingerprint test; after a deliberate provider change,
+    regenerate with `cargo test -p goat-providers fingerprint::regenerate -- --ignored`.
+    User-declared providers — the `providers` map in `config.json`, written by
+    `goat provider add`/`remove`, never by hand — join the same pipeline at load time as
+    OpenAI-compatible chat providers with live `/models` discovery; their keys stay in
+    `credentials.json`. `Registry` reads them through the `UserProviders` handle
+    (constructor-injected like `CredentialStore`, re-read on every registry build).
+    `goat-search-providers::metadata` stays a hardcoded list.
   - code tools: `ToolRegistry::builtin()` aggregates fs, shell, search, skill, and web.
     `goat-tool-browser` and `goat-tool-computer` bypass it and are wired directly into
     `GoatAgent::new` behind `config.browser_enabled` / `config.computer_use_enabled`.
-- **An integration owes neither tools nor a watcher.** Tools are usually discovered from a hosted
-  MCP server's `list_tools`, and a watcher polls and publishes `Event::IntegrationUpdate` on
-  deterministic diffs — but a connection plus a watcher is already a complete integration
-  (`goat-integration-github` registers no tools; the agent reaches GitHub through `shell` and `gh`),
-  and so is a connection plus tools (`goat-integration-posthog` has no watcher). Watchers own
-  polling and diffing, never the policy of what is worth watching — that is declared per-agent in
-  the binding config, and several watchers decline to spawn until it is.
+- **A channel owes no tools.** It is a presence, not a reach: it holds a resident connection under a
+  bot identity and turns inbound traffic into `IncomingMessage`. Workspace-wide search and posting
+  where the bot is not a member belong to the matching integration. `slack` is deliberately both —
+  `goat-channel-slack` is the bot people address (`xoxb-` + `xapp-`, Socket Mode) and
+  `goat-integration-slack` reaches in as the owner (`xoxp-`, hosted MCP). Their token capabilities
+  are disjoint, so the two cannot be merged and neither is redundant.
+- **An integration owes neither tools nor a watch capability.** Tools are usually discovered from a
+  hosted MCP server's `list_tools` — but a connection plus watch hooks is already a complete
+  integration (`goat-integration-github` registers no tools; the agent reaches GitHub through
+  `shell` and `gh`), and so is a connection plus tools (`goat-integration-posthog` has no watch
+  hooks).
+- **Watch policy is a query DSL, declared per-agent in the top-level `watch` section** of the
+  agent's `config.json` — named workflows, each a list of `{source, query, stream?}` entries; one
+  driver task per workflow polls every source per tick and publishes one merged
+  `Event::WorkflowUpdate` (capped at 3 items, overflow counted). The section absent means every
+  bound integration's `default_watch` runs as its own single-source workflow (linear:
+  `assigned` → `assignee:@me is:open`; github: `review`/`assigned`); `"watch": {}` disables
+  everything; a present section replaces defaults, never merges. The grammar lives in
+  `goat-integration::query` and is closed — leaves own only a static `WatchVocabulary` (which keys
+  they understand) and a `compile_watch` hook that turns a resolved query into a `CompiledWatch`.
+  Both are declared together: a leaf implementing `Integration` overrides `watch_vocabulary`, and a
+  hosted-MCP leaf passes the pair to `McpService::watch(&VOCABULARY, compile)` — there is no way to
+  set one without the other, which is what keeps `goat_runtime::validate_watch` honest. That
+  validator resolves a query against the vocabulary alone, so it needs no store, bus, or network and
+  runs anywhere (`goat doctor`, the config-writing CLIs, `goat reload`); `compile_watch` stays
+  authoritative and runs only when a plan is actually built.
+  `Residue::Keep` leaves (github, sentry, slack, langfuse) forward unrecognized tokens verbatim to
+  the service's native search language — including bare terms, so their `TermPolicy` never fires;
+  `Residue::Reject` leaves (linear, notion, tiro) hard-error on unknown keys, and only there does
+  `TermPolicy::Reject` refuse free text. `limit:` is resolver-reserved, `@me` is the one
+  self-reference, and stream names key persisted `WatchState`, so default stream names never change.
 - Connections are global; `IntegrationAuth` decides how one is established — a pasted `Secret`, an
   `OAuth` round trip, or `External`, meaning a host tool such as `gh` owns the credential and the
   `config.json` entry is itself the connection marker. Per-agent binding lives in the agent's
-  `integrations` config map. Raw observations persist losslessly in `integration_observations`.
+  `integrations` config map and now carries only connection-scoped keys (`account`,
+  `organization_slug`, `user_id`, `host`, …) — watch policy keys moved to the `watch` section, and
+  a stale one fails validation with a pointer there. Raw observations persist losslessly in
+  `integration_observations`, and the `observation` agent tool reads them back — a briefing cites
+  `observation:<id>`, and that reference resolves.
+- Channel bindings are per-agent, and **no secret ever lives in `config.json`.** The `channels.<kind>`
+  map records *that* an agent uses a channel — an empty object is a complete binding, so never delete
+  one for looking empty — while every secret sits in `credentials.json` under
+  `{ service: channel, provider: <kind>, account: <agent slug>, slot: <secret name> }`. `slot` is the
+  axis that lets one binding hold several secrets; `account` is the agent, not a workspace. A boot
+  that finds a declared slot sitting in `config.json` moves it into the store and rewrites the file
+  (`goat-runtime::channel_secrets`); the stored value always wins over a stale config one.
 
 ## Where things live
 
-`crates/` is flat, 94 crates, every one prefixed `goat-`. The prefix tells you the family:
+`crates/` is flat, 101 crates, every one prefixed `goat-`. The prefix tells you the family:
 `goat-agent*` is the autonomous actor, `goat-code`/`goat-core`/`goat-engine`/`goat-tui` and the
 `goat-tool-*`/`goat-command-*` families are coding, and `goat-provider*`/`goat-store`/`goat-config`/
 `goat-auth`/`goat-console`/`goat-protocol`/`goat-proxy` are shared. `ls crates/` beats any list
@@ -98,8 +155,27 @@ Placements that contradict the naming:
 
 - `goat-skill` (singular) is a code crate; `goat-skills` (plural) is an agent crate. Different
   scopes, different parsers.
-- `goat-provider-openai-compat` registers nothing — it is the shared base thirteen OpenAI-compatible
-  crates build on. `goat-provider-local` registers three providers (ollama, lmstudio, llama.cpp).
+- `goat-provider-openai-compat` registers nothing — it is the chat/Responses wire base.
+  `goat-provider-builtin` is the product's provider table built over it: one `Row` per data-only
+  provider, covering thirteen hosted providers plus the local trio (ollama, lmstudio, llama-cpp).
+- `goat-integration-mcp` registers nothing either — same idea, one family over. It is the shared base
+  every hosted-MCP integration builds on, so a leaf is a `McpService` descriptor plus its parser.
+- `goat-remote` holds **both halves** of the mTLS surface: `server` (accept, pair, verify) and
+  `client` (enroll, connect). `ws::adapt` is the one WebSocket↔frame adapter, used in both
+  directions. Keep new transport work here rather than growing a second remote path — the daemon
+  serves remote clients through the same `serve_connection` as the local socket, and that is what
+  keeps the two from drifting.
+- `goat-mcp` is the **protocol** crate: transports (stdio and streamable HTTP), session lifecycle,
+  result extraction, error classification, OAuth. It knows neither tool system — `goat-engine` owns
+  the `goat_tool::Tool` adapter for local stdio servers, `goat-integration-mcp` owns the
+  `goat_agent_tool::ToolHandler` passthrough for hosted ones. Do not put a tool adapter in it.
+  Its `handshake` module is the only place that names a protocol revision or decides which one to
+  speak; no other crate mentions an MCP version.
+- `goat-integration`'s `watch` module is the one polling driver (`run_workflow`), and it does not
+  know rmcp — that is why `goat-integration-github`, which shells out to `gh`, uses it too. Diff
+  state stays per source under the unchanged `(agent, integration, account, stream)` key even
+  inside a multi-source workflow. `diff::{REBUILD, RETAIN, SETTLE}` are the three re-fire policies;
+  they encode opposite intents on purpose, so pick one rather than unifying them.
 - `goat-embedding` is agent-side and reaches memory only through `goat-runtime`'s adapter;
   `goat-memory` defines its own `Embedder` trait and does not depend on it.
 - `goat-command-*` is the **TUI** slash-command family. Channel slash commands are
@@ -111,17 +187,37 @@ Placements that contradict the naming:
 Everything is under `~/.goat/`, laid out by `goat-config`'s `GoatPaths`; `HOME` is the only thing
 that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The parts that mislead:
 
-- **Memory and skills are not per-agent.** `agents/<slug>/` holds only `agent.md` and `config.json`.
-  Memory is one global tree at `memory/<scope>/` keyed by `Scope` (`owner`, `self`, `domain/<name>`);
-  per-persona skills live at `profiles/<slug>/skills/`.
-- `~/.goat/agents/*.md` does double duty: `AgentRegistry::load` also scans it (plus the project-local
-  `.goat/agents/`) as the **code engine's subagent registry**.
+- **Memory is not per-agent.** `agents/<slug>/` holds `agent.md`, `config.json`, and that agent's
+  `skills/`. Memory is one global tree at `memory/<scope>/` keyed by `Scope` (`owner`, `self`,
+  `domain/<name>`).
+- Subagent definitions for the code engine live at `~/.goat/subagents/*.md` plus the project-local
+  `.goat/subagents/`, loaded by `SubagentRegistry::load`. Boot migrates the old layout (loose
+  `agents/*.md`, `profiles/<slug>/skills/`) via `goat-runtime::layout`.
 - `~/.agents/skills` is a third, separate skill scope. `<repo>/.goat/worktrees/` is created inside
   the *target* repository and is unrelated to the home tree.
 - `goat.db` is one file holding three table sets: unprefixed agent tables, `code_`, and `proxy_`.
 
 ## Non-obvious behavior
 
+- **Config is applied by `goat reload`, not by writing the file.** A `Supervisor` in `goat-runtime`
+  owns one `CancellationToken` child per agent plus that agent's `config.json` fingerprint, so a
+  reload re-reads config, validates it, and respawns only the agents whose own config changed. When
+  the top-level `config.json` changed its `integrations` or `providers`, the shared world — provider
+  registry, connections, integration tools — is rebuilt and every agent respawns, because the
+  `ToolRegistry` handed to each `Brain` is immutable once built. Validation failure replaces nothing:
+  the running agents keep the settings they already had. That guarantee is why the reload asks the
+  filesystem which agents exist rather than trusting `scan_agents`, which silently drops an agent
+  whose `config.json` stopped parsing — a directory that still holds an `agent.md` is a load failure
+  to report, not a removal to act on. The trigger is a local-only `ClientFrame::ReloadAgents`, and
+  every CLI that writes config calls it after writing, so nothing tells the user to restart the
+  daemon any more. Only a new binary still needs one.
+- An agent respawn does not kill the turn in flight. `Brain::run` awaits `handle_turn` inside a
+  `tokio::select!` arm body, and a chosen arm runs to completion — cancelling the token is only
+  observed on the next loop. What a respawn does interrupt is the channel pump, so inbound messages
+  during the swap can be lost.
+- `agent.md` and skills are re-read on every turn (`Brain::agent_definition`,
+  `SkillIndex::discover_root`), so neither is part of a reload. The `AgentCard` loaded at boot is
+  only the fallback for a read that fails.
 - `Engine`'s only method takes `self` by value, so it is not callable through a trait object;
   nothing uses `dyn Engine`. Decoupling comes from generics plus bounded `tokio::mpsc` channels
   (32 ops, 512 events) carrying `goat-protocol`. The trait avoids `async_trait` and `Stream` —
@@ -129,8 +225,55 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
 - `code_messages` is insert-only; compactions live in `code_compactions`. `/resume` rebuilds engine
   history from the **latest compaction alone**, while the transcript replays full scrollback with a
   marker per compaction.
+- **Backgrounding is a flag on the tool that starts the work, not a tool family.**
+  `Bash(background=true)` and `Subagent(background=true)` each return a run id instead of their result;
+  there is no `ProcessStart`. The engine intercepts the backgrounded `Bash` call in `tools_exec` —
+  `goat-tool-shell` stays a plain synchronous leaf that knows nothing about the registry — and
+  `build_tool_defs` adds the `background`/`watch` switches to the `Bash` schema only when
+  `allow_delegate`, so a subagent is never offered them. The remaining verbs are
+  `BashOutput` / `BashInput` / `BashKill` and `SubagentKill`. There is deliberately **no list tool**:
+  `roster_message` injects the running set every top-level round, so a list would only turn something
+  the agent is already told into something it must remember to ask for.
+- **`background::Runs` is one registry over two kinds**, `Kind::{Bash, Subagent}`, sharing one id
+  space so `#3` is unambiguous. Only the generic half — ids, state, the wake trigger, the
+  already-seen bookkeeping, `roster`, `kill`, `shutdown_all` — is shared; the ring buffer, stdin and
+  process group live in `Detail::Bash`, and the report plus its `CancellationToken` in
+  `Detail::Subagent`. `Event::ProcessListChanged` stays **bash-only**: a background subagent already
+  reaches the TUI as `SubagentStarted`/`SubagentDone`, so putting it in the process list would
+  double-count it. The roster and the wake read `roster()` / `take_pending_observations()`, which
+  cover both. The `Event::Process*` family keeps its name on purpose — those events really do carry a
+  pgid, an exit code and stdout/stderr — but the id they share with subagent runs is `RunId`, not
+  `ProcessId`.
+- **A detached subagent outlives its turn by construction.** `delegate::detach` takes no
+  `CancellationToken` parameter at all — it mints a fresh one owned by the registry entry — so an
+  interrupt on the parent turn cannot reach it; only `SubagentKill` and `shutdown_all` can. The
+  `MAX_CONCURRENT_SUBAGENTS` permit is acquired *inside* the spawned task, not before detaching, so a
+  full pool delays a background run instead of blocking the turn that started it. `run_child` returns
+  an explicitly boxed `Send` future because `run_delegation → detach → run_child → core_loop →
+  run_delegation` is a cycle that `Send` inference cannot close on its own.
+- **Every background run wakes the agent when it finishes — `watch` only adds wakes for output
+  while a bash run is still going.** Waiting is therefore never a reason to set `watch`, and the tool
+  descriptions send a waiting agent to end its turn rather than re-read `BashOutput`; that is the
+  whole anti-polling design, so do not reintroduce a blocking read or a wait timeout. A wake is
+  suppressed exactly when the agent already knows: it read the exit through `BashOutput`, or it
+  stopped the run itself with `BashKill` / `SubagentKill`. `BashOutput` cannot be dropped in favour of
+  the wake: a run that never exits (`pnpm dev`) never fires one, and a `watch` flood auto-clears
+  `watched` (`WATCH_FLOOD_LINES`), which would otherwise leave its output unreachable.
 - Providers classify wire failures into `StreamError`; the engine decides — retry with jittered
   backoff, reactive compaction on `ContextOverflow`, or abort. Callers never inspect error strings.
+- The MCP handshake tries one protocol era and, only when the failure could be the era itself,
+  retries once in the other one. `PREFERRED` picks which era goes first — legacy (`2025-11-25`,
+  the `initialize` handshake) today, because every reachable server still speaks it, so the retry
+  never fires and connecting costs one round trip. `handshake::sort` is the single place that reads
+  meaning into an rmcp failure: only `-32022` and `NoCompatibleProtocolVersion` prove a modern peer
+  (no retry), transport and auth failures are era-agnostic (no retry), and everything else earns the
+  other era. A server's era is never configured — configuring it would be a per-server quirk table.
+- The OAuth redirect is **parsed in one place and validated in another**. `goat-auth`'s loopback
+  capture returns the whole `AuthorizationResponse` (`code` plus RFC 9207 `iss`) and checks only
+  `state`, because that is the one value it issued itself; it has no metadata, so it cannot judge
+  the issuer. `goat-mcp` does the discovery, so it passes `iss` to rmcp and lets rmcp compare.
+  Do not add issuer validation to `goat-auth`, and do not let a capture helper return just a code —
+  dropping the rest of the response is what broke Sentry login.
 - Sessions are keyed by `SessionId`, with a secondary index by `thread_id`. There is no cwd map:
   `goat code` defaults to a **new** session, and only `-c` resolves cwd to the latest thread through
   a database query. Several live sessions can share a cwd.
@@ -142,6 +285,44 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   already-connected service to one agent. Both take `-a <agent>` where an agent is implied.
 - `interact::pick` is the one non-cancellable picker: it promotes Esc to `ConsoleError("cancelled")`,
   while `select_index` and `Table::pick` return `None`.
+- **`device` and `remote` are opposite directions, and both are CLI nouns.** `goat device
+  {add,ls,rm}` runs on the daemon host and manages who may reach it — `add` mints a one-time pairing
+  code (3 min, `goat-remote::pairing`) and prints the server fingerprint. `goat remote
+  {add,ls,rm,use}` runs on the client and manages which daemons *this* machine reaches. `local` is a
+  reserved remote naming the daemon on this machine; it is always in `goat remote ls`, and
+  `goat remote use local` is how you turn remote off — there is no separate enable flag. The
+  matching config keys are `devices` (bind/advertised, server side; still accepts the old `remote`
+  key via serde alias) and `remotes` + `default_remote` (client side). `default_remote: None` means
+  `local`, so local has exactly one representation.
+- **The server never proves its name, only its key.** `ca.rs` issues a SAN-less leaf when
+  `advertised` is empty and skips regeneration once `server.crt` exists, so the client pins the
+  server fingerprint (`verify::PinnedServer`) instead of validating a hostname. Addresses can then
+  be bare IPs, Tailscale names, or port-forwards without touching the certificate. Do not add
+  hostname validation on top; it would re-introduce the certificate-name problem pinning removes.
+- **Device key material is one identity in `credentials.json`**, under
+  `{service: remote, provider: <remote name>, account: "device", slot: "key"|"cert"|"ca"}`.
+  The three slots are stored together on purpose — a half-restored remote is a broken remote.
+  `config.json` keeps only addressing: `host`, `fingerprint`, `last_dir`.
+- **A remote client never sends its own cwd.** `ServerFrame::SessionOpened` carries the cwd the
+  daemon actually normalized, the client records it as that remote's `last_dir`, and the next
+  `goat code --remote <name>` reuses it (`--dir` overrides). Sending the local cwd would open a
+  session on a path that does not exist on the daemon host, which `goat-tool`'s `ToolContext`
+  then fails on for every call. `-w` is refused for remote targets because worktrees are local git.
+- `goat-client` is transport-agnostic: `Link::{Local,Remote}` dials either a unix socket or
+  mTLS+WebSocket and hands back the same `Sink<ClientFrame>`/`Stream<ServerFrame>` pair, so nothing
+  above it knows which it got. Local-daemon autostart lives behind `Link::dial_or_spawn` and fires
+  only for `Link::Local` — a remote target that cannot connect must fail, never silently start a
+  second daemon here.
+- `Hello`/`Welcome` carry `build` alongside `PROTOCOL_VERSION`. A protocol mismatch is fatal; a
+  build mismatch is only reported, because remote client and daemon update independently.
+- **Config writing has three doors and only one of them crosses the wire.** `Op::AddAccount` /
+  `Op::RemoveAccount` reach the daemon and write *its* `credentials.json`; the CLI
+  (`goat setup`, `goat provider login`, `goat search login`) and the `/search` slash command
+  (`goat-command-settings`) write the *client's* files directly; and `/config`'s browser and
+  computer-use toggles write the client's `config.json` while the consumer is
+  `goat-engine`'s `GoatAgent::new`. Locally these coincide by accident. Against a remote daemon
+  they do not, and the toggles are already ineffective locally until the daemon restarts.
+  Collapsing the first two doors into the third is the intended direction; do not add a fourth.
 
 ## Vestigial — present in code, does nothing
 
@@ -152,7 +333,7 @@ Do not build on these, and do not describe them as features:
 - `AutonomyConfig.enabled` — parsed from `config.json` under `deny_unknown_fields`, then read by
   nothing. Setting it has no effect.
 - `MemoryConfig.episodic_k` — parsed and stored, never passed to `BrainDeps`; recall hardcodes 6.
-- Per-agent `EmbeddingSettings` — collected per profile, then `boot_inner` takes
+- Per-agent `EmbeddingSettings` — collected per agent, then `boot_inner` takes
   `embedders.values().next()` for the single global `MemoryEngine`, so with more than one configured
   agent the winner is arbitrary. Only `openai` is implemented; other values warn and are skipped.
 - Goal review — `next_review_at`, `goals_due_for_review`, and `idx_goals_review` are complete and
@@ -173,9 +354,13 @@ Two `goat-brain` test names still say `self_tick` — they exercise `TurnMode::S
 ## Testing
 
 The full-screen TUI needs a real tty, so it is not driven headlessly. Test the pure `App::update`
-reducer and the engine's `Op → Event` behavior instead. Non-TUI binary paths (`--version`,
-`--help`, `update`, `--print-log-path`) are safe anywhere. The headless bridge needs no tty; its
-codec round-trips and shutdown handshake are unit-tested in `goat-code`'s `headless` module.
+reducer and the engine's `Op → Event` behavior instead. `App::new` takes an `Origin`, so a remote
+session is testable without a daemon — that is how the header's local git/gh chrome is proven off
+for remote targets. Non-TUI binary paths (`--version`, `--help`, `update`, `--print-log-path`) are
+safe anywhere. The headless bridge needs no tty; its codec round-trips and shutdown handshake are
+unit-tested in `goat-code`'s `headless` module. `goat-daemon`'s `remote_e2e` drives the real
+`goat_remote::client` rather than a hand-rolled TLS helper, so the client half is covered by the
+same test that covers the server half.
 
 Tests are inline `#[cfg(test)]` modules by default, concentrated in `goat-tui` and `goat-engine`.
 The only `tests/` directories are `goat-daemon`, `goat-remote`, and `goat-tool-browser` (real

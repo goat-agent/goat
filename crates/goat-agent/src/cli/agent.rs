@@ -50,10 +50,10 @@ pub async fn run(cmd: Cmd) -> Result<()> {
 pub fn create_interactive(paths: &GoatPaths) -> Result<String> {
     ui::section("Agent");
     let slug = ui::prompt("slug", Some("dev"))?.ok_or_else(|| anyhow!("cancelled"))?;
-    write_profile(paths, slug.trim())
+    write_agent(paths, slug.trim())
 }
 
-fn write_profile(paths: &GoatPaths, slug: &str) -> Result<String> {
+fn write_agent(paths: &GoatPaths, slug: &str) -> Result<String> {
     let slug = slug.trim().to_string();
     if slug.is_empty() {
         return Err(anyhow!("empty slug"));
@@ -64,8 +64,8 @@ fn write_profile(paths: &GoatPaths, slug: &str) -> Result<String> {
     }
     let model = pick_model(paths)?;
     std::fs::create_dir_all(&dir)?;
-    let profile_md = dir.join("agent.md");
-    std::fs::write(&profile_md, format!("You are {slug}.\n"))?;
+    let agent_md = dir.join("agent.md");
+    std::fs::write(&agent_md, format!("You are {slug}.\n"))?;
     let config_json = dir.join("config.json");
     let body = serde_json::to_string_pretty(&json!({
         "display": slug,
@@ -74,14 +74,15 @@ fn write_profile(paths: &GoatPaths, slug: &str) -> Result<String> {
         "channels": {}
     }))?;
     std::fs::write(&config_json, format!("{body}\n"))?;
-    ui::pair("file", &profile_md.display().to_string());
+    ui::pair("file", &agent_md.display().to_string());
     ui::pair("config", &config_json.display().to_string());
     Ok(slug)
 }
 
 fn pick_model(paths: &GoatPaths) -> Result<Model> {
     let store = CredentialStore::new(paths.credentials_json.clone());
-    let registry = Registry::new(&store);
+    let user = goat_config::UserProviders::at(paths.config_json.clone());
+    let registry = Registry::new(&store, &user);
     let mut entries: Vec<(Option<(String, String)>, String)> = registry
         .all()
         .iter()
@@ -135,7 +136,7 @@ fn list(paths: &GoatPaths) -> Result<()> {
             if !dir.join("agent.md").exists() {
                 continue;
             }
-            let cfg = match read_profile_config(&dir) {
+            let cfg = match read_agent_config(&dir) {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     table.row(vec![
@@ -191,26 +192,26 @@ fn bindings_for(dir: &std::path::Path) -> Result<Vec<String>> {
 }
 
 fn add(paths: &GoatPaths, slug: Option<String>) -> Result<()> {
-    ui::cell("Profile Add", || {
+    ui::cell("Agent Add", || {
         let slug = match slug {
-            Some(s) => write_profile(paths, &s)?,
+            Some(s) => write_agent(paths, &s)?,
             None => create_interactive(paths)?,
         };
         let _ = slug;
-        Ok(Footer::Hint("Created", "goat channel add".into()))
+        Ok(Footer::Hint("Created", "goat agent channel add".into()))
     })
 }
 
 fn show(paths: &GoatPaths, slug: &str) -> Result<()> {
-    ui::cell(&format!("Profile {slug}"), || {
+    ui::cell(&format!("Agent {slug}"), || {
         let dir = paths.agents_dir.join(slug);
-        let profile_md = dir.join("agent.md");
-        if !profile_md.exists() {
-            return Err(anyhow!("no agent at {}", profile_md.display()));
+        let agent_md = dir.join("agent.md");
+        if !agent_md.exists() {
+            return Err(anyhow!("no agent at {}", agent_md.display()));
         }
-        ui::line(&ui::dim(&profile_md.display().to_string()));
+        ui::line(&ui::dim(&agent_md.display().to_string()));
         ui::blank();
-        for raw_line in std::fs::read_to_string(&profile_md)?.lines() {
+        for raw_line in std::fs::read_to_string(&agent_md)?.lines() {
             ui::line(raw_line);
         }
         let config_json = dir.join("config.json");
@@ -228,7 +229,7 @@ fn show(paths: &GoatPaths, slug: &str) -> Result<()> {
 }
 
 fn remove(paths: &GoatPaths, slug: &str) -> Result<()> {
-    ui::cell(&format!("Profile Remove {slug}"), || {
+    ui::cell(&format!("Agent Remove {slug}"), || {
         let dir = paths.agents_dir.join(slug);
         if !dir.exists() {
             return Err(anyhow!("no agent at {}", dir.display()));
@@ -241,7 +242,7 @@ fn remove(paths: &GoatPaths, slug: &str) -> Result<()> {
     })
 }
 
-pub(crate) fn list_profiles(paths: &GoatPaths) -> Result<Vec<String>> {
+pub(crate) fn list_agents(paths: &GoatPaths) -> Result<Vec<String>> {
     let mut out = Vec::new();
     if !paths.agents_dir.exists() {
         return Ok(out);
@@ -262,14 +263,14 @@ pub(crate) fn list_profiles(paths: &GoatPaths) -> Result<Vec<String>> {
     Ok(out)
 }
 
-pub(crate) fn profile_exists(paths: &GoatPaths, slug: &str) -> bool {
+pub(crate) fn agent_exists(paths: &GoatPaths, slug: &str) -> bool {
     paths.agents_dir.join(slug).join("agent.md").exists()
 }
 
-pub(crate) fn resolve_profile(paths: &GoatPaths, explicit: Option<&str>) -> Result<String> {
+pub(crate) fn resolve_agent(paths: &GoatPaths, explicit: Option<&str>) -> Result<String> {
     if let Some(p) = explicit {
         let p = p.trim();
-        if !profile_exists(paths, p) {
+        if !agent_exists(paths, p) {
             return Err(anyhow!(
                 "no agent `{p}` at {}",
                 paths.agents_dir.join(p).display()
@@ -277,7 +278,7 @@ pub(crate) fn resolve_profile(paths: &GoatPaths, explicit: Option<&str>) -> Resu
         }
         return Ok(p.to_string());
     }
-    let mut agents = list_profiles(paths)?;
+    let mut agents = list_agents(paths)?;
     match agents.len() {
         0 => Err(anyhow!("no agents yet — run `goat agent add`")),
         1 => Ok(agents.pop().expect("len 1")),
@@ -293,7 +294,7 @@ pub(crate) fn resolve_profile(paths: &GoatPaths, explicit: Option<&str>) -> Resu
     }
 }
 
-pub(crate) fn read_profile_config(dir: &std::path::Path) -> Result<Value> {
+pub(crate) fn read_agent_config(dir: &std::path::Path) -> Result<Value> {
     let path = dir.join("config.json");
     if !path.exists() {
         return Err(anyhow!("missing {}", path.display()));
@@ -305,7 +306,7 @@ pub(crate) fn read_profile_config(dir: &std::path::Path) -> Result<Value> {
     Ok(cfg)
 }
 
-fn write_profile_config(dir: &std::path::Path, value: &Value) -> Result<()> {
+fn write_agent_config(dir: &std::path::Path, value: &Value) -> Result<()> {
     let body = serde_json::to_string_pretty(value)?;
     std::fs::write(dir.join("config.json"), format!("{body}\n"))?;
     Ok(())
@@ -338,7 +339,7 @@ pub(crate) fn section_entries(
     dir: &std::path::Path,
     section: &str,
 ) -> Result<Vec<(String, Value)>> {
-    let cfg = read_profile_config(dir)?;
+    let cfg = read_agent_config(dir)?;
     let Some(entries) = cfg.get(section) else {
         return Ok(Vec::new());
     };
@@ -365,7 +366,7 @@ pub(crate) fn upsert_section_config(
     kind: &str,
     value: Value,
 ) -> Result<()> {
-    let mut cfg = read_profile_config(dir)?;
+    let mut cfg = read_agent_config(dir)?;
     let entries = section_object(&mut cfg, section)?;
     match (entries.get_mut(kind), value) {
         (Some(Value::Object(existing)), Value::Object(new)) => {
@@ -375,7 +376,7 @@ pub(crate) fn upsert_section_config(
             entries.insert(kind.to_string(), value);
         }
     }
-    write_profile_config(dir, &cfg)
+    write_agent_config(dir, &cfg)
 }
 
 pub(crate) fn remove_section_config(
@@ -383,9 +384,9 @@ pub(crate) fn remove_section_config(
     section: &str,
     kind: &str,
 ) -> Result<()> {
-    let mut cfg = read_profile_config(dir)?;
+    let mut cfg = read_agent_config(dir)?;
     section_object(&mut cfg, section)?.remove(kind);
-    write_profile_config(dir, &cfg)
+    write_agent_config(dir, &cfg)
 }
 
 fn channels_from_config(dir: &std::path::Path) -> Result<Vec<String>> {
@@ -436,7 +437,7 @@ mod tests {
 
         upsert_channel_config(dir.path(), "discord", json!({ "token": "new" })).unwrap();
 
-        let cfg = read_profile_config(dir.path()).unwrap();
+        let cfg = read_agent_config(dir.path()).unwrap();
         let discord = &cfg["channels"]["discord"];
         assert_eq!(discord["token"], "new");
         assert_eq!(discord["allowed_user_ids"], json!([123]));
@@ -459,7 +460,7 @@ mod tests {
 
         remove_channel_config(dir.path(), "discord").unwrap();
 
-        let cfg = read_profile_config(dir.path()).unwrap();
+        let cfg = read_agent_config(dir.path()).unwrap();
         assert!(!cfg["channels"].as_object().unwrap().contains_key("discord"));
     }
 
@@ -489,10 +490,10 @@ mod tests {
     }
 
     #[test]
-    fn profile_config_root_must_be_object() {
+    fn agent_config_root_must_be_object() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("config.json"), "[]").unwrap();
 
-        assert!(read_profile_config(dir.path()).is_err());
+        assert!(read_agent_config(dir.path()).is_err());
     }
 }

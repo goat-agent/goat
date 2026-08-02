@@ -2,9 +2,11 @@
 name = "goat-brain"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 authors.workspace = true
+publish.workspace = true
 
 [dependencies]
 goat-agent-command = { workspace = true }
@@ -18,7 +20,7 @@ goat-render  = { workspace = true }
 goat-store   = { workspace = true }
 goat-memory  = { workspace = true }
 goat-bus     = { workspace = true }
-goat-profile = { workspace = true }
+goat-agent-config = { workspace = true }
 goat-agent-tool    = { workspace = true }
 goat-skills  = { workspace = true }
 tokio        = { workspace = true }

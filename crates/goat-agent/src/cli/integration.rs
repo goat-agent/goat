@@ -7,7 +7,7 @@ use goat_config::{Config, GoatPaths};
 use goat_integration::{Integration, IntegrationAuth, IntegrationFactory};
 use serde_json::json;
 
-use super::agent::{remove_section_config, resolve_profile, section_contains, section_entries};
+use super::agent::{remove_section_config, resolve_agent, section_contains, section_entries};
 use super::ui::{self, Footer, Palette, Table};
 
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -37,9 +37,17 @@ pub enum ConnectCmd {
 pub async fn run_connect(cmd: ConnectCmd) -> Result<()> {
     let paths = GoatPaths::default_layout()?;
     match cmd {
-        ConnectCmd::Add { kind } => connect_add(&paths, kind).await,
+        ConnectCmd::Add { kind } => {
+            connect_add(&paths, kind).await?;
+            super::apply::config_changed(None).await;
+            Ok(())
+        }
         ConnectCmd::List => connect_list(&paths),
-        ConnectCmd::Remove { kind } => connect_remove(&paths, &kind),
+        ConnectCmd::Remove { kind } => {
+            connect_remove(&paths, &kind)?;
+            super::apply::config_changed(None).await;
+            Ok(())
+        }
     }
 }
 
@@ -66,8 +74,9 @@ fn connect_list(paths: &GoatPaths) -> Result<()> {
             if key.service != CredentialService::Integration {
                 continue;
             }
+            let label = display_name(&key.provider).unwrap_or_else(|| key.provider.clone());
             table.styled_row(vec![
-                (key.provider, Palette::Plain),
+                (label, Palette::Plain),
                 (format!("{cred_kind:?}").to_lowercase(), Palette::Success),
             ]);
             rows += 1;
@@ -80,7 +89,10 @@ fn connect_list(paths: &GoatPaths) -> Result<()> {
                 continue;
             }
             table.styled_row(vec![
-                (kind.to_string(), Palette::Plain),
+                (
+                    display_name(kind).unwrap_or_else(|| kind.to_string()),
+                    Palette::Plain,
+                ),
                 ("external".to_string(), Palette::Success),
             ]);
             rows += 1;
@@ -208,14 +220,14 @@ pub enum Cmd {
             long = "agent",
             help = "Target agent; resolved automatically when omitted."
         )]
-        profile: Option<String>,
+        agent: Option<String>,
         #[arg(long, help = "Skip the live connection check.")]
         no_verify: bool,
     },
     #[command(visible_alias = "ls", about = "List an agent's integration bindings.")]
     List {
         #[arg(short = 'a', long = "agent")]
-        profile: Option<String>,
+        agent: Option<String>,
     },
     #[command(
         visible_alias = "rm",
@@ -225,7 +237,7 @@ pub enum Cmd {
     Remove {
         kind: String,
         #[arg(short = 'a', long = "agent")]
-        profile: Option<String>,
+        agent: Option<String>,
     },
 }
 
@@ -234,23 +246,32 @@ pub async fn run(cmd: Cmd) -> Result<()> {
     match cmd {
         Cmd::Add {
             kind,
-            profile,
+            agent,
             no_verify,
-        } => bind_add(&paths, kind, profile, no_verify).await,
-        Cmd::List { profile } => bind_list(&paths, profile.as_deref()),
-        Cmd::Remove { kind, profile } => bind_remove(&paths, &kind, profile.as_deref()),
+        } => {
+            let slug = agent.clone();
+            bind_add(&paths, kind, agent, no_verify).await?;
+            super::apply::config_changed(slug.as_deref()).await;
+            Ok(())
+        }
+        Cmd::List { agent } => bind_list(&paths, agent.as_deref()),
+        Cmd::Remove { kind, agent } => {
+            bind_remove(&paths, &kind, agent.as_deref())?;
+            super::apply::config_changed(agent.as_deref()).await;
+            Ok(())
+        }
     }
 }
 
 async fn bind_add(
     paths: &GoatPaths,
     kind: Option<String>,
-    profile: Option<String>,
+    agent: Option<String>,
     no_verify: bool,
 ) -> Result<()> {
     ui::cell_async("Integration Add", || async move {
-        let slug = resolve_profile(paths, profile.as_deref())?;
-        ui::pair("profile", &slug);
+        let slug = resolve_agent(paths, agent.as_deref())?;
+        ui::pair("agent", &slug);
         let dir = paths.agents_dir.join(&slug);
         let kind = pick_kind(kind)?;
 
@@ -274,16 +295,15 @@ async fn bind_add(
 
         super::agent::upsert_section_config(&dir, SECTION, &kind, json!({}))?;
         ui::pair("file", &dir.join("config.json").display().to_string());
-        ui::line(&ui::dim("takes effect after the daemon restarts"));
         Ok(Footer::Ok("Bound"))
     })
     .await
 }
 
-fn bind_list(paths: &GoatPaths, profile: Option<&str>) -> Result<()> {
+fn bind_list(paths: &GoatPaths, agent: Option<&str>) -> Result<()> {
     ui::cell("Integrations", || {
-        let slug = resolve_profile(paths, profile)?;
-        ui::pair("profile", &slug);
+        let slug = resolve_agent(paths, agent)?;
+        ui::pair("agent", &slug);
         let dir = paths.agents_dir.join(&slug);
         let store = CredentialStore::new(paths.credentials_json.clone());
         let config = Config::load();
@@ -311,10 +331,10 @@ fn bind_list(paths: &GoatPaths, profile: Option<&str>) -> Result<()> {
     })
 }
 
-fn bind_remove(paths: &GoatPaths, kind: &str, profile: Option<&str>) -> Result<()> {
+fn bind_remove(paths: &GoatPaths, kind: &str, agent: Option<&str>) -> Result<()> {
     ui::cell("Integration Remove", || {
-        let slug = resolve_profile(paths, profile)?;
-        ui::pair("profile", &slug);
+        let slug = resolve_agent(paths, agent)?;
+        ui::pair("agent", &slug);
         let kind = kind.trim();
         let dir = paths.agents_dir.join(&slug);
         if !section_contains(&dir, SECTION, kind)? {
@@ -331,6 +351,11 @@ fn bind_remove(paths: &GoatPaths, kind: &str, profile: Option<&str>) -> Result<(
     })
 }
 
+fn display_name(kind: &str) -> Option<String> {
+    let factory = goat_integration::factory_for(kind)?;
+    Some((factory.ctor)().metadata().display.to_string())
+}
+
 fn pick_kind(kind: Option<String>) -> Result<String> {
     if let Some(k) = kind {
         let k = k.trim().to_string();
@@ -341,7 +366,11 @@ fn pick_kind(kind: Option<String>) -> Result<String> {
     }
     let mut items: Vec<(String, String)> = goat_integration::factories()
         .into_iter()
-        .map(|f| (f.id.to_string(), f.id.to_string()))
+        .map(|f| {
+            let id = f.id.to_string();
+            let label = display_name(&id).unwrap_or_else(|| id.clone());
+            (id, label)
+        })
         .collect();
     items.sort_by(|a, b| a.1.cmp(&b.1));
     ui::pick("integration", &items).map_err(Into::into)

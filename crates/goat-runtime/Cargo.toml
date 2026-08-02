@@ -2,9 +2,11 @@
 name = "goat-runtime"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 authors.workspace = true
+publish.workspace = true
 
 [dependencies]
 goat-agent-command = { workspace = true }
@@ -29,13 +31,14 @@ goat-agent-tool-observation = { workspace = true }
 goat-agent-tool-goal        = { workspace = true }
 goat-agent-tool-code        = { workspace = true }
 goat-daemon             = { workspace = true }
+goat-wire             = { workspace = true }
 goat-agent-tool-memory      = { workspace = true }
 goat-agent-tool-pty         = { workspace = true }
 goat-loop             = { workspace = true }
 goat-sleep            = { workspace = true }
 goat-skills           = { workspace = true }
 goat-brain            = { workspace = true }
-goat-profile          = { workspace = true }
+goat-agent-config     = { workspace = true }
 chrono                = { workspace = true }
 tokio                 = { workspace = true }
 tokio-util            = { workspace = true }

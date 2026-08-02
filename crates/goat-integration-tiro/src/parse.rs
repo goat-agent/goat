@@ -77,14 +77,43 @@ fn human_duration(seconds: u64) -> String {
     }
 }
 
-pub struct FetchPage {
-    pub notes: Vec<Note>,
+pub fn describe_identity(status: &Value) -> IntegrationResult<String> {
+    if status.get("authenticated") == Some(&Value::Bool(false)) {
+        return Err(IntegrationError::Auth(
+            "tiro reports the credential is not authenticated".into(),
+        ));
+    }
+    let Some(user) = status.get("userId").and_then(scalar) else {
+        return Ok("tiro mcp".to_owned());
+    };
+    let method = status
+        .get("authMethod")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let scopes = status
+        .get("scopes")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|joined| !joined.is_empty());
+    let head = format!("tiro user {user} ({method})");
+    Ok(match scopes {
+        Some(scopes) => format!("{head} · {scopes}"),
+        None => head,
+    })
 }
 
-pub fn parse_page(data: &Value) -> IntegrationResult<FetchPage> {
-    Ok(FetchPage {
-        notes: parse_notes(data)?,
-    })
+fn scalar(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) if !text.is_empty() => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
 }
 
 pub fn parse_notes(data: &Value) -> IntegrationResult<Vec<Note>> {

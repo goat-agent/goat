@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    path::Path,
     sync::{Arc, atomic::AtomicU64},
 };
 
@@ -20,8 +19,9 @@ use tokio::{
 };
 
 mod accounts;
-mod agent;
 mod ask;
+mod background;
+mod bash_tools;
 mod checkpoint;
 mod compaction;
 mod conversation;
@@ -29,27 +29,31 @@ mod delegate;
 mod instructions;
 mod mcp_tools;
 mod persist;
-mod process;
-mod process_tools;
+mod plan;
 mod prompt;
 mod rate_limit_cache;
 mod retry;
 mod rounds;
 mod shell;
+mod subagent;
 mod threads;
 mod tool_recovery;
 mod tools_exec;
 mod turn;
 mod websearch;
 
-pub use agent::{AgentRegistry, AgentSpec, ToolSelection};
+pub use subagent::{SubagentRegistry, SubagentSpec, ToolSelection};
 
-pub async fn model_list_entries(credentials: &CredentialStore) -> Vec<goat_protocol::ModelEntry> {
-    let registry = Registry::new(credentials);
-    accounts::discover_ready(&registry, credentials).await
+pub async fn model_list_entries(
+    credentials: &CredentialStore,
+    user: &goat_config::UserProviders,
+) -> Vec<goat_protocol::ModelEntry> {
+    let registry = Registry::new(credentials, user);
+    accounts::discover_ready(&registry, credentials, user).await
 }
 
 const CHILD_ID_BASE: u64 = 1 << 32;
+const PLAN_ID_BASE: u64 = 1 << 40;
 const WAKE_ID_BASE: u64 = 1 << 48;
 
 pub struct GoatAgent {
@@ -57,6 +61,7 @@ pub struct GoatAgent {
     tools: ToolRegistry,
     store: Store,
     credentials: CredentialStore,
+    user_providers: goat_config::UserProviders,
     target: Option<ModelTarget>,
     mcp: Arc<goat_mcp::McpManager>,
     cwd: PathBuf,
@@ -68,6 +73,7 @@ impl GoatAgent {
         registry: Registry,
         store: Store,
         credentials: CredentialStore,
+        user_providers: goat_config::UserProviders,
         target: Option<ModelTarget>,
         cwd: PathBuf,
         meter: Option<goat_proxy::Meter>,
@@ -94,6 +100,7 @@ impl GoatAgent {
             tools,
             store,
             credentials,
+            user_providers,
             target,
             mcp,
             cwd,
@@ -108,27 +115,56 @@ impl Engine for GoatAgent {
     }
 }
 
-pub(crate) struct Ctx<'a> {
-    pub(crate) registry: &'a Registry,
-    pub(crate) account_registries: &'a std::sync::Mutex<HashMap<String, Arc<Registry>>>,
-    pub(crate) credentials: &'a CredentialStore,
-    pub(crate) tools: &'a ToolRegistry,
-    pub(crate) agents: &'a AgentRegistry,
-    pub(crate) store: &'a Store,
-    pub(crate) events: &'a mpsc::Sender<Event>,
-    pub(crate) skills: &'a [SkillInfo],
-    pub(crate) instructions: Option<&'a str>,
-    pub(crate) semaphore: &'a Arc<Semaphore>,
-    pub(crate) child_ids: &'a AtomicU64,
-    pub(crate) wake_ids: &'a AtomicU64,
-    pub(crate) processes: &'a Arc<process::ProcessRegistry>,
-    pub(crate) asks: &'a Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>>,
-    pub(crate) rl_cache: &'a std::sync::Mutex<rate_limit_cache::RateLimitCache>,
-    pub(crate) rl_path: Option<&'a std::path::Path>,
-    pub(crate) meter: &'a Option<goat_proxy::Meter>,
-    pub(crate) checkpoints: &'a checkpoint::CheckpointTracker,
-    pub(crate) cwd: &'a std::path::Path,
-    pub(crate) date: &'a str,
+pub(crate) struct Shared {
+    registry: std::sync::Mutex<Arc<Registry>>,
+    pub(crate) account_registries: std::sync::Mutex<HashMap<String, Arc<Registry>>>,
+    pub(crate) credentials: CredentialStore,
+    pub(crate) user: goat_config::UserProviders,
+    pub(crate) tools: ToolRegistry,
+    pub(crate) subagents: SubagentRegistry,
+    pub(crate) store: Store,
+    pub(crate) events: mpsc::Sender<Event>,
+    pub(crate) skills: Vec<SkillInfo>,
+    pub(crate) instructions: Option<String>,
+    pub(crate) semaphore: Arc<Semaphore>,
+    pub(crate) child_ids: AtomicU64,
+    pub(crate) plan_ids: AtomicU64,
+    pub(crate) wake_ids: AtomicU64,
+    pub(crate) background: Arc<background::Runs>,
+    pub(crate) asks: Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>>,
+    pub(crate) rl_cache: std::sync::Mutex<rate_limit_cache::RateLimitCache>,
+    pub(crate) rl_path: Option<PathBuf>,
+    pub(crate) meter: Option<goat_proxy::Meter>,
+    pub(crate) checkpoints: checkpoint::CheckpointTracker,
+    pub(crate) cwd: PathBuf,
+    pub(crate) date: String,
+}
+
+impl Shared {
+    pub(crate) fn registry(&self) -> Arc<Registry> {
+        self.registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_registry(&self, next: Registry) {
+        *self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(next);
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct Ctx(Arc<Shared>);
+
+impl std::ops::Deref for Ctx {
+    type Target = Shared;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 pub(crate) enum Flow {
@@ -138,9 +174,21 @@ pub(crate) enum Flow {
 
 pub(crate) struct SessionState {
     pub(crate) target: Option<ModelTarget>,
+    pub(crate) mode: goat_protocol::Mode,
+    pub(crate) plan_path: Option<PathBuf>,
     pub(crate) conversation: conversation::Conversation,
     pub(crate) tracker: compaction::ContextTracker,
     pub(crate) thread_id: Option<i64>,
+}
+
+impl SessionState {
+    pub(crate) fn plan_prompt_path(&self) -> Option<&std::path::Path> {
+        if self.mode.is_plan() {
+            self.plan_path.as_deref()
+        } else {
+            None
+        }
+    }
 }
 
 pub(crate) struct TurnIds {
@@ -215,23 +263,26 @@ impl<'a> Run<'a> {
     }
 }
 
-pub(crate) struct LoopEnv<'a> {
-    pub(crate) provider: &'a dyn Provider,
-    pub(crate) target: &'a ModelTarget,
-    pub(crate) tool_defs: &'a [ToolDefinition],
-    pub(crate) cwd: &'a Path,
+pub(crate) struct LoopEnv {
+    pub(crate) provider: Arc<dyn Provider>,
+    pub(crate) target: ModelTarget,
+    pub(crate) tool_defs: Vec<ToolDefinition>,
+    pub(crate) cwd: PathBuf,
     pub(crate) allow_delegate: bool,
     pub(crate) allow_ask: bool,
+    pub(crate) plan: bool,
+    pub(crate) plan_path: Option<PathBuf>,
     pub(crate) exec_policy: SandboxPolicy,
 }
 
 #[allow(clippy::too_many_lines)]
 async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender<Event>) {
     let GoatAgent {
-        mut registry,
+        registry,
         tools,
         store,
         credentials,
+        user_providers,
         target,
         mcp,
         cwd,
@@ -239,26 +290,35 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     } = agent;
     let mut state = SessionState {
         target,
+        mode: goat_protocol::Mode::Normal,
+        plan_path: None,
         conversation: conversation::Conversation::new(),
         tracker: compaction::ContextTracker::new(),
         thread_id: None,
     };
 
     if state.target.is_none() {
-        state.target = accounts::restore_target(&store, &credentials, &cwd).await;
+        state.target = accounts::restore_target(&store, &credentials, &user_providers, &cwd).await;
     }
-    accounts::announce_startup(&events, &registry, &credentials, state.target.as_ref()).await;
+    accounts::announce_startup(
+        &events,
+        &registry,
+        &credentials,
+        &user_providers,
+        state.target.as_ref(),
+    )
+    .await;
 
     let skills = prompt::load_skill_infos(&cwd);
-    let agents = AgentRegistry::load(&cwd);
+    let subagents = SubagentRegistry::load(&cwd);
     let project_instructions = instructions::load_project_instructions(&cwd);
     let session_date = prompt::current_utc_date();
-    let semaphore = Arc::new(Semaphore::new(delegate::MAX_CONCURRENT_AGENTS));
+    let semaphore = Arc::new(Semaphore::new(delegate::MAX_CONCURRENT_SUBAGENTS));
     let child_ids = AtomicU64::new(CHILD_ID_BASE);
+    let plan_ids = AtomicU64::new(PLAN_ID_BASE);
     let wake_ids = AtomicU64::new(WAKE_ID_BASE);
     let wake = Arc::new(tokio::sync::Notify::new());
-    let processes =
-        process::ProcessRegistry::new(events.clone(), wake.clone(), Some(store.clone()));
+    let processes = background::Runs::new(events.clone(), wake.clone(), Some(store.clone()));
     let asks: Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>> = Mutex::new(HashMap::new());
     let checkpoints = checkpoint::CheckpointTracker::new(store.clone());
     let _ = events
@@ -289,32 +349,30 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     let account_registries: std::sync::Mutex<HashMap<String, Arc<Registry>>> =
         std::sync::Mutex::new(HashMap::new());
 
-    macro_rules! ctx {
-        () => {
-            Ctx {
-                registry: &registry,
-                account_registries: &account_registries,
-                credentials: &credentials,
-                tools: &tools,
-                agents: &agents,
-                store: &store,
-                events: &events,
-                skills: &skills,
-                instructions: project_instructions.as_deref(),
-                semaphore: &semaphore,
-                child_ids: &child_ids,
-                wake_ids: &wake_ids,
-                processes: &processes,
-                asks: &asks,
-                rl_cache: &rl_cache,
-                rl_path: rl_path.as_deref(),
-                meter: &meter,
-                checkpoints: &checkpoints,
-                cwd: &cwd,
-                date: &session_date,
-            }
-        };
-    }
+    let ctx = Ctx(Arc::new(Shared {
+        registry: std::sync::Mutex::new(Arc::new(registry)),
+        account_registries,
+        credentials,
+        user: user_providers,
+        tools,
+        subagents,
+        store,
+        events,
+        skills,
+        instructions: project_instructions,
+        semaphore,
+        child_ids,
+        plan_ids,
+        wake_ids,
+        background: processes,
+        asks,
+        rl_cache,
+        rl_path,
+        meter,
+        checkpoints,
+        cwd,
+        date: session_date,
+    }));
 
     loop {
         let op = tokio::select! {
@@ -324,7 +382,6 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                 None => break,
             },
             () = wake.notified() => {
-                let ctx = ctx!();
                 if let Flow::Shutdown =
                     turn::handle_wake(&ctx, &mut state, &mut ops).await
                 {
@@ -340,7 +397,6 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                 display,
                 attachments,
             } => {
-                let ctx = ctx!();
                 if let Flow::Shutdown =
                     turn::handle_turn(&ctx, id, text, display, attachments, &mut state, &mut ops)
                         .await
@@ -348,16 +404,18 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                     break;
                 }
             }
-            Op::Interrupt { .. } | Op::Answer { .. } | Op::DequeueMessage { .. } | Op::Clear {} => {
-            }
+            Op::Interrupt { .. }
+            | Op::Answer { .. }
+            | Op::DequeueMessage { .. }
+            | Op::Clear {}
+            | Op::ListFiles {} => {}
             Op::ProcessKill { process } => {
-                let _ = processes.kill(process).await;
+                let _ = ctx.background.kill(process, None).await;
             }
             Op::ProcessWatch { process, on } => {
-                let _ = processes.set_watch(process, on).await;
+                let _ = ctx.background.set_watch(process, on).await;
             }
             Op::Compact { id, instructions } => {
-                let ctx = ctx!();
                 if let Flow::Shutdown =
                     turn::handle_compact(&ctx, id, instructions, &mut state, &mut ops).await
                 {
@@ -365,129 +423,77 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                 }
             }
             Op::SubmitShell { id, command } => {
-                let ctx = ctx!();
                 if let Flow::Shutdown =
                     turn::handle_shell(&ctx, id, &command, &mut state, &mut ops).await
                 {
                     break;
                 }
             }
-            Op::SelectModel { .. } => {
-                turn::handle_idle_op(
-                    op,
-                    &store,
-                    &cwd,
-                    state.thread_id,
-                    &mut state.target,
-                    &events,
-                    &processes,
-                )
-                .await;
+            Op::SelectModel { .. } | Op::SetMode { .. } => {
+                turn::handle_idle_op(op, &ctx, &mut state).await;
+            }
+            Op::ResolvePlan { decision, .. } => {
+                if let Flow::Shutdown =
+                    turn::handle_plan_decision(&ctx, decision, &mut state, &mut ops).await
+                {
+                    break;
+                }
             }
             Op::Login {
                 provider,
                 credential,
             } => {
-                let ctx = accounts::LoginCtx {
-                    credentials: &credentials,
-                    registry: &mut registry,
-                    events: &events,
-                };
                 accounts::handle_login(
-                    ctx,
+                    &ctx,
                     provider,
                     DEFAULT_ACCOUNT.to_owned(),
                     credential,
                     false,
                 )
                 .await;
-                accounts::clear_account_registries(&account_registries);
+                accounts::clear_account_registries(&ctx.account_registries);
             }
             Op::AddAccount {
                 provider,
                 name,
                 credential,
             } => {
-                let ctx = accounts::LoginCtx {
-                    credentials: &credentials,
-                    registry: &mut registry,
-                    events: &events,
-                };
-                accounts::handle_login(ctx, provider, name, credential, true).await;
-                accounts::clear_account_registries(&account_registries);
+                accounts::handle_login(&ctx, provider, name, credential, true).await;
+                accounts::clear_account_registries(&ctx.account_registries);
             }
             Op::RemoveAccount { provider, name } => {
-                accounts::handle_remove_account(
-                    provider,
-                    name,
-                    &credentials,
-                    &mut registry,
-                    &events,
-                )
-                .await;
-                accounts::clear_account_registries(&account_registries);
+                accounts::handle_remove_account(&ctx, provider, name).await;
+                accounts::clear_account_registries(&ctx.account_registries);
             }
             Op::ListThreads {} => {
-                threads::handle_list_threads(&store, &cwd, &events).await;
+                threads::handle_list_threads(&ctx.store, &ctx.cwd, &ctx.events).await;
             }
             Op::ListRewindPoints {} => {
-                threads::handle_list_rewind_points(&checkpoints, state.thread_id, &events).await;
+                threads::handle_list_rewind_points(&ctx, state.thread_id).await;
             }
             Op::Rewind {
                 checkpoint_id,
                 scope,
             } => {
-                threads::handle_rewind(
-                    &store,
-                    &checkpoints,
-                    &skills,
-                    &tools,
-                    project_instructions.as_deref(),
-                    &session_date,
-                    checkpoint_id,
-                    scope,
-                    &mut state,
-                    &events,
-                )
-                .await;
+                threads::handle_rewind(&ctx, checkpoint_id, scope, &mut state).await;
             }
             Op::Resume { thread_id: tid } => {
-                checkpoints.clear();
-                threads::handle_resume(
-                    &store,
-                    &skills,
-                    &tools,
-                    project_instructions.as_deref(),
-                    &session_date,
-                    tid,
-                    &mut state,
-                    &events,
-                )
-                .await;
-                accounts::refresh_model_list(&events, &registry, &credentials).await;
+                ctx.checkpoints.clear();
+                threads::handle_resume(&ctx, tid, &mut state).await;
+                accounts::refresh_model_list(&ctx).await;
             }
             Op::ResumeLatest {} => {
-                checkpoints.clear();
-                threads::handle_resume_latest(
-                    &store,
-                    &skills,
-                    &tools,
-                    project_instructions.as_deref(),
-                    &session_date,
-                    &cwd,
-                    &mut state,
-                    &events,
-                )
-                .await;
-                accounts::refresh_model_list(&events, &registry, &credentials).await;
+                ctx.checkpoints.clear();
+                threads::handle_resume_latest(&ctx, &mut state).await;
+                accounts::refresh_model_list(&ctx).await;
             }
             Op::RenameThread { title } => {
-                threads::handle_rename(&store, state.thread_id, title, &events).await;
+                threads::handle_rename(&ctx.store, state.thread_id, title, &ctx.events).await;
             }
             Op::Shutdown {} => break,
         }
     }
-    processes.shutdown_all().await;
+    ctx.background.shutdown_all().await;
     mcp.shutdown().await;
 }
 
@@ -571,8 +577,8 @@ mod tests {
                     0 => {
                         yield StreamChunk::ToolCall {
                             id: "call-1".to_owned(),
-                            name: "Agent".to_owned(),
-                            input: "{\"agent_type\":\"explore\",\"prompt\":\"look into it\"}"
+                            name: "Subagent".to_owned(),
+                            input: "{\"subagent_type\":\"explore\",\"name\":\"look into it\",\"prompt\":\"look into it\"}"
                                 .to_owned(),
                         };
                     }
@@ -586,6 +592,59 @@ mod tests {
                             text: "final answer".to_owned(),
                         };
                     }
+                }
+            }))
+        }
+
+        fn discover(&self, out: mpsc::Sender<Model>) -> JoinHandle<()> {
+            tokio::spawn(async move {
+                drop(out);
+            })
+        }
+    }
+
+    struct ParallelScriptedProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ParallelScriptedProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::from("mock")
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                tools: true,
+                auth: AuthMethod::None,
+                images: true,
+            }
+        }
+
+        async fn stream(&self, _req: Request) -> Result<ChunkStream, StreamError> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Box::pin(async_stream::try_stream! {
+                if n == 0 {
+                    yield StreamChunk::ToolCall {
+                        id: "call-1".to_owned(),
+                        name: "Subagent".to_owned(),
+                        input: "{\"subagent_type\":\"explore\",\"name\":\"map engine\",\"prompt\":\"map engine\"}"
+                            .to_owned(),
+                    };
+                    yield StreamChunk::ToolCall {
+                        id: "call-2".to_owned(),
+                        name: "Subagent".to_owned(),
+                        input: "{\"subagent_type\":\"critic\",\"name\":\"review UI\",\"prompt\":\"review UI\"}"
+                            .to_owned(),
+                    };
+                } else if n < 3 {
+                    yield StreamChunk::TextDelta {
+                        text: format!("child findings {n}"),
+                    };
+                } else {
+                    yield StreamChunk::TextDelta {
+                        text: "final answer".to_owned(),
+                    };
                 }
             }))
         }
@@ -693,6 +752,7 @@ mod tests {
                 registry,
                 store,
                 credentials,
+                test_user_providers(),
                 Some(target("mock")),
                 std::env::temp_dir(),
                 None,
@@ -951,6 +1011,7 @@ mod tests {
             registry,
             store.clone(),
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1042,6 +1103,7 @@ mod tests {
             registry,
             store.clone(),
             credentials.clone(),
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1074,6 +1136,7 @@ mod tests {
             registry2,
             store.clone(),
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1163,6 +1226,7 @@ mod tests {
                 registry,
                 store,
                 credentials,
+                test_user_providers(),
                 Some(target("mock")),
                 std::env::temp_dir(),
                 None,
@@ -1310,6 +1374,7 @@ mod tests {
             registry,
             store,
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1326,13 +1391,15 @@ mod tests {
         .await
         .unwrap();
 
-        let mut agent_started = false;
-        let mut agent_done_ok = false;
+        let mut subagent_started = false;
+        let mut subagent_done_ok = false;
         let mut final_text = String::new();
         while let Some(event) = events.recv().await {
             match event {
-                Event::ToolStarted { call, .. } if call.name == "Agent" => agent_started = true,
-                Event::ToolDone { outcome, .. } => agent_done_ok = outcome.ok,
+                Event::ToolStarted { call, .. } if call.name == "Subagent" => {
+                    subagent_started = true;
+                }
+                Event::ToolDone { outcome, .. } => subagent_done_ok = outcome.ok,
                 Event::TextDone { text, .. } => final_text = text,
                 Event::TaskDone { interrupted, .. } => {
                     assert!(!interrupted);
@@ -1341,10 +1408,83 @@ mod tests {
                 _ => {}
             }
         }
-        assert!(agent_started, "expected the Agent tool to start");
-        assert!(agent_done_ok, "expected the Agent delegation to succeed");
+        assert!(subagent_started, "expected the Agent tool to start");
+        assert!(subagent_done_ok, "expected the Agent delegation to succeed");
         assert_eq!(final_text, "final answer");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn parallel_agents_emit_one_group_before_tool_rows() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider = ParallelScriptedProvider {
+            calls: calls.clone(),
+        };
+        let registry = Registry::from_providers(vec![Arc::new(provider)]);
+        let store = Store::open_in_memory().await.unwrap();
+        let credentials =
+            CredentialStore::new(std::env::temp_dir().join("goat-agent-parallel-delegate.json"));
+        let agent = GoatAgent::new(
+            registry,
+            store,
+            credentials,
+            test_user_providers(),
+            Some(target("mock")),
+            std::env::temp_dir(),
+            None,
+        )
+        .await;
+        let session = Session::spawn(agent);
+        let (ops, mut events, _handle) = session.into_parts();
+        ops.send(Op::SubmitMessage {
+            id: TaskId(1),
+            text: "do both".to_owned(),
+            display: None,
+            attachments: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        let mut index = 0usize;
+        let mut group_index = None;
+        let mut first_agent_tool_index = None;
+        let mut members = Vec::new();
+        let mut started_calls = Vec::new();
+        while let Some(event) = events.recv().await {
+            match event {
+                Event::SubagentGroupStarted {
+                    group,
+                    members: grouped,
+                    ..
+                } => {
+                    group_index = Some(index);
+                    assert_eq!(group, goat_protocol::ToolCallId(1));
+                    members = grouped;
+                }
+                Event::ToolStarted { call, .. } if call.name == "Subagent" => {
+                    first_agent_tool_index.get_or_insert(index);
+                }
+                Event::SubagentStarted { call, .. } => started_calls.push(call),
+                Event::TaskDone { interrupted, .. } => {
+                    assert!(!interrupted);
+                    break;
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].subagent_type, "explore");
+        assert_eq!(members[0].label, "map engine");
+        assert_eq!(members[1].subagent_type, "critic");
+        assert_eq!(members[1].label, "review UI");
+        assert!(group_index < first_agent_tool_index);
+        started_calls.sort_unstable();
+        assert_eq!(
+            started_calls,
+            vec![goat_protocol::ToolCallId(1), goat_protocol::ToolCallId(2)]
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
     }
 
     #[tokio::test]
@@ -1362,6 +1502,7 @@ mod tests {
             registry,
             store,
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1404,6 +1545,12 @@ mod tests {
         );
     }
 
+    fn test_user_providers() -> goat_config::UserProviders {
+        goat_config::UserProviders::at(
+            std::env::temp_dir().join("goat-engine-test-user-providers.json"),
+        )
+    }
+
     fn target(provider: &str) -> ModelTarget {
         ModelTarget {
             provider: provider.to_owned(),
@@ -1426,6 +1573,7 @@ mod tests {
             registry,
             store,
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1524,6 +1672,7 @@ mod tests {
             registry,
             store,
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1611,6 +1760,7 @@ mod tests {
             registry,
             store,
             credentials,
+            test_user_providers(),
             Some(target("ghost")),
             std::env::temp_dir(),
             None,
@@ -1710,6 +1860,7 @@ mod tests {
             registry,
             store.clone(),
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1771,6 +1922,7 @@ mod tests {
             registry,
             store.clone(),
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1817,6 +1969,7 @@ mod tests {
             registry,
             store.clone(),
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,
@@ -1866,6 +2019,7 @@ mod tests {
             registry,
             store.clone(),
             credentials,
+            test_user_providers(),
             Some(target("mock")),
             std::env::temp_dir(),
             None,

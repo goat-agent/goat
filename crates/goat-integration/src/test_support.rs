@@ -6,12 +6,14 @@ use std::time::Duration;
 use goat_auth::CredentialStore;
 use goat_bus::{EventBus, EventFilter};
 use goat_store::SqliteStore;
-use goat_types::{Event, IntegrationId, IntegrationUpdateKind, ProfileId};
+use goat_types::{AgentId, Event, IntegrationId, IntegrationUpdateKind};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::diff::DiffOps;
-use crate::watch::{Observed, Watch, WatchPage, WatchSource, run};
+use crate::diff::{DiffOps, REBUILD, RETAIN};
+use crate::watch::{
+    CompiledWatch, Observed, WatchPage, WatchSource, Workflow, WorkflowSource, run_workflow,
+};
 use crate::{IntegrationError, IntegrationResult, IntegrationRuntime};
 
 const TICK: Duration = Duration::from_millis(10);
@@ -26,23 +28,23 @@ pub async fn runtime_in(dir: &Path) -> IntegrationRuntime {
     }
 }
 
-pub async fn persona_in(runtime: &IntegrationRuntime) -> ProfileId {
-    let persona = ProfileId::from_slug("test");
+pub async fn agent_in(runtime: &IntegrationRuntime) -> AgentId {
+    let agent = AgentId::from_slug("test");
     runtime
         .store
-        .ensure_persona(persona, "test", "test")
+        .ensure_agent(agent, "test", "test")
         .await
         .unwrap();
-    persona
+    agent
 }
 
 pub fn observed(key: &str, stamp: &str) -> Observed {
-    Observed {
-        key: key.to_owned(),
-        stamp: stamp.to_owned(),
-        summary: format!("{key} needs you"),
-        payload: json!({ "key": key, "stamp": stamp }),
-    }
+    Observed::new(
+        key,
+        stamp,
+        format!("{key} needs you"),
+        json!({ "key": key, "stamp": stamp }),
+    )
 }
 
 pub struct ScriptedSource {
@@ -104,28 +106,32 @@ pub struct WatchContract {
     pub stream: String,
     pub kind: IntegrationUpdateKind,
     pub entity: &'static str,
-    pub overflow_tail: &'static str,
     pub diff: DiffOps,
 }
 
 impl WatchContract {
-    fn watch<S: WatchSource>(&self, source: S) -> Watch<S> {
-        Watch::new(
-            self.integration.clone(),
-            self.stream.clone(),
-            self.kind,
-            self.entity,
-            self.overflow_tail,
-            self.diff,
-            source,
-        )
-        .with_poll(TICK)
+    fn source(&self, source: ScriptedSource) -> WorkflowSource {
+        WorkflowSource {
+            integration: self.integration.clone(),
+            account: "default".to_owned(),
+            stream: self.stream.clone(),
+            compiled: CompiledWatch {
+                kind: self.kind,
+                entity: self.entity,
+                diff: self.diff,
+                source: Box::new(source),
+            },
+        }
+    }
+
+    fn workflow(&self, source: ScriptedSource) -> Workflow {
+        Workflow::new(self.stream.clone(), vec![self.source(source)]).with_poll(TICK)
     }
 }
 
 pub async fn assert_watch_contract(contract: &WatchContract) {
     cold_start_briefs_nothing(contract).await;
-    a_burst_is_capped_with_an_overflow_note(contract).await;
+    a_burst_is_capped_with_an_overflow_count(contract).await;
     repeated_auth_failures_alert_exactly_once(contract).await;
     an_observation_round_trips_losslessly(contract).await;
     unreadable_state_starts_cold_instead_of_replaying(contract).await;
@@ -134,19 +140,18 @@ pub async fn assert_watch_contract(contract: &WatchContract) {
 async fn cold_start_briefs_nothing(contract: &WatchContract) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_in(dir.path()).await;
-    let persona = persona_in(&runtime).await;
-    let mut sub = runtime.bus.subscribe(EventFilter::Persona(persona));
+    let agent = agent_in(&runtime).await;
+    let mut sub = runtime.bus.subscribe(EventFilter::Agent(agent));
     let cancel = CancellationToken::new();
 
     let backlog: Vec<Observed> = (0..40)
         .map(|n| observed(&format!("old{n}"), &format!("2026-01-{n:02}")))
         .collect();
     let source = ScriptedSource::pages(vec![backlog]);
-    let handle = tokio::spawn(run(
-        contract.watch(source),
-        persona,
+    let handle = tokio::spawn(run_workflow(
+        contract.workflow(source),
+        agent,
         runtime.clone(),
-        "default".into(),
         cancel.clone(),
     ));
 
@@ -159,11 +164,11 @@ async fn cold_start_briefs_nothing(contract: &WatchContract) {
     );
 }
 
-async fn a_burst_is_capped_with_an_overflow_note(contract: &WatchContract) {
+async fn a_burst_is_capped_with_an_overflow_count(contract: &WatchContract) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_in(dir.path()).await;
-    let persona = persona_in(&runtime).await;
-    let mut sub = runtime.bus.subscribe(EventFilter::Persona(persona));
+    let agent = agent_in(&runtime).await;
+    let mut sub = runtime.bus.subscribe(EventFilter::Agent(agent));
     let cancel = CancellationToken::new();
 
     let burst: Vec<Observed> = (0..5)
@@ -174,52 +179,51 @@ async fn a_burst_is_capped_with_an_overflow_note(contract: &WatchContract) {
         Ok(WatchPage::new(burst.clone())),
         Ok(WatchPage::new(burst)),
     ]);
-    let handle = tokio::spawn(run(
-        contract.watch(source),
-        persona,
+    let handle = tokio::spawn(run_workflow(
+        contract.workflow(source),
+        agent,
         runtime.clone(),
-        "default".into(),
         cancel.clone(),
     ));
 
-    let mut summaries = Vec::new();
-    while summaries.len() < 3 {
-        let event = tokio::time::timeout(PATIENCE, sub.recv())
-            .await
-            .expect("events before timeout")
-            .expect("event");
-        if let Event::IntegrationUpdate { summary, kind, .. } = event
-            && kind != IntegrationUpdateKind::AuthBroken
-        {
-            summaries.push(summary);
-        }
-    }
+    let event = tokio::time::timeout(PATIENCE, sub.recv())
+        .await
+        .expect("an event before timeout")
+        .expect("event");
+    let Event::WorkflowUpdate {
+        workflow,
+        items,
+        overflow,
+        ..
+    } = event
+    else {
+        panic!("expected a workflow update");
+    };
     let extra = tokio::time::timeout(Duration::from_millis(200), sub.recv()).await;
     cancel.cancel();
     handle.await.unwrap();
 
-    assert_eq!(summaries.len(), 3, "a burst must be capped");
-    assert!(extra.is_err(), "nothing beyond the cap may be published");
-    let last = summaries.last().unwrap();
+    assert_eq!(workflow, contract.stream);
+    assert_eq!(items.len(), 3, "a burst must be capped");
+    assert_eq!(overflow, 2, "the cap must report what it dropped");
     assert!(
-        last.contains("+2 more") && last.contains(contract.overflow_tail),
-        "the last briefing must carry the overflow note, got {last}"
+        extra.is_err(),
+        "everything fetched is seen; nothing beyond the cap may re-fire"
     );
 }
 
 async fn repeated_auth_failures_alert_exactly_once(contract: &WatchContract) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_in(dir.path()).await;
-    let persona = persona_in(&runtime).await;
-    let mut sub = runtime.bus.subscribe(EventFilter::Persona(persona));
+    let agent = agent_in(&runtime).await;
+    let mut sub = runtime.bus.subscribe(EventFilter::Agent(agent));
     let cancel = CancellationToken::new();
 
     let source = ScriptedSource::always_failing(&IntegrationError::Auth("401".into()));
-    let handle = tokio::spawn(run(
-        contract.watch(source),
-        persona,
+    let handle = tokio::spawn(run_workflow(
+        contract.workflow(source),
+        agent,
         runtime.clone(),
-        "default".into(),
         cancel.clone(),
     ));
 
@@ -248,19 +252,18 @@ async fn repeated_auth_failures_alert_exactly_once(contract: &WatchContract) {
 async fn an_observation_round_trips_losslessly(contract: &WatchContract) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_in(dir.path()).await;
-    let persona = persona_in(&runtime).await;
-    let mut sub = runtime.bus.subscribe(EventFilter::Persona(persona));
+    let agent = agent_in(&runtime).await;
+    let mut sub = runtime.bus.subscribe(EventFilter::Agent(agent));
     let cancel = CancellationToken::new();
 
     let source = ScriptedSource::new(vec![
         Ok(WatchPage::new(Vec::new())),
         Ok(WatchPage::new(vec![observed("K-1", "2026-03-01")])),
     ]);
-    let handle = tokio::spawn(run(
-        contract.watch(source),
-        persona,
+    let handle = tokio::spawn(run_workflow(
+        contract.workflow(source),
+        agent,
         runtime.clone(),
-        "default".into(),
         cancel.clone(),
     ));
 
@@ -268,21 +271,17 @@ async fn an_observation_round_trips_losslessly(contract: &WatchContract) {
         .await
         .expect("an event before timeout")
         .expect("event");
-    let Event::IntegrationUpdate {
-        kind,
-        external_ref,
-        observation,
-        ..
-    } = event
-    else {
-        panic!("unexpected event type");
+    let Event::WorkflowUpdate { items, .. } = event else {
+        panic!("expected a workflow update");
     };
     cancel.cancel();
     handle.await.unwrap();
 
-    assert_eq!(kind, contract.kind);
+    let item = items.first().expect("one item");
+    assert_eq!(item.kind, contract.kind);
+    assert_eq!(item.stream, contract.stream);
     assert_eq!(
-        external_ref,
+        item.external_ref,
         format!(
             "{}/default:{}:K-1",
             contract.integration.as_str(),
@@ -291,11 +290,11 @@ async fn an_observation_round_trips_losslessly(contract: &WatchContract) {
     );
     let record = runtime
         .store
-        .get_observation(observation.expect("an observation id"))
+        .get_observation(item.observation.expect("an observation id"))
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(record.external_ref, external_ref);
+    assert_eq!(record.external_ref, item.external_ref);
     assert_eq!(
         record.payload,
         json!({ "key": "K-1", "stamp": "2026-03-01" })
@@ -305,10 +304,10 @@ async fn an_observation_round_trips_losslessly(contract: &WatchContract) {
 async fn unreadable_state_starts_cold_instead_of_replaying(contract: &WatchContract) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_in(dir.path()).await;
-    let persona = persona_in(&runtime).await;
+    let agent = agent_in(&runtime).await;
     runtime
         .save_state(
-            persona,
+            agent,
             &contract.integration,
             "default",
             &contract.stream,
@@ -319,7 +318,7 @@ async fn unreadable_state_starts_cold_instead_of_replaying(contract: &WatchContr
 
     let loaded = crate::watch::load_state(
         &runtime,
-        persona,
+        agent,
         &contract.integration,
         "default",
         &contract.stream,
@@ -330,6 +329,125 @@ async fn unreadable_state_starts_cold_instead_of_replaying(contract: &WatchContr
         loaded.is_none(),
         "unreadable state must resolve to a cold start, not a panic or a replay"
     );
+}
+
+pub async fn assert_bundle_contract() {
+    two_sources_merge_into_one_capped_event().await;
+    one_failing_source_does_not_silence_the_other().await;
+}
+
+fn bundle_source(name: &'static str, diff: DiffOps, source: ScriptedSource) -> WorkflowSource {
+    WorkflowSource {
+        integration: IntegrationId::from_static(name),
+        account: "default".to_owned(),
+        stream: "inbox".to_owned(),
+        compiled: CompiledWatch {
+            kind: IntegrationUpdateKind::Assigned,
+            entity: "item",
+            diff,
+            source: Box::new(source),
+        },
+    }
+}
+
+async fn two_sources_merge_into_one_capped_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = runtime_in(dir.path()).await;
+    let agent = agent_in(&runtime).await;
+    let mut sub = runtime.bus.subscribe(EventFilter::Agent(agent));
+    let cancel = CancellationToken::new();
+
+    let alpha = ScriptedSource::pages(vec![
+        Vec::new(),
+        vec![observed("a1", "1"), observed("a2", "2")],
+    ]);
+    let beta = ScriptedSource::pages(vec![
+        Vec::new(),
+        vec![observed("b1", "1"), observed("b2", "2")],
+    ]);
+    let workflow = Workflow::new(
+        "inbox",
+        vec![
+            bundle_source("alpha", REBUILD, alpha),
+            bundle_source("beta", RETAIN, beta),
+        ],
+    )
+    .with_poll(TICK);
+    let handle = tokio::spawn(run_workflow(
+        workflow,
+        agent,
+        runtime.clone(),
+        cancel.clone(),
+    ));
+
+    let event = tokio::time::timeout(PATIENCE, sub.recv())
+        .await
+        .expect("an event before timeout")
+        .expect("event");
+    let Event::WorkflowUpdate {
+        workflow,
+        items,
+        overflow,
+        ..
+    } = event
+    else {
+        panic!("expected a workflow update");
+    };
+    let extra = tokio::time::timeout(Duration::from_millis(200), sub.recv()).await;
+    cancel.cancel();
+    handle.await.unwrap();
+
+    assert_eq!(workflow, "inbox");
+    assert_eq!(items.len(), 3, "the cap applies across the bundle");
+    assert_eq!(overflow, 1);
+    assert_eq!(items[0].integration.as_str(), "alpha");
+    assert_eq!(items[2].integration.as_str(), "beta");
+    assert!(
+        extra.is_err(),
+        "capped items are seen, not replayed on the next tick"
+    );
+}
+
+async fn one_failing_source_does_not_silence_the_other() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = runtime_in(dir.path()).await;
+    let agent = agent_in(&runtime).await;
+    let mut sub = runtime.bus.subscribe(EventFilter::Agent(agent));
+    let cancel = CancellationToken::new();
+
+    let alpha = ScriptedSource::new(vec![
+        Ok(WatchPage::new(Vec::new())),
+        Ok(WatchPage::new(vec![observed("a1", "1")])),
+    ]);
+    let beta = ScriptedSource::always_failing(&IntegrationError::Service("boom".into()));
+    let workflow = Workflow::new(
+        "inbox",
+        vec![
+            bundle_source("alpha", REBUILD, alpha),
+            bundle_source("beta", RETAIN, beta),
+        ],
+    )
+    .with_poll(TICK);
+    let handle = tokio::spawn(run_workflow(
+        workflow,
+        agent,
+        runtime.clone(),
+        cancel.clone(),
+    ));
+
+    let event = tokio::time::timeout(PATIENCE, sub.recv())
+        .await
+        .expect("an event before timeout")
+        .expect("event");
+    let Event::WorkflowUpdate { items, .. } = event else {
+        panic!("expected a workflow update");
+    };
+    cancel.cancel();
+    handle.await.unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].integration.as_str(), "alpha");
+    assert_eq!(items[0].summary, "a1 needs you");
 }
 
 pub fn sample_payload() -> Value {

@@ -5,9 +5,9 @@ use async_trait::async_trait;
 use goat_agent_command::{CommandArgs, CommandSpec};
 use goat_channel::{
     BindOutput, Channel, ChannelBinding, ChannelError, ChannelHandle, ChannelIdentity,
-    ChannelResult,
+    ChannelResult, ChannelSecrets,
 };
-use goat_types::{ChannelId, ProfileId};
+use goat_types::{AgentId, ChannelId};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use twilight_gateway::Intents;
@@ -18,11 +18,11 @@ use twilight_model::application::command::{
 use twilight_model::id::Id;
 use twilight_model::id::marker::ApplicationMarker;
 
-use crate::ID;
 use crate::config::DiscordConfig;
 use crate::handle::DiscordHandle;
 use crate::inbound::{GatewayConfig, gateway_loop};
 use crate::interaction::InteractionState;
+use crate::{ID, TOKEN_SLOT};
 
 const INCOMING_CAPACITY: usize = 256;
 
@@ -37,13 +37,14 @@ impl Channel for DiscordChannel {
 
     async fn bind(
         self: Arc<Self>,
-        persona: ProfileId,
+        agent: AgentId,
         binding: ChannelBinding,
     ) -> ChannelResult<BindOutput> {
+        let token = binding.secrets.require(TOKEN_SLOT)?.to_owned();
         let cfg: DiscordConfig = serde_json::from_value(binding.config)
             .map_err(|e| ChannelError::Config(format!("discord: {e}")))?;
         let commands = binding.commands;
-        let http = Arc::new(HttpClient::new(cfg.token.clone()));
+        let http = Arc::new(HttpClient::new(token.clone()));
         let (me_id, identity) = current_identity(&http).await?;
         let application_id: Id<ApplicationMarker> = Id::new(me_id);
 
@@ -64,21 +65,21 @@ impl Channel for DiscordChannel {
             http.clone(),
             tx,
             GatewayConfig {
-                persona,
+                agent,
                 instance: binding.instance,
                 commands,
                 interactions: interactions.clone(),
                 allowed_user_ids,
                 bot_id: me_id,
-                token: cfg.token,
+                token,
                 intents,
             },
         ));
 
-        info!(profile = %persona, "discord bot bound: {}", identity.handle);
+        info!(agent = %agent, "discord bot bound: {}", identity.handle);
         let handle: Arc<dyn ChannelHandle> = Arc::new(DiscordHandle::new(
             binding.instance,
-            persona,
+            agent,
             identity,
             http,
             interactions,
@@ -86,10 +87,14 @@ impl Channel for DiscordChannel {
         Ok((handle, rx))
     }
 
-    async fn verify(&self, config: &serde_json::Value) -> ChannelResult<ChannelIdentity> {
-        let cfg: DiscordConfig = serde_json::from_value(config.clone())
+    async fn verify(
+        &self,
+        config: &serde_json::Value,
+        secrets: &ChannelSecrets,
+    ) -> ChannelResult<ChannelIdentity> {
+        serde_json::from_value::<DiscordConfig>(config.clone())
             .map_err(|e| ChannelError::Config(format!("discord: {e}")))?;
-        let http = HttpClient::new(cfg.token);
+        let http = HttpClient::new(secrets.require(TOKEN_SLOT)?.to_owned());
         let (_, identity) = current_identity(&http).await?;
         Ok(identity)
     }
@@ -169,23 +174,31 @@ fn command_options(args: &CommandArgs) -> Vec<CommandOption> {
             name,
             description,
             required,
-        } => vec![CommandOption {
-            autocomplete: None,
-            channel_types: None,
-            choices: None,
-            description: command_description(description),
-            description_localizations: None,
-            kind: CommandOptionType::String,
-            max_length: Some(6000),
-            max_value: None,
-            min_length: None,
-            min_value: None,
-            name: discord_option_name(name),
-            name_localizations: None,
-            options: None,
-            required: Some(*required),
-        }],
+        } => vec![string_option(name, description, *required)],
+        CommandArgs::Named(specs) => specs
+            .iter()
+            .map(|spec| string_option(&spec.name, &spec.description, spec.required))
+            .collect(),
         _ => Vec::new(),
+    }
+}
+
+fn string_option(name: &str, description: &str, required: bool) -> CommandOption {
+    CommandOption {
+        autocomplete: None,
+        channel_types: None,
+        choices: None,
+        description: command_description(description),
+        description_localizations: None,
+        kind: CommandOptionType::String,
+        max_length: Some(6000),
+        max_value: None,
+        min_length: None,
+        min_value: None,
+        name: discord_option_name(name),
+        name_localizations: None,
+        options: None,
+        required: Some(required),
     }
 }
 
@@ -217,4 +230,23 @@ fn parse_intents(names: &[String]) -> Intents {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use goat_agent_command::CommandArgSpec;
+
+    #[test]
+    fn named_arguments_become_one_string_option_each() {
+        let options = command_options(&CommandArgs::Named(vec![
+            CommandArgSpec::new("task", "what to do", true),
+            CommandArgSpec::new("when", "when to do it", false),
+        ]));
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].name, "task");
+        assert_eq!(options[0].required, Some(true));
+        assert_eq!(options[1].name, "when");
+        assert_eq!(options[1].required, Some(false));
+    }
 }

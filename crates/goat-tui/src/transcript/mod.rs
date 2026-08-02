@@ -6,7 +6,10 @@ mod tool_line;
 
 use std::cell::RefCell;
 
-use goat_protocol::{InputAttachment, TaskId, ToolCall, ToolCallId, ToolOutcome};
+use goat_protocol::{
+    InputAttachment, SubagentGroupEntry, SubagentGroupMember, TaskId, ToolCall, ToolCallId,
+    ToolOutcome,
+};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -17,7 +20,11 @@ use ratatui::{
 use crate::{highlight::Highlighter, markdown, symbols, theme::Theme};
 
 use gutter::hang;
-pub(crate) use item::{Item, ShellStatus, ToolStatus, UserMessage, Working};
+pub(crate) use item::{
+    GitRun, Item, ShellStatus, SubagentGroupMemberView, SubagentGroupView, SubagentMemberStatus,
+    ToolStatus, UserMessage, Working,
+};
+pub(crate) use render::format_elapsed;
 use render::{build_static_lines, is_blank, queued_rows, stable_prefix_len, working_rows};
 
 pub(crate) struct RenderCtx<'a> {
@@ -42,7 +49,7 @@ struct RenderCache {
     width: u16,
     version: u64,
     lines: Vec<Line<'static>>,
-    spinner_lines: Vec<usize>,
+    spinner_lines: Vec<render::SpinnerPlacement>,
     images: Vec<ImagePlacement>,
 }
 
@@ -266,16 +273,228 @@ impl Transcript {
         self.items.push(Item::Agent(text.to_owned()));
     }
 
+    pub fn push_subagent_group(
+        &mut self,
+        parent: TaskId,
+        group: ToolCallId,
+        members: Vec<SubagentGroupMember>,
+    ) {
+        self.flush_thinking();
+        self.bump_version();
+        let now = std::time::Instant::now();
+        self.items.push(Item::SubagentGroup(SubagentGroupView {
+            parent,
+            group,
+            members: members
+                .into_iter()
+                .map(|member| SubagentGroupMemberView {
+                    call: member.call,
+                    subagent_type: member.subagent_type,
+                    label: member.label,
+                    background: member.background,
+                    status: SubagentMemberStatus::Pending,
+                    tools: 0,
+                    tokens: 0,
+                    started_at: None,
+                    finished_at: None,
+                })
+                .collect(),
+            started_at: Some(now),
+            finished_at: None,
+        }));
+    }
+
+    pub fn push_restored_agent_group(
+        &mut self,
+        group: ToolCallId,
+        members: Vec<SubagentGroupEntry>,
+    ) {
+        self.bump_version();
+        self.items.push(Item::SubagentGroup(SubagentGroupView {
+            parent: TaskId(0),
+            group,
+            members: members
+                .into_iter()
+                .map(|entry| SubagentGroupMemberView {
+                    call: entry.member.call,
+                    subagent_type: entry.member.subagent_type,
+                    label: entry.member.label,
+                    background: entry.member.background,
+                    status: SubagentMemberStatus::Done(entry.outcome),
+                    tools: 0,
+                    tokens: 0,
+                    started_at: None,
+                    finished_at: None,
+                })
+                .collect(),
+            started_at: None,
+            finished_at: None,
+        }));
+    }
+
+    pub fn is_subagent_group_call(&self, parent: TaskId, call: ToolCallId) -> bool {
+        self.items.iter().rev().any(|item| {
+            matches!(
+                item,
+                Item::SubagentGroup(group)
+                    if group.parent == parent
+                        && group.members.iter().any(|member| member.call == call)
+            )
+        })
+    }
+
+    pub fn start_subagent(&mut self, parent: TaskId, call: ToolCallId) {
+        self.bump_version();
+        for item in self.items.iter_mut().rev() {
+            let Item::SubagentGroup(group) = item else {
+                continue;
+            };
+            if group.parent != parent {
+                continue;
+            }
+            if let Some(member) = group.members.iter_mut().find(|member| member.call == call) {
+                member.status = SubagentMemberStatus::Running;
+                member.started_at = Some(std::time::Instant::now());
+                return;
+            }
+        }
+    }
+
+    pub fn add_subagent_tool(&mut self, parent: TaskId, call: ToolCallId) {
+        self.bump_version();
+        for item in self.items.iter_mut().rev() {
+            let Item::SubagentGroup(group) = item else {
+                continue;
+            };
+            if group.parent != parent {
+                continue;
+            }
+            if let Some(member) = group.members.iter_mut().find(|member| member.call == call) {
+                member.tools = member.tools.saturating_add(1);
+                return;
+            }
+        }
+    }
+
+    pub fn add_subagent_tokens(&mut self, parent: TaskId, call: ToolCallId, tokens: u64) {
+        self.bump_version();
+        for item in self.items.iter_mut().rev() {
+            let Item::SubagentGroup(group) = item else {
+                continue;
+            };
+            if group.parent != parent {
+                continue;
+            }
+            if let Some(member) = group.members.iter_mut().find(|member| member.call == call) {
+                member.tokens = member.tokens.saturating_add(tokens);
+                return;
+            }
+        }
+    }
+
+    pub fn detached_group_member(&self, parent: TaskId, call: ToolCallId) -> bool {
+        self.items.iter().rev().any(|item| {
+            matches!(
+                item,
+                Item::SubagentGroup(group)
+                    if group.parent == parent
+                        && group.members.iter().any(|member| member.call == call && member.background)
+            )
+        })
+    }
+
+    pub fn finish_subagent(&mut self, parent: TaskId, call: ToolCallId, outcome: ToolOutcome) {
+        self.bump_version();
+        for item in self.items.iter_mut().rev() {
+            let Item::SubagentGroup(group) = item else {
+                continue;
+            };
+            if group.parent != parent {
+                continue;
+            }
+            let Some(member) = group.members.iter_mut().find(|member| member.call == call) else {
+                continue;
+            };
+            member.status = SubagentMemberStatus::Done(outcome);
+            member.finished_at = Some(std::time::Instant::now());
+            if group
+                .members
+                .iter()
+                .all(|member| matches!(member.status, SubagentMemberStatus::Done(_)))
+            {
+                group.finished_at = Some(std::time::Instant::now());
+            }
+            return;
+        }
+    }
+
+    pub fn has_running_subagent_group(&self) -> bool {
+        self.items.iter().any(|item| {
+            matches!(
+                item,
+                Item::SubagentGroup(group)
+                    if group.members.iter().any(|member| {
+                        matches!(
+                            member.status,
+                            SubagentMemberStatus::Pending | SubagentMemberStatus::Running
+                        )
+                    })
+            )
+        })
+    }
+
     pub fn push_tool(&mut self, call: ToolCall) {
         self.flush_thinking();
         self.bump_version();
+        let git = self.claim_git_run(&call);
         self.items.push(Item::Tool {
             id: call.id,
             name: call.name,
             display: call.display,
             status: ToolStatus::Running,
             image: None,
+            git,
         });
+    }
+
+    fn claim_git_run(&mut self, call: &ToolCall) -> Option<GitRun> {
+        if call.name != "Bash" {
+            return None;
+        }
+        let args = goat_tool::gist::call_args(&call.name, &call.display.primary);
+        let ops = goat_git::classify(args.first()?)?;
+        if self.drop_running_git_runs() {
+            return None;
+        }
+        Some(GitRun { ops })
+    }
+
+    pub fn touches_pull_request(&self, call_id: ToolCallId) -> bool {
+        self.items.iter().rev().any(|item| match item {
+            Item::Tool {
+                id,
+                git: Some(run),
+                status: ToolStatus::Running,
+                ..
+            } => *id == call_id && run.ops.iter().any(|op| op.verb.touches_pull_request()),
+            _ => false,
+        })
+    }
+
+    fn drop_running_git_runs(&mut self) -> bool {
+        let mut found = false;
+        for item in &mut self.items {
+            if let Item::Tool {
+                status: ToolStatus::Running,
+                git: git @ Some(_),
+                ..
+            } = item
+            {
+                *git = None;
+                found = true;
+            }
+        }
+        found
     }
 
     pub fn finish_tool(
@@ -405,7 +624,26 @@ impl Transcript {
                         ok: false,
                         summary: None,
                         image: None,
+                        git: None,
                     });
+                }
+                if let Item::SubagentGroup(group) = item {
+                    let now = std::time::Instant::now();
+                    for member in &mut group.members {
+                        if matches!(
+                            member.status,
+                            SubagentMemberStatus::Pending | SubagentMemberStatus::Running
+                        ) {
+                            member.status = SubagentMemberStatus::Done(ToolOutcome {
+                                ok: false,
+                                summary: None,
+                                image: None,
+                                git: None,
+                            });
+                            member.finished_at = Some(now);
+                        }
+                    }
+                    group.finished_at = Some(now);
                 }
                 if let Item::Shell { status, .. } = item
                     && matches!(status, ShellStatus::Running)
@@ -576,10 +814,15 @@ impl Transcript {
         let static_end = end.min(cache.lines.len());
         for i in start.min(static_end)..static_end {
             let mut line = cache.lines[i].clone();
-            if cache.spinner_lines.binary_search(&i).is_ok()
-                && let Some(span) = line.spans.first_mut()
+            if let Some(placement) = cache.spinner_lines.iter().find(|entry| entry.line == i)
+                && let Some(span) = line.spans.get_mut(placement.span)
             {
-                *span = Span::styled(format!("{} ", ctx.spinner), ctx.theme.accent());
+                let marker = if placement.trailing_space {
+                    format!("{} ", ctx.spinner)
+                } else {
+                    ctx.spinner.to_owned()
+                };
+                *span = Span::styled(marker, ctx.theme.accent());
             }
             visible.push(pad_left(line, ctx.left_pad, ctx.theme));
         }
@@ -649,6 +892,7 @@ mod tests {
             ok: true,
             summary: None,
             image: None,
+            git: None,
         }
     }
 
@@ -657,11 +901,63 @@ mod tests {
             ok: false,
             summary: Some(summary.to_owned()),
             image: None,
+            git: None,
         }
     }
 
     fn commit(t: &mut Transcript, text: &str) {
         t.commit_text(text);
+    }
+
+    fn bash(id: u64, command: &str) -> ToolCall {
+        call(
+            id,
+            "Bash",
+            &goat_tool::display::call_sig("Bash", &[command]),
+        )
+    }
+
+    fn git_ok(facts: goat_protocol::GitFacts) -> ToolOutcome {
+        ToolOutcome {
+            ok: true,
+            summary: None,
+            image: None,
+            git: Some(Box::new(facts)),
+        }
+    }
+
+    fn landed() -> goat_protocol::GitFacts {
+        goat_protocol::GitFacts {
+            head: Some("a1b2c3d".to_owned()),
+            subject: Some("feat: git-aware transcript rows".to_owned()),
+            branch: Some("feat/git-ui".to_owned()),
+            upstream: Some("origin/feat/git-ui".to_owned()),
+            pr: None,
+            pr_url: None,
+        }
+    }
+
+    fn git_lines(t: &Transcript, width: u16) -> Vec<String> {
+        let (lines, _, _) = build_static_lines(
+            &t.items,
+            Theme::dark(),
+            width,
+            &PlainHighlighter,
+            "/",
+            &mut Vec::new(),
+        );
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .filter(|line| !line.is_empty())
+            .collect()
     }
 
     fn height(t: &Transcript, width: u16) -> usize {
@@ -703,6 +999,7 @@ mod tests {
                 display: goat_protocol::ToolDisplay::primary("Read(a.txt)"),
                 status: ToolStatus::Running,
                 image: None,
+                git: None,
             },
         ];
         let mut memo = Vec::new();
@@ -1002,6 +1299,56 @@ mod tests {
         assert!(buffer_row(&terminal, 0).starts_with(&format!("{} ", symbols::SPINNER[3])));
     }
 
+    #[test]
+    fn subagent_group_renders_compact_tree_with_live_spinner() {
+        let mut t = Transcript::default();
+        t.push_subagent_group(
+            TaskId(1),
+            ToolCallId(1),
+            vec![
+                goat_protocol::SubagentGroupMember {
+                    call: ToolCallId(1),
+                    subagent_type: "explore".to_owned(),
+                    label: "map engine".to_owned(),
+                    background: false,
+                },
+                goat_protocol::SubagentGroupMember {
+                    call: ToolCallId(2),
+                    subagent_type: "critic".to_owned(),
+                    label: "review UI".to_owned(),
+                    background: false,
+                },
+            ],
+        );
+        t.start_subagent(TaskId(1), ToolCallId(1));
+        let mut terminal = Terminal::new(TestBackend::new(60, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                t.render(
+                    frame,
+                    frame.area(),
+                    &super::RenderCtx {
+                        theme: Theme::dark(),
+                        scroll: 0,
+                        left_pad: 0,
+                        cwd: "/",
+                        spinner: symbols::SPINNER[3],
+                        working: None,
+                        queued: &[],
+                        hl: &PlainHighlighter,
+                        picker: None,
+                    },
+                );
+            })
+            .unwrap();
+        assert!(buffer_row(&terminal, 0).contains("2 subagents · 0/2 done"));
+        assert!(
+            buffer_row(&terminal, 1)
+                .contains(&format!("├─ {} explore · map engine", symbols::SPINNER[3]))
+        );
+        assert!(buffer_row(&terminal, 2).contains("└─ ○ critic · review UI"));
+    }
+
     fn cell_bg(terminal: &Terminal<TestBackend>, x: u16, y: u16) -> Option<ratatui::style::Color> {
         terminal.backend().buffer()[(x, y)].style().bg
     }
@@ -1241,5 +1588,196 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(render_text(&incremental), render_text(&full));
+    }
+
+    #[test]
+    fn a_running_git_call_is_one_row_naming_the_whole_chain() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"git add -A && git commit -m "x" && git push"#));
+        assert_eq!(
+            git_lines(&t, 80),
+            vec![format!("{} Committing and pushing…", symbols::SPINNER[0])]
+        );
+    }
+
+    #[test]
+    fn a_running_row_shows_only_what_the_command_itself_said() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, "git push -u origin feat/git-ui"));
+        assert_eq!(
+            git_lines(&t, 80),
+            vec![format!(
+                "{} Pushing feat/git-ui to origin…",
+                symbols::SPINNER[0]
+            )]
+        );
+    }
+
+    #[test]
+    fn a_successful_git_call_expands_to_one_row_per_operation() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"git add -A && git commit -m "x" && git push"#));
+        t.finish_tool(ToolCallId(1), git_ok(landed()), None);
+        assert_eq!(
+            git_lines(&t, 80),
+            vec![
+                "✓ Committed a1b2c3d · feat: git-aware transcript rows".to_owned(),
+                "✓ Pushed feat/git-ui to origin".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_git_call_stays_one_row_and_carries_the_reason() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"git add -A && git commit -m "x" && git push"#));
+        t.finish_tool(
+            ToolCallId(1),
+            failed("exit 1 · ! [rejected] main -> main (fetch first)"),
+            None,
+        );
+        assert_eq!(
+            git_lines(&t, 80),
+            vec![
+                "✗ Failed to commit and push · ! [rejected] main -> main (fetch first)".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pull_request_row_carries_its_number_and_branch() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"gh pr create --title "feat: x""#));
+        let facts = goat_protocol::GitFacts {
+            head: None,
+            subject: None,
+            branch: Some("feat/git-ui".to_owned()),
+            upstream: None,
+            pr: Some(59),
+            pr_url: Some("https://github.com/goat-agent/goat/pull/59".to_owned()),
+        };
+        t.finish_tool(ToolCallId(1), git_ok(facts), None);
+        assert_eq!(git_lines(&t, 80), vec!["✓ Opened PR #59".to_owned()]);
+    }
+
+    #[test]
+    fn long_verbs_keep_one_space_and_the_column_stays_put() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, "git push --force"));
+        t.finish_tool(ToolCallId(1), git_ok(landed()), None);
+        t.push_tool(bash(2, "git switch main"));
+        t.finish_tool(ToolCallId(2), git_ok(landed()), None);
+        assert_eq!(
+            git_lines(&t, 80),
+            vec![
+                "✓ Force-pushed feat/git-ui to origin".to_owned(),
+                "✓ Switched to main".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_narrow_terminal_clips_instead_of_wrapping() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"git commit -m "x""#));
+        t.finish_tool(ToolCallId(1), git_ok(landed()), None);
+        let lines = git_lines(&t, 40);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("✓ Committed a1b2c3d · feat"));
+        assert!(lines[0].ends_with('…'));
+    }
+
+    #[test]
+    fn facts_arriving_with_the_outcome_invalidate_the_memoized_row() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"git commit -m "x""#));
+        let mut memo = Vec::new();
+        let before = build_static_lines(
+            &t.items,
+            Theme::dark(),
+            80,
+            &PlainHighlighter,
+            "/",
+            &mut memo,
+        )
+        .0;
+        t.finish_tool(ToolCallId(1), git_ok(landed()), None);
+        let after = build_static_lines(
+            &t.items,
+            Theme::dark(),
+            80,
+            &PlainHighlighter,
+            "/",
+            &mut memo,
+        )
+        .0;
+        assert_ne!(
+            before[0].spans.len() + before[0].spans[0].content.len(),
+            after[0].spans.len() + after[0].spans[0].content.len()
+        );
+        let text: String = after[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.contains("a1b2c3d"), "{text}");
+    }
+
+    #[test]
+    fn a_second_concurrent_git_call_degrades_both_to_plain_tool_rows() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"git commit -m "a""#));
+        t.push_tool(bash(2, "git push"));
+        let lines = git_lines(&t, 80);
+        assert!(lines.iter().all(|line| line.contains("Bash(")), "{lines:?}");
+    }
+
+    #[test]
+    fn each_verb_reads_as_a_sentence() {
+        let cases = [
+            ("git switch -c feat/git-ui", "✓ Created branch feat/git-ui"),
+            ("git merge origin/main", "✓ Merged origin/main"),
+            ("git rebase main", "✓ Rebased onto main"),
+            ("git pull origin", "✓ Pulled from origin"),
+            ("git tag v1.2.0", "✓ Tagged v1.2.0"),
+            ("git stash", "✓ Stashed changes"),
+            (
+                "git reset --hard origin/main",
+                "✓ Hard reset to origin/main",
+            ),
+            ("git cherry-pick a1b2c3d", "✓ Cherry-picked a1b2c3d"),
+            ("gh pr merge 58 --squash", "✓ Merged PR #58"),
+            ("gh pr close 58", "✓ Closed PR #58"),
+        ];
+        for (index, (command, expected)) in cases.iter().enumerate() {
+            let mut t = Transcript::default();
+            let id = u64::try_from(index).unwrap() + 1;
+            t.push_tool(bash(id, command));
+            t.finish_tool(ToolCallId(id), ok(), None);
+            assert_eq!(git_lines(&t, 80), vec![(*expected).to_owned()], "{command}");
+        }
+    }
+
+    #[test]
+    fn a_pull_request_without_a_number_still_reads() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"gh pr create --title "feat: x""#));
+        assert_eq!(
+            git_lines(&t, 80),
+            vec![format!("{} Opening a pull request…", symbols::SPINNER[0])]
+        );
+        t.finish_tool(ToolCallId(1), ok(), None);
+        assert_eq!(
+            git_lines(&t, 80),
+            vec!["✓ Opened the pull request".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_restored_git_call_without_evidence_still_renders() {
+        let mut t = Transcript::default();
+        t.push_tool(bash(1, r#"git commit -m "x""#));
+        t.finish_tool(ToolCallId(1), ok(), None);
+        assert_eq!(git_lines(&t, 80), vec!["✓ Committed".to_owned()]);
     }
 }

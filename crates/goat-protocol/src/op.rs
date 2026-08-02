@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    InputAttachment, LoginCredential, ModelTarget, ProcessId, RewindScope, TaskId, ToolCallId,
+    InputAttachment, LoginCredential, Mode, ModelTarget, PlanDecision, RewindScope, RunId, TaskId,
+    ToolCallId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -26,6 +27,13 @@ pub enum Op {
     SelectModel {
         target: ModelTarget,
     },
+    SetMode {
+        mode: Mode,
+    },
+    ResolvePlan {
+        call: ToolCallId,
+        decision: PlanDecision,
+    },
     Login {
         provider: String,
         credential: LoginCredential,
@@ -45,6 +53,7 @@ pub enum Op {
         checkpoint_id: i64,
         scope: RewindScope,
     },
+    ListFiles {},
     Resume {
         thread_id: i64,
     },
@@ -65,10 +74,10 @@ pub enum Op {
         id: TaskId,
     },
     ProcessKill {
-        process: ProcessId,
+        process: RunId,
     },
     ProcessWatch {
-        process: ProcessId,
+        process: RunId,
         on: bool,
     },
     Shutdown {},

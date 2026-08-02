@@ -1,18 +1,17 @@
 use std::sync::Arc;
 
-use futures::{SinkExt, StreamExt};
+use goat_wire::{ClientFrame, ServerFrame};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
-use tokio_tungstenite::tungstenite::Message;
 
 use crate::ca::Authority;
 use crate::devices::{Device, Devices};
 use crate::pairing::Pairing;
 use crate::verify::DeviceVerifier;
-use crate::{RemoteConfig, RemoteError, RemoteHandler, RemoteSink, RemoteStream};
+use crate::{RemoteConfig, RemoteError, RemoteHandler};
 
 pub struct RemoteServer {
     authority: Arc<Authority>,
@@ -235,50 +234,16 @@ impl RemoteServer {
             tls.write_all(upgrade.as_bytes()).await?;
             tls.flush().await?;
         }
-        let mut wsconfig = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
-        wsconfig.max_message_size = Some(MAX_WS_MESSAGE);
-        wsconfig.max_frame_size = Some(MAX_WS_MESSAGE);
         let ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
             tls,
             tokio_tungstenite::tungstenite::protocol::Role::Server,
-            Some(wsconfig),
+            Some(crate::ws::config()),
         )
         .await;
-        let (sink, stream) = frame_adapter(ws);
+        let (sink, stream) = crate::ws::adapt::<_, ServerFrame, ClientFrame>(ws);
         handler.handle(device, sink, stream).await;
         Ok(())
     }
-}
-
-const MAX_WS_MESSAGE: usize = 8 * 1024 * 1024;
-
-fn frame_adapter<S>(ws: tokio_tungstenite::WebSocketStream<S>) -> (RemoteSink, RemoteStream)
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    use goat_wire::{ClientFrame, ServerFrame, WireError};
-    let (ws_sink, ws_stream) = ws.split();
-    let sink = ws_sink
-        .sink_map_err(|_| WireError::Closed)
-        .with(|frame: ServerFrame| async move {
-            let text = serde_json::to_string(&frame).map_err(WireError::Encode)?;
-            Ok::<_, WireError>(Message::Text(text.into()))
-        });
-    let stream = ws_stream
-        .filter_map(|item| async move {
-            match item {
-                Ok(Message::Text(text)) => {
-                    Some(serde_json::from_str::<ClientFrame>(&text).map_err(WireError::Decode))
-                }
-                Ok(Message::Binary(bytes)) => {
-                    Some(serde_json::from_slice::<ClientFrame>(&bytes).map_err(WireError::Decode))
-                }
-                Ok(Message::Close(_)) | Err(_) => Some(Err(WireError::Closed)),
-                Ok(_) => None,
-            }
-        })
-        .boxed();
-    (Box::pin(sink), stream)
 }
 
 #[derive(serde::Deserialize)]
@@ -369,7 +334,7 @@ where
     S: AsyncRead + Unpin,
 {
     use tokio::io::AsyncReadExt;
-    if request.content_length == 0 || request.content_length > MAX_WS_MESSAGE {
+    if request.content_length == 0 || request.content_length > crate::ws::MAX_MESSAGE {
         return Ok(Vec::new());
     }
     let mut body = vec![0u8; request.content_length];

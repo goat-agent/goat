@@ -36,8 +36,8 @@ struct ChatOptions {
     vision_filter: fn(&str) -> bool,
     effort_options: fn(&str) -> Vec<Effort>,
     effort_wire: fn(Effort) -> Option<&'static str>,
-    catalog: &'static [&'static str],
-    context_windows: &'static [(&'static str, u32)],
+    catalog: Vec<String>,
+    context_windows: Vec<(String, u32)>,
     validation: ChatValidation,
     discovery: ChatDiscovery,
     model_list_source: Option<ModelListSource>,
@@ -56,8 +56,8 @@ impl Default for ChatOptions {
             vision_filter: crate::vision::known_openai_compatible_vision_model,
             effort_options: default_efforts,
             effort_wire: chat_effort_wire,
-            catalog: &[],
-            context_windows: &[],
+            catalog: Vec::new(),
+            context_windows: Vec::new(),
             validation: ChatValidation::ModelsEndpoint,
             discovery: ChatDiscovery::ModelsEndpoint,
             model_list_source: None,
@@ -169,14 +169,17 @@ impl OpenAiCompatProvider {
     }
 
     #[must_use]
-    pub fn with_catalog(mut self, catalog: &'static [&'static str]) -> Self {
-        self.options.catalog = catalog;
+    pub fn with_catalog(mut self, catalog: &[&str]) -> Self {
+        self.options.catalog = catalog.iter().map(|id| (*id).to_owned()).collect();
         self
     }
 
     #[must_use]
-    pub fn with_context_windows(mut self, windows: &'static [(&'static str, u32)]) -> Self {
-        self.options.context_windows = windows;
+    pub fn with_context_windows(mut self, windows: &[(&str, u32)]) -> Self {
+        self.options.context_windows = windows
+            .iter()
+            .map(|(prefix, window)| ((*prefix).to_owned(), *window))
+            .collect();
         self
     }
 
@@ -608,8 +611,8 @@ impl Provider for OpenAiCompatProvider {
         self.options.metadata
     }
 
-    fn catalog(&self) -> &'static [&'static str] {
-        self.options.catalog
+    fn list_models(&self) -> Vec<String> {
+        self.options.catalog.clone()
     }
 
     fn model_list_source(&self) -> ModelListSource {
@@ -638,7 +641,7 @@ impl Provider for OpenAiCompatProvider {
         self.options
             .context_windows
             .iter()
-            .find_map(|(prefix, window)| model.starts_with(prefix).then_some(*window))
+            .find_map(|(prefix, window)| model.starts_with(prefix.as_str()).then_some(*window))
     }
 
     async fn stream(&self, req: Request) -> Result<ChunkStream, StreamError> {
@@ -678,15 +681,16 @@ impl Provider for OpenAiCompatProvider {
                 out,
             ),
             ChatDiscovery::CatalogOnly => {
-                let catalog = self.options.catalog;
+                let catalog = self.options.catalog.clone();
                 let vision_filter = self.options.vision_filter;
                 let images = self.options.images;
                 tokio::spawn(async move {
                     for id in catalog {
+                        let supports_images = images && vision_filter(&id);
                         if out
                             .send(Model {
-                                id: (*id).to_owned(),
-                                supports_images: images && vision_filter(id),
+                                id,
+                                supports_images,
                             })
                             .await
                             .is_err()
@@ -795,7 +799,7 @@ mod tests {
         )
         .with_catalog(CATALOG)
         .with_discovery(ChatDiscovery::CatalogOnly);
-        assert_eq!(provider.catalog(), CATALOG);
+        assert_eq!(provider.list_models(), CATALOG);
     }
 
     #[test]

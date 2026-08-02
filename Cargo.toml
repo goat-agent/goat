@@ -19,23 +19,12 @@ goat-tui = { path = "crates/goat-tui" }
 goat-provider = { path = "crates/goat-provider" }
 goat-auth = { path = "crates/goat-auth" }
 goat-provider-openai-compat = { path = "crates/goat-provider-openai-compat" }
-goat-provider-openrouter = { path = "crates/goat-provider-openrouter" }
-goat-provider-groq = { path = "crates/goat-provider-groq" }
-goat-provider-deepseek = { path = "crates/goat-provider-deepseek" }
-goat-provider-mistral = { path = "crates/goat-provider-mistral" }
-goat-provider-zai = { path = "crates/goat-provider-zai" }
-goat-provider-zai-coding = { path = "crates/goat-provider-zai-coding" }
-goat-provider-kimi = { path = "crates/goat-provider-kimi" }
-goat-provider-minimax = { path = "crates/goat-provider-minimax" }
-goat-provider-vercel = { path = "crates/goat-provider-vercel" }
-goat-provider-qwen = { path = "crates/goat-provider-qwen" }
+goat-provider-builtin = { path = "crates/goat-provider-builtin" }
 goat-provider-kimi-code = { path = "crates/goat-provider-kimi-code" }
 goat-provider-xai = { path = "crates/goat-provider-xai" }
-goat-provider-openai = { path = "crates/goat-provider-openai" }
 goat-provider-openai-codex = { path = "crates/goat-provider-openai-codex" }
 goat-provider-anthropic = { path = "crates/goat-provider-anthropic" }
 goat-provider-gemini = { path = "crates/goat-provider-gemini" }
-goat-provider-local = { path = "crates/goat-provider-local" }
 goat-providers = { path = "crates/goat-providers" }
 goat-proxy = { path = "crates/goat-proxy" }
 goat-search-provider = { path = "crates/goat-search-provider" }
@@ -64,6 +53,7 @@ goat-command-help = { path = "crates/goat-command-help" }
 goat-command-app = { path = "crates/goat-command-app" }
 goat-commands = { path = "crates/goat-commands" }
 goat-worktree = { path = "crates/goat-worktree" }
+goat-git = { path = "crates/goat-git" }
 goat-github = { path = "crates/goat-github" }
 goat-wire = { path = "crates/goat-wire" }
 goat-daemon = { path = "crates/goat-daemon" }
@@ -140,7 +130,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring"]
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
-tokio-tungstenite = "0.28"
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 qrcode = { version = "0.14", default-features = false }
 
 goat-types              = { path = "crates/goat-types" }
@@ -154,11 +144,13 @@ goat-agent-command-skill      = { path = "crates/goat-agent-command-skill" }
 goat-model              = { path = "crates/goat-model" }
 goat-channel            = { path = "crates/goat-channel" }
 goat-channel-discord    = { path = "crates/goat-channel-discord" }
+goat-channel-slack      = { path = "crates/goat-channel-slack" }
 goat-render             = { path = "crates/goat-render" }
 goat-plugin             = { path = "crates/goat-plugin" }
 goat-integration        = { path = "crates/goat-integration" }
 goat-integration-mcp    = { path = "crates/goat-integration-mcp" }
 goat-integration-github = { path = "crates/goat-integration-github" }
+goat-integration-langfuse = { path = "crates/goat-integration-langfuse" }
 goat-integration-linear = { path = "crates/goat-integration-linear" }
 goat-integration-notion = { path = "crates/goat-integration-notion" }
 goat-integration-posthog = { path = "crates/goat-integration-posthog" }
@@ -176,7 +168,7 @@ goat-agent-tool-code          = { path = "crates/goat-agent-tool-code" }
 goat-agent-tool-memory        = { path = "crates/goat-agent-tool-memory" }
 goat-agent-tool-pty           = { path = "crates/goat-agent-tool-pty" }
 goat-brain              = { path = "crates/goat-brain" }
-goat-profile            = { path = "crates/goat-profile" }
+goat-agent-config       = { path = "crates/goat-agent-config" }
 goat-runtime            = { path = "crates/goat-runtime" }
 goat-agent              = { path = "crates/goat-agent" }
 goat-memory             = { path = "crates/goat-memory" }

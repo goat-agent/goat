@@ -5,7 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+authors.workspace = true
+publish.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }

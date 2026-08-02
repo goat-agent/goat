@@ -4,8 +4,9 @@ pub mod transport;
 
 pub use codec::{WireConn, WireError};
 pub use protocol::{
-    ClientFrame, ClientId, DeviceInfo, DirEntry, DirEntryKind, PROTOCOL_VERSION, RateLimitEntry,
-    ResumeMode, ServerFrame, SessionId, SessionInfo, SessionLiveState, ThreadInfo,
+    BUILD, ClientFrame, ClientId, DeviceInfo, DirEntry, DirEntryKind, PROTOCOL_VERSION,
+    RateLimitEntry, ReloadFailure, ReloadReport, ResumeMode, ServerFrame, SessionId, SessionInfo,
+    SessionLiveState, ThreadInfo,
 };
 
 pub type ServerConn<S> = WireConn<S, ServerFrame, ClientFrame>;
@@ -25,6 +26,7 @@ mod tests {
         client
             .send(&ClientFrame::Hello {
                 version: PROTOCOL_VERSION,
+                build: BUILD.to_owned(),
             })
             .await
             .unwrap();
@@ -32,13 +34,15 @@ mod tests {
         assert_eq!(
             got,
             ClientFrame::Hello {
-                version: PROTOCOL_VERSION
+                version: PROTOCOL_VERSION,
+                build: BUILD.to_owned(),
             }
         );
 
         server
             .send(&ServerFrame::Welcome {
                 version: PROTOCOL_VERSION,
+                build: BUILD.to_owned(),
                 client_id: ClientId(7),
             })
             .await
@@ -48,6 +52,7 @@ mod tests {
             got,
             ServerFrame::Welcome {
                 version: PROTOCOL_VERSION,
+                build: BUILD.to_owned(),
                 client_id: ClientId(7)
             }
         );
@@ -80,6 +85,7 @@ mod tests {
 
         let request = ClientFrame::ListDirectory {
             path: "/home/me".to_owned(),
+            recursive: false,
         };
         client.send(&request).await.unwrap();
         assert_eq!(server.recv().await.unwrap(), request);
@@ -142,6 +148,7 @@ mod tests {
     fn client_frame_hello_serializes_flat() {
         let frame = ClientFrame::Hello {
             version: PROTOCOL_VERSION,
+            build: BUILD.to_owned(),
         };
         let json = serde_json::to_string(&frame).unwrap();
         assert!(json.contains(r#""type":"Hello""#));

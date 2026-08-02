@@ -28,7 +28,7 @@ const MAX_TOKENS: u32 = 16384;
 pub(crate) const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 pub(crate) const OAUTH_AUTHORIZE: &str = "https://claude.ai/oauth/authorize";
 pub(crate) const OAUTH_TOKEN: &str = "https://platform.claude.com/v1/oauth/token";
-pub(crate) const OAUTH_SCOPE: &str = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+pub(crate) const OAUTH_SCOPE: &str = "org:create_api_key user:agent user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
 const OAUTH_BETA: &str = "oauth-2025-04-20,claude-code-20250219";
 const OAUTH_USER_AGENT: &str = "claude-cli/2.1.119 (external, cli)";
 pub(crate) const OAUTH_TOKEN_UA: &str = "axios/1.13.6";
@@ -933,8 +933,8 @@ impl Provider for AnthropicProvider {
         Some(anthropic_context_window(model))
     }
 
-    fn catalog(&self) -> &'static [&'static str] {
-        CATALOG
+    fn list_models(&self) -> Vec<String> {
+        CATALOG.iter().map(|id| (*id).to_owned()).collect()
     }
 
     fn efforts(&self, model: &str) -> Vec<Effort> {

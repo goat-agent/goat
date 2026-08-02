@@ -20,9 +20,10 @@ pub async fn run(args: Args) -> Result<()> {
     let paths = GoatPaths::default_layout()?;
     let cfg = goat_config::load_from(paths.clone()).context("loading config")?;
     let store = CredentialStore::new(paths.credentials_json.clone());
+    let user = goat_config::UserProviders::at(paths.config_json.clone());
 
     let probes = if args.check {
-        Some(probe_all(&store).await)
+        Some(probe_all(&store, &user).await)
     } else {
         None
     };
@@ -40,11 +41,11 @@ pub async fn run(args: Args) -> Result<()> {
         ui::blank();
 
         ui::section("Providers");
-        render_providers(&store, &mut warnings, &mut hint);
+        render_providers(&store, &user, &mut warnings, &mut hint);
         ui::blank();
 
         ui::section("Agents");
-        render_profiles(&paths, &cfg, &store, &mut warnings, &mut hint)?;
+        render_agents(&paths, &cfg, &store, &user, &mut warnings, &mut hint)?;
         ui::blank();
 
         ui::section("Skills");
@@ -106,10 +107,11 @@ fn credential_kind_label(kind: CredentialKind) -> &'static str {
 
 fn render_providers(
     store: &CredentialStore,
+    user: &goat_config::UserProviders,
     warnings: &mut usize,
     hint: &mut Option<(&'static str, String)>,
 ) {
-    let registry = Registry::new(store);
+    let registry = Registry::new(store, user);
     let mut t = Table::new(["provider", "status", "entries", "summary"]);
     let mut any = false;
     for id in provider_ids(&registry) {
@@ -143,8 +145,11 @@ fn render_providers(
     }
 }
 
-fn known_models(store: &CredentialStore) -> HashSet<(String, String)> {
-    Registry::new(store)
+fn known_models(
+    store: &CredentialStore,
+    user: &goat_config::UserProviders,
+) -> HashSet<(String, String)> {
+    Registry::new(store, user)
         .all()
         .iter()
         .flat_map(|provider| {
@@ -157,15 +162,18 @@ fn known_models(store: &CredentialStore) -> HashSet<(String, String)> {
         .collect()
 }
 
-fn render_profiles(
+fn render_agents(
     paths: &GoatPaths,
     cfg: &LoadedConfig,
     store: &CredentialStore,
+    user: &goat_config::UserProviders,
     warnings: &mut usize,
     hint: &mut Option<(&'static str, String)>,
 ) -> Result<()> {
-    let catalog = known_models(store);
+    let catalog = known_models(store, user);
     let loaded: HashMap<&str, _> = cfg.agents.iter().map(|p| (p.slug.as_str(), p)).collect();
+    let watch: HashMap<String, Vec<goat_runtime::WatchIssue>> =
+        goat_runtime::validate_agents(cfg).into_iter().collect();
 
     if !paths.agents_dir.exists() {
         ui::line(&ui::dim("no agents dir"));
@@ -199,9 +207,16 @@ fn render_profiles(
         return Ok(());
     }
 
-    let mut t = Table::new(["agent", "status", "model", "bindings"]);
+    let mut t = Table::new(["agent", "status", "model", "bindings", "watch"]);
     for slug in &slugs {
         if let Some(p) = loaded.get(slug.as_str()) {
+            let issues = watch.get(slug).map_or(&[][..], Vec::as_slice);
+            let (watch_cell, watch_style) = if issues.is_empty() {
+                ("ok".to_string(), Palette::Success)
+            } else {
+                *warnings += issues.len();
+                (format!("{} dropped", issues.len()), Palette::Warning)
+            };
             let model = p.default_model.to_string();
             let bindings = if p.bindings.is_empty() {
                 "—".into()
@@ -227,6 +242,7 @@ fn render_profiles(
                 (badge.to_string(), style),
                 (model, Palette::Plain),
                 (bindings, Palette::Plain),
+                (watch_cell, watch_style),
             ]);
         } else {
             *warnings += 1;
@@ -235,10 +251,17 @@ fn render_profiles(
                 ("warn".into(), Palette::Warning),
                 ("?".into(), Palette::Plain),
                 ("?".into(), Palette::Plain),
+                ("?".into(), Palette::Plain),
             ]);
         }
     }
     t.render();
+
+    for slug in &slugs {
+        for issue in watch.get(slug).map_or(&[][..], Vec::as_slice) {
+            ui::line(&ui::dim(&format!("{slug}: {issue}")));
+        }
+    }
     Ok(())
 }
 
@@ -286,13 +309,13 @@ struct ProbeRow {
     outcome: VerifyOutcome,
 }
 
-async fn probe_all(store: &CredentialStore) -> Vec<ProbeRow> {
-    let registry = Registry::new(store);
+async fn probe_all(store: &CredentialStore, user: &goat_config::UserProviders) -> Vec<ProbeRow> {
+    let registry = Registry::new(store, user);
     let mut out = Vec::new();
     for provider in registry.all() {
         let id = provider.id().to_string();
         for account in verify::accounts_for(store, &id) {
-            let outcome = verify::verify_credential(store, &id, &account).await;
+            let outcome = verify::verify_credential(store, user, &id, &account).await;
             out.push(ProbeRow {
                 label: verify::row_label(&id, &account),
                 outcome,

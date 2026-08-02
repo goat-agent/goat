@@ -59,7 +59,7 @@ pub(crate) enum LoopOutcome {
     Failed(String, Option<String>),
 }
 
-async fn drain_steering(ctx: &Ctx<'_>, run: &Run<'_>, conversation: &mut Conversation) {
+async fn drain_steering(ctx: &Ctx, run: &Run<'_>, conversation: &mut Conversation) {
     let Some(queue) = run.steering() else {
         return;
     };
@@ -85,7 +85,7 @@ async fn drain_steering(ctx: &Ctx<'_>, run: &Run<'_>, conversation: &mut Convers
             let draft = input.display.as_deref().unwrap_or(&input.text).to_owned();
             if let Err(err) = ctx
                 .checkpoints
-                .begin(thread_id, created, draft, &input.attachments, ctx.cwd)
+                .begin(thread_id, created, draft, &input.attachments, &ctx.cwd)
                 .await
             {
                 tracing::warn!(%err, "failed to create steering checkpoint");
@@ -175,7 +175,7 @@ fn tool_input_value(input: &str) -> serde_json::Value {
 }
 
 pub(crate) async fn run_round(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     run: &Run<'_>,
     provider: &dyn Provider,
     request: Request,
@@ -251,9 +251,9 @@ pub(crate) async fn run_round(
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) async fn process_round_output(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     run: &Run<'_>,
-    env: &LoopEnv<'_>,
+    env: &LoopEnv,
     round: RoundResult,
     conversation: &mut Conversation,
     tracker: &mut ContextTracker,
@@ -262,9 +262,7 @@ pub(crate) async fn process_round_output(
     tool_ctx: &ToolContext,
     token: &CancellationToken,
 ) -> RoundOutcome {
-    if let Some(usage) = round.usage.clone()
-        && run.is_top()
-    {
+    if let Some(usage) = round.usage.clone() {
         let context_window = env.provider.context_window(&env.target.model);
         let compaction_threshold = context_window.map(crate::compaction::proactive_limit);
         let _ = ctx
@@ -296,7 +294,7 @@ pub(crate) async fn process_round_output(
             );
             cache.to_json()
         };
-        if let (Some(path), Some(json)) = (ctx.rl_path, serialized) {
+        if let (Some(path), Some(json)) = (ctx.rl_path.as_deref(), serialized) {
             let path = path.to_owned();
             tokio::task::spawn_blocking(move || rate_limit_cache::write(&path, &json));
         }
@@ -323,7 +321,7 @@ pub(crate) async fn process_round_output(
         })
         .collect();
     let (raw, recovered) =
-        crate::tool_recovery::recover(&env.target.provider, &round.raw, env.tool_defs);
+        crate::tool_recovery::recover(&env.target.provider, &round.raw, &env.tool_defs);
     for (idx, (name, raw_input)) in recovered.into_iter().enumerate() {
         let schema = env
             .tool_defs
@@ -436,14 +434,14 @@ pub(crate) async fn process_round_output(
 }
 
 pub(crate) async fn core_loop(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     run: &Run<'_>,
-    env: &LoopEnv<'_>,
+    env: &LoopEnv,
     token: &CancellationToken,
     conversation: &mut Conversation,
     tracker: &mut ContextTracker,
 ) -> LoopOutcome {
-    let mut tool_ctx = match ToolContext::new(env.cwd) {
+    let mut tool_ctx = match ToolContext::new(&env.cwd) {
         Ok(tool_ctx) => tool_ctx,
         Err(err) => return LoopOutcome::Failed(err.to_string(), None),
     };
@@ -455,7 +453,7 @@ pub(crate) async fn core_loop(
         rounds += 1;
         drain_steering(ctx, run, conversation).await;
         if let Some(window) = env.provider.context_window(&env.target.model)
-            && tracker.estimate(conversation.messages(), env.tool_defs)
+            && tracker.estimate(conversation.messages(), &env.tool_defs)
                 > crate::compaction::proactive_limit(window)
         {
             match crate::compaction::compact(ctx, run, env, conversation, tracker, None, token)
@@ -471,7 +469,7 @@ pub(crate) async fn core_loop(
             }
         }
         let roster = if run.is_top() {
-            crate::process_tools::roster_message(ctx).await
+            crate::bash_tools::roster_message(ctx).await
         } else {
             None
         };
@@ -505,7 +503,7 @@ pub(crate) async fn core_loop(
             }
             RoundEnd::Failed(error) => {
                 return LoopOutcome::Failed(
-                    crate::retry::failure_message(error, env.target),
+                    crate::retry::failure_message(error, &env.target),
                     crate::retry::error_hint(error),
                 );
             }

@@ -1,133 +1,95 @@
-mod diff;
-mod mcp;
 mod parse;
-mod tool;
-mod watcher;
+mod watch;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
-use async_trait::async_trait;
-use goat_agent_tool::{ToolName, ToolRegistry};
-use goat_auth::CredentialStore;
-use goat_integration::{
-    BindingMap, Integration, IntegrationAuth, IntegrationBinding, IntegrationError,
-    IntegrationFactory, IntegrationMetadata, IntegrationResult, IntegrationRuntime,
-};
-use goat_types::{IntegrationId, ProfileId};
+use goat_integration::query::{LimitSpec, Residue, TermPolicy, WatchVocabulary};
+use goat_integration::{IntegrationError, IntegrationFactory, IntegrationResult};
+use goat_integration_mcp::{AuthScheme, McpService, ServiceUrl, ToolPolicy};
+use goat_types::IntegrationId;
+use serde::Deserialize;
 use serde_json::Value;
-use tokio_util::sync::CancellationToken;
-use tracing::warn;
 
 pub const ID: IntegrationId = IntegrationId::from_static("slack");
+pub const PREFIX: &str = "slack_";
 
-const SETUP: &str = "1. create the goat app in your workspace: https://api.slack.com/apps?new_app=1&manifest_yaml=display_information%3A%0A%20%20name%3A%20goat%0A%20%20description%3A%20Personal%20AI%20agent%20access%20to%20Slack%0Aoauth_config%3A%0A%20%20scopes%3A%0A%20%20%20%20user%3A%0A%20%20%20%20%20%20-%20search%3Aread.public%0A%20%20%20%20%20%20-%20search%3Aread.private%0A%20%20%20%20%20%20-%20search%3Aread.im%0A%20%20%20%20%20%20-%20search%3Aread.mpim%0A%20%20%20%20%20%20-%20search%3Aread.users%0A%20%20%20%20%20%20-%20channels%3Ahistory%0A%20%20%20%20%20%20-%20groups%3Ahistory%0A%20%20%20%20%20%20-%20im%3Ahistory%0A%20%20%20%20%20%20-%20mpim%3Ahistory%0A%20%20%20%20%20%20-%20users%3Aread%0A%20%20%20%20%20%20-%20emoji%3Aread%0A%20%20%20%20%20%20-%20chat%3Awrite%0A%20%20%20%20%20%20-%20reactions%3Awrite%0A%20%20%20%20%20%20-%20canvases%3Aread%0A%20%20%20%20%20%20-%20canvases%3Awrite%0Asettings%3A%0A%20%20org_deploy_enabled%3A%20false%0A%20%20socket_mode_enabled%3A%20false%0A%20%20token_rotation_enabled%3A%20false%0A\n2. in that app, open Agents & AI Apps and turn on the Slack MCP Server — scopes alone are not enough\n3. Install to Workspace, then copy the User OAuth Token (xoxp-…) from OAuth & Permissions";
+const MCP_URL: &str = "https://mcp.slack.com/mcp";
+const ENV_VAR: &str = "SLACK_USER_TOKEN";
 
-pub struct SlackIntegration;
+const SETUP: &str = "1. create the goat app in your workspace: https://api.slack.com/apps?new_app=1&manifest_yaml=display_information%3A%0A%20%20name%3A%20goat%0A%20%20description%3A%20Personal%20AI%20agent%20access%20to%20Slack%0Aoauth_config%3A%0A%20%20scopes%3A%0A%20%20%20%20user%3A%0A%20%20%20%20%20%20-%20search%3Aread.public%0A%20%20%20%20%20%20-%20search%3Aread.private%0A%20%20%20%20%20%20-%20search%3Aread.im%0A%20%20%20%20%20%20-%20search%3Aread.mpim%0A%20%20%20%20%20%20-%20search%3Aread.users%0A%20%20%20%20%20%20-%20channels%3Ahistory%0A%20%20%20%20%20%20-%20groups%3Ahistory%0A%20%20%20%20%20%20-%20im%3Ahistory%0A%20%20%20%20%20%20-%20mpim%3Ahistory%0A%20%20%20%20%20%20-%20users%3Aread%0A%20%20%20%20%20%20-%20emoji%3Aread%0A%20%20%20%20%20%20-%20chat%3Awrite%0A%20%20%20%20%20%20-%20reactions%3Awrite%0A%20%20%20%20%20%20-%20canvases%3Aread%0A%20%20%20%20%20%20-%20canvases%3Awrite%0Asettings%3A%0A%20%20org_deploy_enabled%3A%20false%0A%20%20socket_mode_enabled%3A%20false%0A%20%20token_rotation_enabled%3A%20false%0A\n2. in that app, open Agents & AI Apps and turn on the Slack MCP Server — scopes alone are not enough\n3. Install to Workspace, then copy the User OAuth Token (xoxp-…) from OAuth & Permissions\n\
+4. set `user_id` to your Slack member ID in the agent's slack binding — the watcher stays off until it is.\n\
+by default the watcher briefs you on messages that mention you (`@me`).\n\
+declare workflows in the agent's `watch` section to change that, e.g.\n\
+{ \"source\": \"slack\", \"query\": \"@me in:#eng limit:25\" } —\n\
+Slack's native search modifiers (from:, in:, has:, before:, \"quoted phrases\") pass through verbatim,\n\
+`@me` becomes your member mention, and limit caps the fetch (default 50, max 100).";
 
-#[async_trait]
-impl Integration for SlackIntegration {
-    fn id(&self) -> IntegrationId {
-        ID
-    }
+pub const VOCABULARY: WatchVocabulary = WatchVocabulary {
+    integration: "slack",
+    residue: Residue::Keep,
+    terms: TermPolicy::Reject,
+    limit: Some(LimitSpec {
+        default: 50,
+        max: 100,
+    }),
+    keys: &[],
+};
 
-    fn metadata(&self) -> IntegrationMetadata {
-        IntegrationMetadata {
-            id: "slack",
-            display: "Slack",
-            auth: IntegrationAuth::Secret,
-            secret_label: "Slack user OAuth token (xoxp-…)",
-            env_var: Some(mcp::ENV_VAR),
-            setup: SETUP,
-            has_watcher: true,
-        }
-    }
+pub fn service() -> McpService {
+    McpService::new("slack", "Slack", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .secret("Slack user OAuth token (xoxp-…)", AuthScheme::Raw)
+        .env_var(ENV_VAR)
+        .tools(ToolPolicy::all(PREFIX))
+        .truncation_hint("narrow the query, or search a single channel instead")
+        .defaults(watch::defaults)
+        .watch(&VOCABULARY, watch::compile)
+}
 
-    async fn register_tools(
-        &self,
-        registry: &mut ToolRegistry,
-        runtime: &IntegrationRuntime,
-        bindings: Arc<BindingMap>,
-    ) -> Vec<ToolName> {
-        tool::register(registry, runtime, bindings).await
-    }
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SlackBinding {
+    #[serde(default, deserialize_with = "meaningful")]
+    pub user_id: Option<String>,
+    #[serde(default, deserialize_with = "meaningful")]
+    pub search_tool: Option<String>,
+}
 
-    fn spawn_watcher(
-        &self,
-        persona: ProfileId,
-        binding: IntegrationBinding,
-        runtime: IntegrationRuntime,
-        cancel: CancellationToken,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        let Some(user_id) = string_setting(&binding.config, "user_id") else {
-            warn!(
-                profile = %persona,
-                "slack watcher disabled; set `user_id` to your Slack member ID in the agent's slack binding",
-            );
-            return None;
-        };
-        let fetch = watcher::McpFetch {
-            credentials: runtime.credentials.clone(),
-            account: binding.account.clone(),
-            query: string_setting(&binding.config, "query")
-                .unwrap_or_else(|| format!("<@{user_id}>")),
-            search_tool: string_setting(&binding.config, "search_tool"),
-            resolved_tool: OnceLock::new(),
-        };
-        Some(tokio::spawn(watcher::run(
-            persona,
-            runtime,
-            binding.account,
-            user_id,
-            fetch,
-            cancel,
-        )))
-    }
-
-    async fn verify(
-        &self,
-        config: &Value,
-        credentials: &CredentialStore,
-    ) -> IntegrationResult<String> {
-        let account = config
-            .get("account")
-            .and_then(Value::as_str)
-            .unwrap_or("default");
-        let token = mcp::resolve_auth(credentials, account)?;
-        let session = mcp::connect(&token).await?;
-        let name = session.server_name();
-        session.close().await;
-        Ok(name)
+impl SlackBinding {
+    pub(crate) fn read(config: &Value) -> Self {
+        goat_integration_mcp::read_binding(config)
     }
 }
 
-fn string_setting(config: &Value, key: &str) -> Option<String> {
-    config
-        .get(key)
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+fn meaningful<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<String> = Option::deserialize(deserializer)?;
+    Ok(raw
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty()))
 }
+
+const MOVED_KEYS: &[&str] = &["query"];
 
 fn validate_config(config: &Value) -> IntegrationResult<()> {
-    let obj = config
-        .as_object()
-        .ok_or_else(|| IntegrationError::Config("slack binding must be an object".into()))?;
-    for key in ["account", "user_id", "query", "search_tool"] {
-        if let Some(value) = obj.get(key)
-            && !value.is_string()
-        {
-            return Err(IntegrationError::Config(format!(
-                "`{key}` must be a string"
-            )));
+    if let Some(object) = config.as_object() {
+        for key in MOVED_KEYS {
+            if object.contains_key(*key) {
+                return Err(IntegrationError::Config(format!(
+                    "slack binding: `{key}` moved to the agent-level `watch` section; \
+                     write {{ \"source\": \"slack\", \"query\": \"...\" }} there instead"
+                )));
+            }
         }
     }
-    Ok(())
+    goat_integration_mcp::validate_binding::<SlackBinding>("slack", config)
 }
 
 inventory::submit! {
     IntegrationFactory {
         id: ID,
-        ctor: || Arc::new(SlackIntegration),
+        ctor: || Arc::new(service().build()),
         validate_config,
     }
 }
@@ -135,16 +97,30 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goat_integration::query::assert_vocabulary;
+    use goat_integration::{Integration, IntegrationAuth};
     use serde_json::json;
 
     #[test]
-    fn validate_config_accepts_valid_and_rejects_invalid() {
+    fn the_vocabulary_holds_its_invariants() {
+        assert_vocabulary(&VOCABULARY);
+    }
+
+    #[test]
+    fn a_typo_in_the_binding_is_rejected_rather_than_ignored() {
         assert!(validate_config(&json!({})).is_ok());
         assert!(validate_config(&json!({ "account": "work", "user_id": "U1" })).is_ok());
-        assert!(validate_config(&json!({ "query": "in:#eng", "search_tool": "x" })).is_ok());
+        assert!(validate_config(&json!({ "search_tool": "x" })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());
         assert!(validate_config(&json!({ "user_id": 3 })).is_err());
-        assert!(validate_config(&json!({ "search_tool": false })).is_err());
+        assert!(validate_config(&json!({ "userid": "U1" })).is_err());
+    }
+
+    #[test]
+    fn the_old_query_key_points_at_the_watch_section() {
+        let err = validate_config(&json!({ "query": "in:#eng" })).unwrap_err();
+        assert!(err.to_string().contains("agent-level `watch` section"));
+        assert!(err.to_string().contains("\"source\": \"slack\""));
     }
 
     #[test]
@@ -156,19 +132,45 @@ mod tests {
 
     #[test]
     fn metadata_uses_a_pasted_secret_not_an_oauth_round_trip() {
-        let meta = SlackIntegration.metadata();
-        assert!(matches!(meta.auth, IntegrationAuth::Secret));
+        let meta = service().build().metadata();
+        assert_eq!(meta.id, "slack");
+        assert_eq!(meta.display, "Slack");
+        assert_eq!(meta.auth, IntegrationAuth::Secret);
         assert_eq!(meta.env_var, Some("SLACK_USER_TOKEN"));
+        assert!(service().compile.is_some());
+        assert!(service().defaults.is_some());
         assert!(meta.setup.contains("Agents & AI Apps"));
         assert!(meta.setup.contains("api.slack.com/apps?new_app=1"));
+        assert!(meta.setup.contains("`@me`"));
+        assert!(meta.setup.contains("`watch` section"));
     }
 
     #[test]
     fn watcher_stays_off_until_the_owner_supplies_a_member_id() {
-        assert_eq!(string_setting(&json!({ "user_id": "" }), "user_id"), None);
+        assert_eq!(SlackBinding::read(&json!({ "user_id": "" })).user_id, None);
         assert_eq!(
-            string_setting(&json!({ "user_id": "U1" }), "user_id"),
-            Some("U1".to_string())
+            SlackBinding::read(&json!({ "user_id": "   " })).user_id,
+            None
         );
+        assert_eq!(
+            SlackBinding::read(&json!({ "user_id": " U1 " })).user_id,
+            Some("U1".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn the_watcher_honours_the_shared_contract() {
+        use goat_integration::diff::RETAIN;
+        use goat_integration::test_support::{WatchContract, assert_watch_contract};
+        use goat_types::IntegrationUpdateKind;
+
+        assert_watch_contract(&WatchContract {
+            integration: ID,
+            stream: watch::STREAM.to_owned(),
+            kind: IntegrationUpdateKind::Updated,
+            entity: "message",
+            diff: RETAIN,
+        })
+        .await;
     }
 }

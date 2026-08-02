@@ -79,9 +79,9 @@ impl ToolHandler for ScheduleOnceTool {
                 now.to_rfc3339()
             ));
         }
-        let similar = similar_summaries(&*self.store, ctx.persona, &args.task).await;
+        let similar = similar_summaries(&*self.store, ctx.agent, &args.task).await;
         let new = NewScheduledTask {
-            persona: ctx.persona,
+            agent: ctx.agent,
             task: args.task.clone(),
             tools: args.tools,
             origin_conv: ctx.thread,
@@ -156,9 +156,9 @@ impl ToolHandler for ScheduleCronTool {
             .into_iter()
             .map(|d| d.to_rfc3339())
             .collect();
-        let similar = similar_summaries(&*self.store, ctx.persona, &args.task).await;
+        let similar = similar_summaries(&*self.store, ctx.agent, &args.task).await;
         let new = NewScheduledTask {
-            persona: ctx.persona,
+            agent: ctx.agent,
             task: args.task.clone(),
             tools: args.tools,
             origin_conv: ctx.thread,
@@ -219,7 +219,7 @@ pub struct ListTasksTool {
 #[async_trait]
 impl ToolHandler for ListTasksTool {
     async fn call(&self, ctx: ToolContext, _call: ToolCall) -> ToolOutput {
-        match self.store.list_active_tasks(ctx.persona).await {
+        match self.store.list_active_tasks(ctx.agent).await {
             Ok(rows) => {
                 let entries: Vec<_> = rows
                     .into_iter()
@@ -248,7 +248,9 @@ impl ToolHandler for ListTasksTool {
 fn spec_schedule_once() -> ToolSpec {
     ToolSpec::new(
         SCHEDULE_ONCE,
-        "Schedules a one-shot task to fire once at the given time.",
+        "Schedules a one-shot task to fire once at the given time. The fire opens a fresh \
+         autonomous turn with no conversation attached, so write the task as a complete \
+         note to your future self.",
         json!({
             "type": "object",
             "additionalProperties": false,
@@ -265,7 +267,7 @@ fn spec_schedule_once() -> ToolSpec {
                 "tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Tool selectors you may call at fire time. Use [\"*\"] for all persona-allowed non-schedule tools, [] for no tools, or names/negations such as [\"read\", \"grep\"] or [\"*\", \"!shell\"]."
+                    "description": "Tool selectors you may call at fire time. Use [\"*\"] for all agent-allowed non-schedule tools, [] for no tools, or names/negations such as [\"read\", \"grep\"] or [\"*\", \"!shell\"]."
                 }
             }
         }),
@@ -275,7 +277,9 @@ fn spec_schedule_once() -> ToolSpec {
 fn spec_schedule_cron() -> ToolSpec {
     ToolSpec::new(
         SCHEDULE_CRON,
-        "Schedules a recurring task using a 5-field cron expression.",
+        "Schedules a recurring task using a 5-field cron expression. Each fire opens a \
+         fresh autonomous turn with no conversation attached, so write the task as a \
+         complete note to your future self.",
         json!({
             "type": "object",
             "additionalProperties": false,
@@ -292,7 +296,7 @@ fn spec_schedule_cron() -> ToolSpec {
                 "tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Tool selectors you may call at fire time. Use [\"*\"] for all persona-allowed non-schedule tools, [] for no tools, or names/negations such as [\"read\", \"grep\"] or [\"*\", \"!shell\"]."
+                    "description": "Tool selectors you may call at fire time. Use [\"*\"] for all agent-allowed non-schedule tools, [] for no tools, or names/negations such as [\"read\", \"grep\"] or [\"*\", \"!shell\"]."
                 },
                 "first_at": {
                     "type": "string",
@@ -325,7 +329,7 @@ fn spec_cancel_task() -> ToolSpec {
 fn spec_list_tasks() -> ToolSpec {
     ToolSpec::new(
         LIST_TASKS,
-        "Lists all active scheduled tasks for this persona.",
+        "Lists all active scheduled tasks for this agent.",
         json!({
             "type": "object",
             "additionalProperties": false,
@@ -336,7 +340,7 @@ fn spec_list_tasks() -> ToolSpec {
 
 async fn similar_summaries(
     store: &dyn Store,
-    persona: goat_types::ProfileId,
+    agent: goat_types::AgentId,
     incoming: &str,
 ) -> Vec<serde_json::Value> {
     const NEEDLE_CHARS: usize = 30;
@@ -345,7 +349,7 @@ async fn similar_summaries(
     if needle.is_empty() {
         return Vec::new();
     }
-    match store.similar_active_tasks(persona, needle).await {
+    match store.similar_active_tasks(agent, needle).await {
         Ok(rows) => rows
             .into_iter()
             .take(5)
@@ -367,25 +371,25 @@ mod tests {
     use goat_agent_tool::{ToolCall, ToolContext, ToolReadState};
     use goat_loop::scheduler::SchedulerHandle;
     use goat_store::SqliteStore;
-    use goat_types::{ChannelId, InstanceId, ProfileId, ThreadId};
+    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
     use std::path::PathBuf;
 
-    async fn setup() -> (Arc<dyn Store>, ToolContext, ProfileId) {
+    async fn setup() -> (Arc<dyn Store>, ToolContext, AgentId) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
         std::mem::forget(dir);
         let store = Arc::new(SqliteStore::open(&path).await.unwrap()) as Arc<dyn Store>;
-        let persona = ProfileId::new();
-        store.ensure_persona(persona, "dev", "dev").await.unwrap();
+        let agent = AgentId::new();
+        store.ensure_agent(agent, "dev", "dev").await.unwrap();
         let conv = ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1");
-        store.ensure_thread(&conv, persona).await.unwrap();
+        store.ensure_thread(&conv, agent).await.unwrap();
         let ctx = ToolContext {
-            persona,
+            agent,
             thread: conv,
             goat_root: PathBuf::from("/tmp"),
             read_state: ToolReadState::default(),
         };
-        (store, ctx, persona)
+        (store, ctx, agent)
     }
 
     fn call_once(due_at: &str, text: &str) -> ToolCall {
@@ -414,7 +418,7 @@ mod tests {
 
     #[tokio::test]
     async fn schedule_once_accepts_future_due() {
-        let (store, ctx, persona) = setup().await;
+        let (store, ctx, agent) = setup().await;
         let tool = ScheduleOnceTool {
             store: store.clone(),
             scheduler: SchedulerHandle::detached(),
@@ -424,7 +428,7 @@ mod tests {
             .call(ctx, call_once(&future, "ping example.com from staging"))
             .await;
         assert!(!out.is_error, "got error: {out:?}");
-        let active = store.list_active_tasks(persona).await.unwrap();
+        let active = store.list_active_tasks(agent).await.unwrap();
         assert_eq!(active.len(), 1);
     }
 
@@ -498,7 +502,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_by_id_succeeds() {
-        let (store, ctx, persona) = setup().await;
+        let (store, ctx, agent) = setup().await;
         let once = ScheduleOnceTool {
             store: store.clone(),
             scheduler: SchedulerHandle::detached(),
@@ -506,7 +510,7 @@ mod tests {
         let future = (Utc::now() + Duration::minutes(10)).to_rfc3339();
         once.call(ctx.clone(), call_once(&future, "loadtest staging"))
             .await;
-        let active_before = store.list_active_tasks(persona).await.unwrap();
+        let active_before = store.list_active_tasks(agent).await.unwrap();
         let task_id = active_before[0].0.id;
 
         let cancel = CancelTaskTool {
@@ -523,7 +527,7 @@ mod tests {
             )
             .await;
         assert!(!out.is_error, "got error: {out:?}");
-        let active = store.list_active_tasks(persona).await.unwrap();
+        let active = store.list_active_tasks(agent).await.unwrap();
         assert!(active.is_empty());
     }
 

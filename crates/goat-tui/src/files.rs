@@ -1,5 +1,3 @@
-use std::path::{Path, PathBuf};
-
 use ratatui::{
     Frame,
     layout::Rect,
@@ -9,28 +7,35 @@ use ratatui::{
 
 use crate::{layout::LIST_MAX, overlay, theme::Theme};
 
-const SCAN_CAP: usize = 4000;
 const RESULT_CAP: usize = 200;
 
 pub struct FileMenu {
     entries: Vec<String>,
     matches: Vec<String>,
     cursor: usize,
+    loading: bool,
 }
 
 impl FileMenu {
-    pub fn new(root: &Path, query: &str) -> Self {
-        let entries = scan(root);
+    pub fn new(entries: Vec<String>, loading: bool, query: &str) -> Self {
         let mut menu = Self {
             entries,
             matches: Vec::new(),
             cursor: 0,
+            loading,
         };
         menu.refilter(query);
         menu
     }
 
     pub fn update(&mut self, query: &str) {
+        self.refilter(query);
+    }
+
+    pub fn fill(&mut self, entries: Vec<String>, query: &str) {
+        self.entries = entries;
+        self.loading = false;
+        self.cursor = 0;
         self.refilter(query);
     }
 
@@ -70,7 +75,12 @@ impl FileMenu {
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: Theme) {
         let width = usize::from(area.width);
         let lines = if self.matches.is_empty() {
-            vec![Line::from(Span::styled(" no files match", theme.muted()))]
+            let note = if self.loading {
+                " listing files…"
+            } else {
+                " no files match"
+            };
+            vec![Line::from(Span::styled(note, theme.muted()))]
         } else {
             let visible = usize::from(area.height).max(1);
             let start = if self.cursor >= visible {
@@ -100,40 +110,35 @@ impl FileMenu {
     }
 }
 
-fn scan(root: &Path) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        if out.len() >= SCAN_CAP {
-            break;
-        }
-        let Ok(read) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in read.flatten() {
-            let path = entry.path();
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with('.') || name.as_ref() == "target" || name.as_ref() == "node_modules"
-            {
-                continue;
-            }
-            let Ok(rel) = path.strip_prefix(root) else {
-                continue;
-            };
-            let rel = rel.to_string_lossy().replace('\\', "/");
-            let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
-            if is_dir {
-                out.push(format!("{rel}/"));
-                stack.push(path);
-            } else {
-                out.push(rel);
-            }
-            if out.len() >= SCAN_CAP {
-                break;
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use super::FileMenu;
+
+    fn entries() -> Vec<String> {
+        vec![
+            "src/".to_owned(),
+            "src/main.rs".to_owned(),
+            "README.md".to_owned(),
+        ]
     }
-    out.sort();
-    out
+
+    #[test]
+    fn an_empty_query_matches_everything() {
+        let menu = FileMenu::new(entries(), false, "");
+        assert_eq!(menu.selected().as_deref(), Some("src/"));
+    }
+
+    #[test]
+    fn the_query_filters_case_insensitively() {
+        let menu = FileMenu::new(entries(), false, "readme");
+        assert_eq!(menu.selected().as_deref(), Some("README.md"));
+    }
+
+    #[test]
+    fn filling_replaces_a_loading_menu() {
+        let mut menu = FileMenu::new(Vec::new(), true, "main");
+        assert_eq!(menu.selected(), None);
+        menu.fill(entries(), "main");
+        assert_eq!(menu.selected().as_deref(), Some("src/main.rs"));
+    }
 }

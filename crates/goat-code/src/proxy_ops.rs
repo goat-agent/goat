@@ -9,11 +9,12 @@ use tokio::task::JoinHandle;
 
 pub struct RegistryAccountOps {
     creds: CredentialStore,
+    user: goat_config::UserProviders,
 }
 
 impl RegistryAccountOps {
-    pub fn new(creds: CredentialStore) -> Arc<Self> {
-        Arc::new(Self { creds })
+    pub fn new(creds: CredentialStore, user: goat_config::UserProviders) -> Arc<Self> {
+        Arc::new(Self { creds, user })
     }
 }
 
@@ -61,7 +62,7 @@ fn api_key_credential(
 #[async_trait::async_trait]
 impl AccountOps for RegistryAccountOps {
     fn providers(&self) -> Vec<ProviderMeta> {
-        let registry = Registry::new(&self.creds);
+        let registry = Registry::new(&self.creds, &self.user);
         registry
             .all()
             .iter()
@@ -93,7 +94,7 @@ impl AccountOps for RegistryAccountOps {
         secret: &str,
         endpoint: Option<&str>,
     ) -> Result<(), String> {
-        let registry = Registry::new(&self.creds);
+        let registry = Registry::new(&self.creds, &self.user);
         let handle = registry
             .all()
             .iter()
@@ -113,7 +114,7 @@ impl AccountOps for RegistryAccountOps {
     }
 
     async fn verify(&self, provider: &str, account: &str) -> Result<usize, String> {
-        let registry = Registry::load(&self.creds, account);
+        let registry = Registry::load(&self.creds, &self.user, account);
         let Some(handle) = registry.get(&ProviderId::from(provider)) else {
             return Ok(0);
         };
@@ -135,7 +136,7 @@ impl AccountOps for RegistryAccountOps {
         provider: &str,
         status: mpsc::Sender<String>,
     ) -> JoinHandle<Result<TokenSet, String>> {
-        let registry = Registry::new(&self.creds);
+        let registry = Registry::new(&self.creds, &self.user);
         let provider = provider.to_owned();
         tokio::spawn(async move { registry.login(&provider, status).await })
     }

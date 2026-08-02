@@ -3,7 +3,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use base64::Engine;
 use goat_auth::{
-    BASE64URL, Credential, CredentialKey, CredentialStore, Pkce, TokenSet, capture_loopback_code,
+    BASE64URL, Credential, CredentialKey, CredentialStore, Pkce, TokenSet, capture_loopback,
     ensure_valid, random_state,
 };
 use goat_provider::{
@@ -20,8 +20,7 @@ const AUTHORIZE: &str = "https://auth.openai.com/oauth/authorize";
 const TOKEN: &str = "https://auth.openai.com/oauth/token";
 const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 const CALLBACK_PORT: u16 = 1455;
-const SCOPES: &str =
-    "openid profile email offline_access api.connectors.read api.connectors.invoke";
+const SCOPES: &str = "openid agent email offline_access api.connectors.read api.connectors.invoke";
 const ORIGINATOR: &str = "codex_cli_rs";
 const CLIENT_VERSION: &str = "0.133.0";
 const BASE: &str = "https://chatgpt.com/backend-api/codex";
@@ -162,7 +161,7 @@ async fn login_browser() -> Result<TokenSet, CodexError> {
     if open::that(&url).is_err() {
         return Err(CodexError::NoBrowser);
     }
-    let code = capture_loopback_code(CALLBACK_PORT, &state).await?;
+    let code = capture_loopback(CALLBACK_PORT, &state).await?.code;
     exchange_code(&code, &pkce.verifier).await
 }
 
@@ -557,8 +556,8 @@ impl Provider for CodexProvider {
         .await
     }
 
-    fn catalog(&self) -> &'static [&'static str] {
-        CATALOG
+    fn list_models(&self) -> Vec<String> {
+        CATALOG.iter().map(|id| (*id).to_owned()).collect()
     }
 
     fn efforts(&self, model: &str) -> Vec<goat_provider::Effort> {

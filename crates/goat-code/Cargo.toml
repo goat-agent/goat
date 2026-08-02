@@ -5,7 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+authors.workspace = true
+publish.workspace = true
 
 [[bin]]
 name = "goat"
@@ -16,6 +17,7 @@ goat-tui = { workspace = true }
 goat-config = { workspace = true }
 goat-daemon = { workspace = true }
 goat-client = { workspace = true }
+goat-remote = { workspace = true }
 goat-wire = { workspace = true }
 goat-protocol = { workspace = true }
 goat-provider = { workspace = true }
@@ -25,6 +27,7 @@ goat-store = { workspace = true }
 goat-tool-search = { workspace = true }
 goat-auth = { workspace = true }
 goat-worktree = { workspace = true }
+goat-git = { workspace = true }
 goat-console = { workspace = true }
 goat-agent = { workspace = true }
 goat-runtime = { workspace = true }
@@ -33,7 +36,9 @@ goat-agent-tool-fs = { workspace = true }
 goat-agent-tool-shell = { workspace = true }
 goat-agent-tool-skill = { workspace = true }
 goat-channel-discord = { workspace = true }
+goat-channel-slack   = { workspace = true }
 goat-integration-github = { workspace = true }
+goat-integration-langfuse = { workspace = true }
 goat-integration-linear = { workspace = true }
 goat-integration-notion = { workspace = true }
 goat-integration-posthog = { workspace = true }

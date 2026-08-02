@@ -20,10 +20,11 @@ pub fn register(registry: &mut ToolRegistry, store: Arc<dyn Store>) {
 fn spec() -> ToolSpec {
     ToolSpec::new(
         OBSERVATION,
-        "Read what an integration watcher actually saw. Integration briefings cite an \
-         observation reference such as `observation:42`; pass that id here to get the raw \
-         payload back. Pass an external_ref instead to get the recorded history for one \
-         item, newest first.",
+        "Read what an integration watcher actually saw. A watcher polls an integration \
+         bound to this agent and records each sighting losslessly as an observation. \
+         Integration briefings cite an observation reference such as `observation:42`; \
+         pass that id here to get the raw payload back. Pass an external_ref instead to \
+         get the recorded history for one item, newest first.",
         json!({
             "type": "object",
             "properties": {
@@ -74,7 +75,7 @@ impl ToolHandler for ObservationTool {
 
         if let Some(id) = args.id {
             return match self.store.get_observation(id).await {
-                Ok(Some(record)) if record.persona == ctx.persona => {
+                Ok(Some(record)) if record.agent == ctx.agent => {
                     ToolOutput::structured(render(&record))
                 }
                 Ok(_) => ToolOutput::error(format!("no observation {id} for this agent")),
@@ -97,7 +98,7 @@ impl ToolHandler for ObservationTool {
         let limit = args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
         match self
             .store
-            .observations_by_ref(ctx.persona, &integration, &external_ref, limit)
+            .observations_by_ref(ctx.agent, &integration, &external_ref, limit)
             .await
         {
             Ok(records) => ToolOutput::structured(json!({
@@ -135,13 +136,13 @@ fn render(record: &ObservationRecord) -> Value {
 mod tests {
     use super::*;
     use goat_store::{NewObservation, SqliteStore};
-    use goat_types::{ChannelId, InstanceId, ProfileId, ThreadId};
+    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
 
-    async fn store_with(dir: &std::path::Path) -> (Arc<dyn Store>, ProfileId) {
+    async fn store_with(dir: &std::path::Path) -> (Arc<dyn Store>, AgentId) {
         let store = SqliteStore::open(&dir.join("goat.db")).await.unwrap();
-        let persona = ProfileId::from_slug("test");
-        store.ensure_persona(persona, "test", "test").await.unwrap();
-        (Arc::new(store), persona)
+        let agent = AgentId::from_slug("test");
+        store.ensure_agent(agent, "test", "test").await.unwrap();
+        (Arc::new(store), agent)
     }
 
     fn call(arguments: Value) -> ToolCall {
@@ -152,9 +153,9 @@ mod tests {
         }
     }
 
-    fn ctx(persona: ProfileId) -> ToolContext {
+    fn ctx(agent: AgentId) -> ToolContext {
         ToolContext {
-            persona,
+            agent,
             thread: ThreadId::new(ChannelId::from_static("test"), InstanceId::default(), "t"),
             goat_root: std::path::PathBuf::from("/tmp/goat-observation-test"),
             read_state: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -174,10 +175,10 @@ mod tests {
     #[tokio::test]
     async fn a_cited_observation_id_resolves_to_its_payload() {
         let dir = tempfile::tempdir().unwrap();
-        let (store, persona) = store_with(dir.path()).await;
+        let (store, agent) = store_with(dir.path()).await;
         let id = store
             .record_observation(NewObservation {
-                persona,
+                agent,
                 integration: "linear".to_owned(),
                 account: "default".to_owned(),
                 external_ref: "linear/default:issue:US-1".to_owned(),
@@ -190,7 +191,7 @@ mod tests {
         let tool = ObservationTool {
             store: store.clone(),
         };
-        let out = tool.call(ctx(persona), call(json!({ "id": id }))).await;
+        let out = tool.call(ctx(agent), call(json!({ "id": id }))).await;
         let value = out.structured_content.expect("structured output");
         assert_eq!(value["payload"]["title"], "hammer the api");
         assert_eq!(value["external_ref"], "linear/default:issue:US-1");
@@ -199,12 +200,12 @@ mod tests {
     #[tokio::test]
     async fn another_agents_observation_is_not_readable() {
         let dir = tempfile::tempdir().unwrap();
-        let (store, persona) = store_with(dir.path()).await;
-        let other = ProfileId::from_slug("other");
-        store.ensure_persona(other, "other", "other").await.unwrap();
+        let (store, agent) = store_with(dir.path()).await;
+        let other = AgentId::from_slug("other");
+        store.ensure_agent(other, "other", "other").await.unwrap();
         let id = store
             .record_observation(NewObservation {
-                persona,
+                agent,
                 integration: "linear".to_owned(),
                 account: "default".to_owned(),
                 external_ref: "linear/default:issue:US-1".to_owned(),
@@ -222,11 +223,11 @@ mod tests {
     #[tokio::test]
     async fn an_external_ref_returns_its_history_newest_first() {
         let dir = tempfile::tempdir().unwrap();
-        let (store, persona) = store_with(dir.path()).await;
+        let (store, agent) = store_with(dir.path()).await;
         for n in 0..3 {
             store
                 .record_observation(NewObservation {
-                    persona,
+                    agent,
                     integration: "sentry".to_owned(),
                     account: "default".to_owned(),
                     external_ref: "sentry/default:issue:E-1".to_owned(),
@@ -240,7 +241,7 @@ mod tests {
         let tool = ObservationTool { store };
         let out = tool
             .call(
-                ctx(persona),
+                ctx(agent),
                 call(json!({ "external_ref": "sentry/default:issue:E-1" })),
             )
             .await;
@@ -252,9 +253,9 @@ mod tests {
     #[tokio::test]
     async fn a_lookup_without_id_or_ref_explains_itself() {
         let dir = tempfile::tempdir().unwrap();
-        let (store, persona) = store_with(dir.path()).await;
+        let (store, agent) = store_with(dir.path()).await;
         let tool = ObservationTool { store };
-        let out = tool.call(ctx(persona), call(json!({}))).await;
+        let out = tool.call(ctx(agent), call(json!({}))).await;
         assert!(out.is_error);
     }
 }

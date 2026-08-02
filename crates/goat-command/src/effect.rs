@@ -10,6 +10,7 @@ pub enum CommandEffect {
     ShowHelp,
     ClearConversation,
     CompactConversation(Option<String>),
+    TogglePlanMode,
     RenameConversation(String),
     Submit(String),
     SubmitCommand { display: String, prompt: String },

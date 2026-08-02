@@ -1,197 +1,84 @@
-mod diff;
-mod mcp;
 mod parse;
-mod tool;
-mod watcher;
+mod watch;
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use goat_agent_tool::{ToolName, ToolRegistry};
-use goat_auth::CredentialStore;
-use goat_integration::{
-    BindingMap, Integration, IntegrationAuth, IntegrationBinding, IntegrationError,
-    IntegrationFactory, IntegrationMetadata, IntegrationResult, IntegrationRuntime,
-};
-use goat_types::{IntegrationId, ProfileId};
+use goat_integration::query::{KeySpec, LimitSpec, Residue, TermPolicy, WatchVocabulary};
+use goat_integration::{IntegrationError, IntegrationFactory, IntegrationResult};
+use goat_integration_mcp::{AuthScheme, IdentityProbe, McpService, ServiceUrl, ToolPolicy};
+use goat_types::IntegrationId;
+use serde::Deserialize;
 use serde_json::Value;
-use tokio_util::sync::CancellationToken;
-use tracing::warn;
 
 pub const ID: IntegrationId = IntegrationId::from_static("tiro");
+pub const PREFIX: &str = "tiro_";
+
+const MCP_URL: &str = "https://mcp.tiro.ooo/mcp";
+const ENV_VAR: &str = "GOAT_TIRO_API_KEY";
+const TOOL_AUTH_STATUS: &str = "auth_status";
 
 const SETUP: &str = "connects to Tiro's hosted MCP server; a browser window will ask you to approve access.\n\
      the scopes you were actually granted are printed on connect — an oauth session can be read-only, and folder or share-link writes then need an api key instead.\n\
-     the watcher stays off until you set `workspace` or `folder_id` in the agent's tiro binding; find them with `tiro_list_workspaces` and `tiro_search_private_folders`.\n\
+     the watcher stays off until you declare a workflow in the agent's `watch` section, e.g.\n\
+     { \"source\": \"tiro\", \"query\": \"workspace:<name>\" } or { \"source\": \"tiro\", \"query\": \"folder:<id>\" } —\n\
+     known keys: workspace, folder, limit; at least one of workspace/folder is required;\n\
+     find values with `tiro_list_workspaces` and `tiro_search_private_folders`.\n\
      to run headless, or to recover if the browser flow fails, set GOAT_TIRO_API_KEY to a Tiro api key.";
 
-const STRING_SETTINGS: [&str; 4] = ["account", "client_id", "workspace", "folder_id"];
+pub const VOCABULARY: WatchVocabulary = WatchVocabulary {
+    integration: "tiro",
+    residue: Residue::Reject,
+    terms: TermPolicy::Reject,
+    limit: Some(LimitSpec {
+        default: 50,
+        max: 250,
+    }),
+    keys: &[KeySpec::new("workspace"), KeySpec::new("folder")],
+};
 
-pub struct TiroIntegration;
-
-#[async_trait]
-impl Integration for TiroIntegration {
-    fn id(&self) -> IntegrationId {
-        ID
-    }
-
-    fn metadata(&self) -> IntegrationMetadata {
-        IntegrationMetadata {
-            id: "tiro",
-            display: "Tiro",
-            auth: IntegrationAuth::OAuth,
-            secret_label: "Tiro api key",
-            env_var: Some(mcp::ENV_VAR),
-            setup: SETUP,
-            has_watcher: true,
-        }
-    }
-
-    async fn register_tools(
-        &self,
-        registry: &mut ToolRegistry,
-        runtime: &IntegrationRuntime,
-        bindings: Arc<BindingMap>,
-    ) -> Vec<ToolName> {
-        tool::register(registry, runtime, bindings).await
-    }
-
-    fn spawn_watcher(
-        &self,
-        persona: ProfileId,
-        binding: IntegrationBinding,
-        runtime: IntegrationRuntime,
-        cancel: CancellationToken,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        let workspace = string_setting(&binding.config, "workspace");
-        let folder_id = string_setting(&binding.config, "folder_id");
-        if workspace.is_none() && folder_id.is_none() {
-            warn!(
-                profile = %persona,
-                "tiro watcher disabled; set `workspace` or `folder_id` in the agent's tiro binding",
-            );
-            return None;
-        }
-        let fetch = watcher::McpFetch {
-            credentials: runtime.credentials.clone(),
-            account: binding.account.clone(),
-            client_id: tool::client_id_of(&binding),
-            workspace,
-            folder_id,
-        };
-        Some(tokio::spawn(watcher::run(
-            persona,
-            runtime,
-            binding.account,
-            fetch,
-            cancel,
-        )))
-    }
-
-    async fn verify(
-        &self,
-        config: &Value,
-        credentials: &CredentialStore,
-    ) -> IntegrationResult<String> {
-        let account = config
-            .get("account")
-            .and_then(Value::as_str)
-            .unwrap_or("default");
-        let client_id = config.get("client_id").and_then(Value::as_str);
-        let auth = mcp::resolve_auth(credentials, account, client_id)?;
-        let session = mcp::connect(&auth).await?;
-        let identity = session.identity().await;
-        mcp::persist_tokens(credentials, account, &session).await;
-        session.close().await;
-        identity
-    }
-
-    async fn oauth_login(
-        &self,
-        credentials: &CredentialStore,
-        account: &str,
-        present_url: &(dyn for<'a> Fn(&'a str) + Send + Sync),
-    ) -> IntegrationResult<serde_json::Value> {
-        use rmcp::transport::auth::{AuthorizationRequest, OAuthState};
-
-        let (listener, port) = goat_auth::bind_loopback()
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        let redirect = format!("http://127.0.0.1:{port}/callback");
-
-        let mut oauth = OAuthState::new(mcp::MCP_URL, None)
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        oauth
-            .start_authorization(AuthorizationRequest::new(&redirect).with_client_name("goat"))
-            .await
-            .map_err(|e| IntegrationError::Auth(format!("authorization start failed: {e}")))?;
-        let auth_url = oauth
-            .get_authorization_url()
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        let state = url::Url::parse(&auth_url)
-            .ok()
-            .and_then(|u| {
-                u.query_pairs()
-                    .find(|(k, _)| k == "state")
-                    .map(|(_, v)| v.to_string())
-            })
-            .ok_or_else(|| IntegrationError::Auth("authorization url missing state".into()))?;
-
-        present_url(&auth_url);
-        let code = goat_auth::capture_on(listener, &state)
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        oauth
-            .handle_callback(&code, &state)
-            .await
-            .map_err(|e| IntegrationError::Auth(format!("token exchange failed: {e}")))?;
-
-        let (client_id, tokens) = oauth
-            .get_credentials()
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        let tokens =
-            tokens.ok_or_else(|| IntegrationError::Auth("no tokens after authorization".into()))?;
-        credentials
-            .store(
-                &goat_auth::CredentialKey::integration("tiro", account),
-                goat_auth::Credential::OAuth(mcp::token_set_from_response(&tokens)?),
-            )
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        Ok(serde_json::json!({ "client_id": client_id }))
-    }
+pub fn service() -> McpService {
+    McpService::new("tiro", "Tiro", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .env_var(ENV_VAR)
+        .token_scheme(AuthScheme::Bearer)
+        .tools(ToolPolicy::all(PREFIX))
+        .truncation_hint(
+            "narrow the date range, request a smaller page, or fetch one note at a time",
+        )
+        .identity(IdentityProbe {
+            tool: TOOL_AUTH_STATUS,
+            describe: parse::describe_identity,
+        })
+        .defaults(watch::defaults)
+        .watch(&VOCABULARY, watch::compile)
 }
 
-fn string_setting(config: &Value, key: &str) -> Option<String> {
-    config
-        .get(key)
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| value.trim().to_string())
-}
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TiroBinding {}
+
+const MOVED_KEYS: &[(&str, &str)] = &[
+    ("workspace", "workspace:<name>"),
+    ("folder_id", "folder:<id>"),
+];
 
 fn validate_config(config: &Value) -> IntegrationResult<()> {
-    let obj = config
-        .as_object()
-        .ok_or_else(|| IntegrationError::Config("tiro binding must be an object".into()))?;
-    for key in STRING_SETTINGS {
-        if let Some(value) = obj.get(key)
-            && !value.is_string()
-        {
-            return Err(IntegrationError::Config(format!(
-                "`{key}` must be a string"
-            )));
+    if let Some(object) = config.as_object() {
+        for (key, query) in MOVED_KEYS {
+            if object.contains_key(*key) {
+                return Err(IntegrationError::Config(format!(
+                    "tiro binding: `{key}` moved to the agent-level `watch` section; \
+                     write {{ \"source\": \"tiro\", \"query\": \"{query}\" }} there instead"
+                )));
+            }
         }
     }
-    Ok(())
+    goat_integration_mcp::validate_binding::<TiroBinding>("tiro", config)
 }
 
 inventory::submit! {
     IntegrationFactory {
         id: ID,
-        ctor: || Arc::new(TiroIntegration),
+        ctor: || Arc::new(service().build()),
         validate_config,
     }
 }
@@ -199,23 +86,41 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goat_integration::query::assert_vocabulary;
+    use goat_integration::{Integration, IntegrationAuth};
     use serde_json::json;
 
     #[test]
-    fn validate_config_accepts_valid_and_rejects_invalid() {
+    fn the_vocabulary_holds_its_invariants() {
+        assert_vocabulary(&VOCABULARY);
+    }
+
+    #[test]
+    fn the_binding_keeps_only_connection_keys() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(
-            validate_config(&json!({
-                "account": "work",
-                "client_id": "client-1",
-                "workspace": "ws-guid",
-                "folder_id": "455765"
-            }))
-            .is_ok()
-        );
+        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());
-        assert!(validate_config(&json!({ "workspace": 3 })).is_err());
-        assert!(validate_config(&json!({ "folder_id": ["455765"] })).is_err());
+        assert!(validate_config(&json!({ "folderid": "F2" })).is_err());
+    }
+
+    #[test]
+    fn an_old_workspace_key_points_at_the_watch_section() {
+        let err = validate_config(&json!({ "workspace": "W1" })).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "config: tiro binding: `workspace` moved to the agent-level `watch` section; \
+             write { \"source\": \"tiro\", \"query\": \"workspace:<name>\" } there instead"
+        );
+    }
+
+    #[test]
+    fn an_old_folder_id_key_points_at_the_watch_section() {
+        let err = validate_config(&json!({ "folder_id": "F2" })).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "config: tiro binding: `folder_id` moved to the agent-level `watch` section; \
+             write { \"source\": \"tiro\", \"query\": \"folder:<id>\" } there instead"
+        );
     }
 
     #[test]
@@ -226,33 +131,53 @@ mod tests {
     }
 
     #[test]
-    fn metadata_advertises_the_prefixed_environment_override() {
-        let meta = TiroIntegration.metadata();
+    fn metadata_advertises_oauth_with_an_api_key_escape_hatch() {
+        let meta = service().build().metadata();
+        assert_eq!(meta.id, "tiro");
+        assert_eq!(meta.display, "Tiro");
         assert_eq!(meta.auth, IntegrationAuth::OAuth);
         assert_eq!(meta.env_var, Some("GOAT_TIRO_API_KEY"));
-        assert!(meta.has_watcher);
+        assert!(service().compile.is_some());
+        assert!(service().defaults.is_some());
         assert!(meta.setup.contains("GOAT_TIRO_API_KEY"));
-        assert!(meta.setup.contains("workspace"));
+        assert!(meta.setup.contains("workspace:<name>"));
+        assert!(meta.setup.contains("folder:<id>"));
     }
 
     #[test]
-    fn watcher_settings_are_trimmed_and_blank_values_are_ignored() {
-        let config = json!({ "workspace": "  ws-guid  ", "folder_id": "   " });
-        assert_eq!(
-            string_setting(&config, "workspace"),
-            Some("ws-guid".to_string())
-        );
-        assert_eq!(string_setting(&config, "folder_id"), None);
-        assert_eq!(string_setting(&config, "account"), None);
+    fn verify_probes_the_credential_rather_than_the_server_name() {
+        let probe = service().identity.expect("an identity probe");
+        assert_eq!(probe.tool, "auth_status");
+
+        let rendered = (probe.describe)(&json!({
+            "userId": 42,
+            "authMethod": "oauth",
+            "scopes": ["notes:read", "folders:read"]
+        }))
+        .unwrap();
+        assert_eq!(rendered, "tiro user 42 (oauth) · notes:read, folders:read");
     }
 
     #[test]
-    fn watcher_stays_off_until_a_scope_is_declared() {
-        let bare = IntegrationBinding::from_config(json!({}));
-        assert!(string_setting(&bare.config, "workspace").is_none());
-        assert!(string_setting(&bare.config, "folder_id").is_none());
+    fn an_unauthenticated_credential_is_an_auth_error_not_a_name() {
+        let probe = service().identity.expect("an identity probe");
+        let err = (probe.describe)(&json!({ "authenticated": false })).unwrap_err();
+        assert!(matches!(err, IntegrationError::Auth(_)));
+    }
 
-        let scoped = IntegrationBinding::from_config(json!({ "folder_id": "455765" }));
-        assert!(string_setting(&scoped.config, "folder_id").is_some());
+    #[tokio::test]
+    async fn the_watcher_honours_the_shared_contract() {
+        use goat_integration::diff::SETTLE;
+        use goat_integration::test_support::{WatchContract, assert_watch_contract};
+        use goat_types::IntegrationUpdateKind;
+
+        assert_watch_contract(&WatchContract {
+            integration: ID,
+            stream: "notes".to_owned(),
+            kind: IntegrationUpdateKind::Updated,
+            entity: "note",
+            diff: SETTLE,
+        })
+        .await;
     }
 }

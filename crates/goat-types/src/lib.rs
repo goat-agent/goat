@@ -9,9 +9,9 @@ use uuid::Uuid;
 pub const GOAT_NAMESPACE: Uuid = Uuid::from_u128(0x6f61_745f_7065_7273_6f6e_615f_6e73_3031);
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
-pub struct ProfileId(pub Uuid);
+pub struct AgentId(pub Uuid);
 
-impl ProfileId {
+impl AgentId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -21,13 +21,13 @@ impl ProfileId {
     }
 }
 
-impl Default for ProfileId {
+impl Default for AgentId {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl fmt::Display for ProfileId {
+impl fmt::Display for AgentId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -67,51 +67,35 @@ impl fmt::Display for MessageId {
     }
 }
 
-#[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
-pub struct ChannelId(Cow<'static, str>);
+macro_rules! slug_id {
+    ($name:ident) => {
+        #[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
+        pub struct $name(Cow<'static, str>);
 
-impl ChannelId {
-    pub const fn from_static(slug: &'static str) -> Self {
-        Self(Cow::Borrowed(slug))
-    }
+        impl $name {
+            pub const fn from_static(slug: &'static str) -> Self {
+                Self(Cow::Borrowed(slug))
+            }
 
-    pub fn new(slug: impl Into<String>) -> Self {
-        Self(Cow::Owned(slug.into()))
-    }
+            pub fn new(slug: impl Into<String>) -> Self {
+                Self(Cow::Owned(slug.into()))
+            }
 
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+    };
 }
 
-impl fmt::Display for ChannelId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-#[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
-pub struct IntegrationId(Cow<'static, str>);
-
-impl IntegrationId {
-    pub const fn from_static(slug: &'static str) -> Self {
-        Self(Cow::Borrowed(slug))
-    }
-
-    pub fn new(slug: impl Into<String>) -> Self {
-        Self(Cow::Owned(slug.into()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for IntegrationId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
+slug_id!(ChannelId);
+slug_id!(IntegrationId);
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
 pub struct ThreadId {
@@ -254,7 +238,7 @@ pub enum Surface {
 #[derive(Clone, Debug)]
 pub struct IncomingMessage {
     pub id: MessageId,
-    pub profile: ProfileId,
+    pub agent: AgentId,
     pub thread: ThreadId,
     pub from: UserHandle,
     pub text: String,
@@ -281,12 +265,12 @@ pub enum OutgoingBody {
 pub enum Event {
     Incoming(IncomingMessage),
     Schedule {
-        profile: ProfileId,
+        agent: AgentId,
         run_id: i64,
         task_id: i64,
     },
     IntegrationUpdate {
-        profile: ProfileId,
+        agent: AgentId,
         integration: IntegrationId,
         account: String,
         kind: IntegrationUpdateKind,
@@ -294,6 +278,23 @@ pub enum Event {
         summary: String,
         observation: Option<i64>,
     },
+    WorkflowUpdate {
+        agent: AgentId,
+        workflow: String,
+        items: Vec<WorkflowItem>,
+        overflow: usize,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkflowItem {
+    pub integration: IntegrationId,
+    pub account: String,
+    pub stream: String,
+    pub kind: IntegrationUpdateKind,
+    pub external_ref: String,
+    pub summary: String,
+    pub observation: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -314,10 +315,12 @@ impl IntegrationUpdateKind {
 }
 
 impl Event {
-    pub fn profile(&self) -> ProfileId {
+    pub fn agent(&self) -> AgentId {
         match self {
-            Event::Incoming(m) => m.profile,
-            Event::Schedule { profile, .. } | Event::IntegrationUpdate { profile, .. } => *profile,
+            Event::Incoming(m) => m.agent,
+            Event::Schedule { agent, .. }
+            | Event::IntegrationUpdate { agent, .. }
+            | Event::WorkflowUpdate { agent, .. } => *agent,
         }
     }
 }
@@ -353,10 +356,10 @@ mod tests {
     }
 
     #[test]
-    fn integration_update_carries_profile() {
-        let p = ProfileId::new();
+    fn integration_update_carries_agent() {
+        let p = AgentId::new();
         let ev = Event::IntegrationUpdate {
-            profile: p,
+            agent: p,
             integration: IntegrationId::from_static("linear"),
             account: "default".into(),
             kind: IntegrationUpdateKind::Assigned,
@@ -364,15 +367,15 @@ mod tests {
             summary: "GOA-1".into(),
             observation: None,
         };
-        assert_eq!(ev.profile(), p);
+        assert_eq!(ev.agent(), p);
     }
 
     #[test]
-    fn event_persona_matches_message() {
-        let p = ProfileId::new();
+    fn event_agent_matches_message() {
+        let p = AgentId::new();
         let msg = IncomingMessage {
             id: MessageId("m1".into()),
-            profile: p,
+            agent: p,
             thread: ThreadId::new(ChannelId::new("test"), InstanceId::new(), "x"),
             from: UserHandle {
                 external: "u".into(),
@@ -387,6 +390,6 @@ mod tests {
             ts: Utc::now(),
             raw: serde_json::Value::Null,
         };
-        assert_eq!(Event::Incoming(msg).profile(), p);
+        assert_eq!(Event::Incoming(msg).agent(), p);
     }
 }

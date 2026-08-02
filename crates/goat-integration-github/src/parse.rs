@@ -24,22 +24,14 @@ impl Item {
     }
 }
 
-pub struct FetchPage {
-    pub items: Vec<Item>,
-    pub truncated: bool,
-}
-
-pub fn parse_page(data: &Value) -> IntegrationResult<FetchPage> {
-    let items = parse_items(data)?;
+pub fn truncated(data: &Value) -> bool {
+    let counted = parse_items(data).map_or(0, |items| items.len());
     let total = data.get("total_count").and_then(Value::as_u64);
     let incomplete = data
         .get("incomplete_results")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    Ok(FetchPage {
-        truncated: incomplete || total.is_some_and(|total| total > items.len() as u64),
-        items,
-    })
+    incomplete || total.is_some_and(|total| total > counted as u64)
 }
 
 pub fn parse_items(data: &Value) -> IntegrationResult<Vec<Item>> {
@@ -139,17 +131,17 @@ mod tests {
 
     #[test]
     fn parses_the_search_issues_envelope() {
-        let page = parse_page(&json!({
+        let data = json!({
             "total_count": 2,
             "incomplete_results": false,
             "items": [pr_node(), issue_node()]
-        }))
-        .unwrap();
-        assert_eq!(page.items.len(), 2);
-        assert!(!page.truncated);
-        assert_eq!(page.items[0].key, "goat-agent/goat#42");
-        assert_eq!(page.items[0].repo, "goat-agent/goat");
-        assert_eq!(page.items[0].updated_at, "2026-07-28T04:00:00Z");
+        });
+        let items = parse_items(&data).unwrap();
+        assert_eq!(items.len(), 2);
+        assert!(!truncated(&data));
+        assert_eq!(items[0].key, "goat-agent/goat#42");
+        assert_eq!(items[0].repo, "goat-agent/goat");
+        assert_eq!(items[0].updated_at, "2026-07-28T04:00:00Z");
     }
 
     #[test]
@@ -186,11 +178,15 @@ mod tests {
 
     #[test]
     fn a_short_page_against_a_bigger_total_counts_as_truncated() {
-        let page = parse_page(&json!({ "total_count": 900, "items": [issue_node()] })).unwrap();
-        assert!(page.truncated);
-
-        let page = parse_page(&json!({ "incomplete_results": true, "items": [] })).unwrap();
-        assert!(page.truncated);
+        assert!(truncated(
+            &json!({ "total_count": 900, "items": [issue_node()] })
+        ));
+        assert!(truncated(
+            &json!({ "incomplete_results": true, "items": [] })
+        ));
+        assert!(!truncated(
+            &json!({ "total_count": 1, "items": [issue_node()] })
+        ));
     }
 
     #[test]

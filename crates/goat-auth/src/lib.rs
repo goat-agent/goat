@@ -25,7 +25,7 @@ pub fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SecretString(String);
 
@@ -60,6 +60,8 @@ pub enum CredentialService {
     Model,
     Search,
     Integration,
+    Channel,
+    Remote,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -68,6 +70,8 @@ pub struct CredentialKey {
     pub service: CredentialService,
     pub provider: String,
     pub account: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
 }
 
 impl CredentialKey {
@@ -76,6 +80,7 @@ impl CredentialKey {
             service: CredentialService::Model,
             provider: provider.into(),
             account: account.into(),
+            slot: None,
         }
     }
 
@@ -84,6 +89,7 @@ impl CredentialKey {
             service: CredentialService::Search,
             provider: provider.into(),
             account: account.into(),
+            slot: None,
         }
     }
 
@@ -92,6 +98,29 @@ impl CredentialKey {
             service: CredentialService::Integration,
             provider: provider.into(),
             account: account.into(),
+            slot: None,
+        }
+    }
+
+    pub fn channel(
+        provider: impl Into<String>,
+        account: impl Into<String>,
+        slot: impl Into<String>,
+    ) -> Self {
+        Self {
+            service: CredentialService::Channel,
+            provider: provider.into(),
+            account: account.into(),
+            slot: Some(slot.into()),
+        }
+    }
+
+    pub fn remote(remote: impl Into<String>, slot: impl Into<String>) -> Self {
+        Self {
+            service: CredentialService::Remote,
+            provider: remote.into(),
+            account: "device".to_owned(),
+            slot: Some(slot.into()),
         }
     }
 }
@@ -100,14 +129,21 @@ impl CredentialKey {
 #[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
     ApiKey,
+    #[serde(rename = "oauth", alias = "o_auth")]
     OAuth,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenSet {
     pub access_token: SecretString,
     pub refresh_token: Option<SecretString>,
     pub expires_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
 }
 
 impl TokenSet {
@@ -124,7 +160,26 @@ impl TokenSet {
                 .map(SecretString::from)
                 .or_else(|| fallback_refresh.map(SecretString::from)),
             expires_at,
+            ..Self::default()
         }
+    }
+
+    #[must_use]
+    pub fn with_client(mut self, client_id: impl Into<String>) -> Self {
+        self.client_id = Some(client_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_scopes(mut self, scopes: Vec<String>) -> Self {
+        self.scopes = scopes;
+        self
+    }
+
+    #[must_use]
+    pub fn with_issuer(mut self, issuer: Option<String>) -> Self {
+        self.issuer = issuer;
+        self
     }
 
     pub fn is_expired(&self) -> bool {
@@ -236,6 +291,7 @@ enum StoredValue {
         secret: SecretString,
         endpoint: String,
     },
+    #[serde(rename = "oauth", alias = "o_auth")]
     OAuth {
         tokens: TokenSet,
     },
@@ -326,20 +382,34 @@ pub async fn bind_loopback() -> Result<(TcpListener, u16), AuthError> {
     Ok((listener, port))
 }
 
-pub async fn capture_loopback_code(port: u16, expected_state: &str) -> Result<String, AuthError> {
+pub struct AuthorizationResponse {
+    pub code: String,
+    pub issuer: Option<String>,
+}
+
+pub async fn capture_loopback(
+    port: u16,
+    expected_state: &str,
+) -> Result<AuthorizationResponse, AuthError> {
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     capture_on(listener, expected_state).await
 }
 
 const LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
 
-pub async fn capture_on(listener: TcpListener, expected_state: &str) -> Result<String, AuthError> {
+pub async fn capture_on(
+    listener: TcpListener,
+    expected_state: &str,
+) -> Result<AuthorizationResponse, AuthError> {
     tokio::time::timeout(LOGIN_TIMEOUT, capture_loop(listener, expected_state))
         .await
         .map_err(|_| AuthError::OAuth("login timed out".to_owned()))?
 }
 
-async fn capture_loop(listener: TcpListener, expected_state: &str) -> Result<String, AuthError> {
+async fn capture_loop(
+    listener: TcpListener,
+    expected_state: &str,
+) -> Result<AuthorizationResponse, AuthError> {
     loop {
         let (mut stream, _) = listener.accept().await?;
         let mut buf = vec![0u8; 8192];
@@ -357,29 +427,61 @@ async fn capture_loop(listener: TcpListener, expected_state: &str) -> Result<Str
                 .await;
             continue;
         };
-        let mut code = None;
-        let mut state = None;
-        for pair in query.split('&') {
-            if let Some((key, value)) = pair.split_once('=') {
-                match form_urldecode(key).as_str() {
-                    "code" => code = Some(form_urldecode(value)),
-                    "state" => state = Some(form_urldecode(value)),
-                    _ => {}
-                }
+        let outcome = read_response(query, expected_state);
+        respond(&mut stream, outcome.is_ok()).await;
+        return outcome;
+    }
+}
+
+fn read_response(query: &str, expected_state: &str) -> Result<AuthorizationResponse, AuthError> {
+    let mut code = None;
+    let mut state = None;
+    let mut issuer = None;
+    let mut error = None;
+    let mut description = None;
+    for pair in query.split('&') {
+        if let Some((key, value)) = pair.split_once('=') {
+            match form_urldecode(key).as_str() {
+                "code" => code = Some(form_urldecode(value)),
+                "state" => state = Some(form_urldecode(value)),
+                "iss" => issuer = Some(form_urldecode(value)),
+                "error" => error = Some(form_urldecode(value)),
+                "error_description" => description = Some(form_urldecode(value)),
+                _ => {}
             }
         }
-        let body = "<html><body>goat-code login complete. You can close this tab.</body></html>";
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        let _ = stream.write_all(response.as_bytes()).await;
-        let _ = stream.flush().await;
-        if state.as_deref() != Some(expected_state) {
-            return Err(AuthError::OAuth("state mismatch".to_owned()));
-        }
-        return code.ok_or_else(|| AuthError::OAuth("missing authorization code".to_owned()));
     }
+    tracing::debug!(
+        has_code = code.is_some(),
+        issuer = ?issuer,
+        error = ?error,
+        "captured oauth authorization response"
+    );
+    if state.as_deref() != Some(expected_state) {
+        return Err(AuthError::OAuth("state mismatch".to_owned()));
+    }
+    if let Some(error) = error {
+        return Err(AuthError::OAuth(match description {
+            Some(description) => format!("authorization denied: {error} ({description})"),
+            None => format!("authorization denied: {error}"),
+        }));
+    }
+    let code = code.ok_or_else(|| AuthError::OAuth("missing authorization code".to_owned()))?;
+    Ok(AuthorizationResponse { code, issuer })
+}
+
+async fn respond(stream: &mut tokio::net::TcpStream, granted: bool) {
+    let body = if granted {
+        "<html><body>goat login complete. You can close this tab.</body></html>"
+    } else {
+        "<html><body>goat login failed. Check the terminal for details.</body></html>"
+    };
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.flush().await;
 }
 
 #[derive(Clone)]
@@ -583,7 +685,7 @@ impl CredentialStore {
 mod tests {
     use super::{
         Credential, CredentialKey, CredentialKind, CredentialService, CredentialStore, Pkce,
-        SecretString, TokenSet, ensure_valid, now_secs,
+        SecretString, StoredValue, TokenSet, ensure_valid, now_secs,
     };
 
     #[tokio::test]
@@ -598,6 +700,7 @@ mod tests {
             access_token: SecretString::from("old"),
             refresh_token: Some(SecretString::from("refresh")),
             expires_at: Some(now_secs() - 100),
+            ..TokenSet::default()
         };
         let calls = Arc::new(AtomicUsize::new(0));
         let mut handles = Vec::new();
@@ -616,6 +719,7 @@ mod tests {
                             access_token: SecretString::from("new"),
                             refresh_token: Some(SecretString::from("refresh2")),
                             expires_at: Some(now_secs() + 3600),
+                            ..TokenSet::default()
                         })
                     }
                 })
@@ -650,6 +754,52 @@ mod tests {
     }
 
     #[test]
+    fn channel_key_carries_a_slot_and_stays_distinct_per_slot() {
+        let bot = CredentialKey::channel("slack", "personal", "bot_token");
+        let app = CredentialKey::channel("slack", "personal", "app_token");
+        assert_ne!(bot, app);
+        assert_eq!(bot.service, CredentialService::Channel);
+        assert_eq!(bot.account, "personal");
+        assert_eq!(bot.slot.as_deref(), Some("bot_token"));
+
+        let raw = serde_json::to_string(&bot).unwrap();
+        assert!(raw.contains(r#""service":"channel""#));
+        assert!(raw.contains(r#""slot":"bot_token""#));
+        let parsed: CredentialKey = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed, bot);
+    }
+
+    #[test]
+    fn non_channel_keys_omit_the_slot_field_entirely() {
+        let raw = serde_json::to_string(&CredentialKey::model("anthropic", "default")).unwrap();
+        assert!(!raw.contains("slot"));
+    }
+
+    #[test]
+    fn channel_slots_round_trip_through_the_store() {
+        let dir = std::env::temp_dir().join(format!("goat-auth-slots-{}", std::process::id()));
+        let path = dir.join("credentials.json");
+        let store = CredentialStore::new(path.clone());
+        let bot = CredentialKey::channel("slack", "personal", "bot_token");
+        let app = CredentialKey::channel("slack", "personal", "app_token");
+        store
+            .store(&bot, Credential::ApiKey(SecretString::from("xoxb-1")))
+            .unwrap();
+        store
+            .store(&app, Credential::ApiKey(SecretString::from("xapp-1")))
+            .unwrap();
+
+        assert_eq!(store.get(&bot).unwrap().bearer(), "xoxb-1");
+        assert_eq!(store.get(&app).unwrap().bearer(), "xapp-1");
+        assert_eq!(store.entries().len(), 2);
+
+        assert!(store.remove(&bot).unwrap());
+        assert!(store.get(&bot).is_none());
+        assert_eq!(store.get(&app).unwrap().bearer(), "xapp-1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn pkce_generates_s256_challenge() {
         use base64::Engine;
         use sha2::{Digest, Sha256};
@@ -681,6 +831,72 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn an_oauth_credential_is_stored_under_the_plain_spelling() {
+        let stored = StoredValue::from(Credential::OAuth(TokenSet {
+            access_token: SecretString::from("at"),
+            ..TokenSet::default()
+        }));
+        assert_eq!(serde_json::to_value(&stored).unwrap()["kind"], "oauth");
+    }
+
+    #[test]
+    fn credentials_written_before_the_rename_still_load() {
+        let legacy = serde_json::json!({
+            "kind": "o_auth",
+            "tokens": { "access_token": "at", "refresh_token": null, "expires_at": null }
+        });
+        let stored: StoredValue = serde_json::from_value(legacy).unwrap();
+        let credential = Credential::from(stored);
+        assert!(matches!(credential, Credential::OAuth(t) if t.access_token.expose() == "at"));
+    }
+
+    #[test]
+    fn the_credential_kind_uses_the_same_spelling_both_ways() {
+        assert_eq!(
+            serde_json::to_value(CredentialKind::OAuth).unwrap(),
+            serde_json::Value::String("oauth".to_owned())
+        );
+        let from_new: CredentialKind = serde_json::from_str("\"oauth\"").unwrap();
+        let from_old: CredentialKind = serde_json::from_str("\"o_auth\"").unwrap();
+        assert_eq!(from_new, CredentialKind::OAuth);
+        assert_eq!(from_old, CredentialKind::OAuth);
+    }
+
+    #[test]
+    fn the_oauth_identity_is_omitted_when_empty_and_kept_when_set() {
+        let bare = TokenSet {
+            access_token: SecretString::from("at"),
+            ..TokenSet::default()
+        };
+        let raw = serde_json::to_value(&bare).unwrap();
+        assert!(raw.get("client_id").is_none());
+        assert!(raw.get("scopes").is_none());
+        assert!(raw.get("issuer").is_none());
+
+        let full = bare
+            .with_client("cid")
+            .with_scopes(vec!["read".to_owned()])
+            .with_issuer(Some("https://as.test".to_owned()));
+        let raw = serde_json::to_value(&full).unwrap();
+        assert_eq!(raw["client_id"], "cid");
+        assert_eq!(raw["scopes"], serde_json::json!(["read"]));
+        assert_eq!(raw["issuer"], "https://as.test");
+
+        let back: TokenSet = serde_json::from_value(raw).unwrap();
+        assert_eq!(back, full);
+    }
+
+    #[test]
+    fn tokens_written_before_the_identity_fields_still_load() {
+        let legacy = serde_json::json!({ "access_token": "at" });
+        let tokens: TokenSet = serde_json::from_value(legacy).unwrap();
+        assert_eq!(tokens.access_token.expose(), "at");
+        assert!(tokens.client_id.is_none());
+        assert!(tokens.scopes.is_empty());
+        assert!(tokens.issuer.is_none());
+    }
+
     #[test]
     fn saved_file_is_owner_only_and_atomic() {
         use std::os::unix::fs::PermissionsExt;
@@ -777,18 +993,21 @@ mod tests {
             access_token: SecretString::from("a"),
             refresh_token: None,
             expires_at: Some(0),
+            ..TokenSet::default()
         };
         assert!(expired.is_expired());
         let fresh = TokenSet {
             access_token: SecretString::from("a"),
             refresh_token: None,
             expires_at: Some(i64::MAX),
+            ..TokenSet::default()
         };
         assert!(!fresh.is_expired());
         let no_expiry = TokenSet {
             access_token: SecretString::from("a"),
             refresh_token: None,
             expires_at: None,
+            ..TokenSet::default()
         };
         assert!(!no_expiry.is_expired());
     }
@@ -865,5 +1084,112 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(super::lock_path_for(&path));
+    }
+
+    fn granted(query: &str) -> super::AuthorizationResponse {
+        match super::read_response(query, "s") {
+            Ok(response) => response,
+            Err(error) => panic!("expected a success for {query}, got {error}"),
+        }
+    }
+
+    fn denial(query: &str) -> String {
+        match super::read_response(query, "s") {
+            Err(super::AuthError::OAuth(message)) => message,
+            Err(other) => panic!("expected an oauth error, got {other}"),
+            Ok(_) => panic!("expected a failure for {query}"),
+        }
+    }
+
+    #[test]
+    fn the_rfc_9207_issuer_is_kept_and_percent_decoded() {
+        let response = granted("code=abc&state=s&iss=https%3A%2F%2Fmcp.sentry.dev");
+        assert_eq!(response.code, "abc");
+        assert_eq!(response.issuer.as_deref(), Some("https://mcp.sentry.dev"));
+    }
+
+    #[test]
+    fn a_callback_without_an_issuer_still_succeeds() {
+        let response = granted("code=abc&state=s");
+        assert_eq!(response.code, "abc");
+        assert_eq!(response.issuer, None);
+    }
+
+    #[test]
+    fn a_denial_reports_the_reason_the_server_gave() {
+        let message = denial("error=access_denied&error_description=User+denied&state=s");
+        assert!(message.contains("access_denied"), "{message}");
+        assert!(message.contains("User denied"), "{message}");
+
+        let bare = denial("error=access_denied&state=s");
+        assert!(bare.contains("access_denied"), "{bare}");
+    }
+
+    #[test]
+    fn a_response_carrying_neither_code_nor_error_is_named_as_such() {
+        assert_eq!(denial("state=s"), "missing authorization code");
+    }
+
+    #[test]
+    fn the_state_is_checked_before_anything_the_server_said() {
+        assert_eq!(
+            denial("code=abc&state=other&iss=https%3A%2F%2Fevil.test"),
+            "state mismatch"
+        );
+        assert_eq!(
+            denial("error=access_denied&error_description=User+denied&state=other"),
+            "state mismatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_loopback_server_reads_the_query_off_the_request_line() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (listener, port) = super::bind_loopback().await.unwrap();
+        let captured = tokio::spawn(async move { super::capture_on(listener, "s").await });
+
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        client
+            .write_all(
+                b"GET /callback?code=abc&state=s&iss=https%3A%2F%2Fmcp.sentry.dev HTTP/1.1\r\n\
+                  Host: 127.0.0.1\r\n\r\n",
+            )
+            .await
+            .unwrap();
+
+        let mut page = String::new();
+        client.read_to_string(&mut page).await.unwrap();
+        assert!(page.contains("login complete"), "{page}");
+
+        let response = match captured.await.unwrap() {
+            Ok(response) => response,
+            Err(error) => panic!("capture failed: {error}"),
+        };
+        assert_eq!(response.code, "abc");
+        assert_eq!(response.issuer.as_deref(), Some("https://mcp.sentry.dev"));
+    }
+
+    #[tokio::test]
+    async fn a_rejected_login_tells_the_browser_it_failed() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (listener, port) = super::bind_loopback().await.unwrap();
+        let captured = tokio::spawn(async move { super::capture_on(listener, "s").await });
+
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        client
+            .write_all(b"GET /callback?error=access_denied&state=s HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+
+        let mut page = String::new();
+        client.read_to_string(&mut page).await.unwrap();
+        assert!(page.contains("login failed"), "{page}");
+        assert!(captured.await.unwrap().is_err());
     }
 }

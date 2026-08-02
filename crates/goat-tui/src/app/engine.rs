@@ -1,5 +1,5 @@
 use goat_protocol::{
-    Event as EngineEvent, NotifyKind, Op, ProcessExitReason, ProcessId, ProcessInfo, ProcessState,
+    Event as EngineEvent, NotifyKind, Op, ProcessExitReason, ProcessInfo, ProcessState, RunId,
     TaskId, TranscriptEntry,
 };
 
@@ -25,6 +25,26 @@ impl App {
                 self.models_loaded = true;
             }
             EngineEvent::ModelSelected { target } => self.model = Some(target),
+            EngineEvent::ModeChanged { mode, plan_path } => {
+                self.mode = mode;
+                self.plan_path = plan_path;
+                if !mode.is_plan()
+                    && let Overlay::Plan(_) = &self.overlay
+                {
+                    self.overlay = Overlay::None;
+                }
+                self.dirty = true;
+            }
+            EngineEvent::PlanProposed {
+                call, plan, path, ..
+            } => {
+                if !self.focused {
+                    self.queue_notification(crate::notification::Notification::Attention);
+                }
+                self.overlay =
+                    Overlay::Plan(Box::new(crate::plan::PlanSheet::new(call, plan, path)));
+                self.dirty = true;
+            }
             EngineEvent::ThreadsListed { threads } => match self.pending.resume.take() {
                 Some(ResumeIntent::Picker) => {
                     self.overlay = Overlay::Thread(ThreadPicker::new(threads));
@@ -54,6 +74,14 @@ impl App {
                 self.follow = true;
                 self.dirty = true;
             }
+            EngineEvent::FilesListed { entries } => {
+                self.files = entries;
+                self.files_loaded = true;
+                if let Overlay::Files(menu) = &mut self.overlay {
+                    let query = self.composer.at_query().unwrap_or_default();
+                    menu.fill(self.files.clone(), &query);
+                }
+            }
             EngineEvent::ConversationRestored {
                 target,
                 entries,
@@ -61,7 +89,7 @@ impl App {
                 compaction_threshold,
             } => {
                 self.transcript.clear();
-                self.reset_agents();
+                self.reset_subagents();
                 self.turn = crate::app::TurnStatus::default();
                 self.scroll = 0;
                 self.follow = true;
@@ -82,6 +110,9 @@ impl App {
                             self.transcript.push_tool(call);
                             self.transcript
                                 .finish_tool(id, outcome, self.picker.as_ref());
+                        }
+                        TranscriptEntry::SubagentGroup { group, members } => {
+                            self.transcript.push_restored_agent_group(group, members);
                         }
                         TranscriptEntry::Compaction {
                             tokens_before,
@@ -113,8 +144,8 @@ impl App {
             }
             EngineEvent::ThinkingDelta { id, chunk } => {
                 self.turn.thinking = true;
-                if let Some(i) = self.agent_index(id) {
-                    self.agent_runs[i].transcript.push_thinking_delta(&chunk);
+                if let Some(i) = self.subagent_index(id) {
+                    self.subagent_runs[i].transcript.push_thinking_delta(&chunk);
                 } else {
                     self.transcript.push_thinking_delta(&chunk);
                 }
@@ -159,7 +190,7 @@ impl App {
                 self.dirty = true;
             }
             EngineEvent::CompactionStarted { id } => {
-                if self.agent_index(id).is_none() {
+                if self.subagent_index(id).is_none() {
                     self.turn.compacting = true;
                 }
                 self.dirty = true;
@@ -171,11 +202,16 @@ impl App {
                 tokens_after,
                 usage,
             } => {
-                if let Some(i) = self.agent_index(id) {
+                if let Some(i) = self.subagent_index(id) {
                     if ok {
-                        self.agent_runs[i]
-                            .transcript
-                            .push_compaction(tokens_before, tokens_after);
+                        let tokens = u64::from(usage.input_tokens) + u64::from(usage.output_tokens);
+                        let (parent, call) = {
+                            let run = &mut self.subagent_runs[i];
+                            run.tokens = run.tokens.saturating_add(tokens);
+                            run.transcript.push_compaction(tokens_before, tokens_after);
+                            (run.parent, run.call)
+                        };
+                        self.transcript.add_subagent_tokens(parent, call, tokens);
                     }
                 } else {
                     self.turn.compacting = false;
@@ -213,7 +249,7 @@ impl App {
                     .map(|pos| self.queued.remove(pos))
                     .is_some();
                 if !sent_by_us && self.turn.active.is_none() {
-                    self.reset_agents();
+                    self.reset_subagents();
                     self.follow = true;
                 }
                 self.transcript
@@ -252,8 +288,8 @@ impl App {
                 resets_at: _,
             } => {
                 self.turn.thinking = false;
-                if let Some(i) = self.agent_index(id) {
-                    self.agent_runs[i].transcript.discard_stream();
+                if let Some(i) = self.subagent_index(id) {
+                    self.subagent_runs[i].transcript.discard_stream();
                 } else {
                     self.transcript.discard_stream();
                     self.turn.retry = Some(super::RetryState {
@@ -288,64 +324,105 @@ impl App {
             }
             EngineEvent::TextDelta { id, chunk } => {
                 self.turn.thinking = false;
-                if self.agent_index(id).is_none() {
+                if self.subagent_index(id).is_none() {
                     self.turn.retry = None;
                 }
-                if let Some(i) = self.agent_index(id) {
-                    self.agent_runs[i].transcript.push_delta(&chunk);
+                if let Some(i) = self.subagent_index(id) {
+                    self.subagent_runs[i].transcript.push_delta(&chunk);
                 } else {
                     self.transcript.push_delta(&chunk);
                 }
             }
             EngineEvent::TextDone { id, text } => {
-                if let Some(i) = self.agent_index(id) {
-                    self.agent_runs[i].transcript.commit_text(&text);
+                if let Some(i) = self.subagent_index(id) {
+                    self.subagent_runs[i].transcript.commit_text(&text);
                 } else {
                     self.transcript.commit_text(&text);
                 }
             }
+            EngineEvent::SubagentGroupStarted { id, group, members } => {
+                self.transcript.push_subagent_group(id, group, members);
+            }
             EngineEvent::ToolStarted { id, call } => {
                 self.turn.thinking = false;
-                if self.agent_index(id).is_none() {
+                if self.subagent_index(id).is_none() {
                     self.turn.retry = None;
                 }
-                if let Some(i) = self.agent_index(id) {
-                    self.agent_runs[i].transcript.push_tool(call);
-                } else {
+                if let Some(i) = self.subagent_index(id) {
+                    let (parent, parent_call) = {
+                        let run = &mut self.subagent_runs[i];
+                        run.tools = run.tools.saturating_add(1);
+                        run.transcript.push_tool(call);
+                        (run.parent, run.call)
+                    };
+                    self.transcript.add_subagent_tool(parent, parent_call);
+                } else if !self.transcript.is_subagent_group_call(id, call.id) {
                     self.transcript.push_tool(call);
                 }
             }
             EngineEvent::ToolDone { id, call, outcome } => {
-                if let Some(i) = self.agent_index(id) {
-                    self.agent_runs[i]
-                        .transcript
-                        .finish_tool(call, outcome, self.picker.as_ref());
+                if let Some(i) = self.subagent_index(id) {
+                    self.subagent_runs[i].transcript.finish_tool(
+                        call,
+                        outcome,
+                        self.picker.as_ref(),
+                    );
+                } else if self.transcript.is_subagent_group_call(id, call) {
+                    if !self.transcript.detached_group_member(id, call) {
+                        self.transcript.finish_subagent(id, call, outcome);
+                    }
                 } else {
+                    let touched = outcome.ok && self.transcript.touches_pull_request(call);
                     self.transcript
                         .finish_tool(call, outcome, self.picker.as_ref());
+                    if touched {
+                        self.forget_pull_request();
+                    }
                 }
             }
             EngineEvent::ShellDone { id, output } => {
                 self.transcript.finish_shell(id, output);
             }
-            EngineEvent::AgentStarted {
+            EngineEvent::SubagentStarted {
                 id,
-                agent_type,
+                parent,
+                call,
+                subagent_type,
                 label,
-                ..
             } => {
-                self.agent_runs.push(super::AgentRunView {
+                self.transcript.start_subagent(parent, call);
+                self.subagent_runs.push(super::SubagentRunView {
                     id,
-                    agent_type,
+                    parent,
+                    call,
+                    subagent_type,
                     label,
                     transcript: crate::transcript::Transcript::default(),
                     done: None,
+                    tools: 0,
+                    tokens: 0,
+                    started_at: std::time::Instant::now(),
+                    finished_at: None,
                 });
             }
-            EngineEvent::AgentDone { id, ok } => {
-                if let Some(i) = self.agent_index(id) {
-                    self.agent_runs[i].done = Some(ok);
-                    self.agent_runs[i].transcript.complete(!ok);
+            EngineEvent::SubagentDone { id, ok } => {
+                if let Some(i) = self.subagent_index(id) {
+                    self.subagent_runs[i].done = Some(ok);
+                    self.subagent_runs[i].finished_at = Some(std::time::Instant::now());
+                    self.subagent_runs[i].transcript.complete(!ok);
+                    let (parent, call) = (self.subagent_runs[i].parent, self.subagent_runs[i].call);
+                    if self.transcript.detached_group_member(parent, call) {
+                        self.transcript.finish_subagent(
+                            parent,
+                            call,
+                            goat_protocol::ToolOutcome {
+                                ok,
+                                summary: None,
+                                image: None,
+                                git: None,
+                            },
+                        );
+                    }
                 }
             }
             EngineEvent::TaskDone { interrupted, .. } => {
@@ -393,25 +470,34 @@ impl App {
                 }
             }
             EngineEvent::Usage {
-                id: _,
+                id,
                 provider,
                 account,
                 usage,
                 context_window,
                 compaction_threshold,
             } => {
-                self.usage.turn_tokens +=
-                    u64::from(usage.input_tokens) + u64::from(usage.output_tokens);
-                let key = (provider, account);
-                let total = self.usage.total.entry(key.clone()).or_default();
-                total.0 += u64::from(usage.input_tokens);
-                total.1 += u64::from(usage.output_tokens);
-                if let Some(w) = context_window {
-                    self.context_window.insert(key.clone(), w);
-                }
-                self.usage.last.insert(key, usage);
-                if compaction_threshold.is_some() {
-                    self.compaction_threshold = compaction_threshold;
+                let tokens = u64::from(usage.input_tokens) + u64::from(usage.output_tokens);
+                if let Some(i) = self.subagent_index(id) {
+                    let (parent, call) = {
+                        let run = &mut self.subagent_runs[i];
+                        run.tokens = run.tokens.saturating_add(tokens);
+                        (run.parent, run.call)
+                    };
+                    self.transcript.add_subagent_tokens(parent, call, tokens);
+                } else {
+                    self.usage.turn_tokens = self.usage.turn_tokens.saturating_add(tokens);
+                    let key = (provider, account);
+                    let total = self.usage.total.entry(key.clone()).or_default();
+                    total.0 += u64::from(usage.input_tokens);
+                    total.1 += u64::from(usage.output_tokens);
+                    if let Some(w) = context_window {
+                        self.context_window.insert(key.clone(), w);
+                    }
+                    self.usage.last.insert(key, usage);
+                    if compaction_threshold.is_some() {
+                        self.compaction_threshold = compaction_threshold;
+                    }
                 }
                 self.dirty = true;
             }
@@ -430,11 +516,11 @@ impl App {
         ops
     }
 
-    pub(crate) fn agent_index(&self, id: TaskId) -> Option<usize> {
-        self.agent_runs.iter().position(|run| run.id == id)
+    pub(crate) fn subagent_index(&self, id: TaskId) -> Option<usize> {
+        self.subagent_runs.iter().position(|run| run.id == id)
     }
 
-    fn ensure_process_run(&mut self, id: ProcessId, command: &str) {
+    fn ensure_process_run(&mut self, id: RunId, command: &str) {
         if self.process_runs.iter().any(|run| run.id == id) {
             return;
         }

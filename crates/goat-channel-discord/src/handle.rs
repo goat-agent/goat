@@ -7,7 +7,7 @@ use goat_channel::{
     SentRef, TypingGuard, spawn_typing,
 };
 use goat_types::{
-    ChannelId, IncomingMessage, InstanceId, MessageId, OutgoingBody, ProfileId, ThreadId,
+    AgentId, ChannelId, IncomingMessage, InstanceId, MessageId, OutgoingBody, ThreadId,
 };
 use twilight_http::Client as HttpClient;
 use twilight_model::id::Id;
@@ -20,7 +20,7 @@ const INTERACTION_RESPONSE_KIND: &str = "discord_interaction_response";
 
 pub(crate) struct DiscordHandle {
     instance: InstanceId,
-    persona: ProfileId,
+    agent: AgentId,
     identity: ChannelIdentity,
     http: Arc<HttpClient>,
     interactions: Arc<InteractionState>,
@@ -29,14 +29,14 @@ pub(crate) struct DiscordHandle {
 impl DiscordHandle {
     pub(crate) fn new(
         instance: InstanceId,
-        persona: ProfileId,
+        agent: AgentId,
         identity: ChannelIdentity,
         http: Arc<HttpClient>,
         interactions: Arc<InteractionState>,
     ) -> Self {
         Self {
             instance,
-            persona,
+            agent,
             identity,
             http,
             interactions,
@@ -103,8 +103,8 @@ impl ChannelHandle for DiscordHandle {
         self.instance
     }
 
-    fn persona(&self) -> ProfileId {
-        self.persona
+    fn agent(&self) -> AgentId {
+        self.agent
     }
 
     fn id(&self) -> ChannelId {
@@ -323,7 +323,7 @@ mod tests {
     fn handle(interactions: Arc<InteractionState>) -> DiscordHandle {
         DiscordHandle::new(
             InstanceId::new(),
-            ProfileId::from_slug("dev"),
+            AgentId::from_slug("dev"),
             ChannelIdentity::new("bot", "bot"),
             Arc::new(HttpClient::new("token".to_string())),
             interactions,
@@ -333,7 +333,7 @@ mod tests {
     fn message(id: &str, instance: InstanceId) -> IncomingMessage {
         IncomingMessage {
             id: MessageId(id.to_string()),
-            profile: ProfileId::from_slug("dev"),
+            agent: AgentId::from_slug("dev"),
             thread: ThreadId::new(ID.clone(), instance, "dm:456"),
             from: UserHandle {
                 external: "u".into(),

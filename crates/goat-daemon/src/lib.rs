@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use goat_wire::transport;
 use tokio_util::sync::CancellationToken;
 
-pub use crate::manager::Manager;
+pub use crate::manager::{Manager, ReloadRequest};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
@@ -23,6 +23,7 @@ pub enum DaemonError {
 pub struct DaemonConfig {
     pub socket_path: PathBuf,
     pub auth_path: PathBuf,
+    pub config_json: PathBuf,
     pub db_path: PathBuf,
     pub remote: Option<RemoteSettings>,
 }
@@ -34,7 +35,11 @@ pub struct RemoteSettings {
 }
 
 pub async fn serve(config: DaemonConfig) -> Result<(), DaemonError> {
-    let manager = Manager::new(config.auth_path.clone(), config.db_path.clone());
+    let manager = Manager::new(
+        config.auth_path.clone(),
+        goat_config::UserProviders::at(config.config_json.clone()),
+        config.db_path.clone(),
+    );
     let shutdown = CancellationToken::new();
     let signal = shutdown.clone();
     tokio::spawn(async move {

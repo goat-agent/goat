@@ -59,7 +59,7 @@ impl GoalTool {
                     return ToolOutput::error("goal title must not be empty");
                 }
                 let new = NewGoal {
-                    persona: ctx.persona,
+                    agent: ctx.agent,
                     title: title.trim().to_string(),
                     detail,
                     parent: None,
@@ -93,7 +93,7 @@ impl GoalTool {
                     Err(e) => ToolOutput::error(format!("set_goal_review failed: {e}")),
                 }
             }
-            GoalCmd::List => match self.store.active_goals(ctx.persona).await {
+            GoalCmd::List => match self.store.active_goals(ctx.agent).await {
                 Ok(goals) => {
                     let out: Vec<_> = goals
                         .into_iter()
@@ -173,7 +173,7 @@ mod tests {
     use super::*;
     use goat_agent_tool::ToolReadState;
     use goat_store::SqliteStore;
-    use goat_types::{ChannelId, InstanceId, ProfileId, ThreadId};
+    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
     use std::path::PathBuf;
 
     async fn setup() -> (Arc<dyn Store>, ToolContext) {
@@ -181,13 +181,13 @@ mod tests {
         let path = dir.path().join("goat.db");
         std::mem::forget(dir);
         let store = SqliteStore::open(&path).await.unwrap();
-        let persona = ProfileId::new();
-        store.ensure_persona(persona, "dev", "dev").await.unwrap();
+        let agent = AgentId::new();
+        store.ensure_agent(agent, "dev", "dev").await.unwrap();
         let conv = ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1");
-        store.ensure_thread(&conv, persona).await.unwrap();
+        store.ensure_thread(&conv, agent).await.unwrap();
         let store: Arc<dyn Store> = Arc::new(store);
         let ctx = ToolContext {
-            persona,
+            agent,
             thread: conv,
             goat_root: PathBuf::from("/tmp"),
             read_state: ToolReadState::default(),

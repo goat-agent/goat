@@ -2,22 +2,19 @@
 name = "goat-integration-tiro"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 authors.workspace = true
+publish.workspace = true
 
 [dependencies]
-goat-agent-tool  = { workspace = true }
-goat-auth        = { workspace = true }
-goat-integration = { workspace = true }
-goat-store       = { workspace = true }
-goat-types       = { workspace = true }
-async-trait = { workspace = true }
-chrono      = { workspace = true }
+goat-auth            = { workspace = true }
+goat-integration     = { workspace = true }
+goat-integration-mcp = { workspace = true }
+goat-mcp             = { workspace = true }
+goat-types           = { workspace = true }
 inventory   = { workspace = true }
-rmcp        = { workspace = true }
-rmcp-reqwest = { workspace = true }
-url         = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 tokio       = { workspace = true }
@@ -25,9 +22,8 @@ tokio-util  = { workspace = true }
 tracing     = { workspace = true }
 
 [dev-dependencies]
-goat-bus = { workspace = true }
-tempfile = "3"
-tokio    = { workspace = true, features = ["test-util"] }
+goat-integration = { workspace = true, features = ["test-support"] }
+tokio            = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

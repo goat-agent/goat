@@ -201,10 +201,6 @@ impl Provider for XaiProvider {
         self.store.resolve(&self.key, Some("XAI_API_KEY")).is_some()
     }
 
-    fn catalog(&self) -> &'static [&'static str] {
-        CATALOG
-    }
-
     fn list_models(&self) -> Vec<String> {
         match self.store.get(&self.key) {
             Some(Credential::ApiKey(_) | Credential::ApiKeyWithEndpoint { .. }) => {
@@ -354,7 +350,7 @@ mod tests {
             Some("browser or device code (SuperGrok / X Premium+)")
         );
         assert!(!provider.authenticated());
-        assert_eq!(provider.catalog(), CATALOG);
+        assert_eq!(provider.list_models(), CATALOG);
         assert_eq!(
             provider.context_window("grok-composer-2.5-fast"),
             Some(200_000)

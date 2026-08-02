@@ -126,32 +126,32 @@ impl JsonSchema for ToolCallId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ProcessId(pub u64);
+pub struct RunId(pub u64);
 
-impl Serialize for ProcessId {
+impl Serialize for RunId {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         id_serde::serialize(&self.0, s)
     }
 }
 
-impl<'de> Deserialize<'de> for ProcessId {
+impl<'de> Deserialize<'de> for RunId {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         id_serde::deserialize(d).map(Self)
     }
 }
 
-impl fmt::Display for ProcessId {
+impl fmt::Display for RunId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl JsonSchema for ProcessId {
+impl JsonSchema for RunId {
     fn schema_name() -> std::borrow::Cow<'static, str> {
-        "ProcessId".into()
+        "RunId".into()
     }
     fn schema_id() -> std::borrow::Cow<'static, str> {
-        concat!(module_path!(), "::ProcessId").into()
+        concat!(module_path!(), "::RunId").into()
     }
     fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
         id_json_schema(generator)
@@ -176,7 +176,7 @@ pub enum ProcessExitReason {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ProcessInfo {
-    pub id: ProcessId,
+    pub id: RunId,
     pub command: String,
     pub state: ProcessState,
     pub watched: bool,
@@ -214,6 +214,20 @@ pub struct ToolCall {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SubagentGroupMember {
+    pub call: ToolCallId,
+    pub subagent_type: String,
+    pub label: String,
+    pub background: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SubagentGroupEntry {
+    pub member: SubagentGroupMember,
+    pub outcome: ToolOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ToolImageData {
     pub media_type: String,
     pub data: String,
@@ -232,6 +246,24 @@ pub struct ToolOutcome {
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<ToolImageData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<Box<GitFacts>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GitFacts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
@@ -276,6 +308,38 @@ impl fmt::Display for Effort {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    #[default]
+    Normal,
+    Plan,
+}
+
+impl Mode {
+    #[must_use]
+    pub fn is_plan(self) -> bool {
+        matches!(self, Self::Plan)
+    }
+
+    #[must_use]
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Normal => Self::Plan,
+            Self::Plan => Self::Normal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "type")]
+pub enum PlanDecision {
+    Approve {},
+    Reject { feedback: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
@@ -356,6 +420,10 @@ pub enum TranscriptEntry {
     Tool {
         call: ToolCall,
         outcome: ToolOutcome,
+    },
+    SubagentGroup {
+        group: ToolCallId,
+        members: Vec<SubagentGroupEntry>,
     },
     Compaction {
         tokens_before: u32,

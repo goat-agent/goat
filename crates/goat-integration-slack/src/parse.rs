@@ -32,16 +32,6 @@ impl Mention {
     }
 }
 
-pub struct FetchPage {
-    pub mentions: Vec<Mention>,
-}
-
-pub fn parse_page(data: &Value) -> IntegrationResult<FetchPage> {
-    Ok(FetchPage {
-        mentions: parse_mentions(data)?,
-    })
-}
-
 pub fn parse_mentions(data: &Value) -> IntegrationResult<Vec<Mention>> {
     match_array(data)
         .ok_or_else(|| {

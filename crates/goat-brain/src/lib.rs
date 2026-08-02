@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use futures::{StreamExt, stream};
 use goat_agent_command::{CommandOutput, CommandRegistry};
+use goat_agent_config::AgentCard;
 use goat_agent_tool::{
     ToolCall, ToolContext, ToolOutput, ToolReadState, ToolRegistry, selector_allows,
     selector_allows_empty_denies, validate_tool_selectors,
@@ -13,7 +14,6 @@ use goat_agent_tool::{
 use goat_bus::{EventBus, EventFilter};
 use goat_channel::ChannelHandle;
 use goat_model::{Model, canonicalize_provider_id};
-use goat_profile::ProfileCard;
 use goat_provider::{
     ChunkStream, ContentBlock, Message, MessageRole, Provider, Request, StreamChunk, StreamError,
     ToolChoice, ToolDefinition,
@@ -25,8 +25,8 @@ use goat_store::{
     ToolInvocationStatus,
 };
 use goat_types::{
-    Event, IncomingMessage, IntegrationId, IntegrationUpdateKind, MessageId, ProfileId, Surface,
-    ThreadId,
+    AgentId, Event, IncomingMessage, IntegrationId, IntegrationUpdateKind, MessageId, Surface,
+    ThreadId, WorkflowItem,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -138,6 +138,17 @@ fn build_request(
     }
 }
 
+const GOAT_SELF: &str = r"
+<goat_self>
+You are a goat agent: a resident actor. A turn starts three ways — a channel message, a fire of a schedule you registered (once/cron only, no self-tick), or an update from a watch workflow; the agent's `watch` section declares what is watched as named workflows of query-filtered sources.
+Channels are presence; integrations are reach.
+Memory scopes are owner, self, and domain:<name>. Files under core/ are always loaded and yours to curate; nightly consolidation writes notes, never core/.
+Schedule prompts are notes to your future self — a fire carries no conversation.
+Cite integration observations as observation:<id>. Delegate real coding to the code tool.
+For the full picture, activate the `goat` skill.
+</goat_self>
+";
+
 const RUNTIME_SYSTEM_GUARD: &str = r#"
 <goat_runtime_guard>
 You are speaking directly to the user through a chat channel.
@@ -211,8 +222,8 @@ impl ProviderRegistry {
 }
 
 pub struct BrainDeps {
-    pub persona: ProfileId,
-    pub personality: Arc<ProfileCard>,
+    pub agent: AgentId,
+    pub personality: Arc<AgentCard>,
     pub default_model: Model,
     pub history_window: usize,
     pub tool_selectors: Vec<String>,
@@ -233,8 +244,8 @@ pub struct BrainDeps {
 }
 
 pub struct Brain {
-    persona: ProfileId,
-    personality: Arc<ProfileCard>,
+    agent: AgentId,
+    personality: Arc<AgentCard>,
     default_model: Model,
     history_window: usize,
     tool_selectors: Vec<String>,
@@ -257,7 +268,7 @@ pub struct Brain {
 impl Brain {
     pub fn new(deps: BrainDeps) -> Self {
         Self {
-            persona: deps.persona,
+            agent: deps.agent,
             personality: deps.personality,
             default_model: deps.default_model,
             history_window: deps.history_window,
@@ -279,14 +290,30 @@ impl Brain {
         }
     }
 
+    fn agent_definition(&self) -> String {
+        match std::fs::read_to_string(&self.personality.source_path) {
+            Ok(raw) if !raw.trim().is_empty() => raw.trim().to_owned(),
+            Ok(_) => self.personality.system_prompt.clone(),
+            Err(e) => {
+                warn!(
+                    agent = %self.agent,
+                    path = %self.personality.source_path.display(),
+                    error = ?e,
+                    "re-reading agent.md failed; using the copy loaded at boot",
+                );
+                self.personality.system_prompt.clone()
+            }
+        }
+    }
+
     pub async fn run(
         self: Arc<Self>,
         bus: EventBus,
         channels: Vec<Arc<dyn ChannelHandle>>,
         cancel: CancellationToken,
     ) -> Result<()> {
-        let mut sub = bus.subscribe(EventFilter::Persona(self.persona));
-        info!(profile = %self.persona, "brain running");
+        let mut sub = bus.subscribe(EventFilter::Agent(self.agent));
+        info!(agent = %self.agent, "brain running");
 
         let mut buffer = IntakeBuffer::new(self.intake_debounce, self.intake_ceiling);
         loop {
@@ -297,7 +324,7 @@ impl Brain {
                 () = wait_intake(deadline) => {
                     for msg in buffer.drain_due(Instant::now()) {
                         if let Err(e) = self.handle_turn(&channels, msg).await {
-                            warn!(profile = %self.persona, error = ?e, "turn failed");
+                            warn!(agent = %self.agent, error = ?e, "turn failed");
                         }
                     }
                 }
@@ -309,7 +336,7 @@ impl Brain {
                                 continue;
                             }
                             if let Err(e) = self.store.append_incoming(&msg).await {
-                                warn!(profile = %self.persona, error = ?e, "append incoming");
+                                warn!(agent = %self.agent, error = ?e, "append incoming");
                                 continue;
                             }
                             let key = (msg.thread.clone(), msg.from.external.clone());
@@ -317,10 +344,10 @@ impl Brain {
                                 if let Some(prev) = buffer.take(&key)
                                     && let Err(e) = self.handle_turn(&channels, prev.last).await
                                 {
-                                    warn!(profile = %self.persona, error = ?e, "turn failed");
+                                    warn!(agent = %self.agent, error = ?e, "turn failed");
                                 }
                                 if let Err(e) = self.handle_turn(&channels, msg).await {
-                                    warn!(profile = %self.persona, error = ?e, "turn failed");
+                                    warn!(agent = %self.agent, error = ?e, "turn failed");
                                 }
                             } else {
                                 buffer.push(key, msg, Instant::now());
@@ -331,7 +358,7 @@ impl Brain {
                         } => {
                             if let Err(e) = self.handle_schedule(&channels, run_id, task_id).await {
                                 warn!(
-                                    profile = %self.persona,
+                                    agent = %self.agent,
                                     run_id,
                                     task_id,
                                     error = ?e,
@@ -360,9 +387,28 @@ impl Brain {
                                 self.handle_integration_update(&channels, update).await
                             {
                                 warn!(
-                                    profile = %self.persona,
+                                    agent = %self.agent,
                                     error = ?e,
                                     "integration update failed",
+                                );
+                            }
+                        }
+                        Event::WorkflowUpdate {
+                            workflow,
+                            items,
+                            overflow,
+                            ..
+                        } => {
+                            let update = WorkflowTurn {
+                                workflow,
+                                items,
+                                overflow,
+                            };
+                            if let Err(e) = self.handle_workflow_update(&channels, update).await {
+                                warn!(
+                                    agent = %self.agent,
+                                    error = ?e,
+                                    "workflow update failed",
                                 );
                             }
                         }
@@ -379,7 +425,7 @@ impl Brain {
             Engagement::Skip => Ok(false),
             Engagement::NeedsActivity => Ok(self
                 .store
-                .has_agent_activity(self.persona, &msg.thread)
+                .has_agent_activity(self.agent, &msg.thread)
                 .await?),
             Engagement::Engage => Ok(true),
         }
@@ -420,7 +466,7 @@ impl Brain {
                     if !summary.final_text.is_empty() {
                         self.store
                             .append_outgoing_text(
-                                self.persona,
+                                self.agent,
                                 &msg.thread,
                                 &summary.final_text,
                                 Some(&msg.id),
@@ -432,7 +478,7 @@ impl Brain {
                 }
                 Ok(_) => return Ok(()),
                 Err(e) => {
-                    warn!(profile = %self.persona, error = ?e, "command failed");
+                    warn!(agent = %self.agent, error = ?e, "command failed");
                     messages.push(LlmMessage {
                         role: Role::User,
                         content: vec![ContentPart::Text(format!(
@@ -465,7 +511,7 @@ impl Brain {
 
         if !summary.final_text.is_empty() {
             self.store
-                .append_outgoing_text(self.persona, &thread, &summary.final_text, Some(&msg.id))
+                .append_outgoing_text(self.agent, &thread, &summary.final_text, Some(&msg.id))
                 .await
                 .context("append outgoing")?;
         }
@@ -481,7 +527,7 @@ impl Brain {
     }
 
     async fn build_goals_section(&self) -> Option<String> {
-        let goals = self.store.active_goals(self.persona).await.ok()?;
+        let goals = self.store.active_goals(self.agent).await.ok()?;
         if goals.is_empty() {
             return None;
         }
@@ -555,7 +601,7 @@ impl Brain {
     async fn history_messages(&self, conv: &ThreadId) -> Result<Vec<LlmMessage>> {
         let history = self
             .store
-            .recent(self.persona, conv, self.history_window)
+            .recent(self.agent, conv, self.history_window)
             .await
             .context("read history")?;
         Ok(rows_to_messages(history))
@@ -566,8 +612,8 @@ impl Brain {
             return Ok((None, self.history_messages(conv).await?));
         }
 
-        let total = self.store.message_count(self.persona, conv).await?;
-        let existing = self.store.get_thread_summary(self.persona, conv).await?;
+        let total = self.store.message_count(self.agent, conv).await?;
+        let existing = self.store.get_thread_summary(self.agent, conv).await?;
         let mut summary_text = existing.as_ref().map(|s| s.summary.clone());
         let mut summarized = existing.map_or(0, |s| s.summarized_count).min(total);
 
@@ -579,17 +625,17 @@ impl Brain {
             let fold_count = remaining.min(MAX_SUMMARY_FOLD_BATCH);
             let batch = self
                 .store
-                .messages_from(self.persona, conv, summarized, fold_count)
+                .messages_from(self.agent, conv, summarized, fold_count)
                 .await?;
             match self.summarize_batch(summary_text.as_deref(), &batch).await {
                 Some(updated) => {
                     let new_count = summarized + fold_count;
                     if let Err(e) = self
                         .store
-                        .upsert_thread_summary(self.persona, conv, &updated, new_count)
+                        .upsert_thread_summary(self.agent, conv, &updated, new_count)
                         .await
                     {
-                        warn!(profile = %self.persona, error = ?e, "upsert_thread_summary failed");
+                        warn!(agent = %self.agent, error = ?e, "upsert_thread_summary failed");
                         break;
                     }
                     summary_text = Some(updated);
@@ -603,7 +649,7 @@ impl Brain {
         let raw = self
             .store
             .messages_from(
-                self.persona,
+                self.agent,
                 conv,
                 summarized,
                 total.saturating_sub(summarized),
@@ -649,7 +695,7 @@ impl Brain {
         let stream = match provider.stream(req).await {
             Ok(s) => s,
             Err(e) => {
-                warn!(profile = %self.persona, error = ?e, "summarization request failed");
+                warn!(agent = %self.agent, error = ?e, "summarization request failed");
                 return None;
             }
         };
@@ -659,7 +705,7 @@ impl Brain {
                 if text.is_empty() { None } else { Some(text) }
             }
             Err(e) => {
-                warn!(profile = %self.persona, error = ?e, "summarization stream failed");
+                warn!(agent = %self.agent, error = ?e, "summarization stream failed");
                 None
             }
         }
@@ -673,11 +719,11 @@ impl Brain {
         mode: TurnMode,
         summary: Option<String>,
     ) -> Result<(RenderSummary, ThreadId)> {
-        const MAX_TOOL_ROUNDS: usize = 8;
+        const MAX_TOOL_ROUNDS: usize = 1000;
 
         let provider = self.providers.route(&self.default_model)?;
         let skill_prompt =
-            SkillIndex::discover_root(&self.goat_root).system_prompt_block(self.persona);
+            SkillIndex::discover_root(&self.goat_root).system_prompt_block(self.agent);
         let tool_specs: Vec<ToolSpec> = self
             .llm_tool_specs(skill_prompt.is_some(), &mode)
             .into_iter()
@@ -710,7 +756,7 @@ impl Brain {
              Resolve any user time reference against this clock.\n\
              </current_time>",
             compose_system_prompt(
-                &self.personality.system_prompt,
+                &self.agent_definition(),
                 skill_prompt.as_deref(),
                 summary.as_deref(),
                 memory_section.as_deref(),
@@ -800,7 +846,7 @@ impl Brain {
                                 Ok(new_thread) => {
                                     let _ = self
                                         .store
-                                        .append_incoming_text(self.persona, &new_thread, &seed)
+                                        .append_incoming_text(self.agent, &new_thread, &seed)
                                         .await;
                                     route.thread = new_thread;
                                     route.reply_to = None;
@@ -864,7 +910,7 @@ impl Brain {
         if let Err(e) = self.store.finish_run(run_id, status, note).await {
             tracing::error!(
                 run_id,
-                profile = %self.persona,
+                agent = %self.agent,
                 status = %label,
                 error = %e,
                 "failed to persist task run completion",
@@ -912,7 +958,7 @@ impl Brain {
                 .collect();
             warn!(
                 run_id,
-                profile = %self.persona,
+                agent = %self.agent,
                 want = %format!("{}:{}", conv.channel.as_str(), conv.instance),
                 have = ?available,
                 "no channel handle for origin_conv; marking failed"
@@ -974,7 +1020,7 @@ impl Brain {
             warn!(
                 run_id,
                 task_id,
-                profile = %self.persona,
+                agent = %self.agent,
                 "schedule produced empty response; marking failed",
             );
             self.finish_run_logged(
@@ -987,7 +1033,7 @@ impl Brain {
         }
 
         self.store
-            .append_outgoing_text(self.persona, &thread, &summary.final_text, None)
+            .append_outgoing_text(self.agent, &thread, &summary.final_text, None)
             .await
             .context("append outgoing text for schedule")?;
 
@@ -1002,7 +1048,7 @@ impl Brain {
         channels: &[Arc<dyn ChannelHandle>],
         update: IntegrationTurn,
     ) -> Result<()> {
-        let resolved = match self.store.latest_thread(self.persona).await? {
+        let resolved = match self.store.latest_thread(self.agent).await? {
             Some(thread) => channels
                 .iter()
                 .find(|h| h.id() == thread.channel && h.instance() == thread.instance)
@@ -1012,7 +1058,7 @@ impl Brain {
         };
         let Some((thread, handle)) = resolved else {
             warn!(
-                profile = %self.persona,
+                agent = %self.agent,
                 integration = %update.integration,
                 external_ref = %update.external_ref,
                 "no channel handle for integration update; dropping briefing",
@@ -1050,9 +1096,69 @@ impl Brain {
         let trimmed = summary.final_text.trim();
         if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("skip") {
             self.store
-                .append_outgoing_text(self.persona, &thread, &summary.final_text, None)
+                .append_outgoing_text(self.agent, &thread, &summary.final_text, None)
                 .await
                 .context("append outgoing text for integration update")?;
+        }
+        Ok(())
+    }
+
+    async fn handle_workflow_update(
+        &self,
+        channels: &[Arc<dyn ChannelHandle>],
+        update: WorkflowTurn,
+    ) -> Result<()> {
+        let resolved = match self.store.latest_thread(self.agent).await? {
+            Some(thread) => channels
+                .iter()
+                .find(|h| h.id() == thread.channel && h.instance() == thread.instance)
+                .cloned()
+                .map(|handle| (thread, handle)),
+            None => None,
+        };
+        let Some((thread, handle)) = resolved else {
+            warn!(
+                agent = %self.agent,
+                workflow = %update.workflow,
+                "no channel handle for workflow update; dropping briefing",
+            );
+            return Ok(());
+        };
+
+        let prompt = workflow_prompt(&update, &self.integration_tools);
+        let mut messages = vec![LlmMessage {
+            role: Role::User,
+            content: vec![ContentPart::Text(prompt)],
+        }];
+
+        let mut tools = self.integration_tools.clone();
+        tools.extend(
+            ["memory_search", "fact", "observation"]
+                .iter()
+                .map(std::string::ToString::to_string),
+        );
+
+        let (summary, thread) = self
+            .complete_with_tools(
+                handle,
+                TurnRoute {
+                    thread: thread.clone(),
+                    reply_to: None,
+                    surface: surface_of_external(&thread.external),
+                    thread_open: None,
+                },
+                &mut messages,
+                TurnMode::Integration { tools },
+                None,
+            )
+            .await?;
+
+        let trimmed = summary.final_text.trim();
+        if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("skip") {
+            self.store
+                .append_outgoing_text(self.agent, &thread, &summary.final_text, None)
+                .await
+                .context("append outgoing text for workflow update")?;
         }
         Ok(())
     }
@@ -1110,7 +1216,7 @@ impl Brain {
             return output;
         }
         let ctx = ToolContext {
-            persona: self.persona,
+            agent: self.agent,
             thread: conv.clone(),
             goat_root: self.goat_root.clone(),
             read_state,
@@ -1143,7 +1249,7 @@ impl Brain {
         };
         let output_text = output.text_for_model();
         let record = ToolInvocationRecord {
-            persona: self.persona,
+            agent: self.agent,
             thread: conv.clone(),
             call_id: call.id.clone(),
             tool_name: resolved_name,
@@ -1399,7 +1505,7 @@ impl Brain {
                     None => std::time::Duration::from_millis(500u64 << (attempt - 1).min(4)),
                 };
                 warn!(
-                    profile = %self.persona,
+                    agent = %self.agent,
                     attempt,
                     delay_ms = delay.as_millis(),
                     "retrying transient LLM error",
@@ -1423,7 +1529,7 @@ impl Brain {
                         last_rate_limit_secs = retry_after.map(|d| d.as_secs());
                     }
                     warn!(
-                        profile = %self.persona,
+                        agent = %self.agent,
                         error = ?e,
                         attempt,
                         "LLM stream error; will retry",
@@ -1494,12 +1600,15 @@ fn preview(text: &str, max_chars: usize) -> String {
 }
 
 fn compose_system_prompt(
-    persona_prompt: &str,
+    agent_prompt: &str,
     skill_prompt: Option<&str>,
     summary_prompt: Option<&str>,
     memory_prompt: Option<&str>,
 ) -> String {
-    let mut parts = vec![persona_prompt.trim().to_string()];
+    let mut parts = vec![
+        GOAT_SELF.trim().to_string(),
+        agent_prompt.trim().to_string(),
+    ];
     if let Some(skill_prompt) = skill_prompt.filter(|s| !s.trim().is_empty()) {
         parts.push(skill_prompt.trim().to_string());
     }
@@ -1624,6 +1733,75 @@ fn integration_prompt(update: &IntegrationTurn) -> String {
     )
 }
 
+struct WorkflowTurn {
+    workflow: String,
+    items: Vec<WorkflowItem>,
+    overflow: usize,
+}
+
+fn workflow_prompt(update: &WorkflowTurn, registered_tools: &[String]) -> String {
+    let mut body = format!("<workflow_update workflow=\"{}\">", update.workflow);
+    for item in &update.items {
+        let _ = write!(
+            body,
+            "\n<item integration=\"{}\" account=\"{}\" kind=\"{}\">\n{}\nexternal_ref: {}",
+            item.integration,
+            item.account,
+            item.kind.as_str(),
+            item.summary,
+            item.external_ref,
+        );
+        if let Some(observation) = item.observation {
+            let _ = write!(
+                body,
+                "\nobservation recorded (raw payload kept losslessly): observation:{observation}",
+            );
+        }
+        body.push_str("\n</item>");
+    }
+    if update.overflow > 0 {
+        let _ = write!(body, "\n(+{} more items waiting)", update.overflow);
+    }
+    body.push_str("\n</workflow_update>\n");
+
+    let mut integrations: Vec<&str> = update
+        .items
+        .iter()
+        .map(|item| item.integration.as_str())
+        .collect();
+    integrations.sort_unstable();
+    integrations.dedup();
+    let hints: Vec<String> = integrations
+        .iter()
+        .filter(|name| {
+            let prefix = format!("{name}_");
+            registered_tools
+                .iter()
+                .any(|tool| tool.starts_with(&prefix))
+        })
+        .map(|name| format!("`{name}_*`"))
+        .collect();
+    let live = if hints.is_empty() {
+        String::new()
+    } else {
+        format!("pull live data with the {} tools, ", hints.join(", "))
+    };
+    let domains: Vec<String> = integrations
+        .iter()
+        .map(|name| format!("domain:{name}"))
+        .collect();
+    let _ = write!(
+        body,
+        "Gather context now: {live}read what the watcher actually saw with `observation`, \
+         and search prior knowledge with `memory_search`. Record durable claims with `fact` \
+         in each item's integration scope ({}), using its observation reference as source_ref. \
+         Then brief me once, covering these items together: what happened, the key context \
+         you found, and a suggested first step. Do not start the work itself.",
+        domains.join(", "),
+    );
+    body
+}
+
 fn is_schedule_tool(name: &str) -> bool {
     matches!(
         name,
@@ -1716,6 +1894,54 @@ mod tests {
         assert!(!prompt.contains("observation recorded"));
     }
 
+    fn workflow_item(integration: &'static str, reference: &str) -> WorkflowItem {
+        WorkflowItem {
+            integration: IntegrationId::from_static(integration),
+            account: "default".into(),
+            stream: "inbox".into(),
+            kind: IntegrationUpdateKind::Assigned,
+            external_ref: format!("{integration}/default:issue:{reference}"),
+            summary: format!("{reference} — Fix retry storm"),
+            observation: Some(12),
+        }
+    }
+
+    #[test]
+    fn workflow_prompt_bundles_items_and_hints_only_registered_tools() {
+        let update = WorkflowTurn {
+            workflow: "inbox".into(),
+            items: vec![
+                workflow_item("linear", "GOA-1"),
+                workflow_item("github", "#42"),
+            ],
+            overflow: 2,
+        };
+        let prompt = workflow_prompt(&update, &["linear_list_issues".to_string()]);
+        assert!(prompt.starts_with("<workflow_update workflow=\"inbox\">"));
+        assert!(prompt.contains("<item integration=\"linear\""));
+        assert!(prompt.contains("<item integration=\"github\""));
+        assert!(prompt.contains("observation:12"));
+        assert!(prompt.contains("(+2 more items waiting)"));
+        assert!(prompt.contains("`linear_*`"));
+        assert!(!prompt.contains("`github_*`"));
+        assert!(prompt.contains("domain:github, domain:linear"));
+        assert!(prompt.contains("brief me once"));
+        assert!(prompt.contains("Do not start the work itself"));
+    }
+
+    #[test]
+    fn workflow_prompt_without_registered_tools_skips_the_live_hint() {
+        let update = WorkflowTurn {
+            workflow: "errors".into(),
+            items: vec![workflow_item("github", "#7")],
+            overflow: 0,
+        };
+        let prompt = workflow_prompt(&update, &[]);
+        assert!(!prompt.contains("pull live data"));
+        assert!(!prompt.contains("more items waiting"));
+        assert!(prompt.contains("read what the watcher actually saw"));
+    }
+
     #[test]
     fn autonomous_modes_cover_self_tick_and_integration() {
         assert!(!TurnMode::Normal.is_autonomous());
@@ -1731,7 +1957,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_empty_persona_selector_denies_tools() {
+    fn explicit_empty_agent_selector_denies_tools() {
         assert!(!selector_allows("shell", &selectors(&[])));
     }
 
@@ -1798,12 +2024,21 @@ mod tests {
     }
 
     #[test]
+    fn compose_system_prompt_leads_with_goat_self() {
+        let prompt = compose_system_prompt("You are dev.", None, None, None);
+        let goat_self = prompt.find("<goat_self>").unwrap();
+        let agent = prompt.find("You are dev.").unwrap();
+        assert!(goat_self < agent);
+        assert!(prompt.contains("activate the `goat` skill"));
+    }
+
+    #[test]
     fn compose_system_prompt_inserts_skill_catalog_before_runtime_guard() {
         let prompt = compose_system_prompt("You are dev.", Some("<available_skills/>"), None, None);
-        let persona = prompt.find("You are dev.").unwrap();
+        let agent = prompt.find("You are dev.").unwrap();
         let skills = prompt.find("<available_skills/>").unwrap();
         let guard = prompt.find("<goat_runtime_guard>").unwrap();
-        assert!(persona < skills);
+        assert!(agent < skills);
         assert!(skills < guard);
     }
 
@@ -1813,10 +2048,10 @@ mod tests {
             "You are dev.",
             Some("<available_skills/>"),
             None,
-            Some("<persona_memory>fact</persona_memory>"),
+            Some("<agent_memory>fact</agent_memory>"),
         );
         let skills = prompt.find("<available_skills/>").unwrap();
-        let memory = prompt.find("<persona_memory>").unwrap();
+        let memory = prompt.find("<agent_memory>").unwrap();
         let guard = prompt.find("<goat_runtime_guard>").unwrap();
         assert!(skills < memory);
         assert!(memory < guard);
@@ -1828,10 +2063,10 @@ mod tests {
             "You are dev.",
             None,
             Some("they talked about cats"),
-            Some("<persona_memory>fact</persona_memory>"),
+            Some("<agent_memory>fact</agent_memory>"),
         );
         let summary = prompt.find("<conversation_summary>").unwrap();
-        let memory = prompt.find("<persona_memory>").unwrap();
+        let memory = prompt.find("<agent_memory>").unwrap();
         let guard = prompt.find("<goat_runtime_guard>").unwrap();
         assert!(prompt.contains("they talked about cats"));
         assert!(summary < memory);
@@ -1937,7 +2172,7 @@ mod tests {
     fn intake_msg(thread: ThreadId, from: &str, text: &str) -> IncomingMessage {
         IncomingMessage {
             id: MessageId(String::new()),
-            profile: ProfileId::from_slug("test"),
+            agent: AgentId::from_slug("test"),
             thread,
             from: goat_types::UserHandle {
                 external: from.to_string(),

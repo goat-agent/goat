@@ -1,206 +1,93 @@
-mod diff;
-mod mcp;
 mod parse;
-mod tool;
-mod watcher;
+mod watch;
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use goat_agent_tool::{ToolName, ToolRegistry};
-use goat_auth::CredentialStore;
-use goat_integration::{
-    BindingMap, Integration, IntegrationAuth, IntegrationBinding, IntegrationError,
-    IntegrationFactory, IntegrationMetadata, IntegrationResult, IntegrationRuntime,
-};
-use goat_types::{IntegrationId, ProfileId};
+use goat_integration::query::{KeySpec, Residue, TermPolicy, WatchVocabulary};
+use goat_integration::{IntegrationError, IntegrationFactory, IntegrationResult};
+use goat_integration_mcp::{AuthScheme, McpService, ServiceUrl, ToolPolicy};
+use goat_types::IntegrationId;
+use serde::Deserialize;
 use serde_json::Value;
-use tokio_util::sync::CancellationToken;
-use tracing::warn;
 
 pub const ID: IntegrationId = IntegrationId::from_static("sentry");
+pub const PREFIX: &str = "sentry_";
+
+const MCP_URL: &str = "https://mcp.sentry.dev/mcp";
+const ENV_VAR: &str = "GOAT_SENTRY_ACCESS_TOKEN";
 
 const SETUP: &str = "connects to Sentry's hosted MCP server; a browser window will ask you to approve access.\n\
      the approval screen lists skills — uncheck anything you do not want; `Manage Projects & Teams` grants project and team writes.\n\
      the watcher stays off until you set `organization_slug` in the agent's sentry binding.\n\
+     by default it briefs you on fresh unresolved issues awaiting review (`is:unresolved is:for_review sort:new`).\n\
+     declare workflows in the agent's `watch` section to change that, e.g.\n\
+     { \"source\": \"sentry\", \"query\": \"is:unresolved level:error project:backend sort:freq\" } —\n\
+     known keys: project, sort; every other token passes through to Sentry's issue search verbatim (`@me` becomes `me`).\n\
      to run headless, or to recover if the browser flow fails, set GOAT_SENTRY_ACCESS_TOKEN to a Sentry user auth token.";
 
-const STRING_SETTINGS: [&str; 6] = [
-    "account",
-    "client_id",
-    "organization_slug",
-    "project",
-    "query",
-    "sort",
-];
+pub const VOCABULARY: WatchVocabulary = WatchVocabulary {
+    integration: "sentry",
+    residue: Residue::Keep,
+    terms: TermPolicy::Reject,
+    limit: None,
+    keys: &[KeySpec::new("project"), KeySpec::new("sort")],
+};
 
-pub struct SentryIntegration;
+pub fn service() -> McpService {
+    McpService::new("sentry", "Sentry", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .env_var(ENV_VAR)
+        .token_scheme(AuthScheme::Custom("Sentry-Bearer"))
+        .tools(ToolPolicy::all(PREFIX))
+        .truncation_hint(
+            "narrow the time range, request fewer fields, or fetch a single issue instead",
+        )
+        .defaults(watch::defaults)
+        .watch(&VOCABULARY, watch::compile)
+}
 
-#[async_trait]
-impl Integration for SentryIntegration {
-    fn id(&self) -> IntegrationId {
-        ID
-    }
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SentryBinding {
+    #[serde(default, deserialize_with = "meaningful")]
+    pub organization_slug: Option<String>,
+}
 
-    fn metadata(&self) -> IntegrationMetadata {
-        IntegrationMetadata {
-            id: "sentry",
-            display: "Sentry",
-            auth: IntegrationAuth::OAuth,
-            secret_label: "Sentry user auth token",
-            env_var: Some(mcp::ENV_VAR),
-            setup: SETUP,
-            has_watcher: true,
-        }
-    }
-
-    async fn register_tools(
-        &self,
-        registry: &mut ToolRegistry,
-        runtime: &IntegrationRuntime,
-        bindings: Arc<BindingMap>,
-    ) -> Vec<ToolName> {
-        tool::register(registry, runtime, bindings).await
-    }
-
-    fn spawn_watcher(
-        &self,
-        persona: ProfileId,
-        binding: IntegrationBinding,
-        runtime: IntegrationRuntime,
-        cancel: CancellationToken,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        let Some(organization_slug) = string_setting(&binding.config, "organization_slug") else {
-            warn!(
-                profile = %persona,
-                "sentry watcher disabled; set `organization_slug` in the agent's sentry binding",
-            );
-            return None;
-        };
-        let fetch = watcher::McpFetch {
-            credentials: runtime.credentials.clone(),
-            account: binding.account.clone(),
-            client_id: tool::client_id_of(&binding),
-            organization_slug,
-            project: string_setting(&binding.config, "project"),
-            query: string_setting(&binding.config, "query")
-                .unwrap_or_else(|| watcher::DEFAULT_QUERY.to_string()),
-            sort: string_setting(&binding.config, "sort")
-                .unwrap_or_else(|| watcher::DEFAULT_SORT.to_string()),
-        };
-        Some(tokio::spawn(watcher::run(
-            persona,
-            runtime,
-            binding.account,
-            fetch,
-            cancel,
-        )))
-    }
-
-    async fn verify(
-        &self,
-        config: &Value,
-        credentials: &CredentialStore,
-    ) -> IntegrationResult<String> {
-        let account = config
-            .get("account")
-            .and_then(Value::as_str)
-            .unwrap_or("default");
-        let client_id = config.get("client_id").and_then(Value::as_str);
-        let auth = mcp::resolve_auth(credentials, account, client_id)?;
-        let session = mcp::connect(&auth).await?;
-        let name = session.server_name();
-        mcp::persist_tokens(credentials, account, &session).await;
-        session.close().await;
-        Ok(name)
-    }
-
-    async fn oauth_login(
-        &self,
-        credentials: &CredentialStore,
-        account: &str,
-        present_url: &(dyn for<'a> Fn(&'a str) + Send + Sync),
-    ) -> IntegrationResult<serde_json::Value> {
-        use rmcp::transport::auth::{AuthorizationRequest, OAuthState};
-
-        let (listener, port) = goat_auth::bind_loopback()
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        let redirect = format!("http://127.0.0.1:{port}/callback");
-
-        let mut oauth = OAuthState::new(mcp::MCP_URL, None)
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        oauth
-            .start_authorization(AuthorizationRequest::new(&redirect).with_client_name("goat"))
-            .await
-            .map_err(|e| IntegrationError::Auth(format!("authorization start failed: {e}")))?;
-        let auth_url = oauth
-            .get_authorization_url()
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        let state = url::Url::parse(&auth_url)
-            .ok()
-            .and_then(|u| {
-                u.query_pairs()
-                    .find(|(k, _)| k == "state")
-                    .map(|(_, v)| v.to_string())
-            })
-            .ok_or_else(|| IntegrationError::Auth("authorization url missing state".into()))?;
-
-        present_url(&auth_url);
-        let code = goat_auth::capture_on(listener, &state)
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        oauth
-            .handle_callback(&code, &state)
-            .await
-            .map_err(|e| IntegrationError::Auth(format!("token exchange failed: {e}")))?;
-
-        let (client_id, tokens) = oauth
-            .get_credentials()
-            .await
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        let tokens =
-            tokens.ok_or_else(|| IntegrationError::Auth("no tokens after authorization".into()))?;
-        credentials
-            .store(
-                &goat_auth::CredentialKey::integration("sentry", account),
-                goat_auth::Credential::OAuth(mcp::token_set_from_response(&tokens)?),
-            )
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        Ok(serde_json::json!({ "client_id": client_id }))
+impl SentryBinding {
+    pub(crate) fn read(config: &Value) -> Self {
+        goat_integration_mcp::read_binding(config)
     }
 }
 
-fn string_setting(config: &Value, key: &str) -> Option<String> {
-    config
-        .get(key)
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| value.trim().to_string())
+fn meaningful<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<String> = Option::deserialize(deserializer)?;
+    Ok(raw
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty()))
 }
+
+const MOVED_KEYS: &[&str] = &["project", "query", "sort"];
 
 fn validate_config(config: &Value) -> IntegrationResult<()> {
-    let obj = config
-        .as_object()
-        .ok_or_else(|| IntegrationError::Config("sentry binding must be an object".into()))?;
-    for key in STRING_SETTINGS {
-        if let Some(value) = obj.get(key)
-            && !value.is_string()
-        {
-            return Err(IntegrationError::Config(format!(
-                "`{key}` must be a string"
-            )));
+    if let Some(object) = config.as_object() {
+        for key in MOVED_KEYS {
+            if object.contains_key(*key) {
+                return Err(IntegrationError::Config(format!(
+                    "sentry binding: `{key}` moved to the agent-level `watch` section; \
+                     write {{ \"source\": \"sentry\", \"query\": \"...\" }} there instead"
+                )));
+            }
         }
     }
-    Ok(())
+    goat_integration_mcp::validate_binding::<SentryBinding>("sentry", config)
 }
 
 inventory::submit! {
     IntegrationFactory {
         id: ID,
-        ctor: || Arc::new(SentryIntegration),
+        ctor: || Arc::new(service().build()),
         validate_config,
     }
 }
@@ -208,24 +95,32 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goat_integration::query::assert_vocabulary;
+    use goat_integration::{Integration, IntegrationAuth};
     use serde_json::json;
 
     #[test]
-    fn validate_config_accepts_valid_and_rejects_invalid() {
+    fn the_vocabulary_holds_its_invariants() {
+        assert_vocabulary(&VOCABULARY);
+    }
+
+    #[test]
+    fn the_binding_keeps_only_connection_keys() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(
-            validate_config(&json!({
-                "account": "work",
-                "organization_slug": "acme",
-                "project": "backend",
-                "query": "is:unresolved",
-                "sort": "new"
-            }))
-            .is_ok()
-        );
+        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "organization_slug": "acme" })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());
         assert!(validate_config(&json!({ "organization_slug": 3 })).is_err());
-        assert!(validate_config(&json!({ "project": ["backend"] })).is_err());
+        assert!(validate_config(&json!({ "org_slug": "acme" })).is_err());
+    }
+
+    #[test]
+    fn an_old_policy_key_points_at_the_watch_section() {
+        for key in ["project", "query", "sort"] {
+            let err = validate_config(&json!({ key: "value" })).unwrap_err();
+            assert!(err.to_string().contains("agent-level `watch` section"));
+            assert!(err.to_string().contains(key));
+        }
     }
 
     #[test]
@@ -237,28 +132,52 @@ mod tests {
 
     #[test]
     fn metadata_advertises_the_prefixed_environment_override() {
-        let meta = SentryIntegration.metadata();
+        let meta = service().build().metadata();
+        assert_eq!(meta.id, "sentry");
+        assert_eq!(meta.display, "Sentry");
         assert_eq!(meta.auth, IntegrationAuth::OAuth);
         assert_eq!(meta.env_var, Some("GOAT_SENTRY_ACCESS_TOKEN"));
-        assert!(meta.has_watcher);
+        assert!(service().compile.is_some());
+        assert!(service().defaults.is_some());
         assert!(meta.setup.contains("GOAT_SENTRY_ACCESS_TOKEN"));
         assert!(meta.setup.contains("organization_slug"));
+        assert!(meta.setup.contains("is:unresolved is:for_review sort:new"));
     }
 
     #[test]
-    fn watcher_settings_are_trimmed_and_blank_values_are_ignored() {
-        let config = json!({ "organization_slug": "  acme  ", "project": "   " });
+    fn settings_are_trimmed_and_blank_values_ignored() {
+        let read = SentryBinding::read(&json!({ "organization_slug": "  " }));
+        assert_eq!(read.organization_slug, None);
+        let read = SentryBinding::read(&json!({ "organization_slug": " acme " }));
+        assert_eq!(read.organization_slug, Some("acme".to_owned()));
+    }
+
+    #[test]
+    fn the_custom_auth_scheme_is_kept() {
+        let service = service();
         assert_eq!(
-            string_setting(&config, "organization_slug"),
-            Some("acme".to_string())
+            service.credential.scheme,
+            AuthScheme::Custom("Sentry-Bearer")
         );
-        assert_eq!(string_setting(&config, "project"), None);
-        assert_eq!(string_setting(&config, "query"), None);
+        assert_eq!(
+            goat_integration_mcp::header_value(service.credential.scheme, " tok \n"),
+            "Sentry-Bearer tok"
+        );
     }
 
-    #[test]
-    fn watcher_stays_off_without_an_organization() {
-        let binding = IntegrationBinding::from_config(json!({}));
-        assert!(string_setting(&binding.config, "organization_slug").is_none());
+    #[tokio::test]
+    async fn the_watcher_honours_the_shared_contract() {
+        use goat_integration::diff::RETAIN;
+        use goat_integration::test_support::{WatchContract, assert_watch_contract};
+        use goat_types::IntegrationUpdateKind;
+
+        assert_watch_contract(&WatchContract {
+            integration: ID,
+            stream: watch::STREAM.to_owned(),
+            kind: IntegrationUpdateKind::Updated,
+            entity: "issue",
+            diff: RETAIN,
+        })
+        .await;
     }
 }

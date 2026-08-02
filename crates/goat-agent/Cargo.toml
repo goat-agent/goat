@@ -2,9 +2,11 @@
 name = "goat-agent"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 authors.workspace = true
+publish.workspace = true
 
 [lib]
 name = "goat_agent"
@@ -12,6 +14,8 @@ path = "src/lib.rs"
 
 [dependencies]
 goat-runtime    = { workspace = true }
+goat-client     = { workspace = true }
+goat-wire       = { workspace = true }
 goat-config     = { workspace = true }
 goat-console    = { workspace = true }
 goat-store      = { workspace = true }
@@ -26,6 +30,7 @@ goat-skills     = { workspace = true }
 goat-types      = { workspace = true }
 goat-channel    = { workspace = true }
 goat-channel-discord  = { workspace = true }
+goat-channel-slack    = { workspace = true }
 goat-agent-tool-fs       = { workspace = true }
 goat-agent-tool-shell    = { workspace = true }
 goat-agent-tool-skill    = { workspace = true }

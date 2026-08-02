@@ -103,8 +103,8 @@ impl Provider for KimiCodeProvider {
             .is_some_and(|cred| matches!(cred, Credential::OAuth(_)))
     }
 
-    fn catalog(&self) -> &'static [&'static str] {
-        CATALOG
+    fn list_models(&self) -> Vec<String> {
+        CATALOG.iter().map(|id| (*id).to_owned()).collect()
     }
 
     fn efforts(&self, model: &str) -> Vec<Effort> {
@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(provider.capabilities().auth, AuthMethod::OAuth);
         assert_eq!(provider.metadata().oauth, Some("device code"));
         assert!(!provider.authenticated());
-        assert_eq!(provider.catalog(), CATALOG);
+        assert_eq!(provider.list_models(), CATALOG);
         assert_eq!(provider.context_window("k3"), Some(1_048_576));
         assert_eq!(provider.context_window("k3-256k"), Some(262_144));
         assert_eq!(provider.context_window("kimi-for-coding"), Some(262_144));

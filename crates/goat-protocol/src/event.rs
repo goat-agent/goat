@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AccountEntry, InputAttachment, LoginProvider, ModelEntry, ModelTarget, ProcessExitReason,
-    ProcessId, ProcessInfo, RateLimitSnapshot, RewindDraft, RewindPoint, SkillInfo, TaskId,
-    ThreadSummary, ToolCall, ToolCallId, ToolOutcome, TranscriptEntry, Usage,
+    AccountEntry, InputAttachment, LoginProvider, Mode, ModelEntry, ModelTarget, ProcessExitReason,
+    ProcessInfo, RateLimitSnapshot, RewindDraft, RewindPoint, RunId, SkillInfo,
+    SubagentGroupMember, TaskId, ThreadSummary, ToolCall, ToolCallId, ToolOutcome, TranscriptEntry,
+    Usage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -37,6 +38,11 @@ pub enum Event {
         call: ToolCallId,
         outcome: ToolOutcome,
     },
+    SubagentGroupStarted {
+        id: TaskId,
+        group: ToolCallId,
+        members: Vec<SubagentGroupMember>,
+    },
     ShellDone {
         id: TaskId,
         output: String,
@@ -45,13 +51,14 @@ pub enum Event {
         id: TaskId,
         interrupted: bool,
     },
-    AgentStarted {
+    SubagentStarted {
         id: TaskId,
         parent: TaskId,
-        agent_type: String,
+        call: ToolCallId,
+        subagent_type: String,
         label: String,
     },
-    AgentDone {
+    SubagentDone {
         id: TaskId,
         ok: bool,
     },
@@ -61,6 +68,17 @@ pub enum Event {
     ModelSelected {
         target: ModelTarget,
     },
+    ModeChanged {
+        mode: Mode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan_path: Option<String>,
+    },
+    PlanProposed {
+        id: TaskId,
+        call: ToolCallId,
+        plan: String,
+        path: String,
+    },
     ThreadsListed {
         threads: Vec<ThreadSummary>,
     },
@@ -69,6 +87,9 @@ pub enum Event {
     },
     ConversationRewound {
         draft: RewindDraft,
+    },
+    FilesListed {
+        entries: Vec<String>,
     },
     ConversationRestored {
         target: ModelTarget,
@@ -167,23 +188,23 @@ pub enum Event {
         thread_id: i64,
     },
     ProcessStarted {
-        process: ProcessId,
+        process: RunId,
         command: String,
         watched: bool,
     },
     ProcessOutput {
-        process: ProcessId,
+        process: RunId,
         chunk: String,
     },
     ProcessExited {
-        process: ProcessId,
+        process: RunId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         code: Option<i32>,
         reason: ProcessExitReason,
     },
     ProcessObserved {
         id: TaskId,
-        process: ProcessId,
+        process: RunId,
         command: String,
         output: String,
     },

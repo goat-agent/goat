@@ -16,6 +16,11 @@ pub fn transcript_sig(
     format(&name, &args)
 }
 
+pub fn call_args(tool_name: &str, display_primary: &str) -> Vec<String> {
+    let full = normalize(tool_name, display_primary);
+    parse(tool_name, &full).1
+}
+
 struct Ctx<'a> {
     cwd: &'a str,
     width: u16,
@@ -306,7 +311,7 @@ fn url_host(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_owned())
 }
 
-fn clip_to_width(s: &str, max: usize) -> String {
+pub fn clip_to_width(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
     }
@@ -376,6 +381,28 @@ mod tests {
         assert_eq!(
             path_under_cwd("/Users/jmo/proj/crates/a.rs", "/Users/jmo/proj"),
             "crates/a.rs"
+        );
+    }
+
+    #[test]
+    fn call_args_inverts_call_sig() {
+        for command in [
+            r#"git commit -m "fix, cleanup""#,
+            r#"git add -A && git commit -m "feat: x" && git push"#,
+            r#"gh pr create --title "feat: x" --body "a \"quoted\" body""#,
+            "cargo nextest run --workspace",
+            "echo ''",
+        ] {
+            let sig = crate::display::call_sig("Bash", &[command]);
+            assert_eq!(super::call_args("Bash", &sig), vec![command.to_owned()]);
+        }
+    }
+
+    #[test]
+    fn call_args_reads_a_bare_display_string() {
+        assert_eq!(
+            super::call_args("Glob", "Glob(**/symbols*)"),
+            vec!["**/symbols*".to_owned()]
         );
     }
 

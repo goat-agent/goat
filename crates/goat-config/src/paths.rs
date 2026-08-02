@@ -10,6 +10,8 @@ pub struct GoatPaths {
     pub mcp_json: PathBuf,
     pub rate_limits_json: PathBuf,
     pub agents_dir: PathBuf,
+    pub subagents_dir: PathBuf,
+    pub plans_dir: PathBuf,
     pub memory_dir: PathBuf,
     pub skills_dir: PathBuf,
     pub logs_dir: PathBuf,
@@ -33,6 +35,8 @@ impl GoatPaths {
             mcp_json: root.join("mcp.json"),
             rate_limits_json: root.join("rate_limits.json"),
             agents_dir: root.join("agents"),
+            subagents_dir: root.join("subagents"),
+            plans_dir: root.join("plans"),
             memory_dir: root.join("memory"),
             skills_dir: root.join("skills"),
             logs_dir: root.join("logs"),
@@ -114,6 +118,14 @@ pub fn agents_dir() -> Option<PathBuf> {
     resolved().map(|p| p.agents_dir)
 }
 
+pub fn subagents_dir() -> Option<PathBuf> {
+    resolved().map(|p| p.subagents_dir)
+}
+
+pub fn plans_dir() -> Option<PathBuf> {
+    resolved().map(|p| p.plans_dir)
+}
+
 pub fn rate_limits_path() -> Option<PathBuf> {
     resolved().map(|p| p.rate_limits_json)
 }
@@ -123,7 +135,7 @@ pub fn global_instructions_file() -> Option<PathBuf> {
 }
 
 pub const PROJECT_SKILLS_SUBDIR: &str = ".goat/skills";
-pub const PROJECT_AGENTS_SUBDIR: &str = ".goat/agents";
+pub const PROJECT_SUBAGENTS_SUBDIR: &str = ".goat/subagents";
 pub const PROJECT_INSTRUCTIONS_FILE: &str = "AGENTS.md";
 pub const PROJECT_INSTRUCTIONS_OVERRIDE_FILE: &str = "AGENTS.override.md";
 pub const INSTRUCTIONS_MAX_BYTES: usize = 32 * 1024;

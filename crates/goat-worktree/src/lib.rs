@@ -6,18 +6,20 @@ mod workspace;
 pub use workspace::{Workspace, WorkspaceKind, workspace};
 
 use std::{
+    ffi::OsString,
     fs,
     io::ErrorKind,
     path::{Component, Path, PathBuf},
 };
 
+use goat_git::{
+    Worktree, branch_exists, commit_oid, common_dir, is_dirty, output as git_output, path_arg,
+    repo_root, validate_branch_name, worktrees as git_worktrees,
+};
 use ignore::gitignore::GitignoreBuilder;
 
 pub use error::WorktreeError;
-use git::{
-    ExistingBase, GitWorktree, branch_exists, commit_oid, common_dir, git_output, git_path,
-    git_worktrees, is_dirty, os, repo_root, resolve_base_ref, validate_branch_name,
-};
+use git::{ExistingBase, resolve_base_ref};
 use metadata::{metadata_path, read_metadata, write_metadata_open};
 
 const GOAT_DIR: &str = ".goat";
@@ -89,10 +91,14 @@ fn remove_from_cwd(label: &str, cwd: &Path) -> Result<(), WorktreeError> {
     }
     git_output(
         &repo.owner_root,
-        &[os("worktree"), os("remove"), git_path(&path)],
+        &[
+            OsString::from("worktree"),
+            OsString::from("remove"),
+            path_arg(&path),
+        ],
     )?;
     if branch_exists(&repo.owner_root, &branch)? {
-        git_output(&repo.owner_root, &[os("branch"), os("-D"), os(&branch)])?;
+        git_output(&repo.owner_root, &["branch", "-D", &branch])?;
     }
     let metadata_path = metadata_path(&repo.bucket, label);
     if metadata_path.exists() {
@@ -157,19 +163,24 @@ fn prepare_from_cwd(label: &str, cwd: &Path) -> Result<Launch, WorktreeError> {
         ExistingBase::Branch(existing) => {
             git_output(
                 &repo.owner_root,
-                &[os("worktree"), os("add"), git_path(&path), os(existing)],
+                &[
+                    OsString::from("worktree"),
+                    OsString::from("add"),
+                    path_arg(&path),
+                    OsString::from(existing),
+                ],
             )?;
         }
         ExistingBase::Ref(base_ref) => {
             git_output(
                 &repo.owner_root,
                 &[
-                    os("worktree"),
-                    os("add"),
-                    os("-b"),
-                    os(&branch),
-                    git_path(&path),
-                    os(&base_ref.name),
+                    OsString::from("worktree"),
+                    OsString::from("add"),
+                    OsString::from("-b"),
+                    OsString::from(&branch),
+                    path_arg(&path),
+                    OsString::from(&base_ref.name),
                 ],
             )?;
         }
@@ -265,7 +276,7 @@ fn branch_name(label: &str) -> String {
     format!("{BRANCH_PREFIX}{label}")
 }
 
-fn owner_root(current_root: &Path, worktrees: &[GitWorktree]) -> PathBuf {
+fn owner_root(current_root: &Path, worktrees: &[Worktree]) -> PathBuf {
     for worktree in worktrees {
         let bucket = worktree.path.join(GOAT_DIR).join(WORKTREES_DIR);
         if current_root.starts_with(&bucket) {
@@ -304,12 +315,12 @@ fn has_unique_commits(repo: &Repo, label: &str, branch: &str) -> Result<bool, Wo
     let output = git_output(
         &repo.owner_root,
         &[
-            os("for-each-ref"),
-            os("--format=%(refname:short)"),
-            os("--contains"),
-            os(branch),
-            os("refs/heads"),
-            os("refs/remotes"),
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "--contains",
+            branch,
+            "refs/heads",
+            "refs/remotes",
         ],
     )?;
     for line in output
@@ -355,7 +366,7 @@ fn managed_worktrees(repo: &Repo) -> Result<Vec<ManagedWorktree>, WorktreeError>
 fn ensure_local_exclude(repo: &Repo) -> Result<(), WorktreeError> {
     let output = git_output(
         &repo.owner_root,
-        &[os("rev-parse"), os("--git-path"), os("info/exclude")],
+        &["rev-parse", "--git-path", "info/exclude"],
     )?;
     let raw = output.stdout.trim();
     let path = PathBuf::from(raw);
@@ -411,11 +422,11 @@ fn copy_worktree_include(invocation_cwd: &Path, target: &Path) -> Result<(), Wor
     let output = git_output(
         &source_root,
         &[
-            os("ls-files"),
-            os("-z"),
-            os("--others"),
-            os("--ignored"),
-            os("--exclude-standard"),
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
         ],
     )?;
     for rel in output.stdout.split('\0').filter(|rel| !rel.is_empty()) {
@@ -458,7 +469,7 @@ mod tests {
         EXCLUDE_ENTRY, WorkspaceKind, WorktreeError, prepare_from_cwd, remove_from_cwd,
         validate_label, workspace,
     };
-    use crate::git::{branch_exists, parse_worktrees};
+    use goat_git::branch_exists;
 
     fn git_available() -> bool {
         Command::new("git")
@@ -559,15 +570,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_worktree_porcelain() {
-        let input = "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /repo/.goat/worktrees/plan\nHEAD def\nbranch refs/heads/worktree-plan\n\n";
-        let parsed = parse_worktrees(input);
-        assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].branch.as_deref(), Some("main"));
-        assert_eq!(parsed[1].branch.as_deref(), Some("worktree-plan"));
-    }
-
-    #[test]
     fn creates_worktree_from_origin_head() {
         let Some(dir) = git_repo_with_origin() else {
             return;
@@ -614,6 +616,20 @@ mod tests {
         assert_eq!(ws.head_branch().as_deref(), Some("main"));
         run(&repo, &["checkout", "-b", "feature-x"]);
         assert_eq!(ws.head_branch().as_deref(), Some("feature-x"));
+    }
+
+    #[test]
+    fn head_branch_tracks_checkout_inside_a_managed_worktree() {
+        let Some(dir) = git_repo_with_origin() else {
+            return;
+        };
+        let repo = dir.path().join("repo");
+        let launch = prepare_from_cwd("plan", &repo).unwrap();
+        assert!(launch.path.join(".git").is_file());
+        let ws = workspace(&launch.path).unwrap();
+        assert_eq!(ws.head_branch().as_deref(), Some("worktree-plan"));
+        run(&launch.path, &["checkout", "-b", "feature-y"]);
+        assert_eq!(ws.head_branch().as_deref(), Some("feature-y"));
     }
 
     #[test]

@@ -25,6 +25,7 @@ impl App {
             Overlay::Config(_) => return self.on_config_key(key),
             Overlay::Runs(_) => return self.on_run_selector_key(key),
             Overlay::Ask(_, _) => return self.on_ask_picker_key(key),
+            Overlay::Plan(_) => return self.on_plan_sheet_key(key),
             Overlay::Commands(_) => {
                 if let Some(result) = self.on_command_menu_key(key) {
                     return result;
@@ -200,9 +201,85 @@ impl App {
         }
     }
 
+    pub(crate) fn on_plan_sheet_key(&mut self, key: KeyEvent) -> Vec<Op> {
+        let Overlay::Plan(sheet) = &mut self.overlay else {
+            return Vec::new();
+        };
+        self.dirty = true;
+        if sheet.rejecting() {
+            return match key.code {
+                KeyCode::Esc => {
+                    sheet.cancel_reject();
+                    Vec::new()
+                }
+                KeyCode::Backspace => {
+                    sheet.pop_feedback();
+                    Vec::new()
+                }
+                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    sheet.push_feedback(ch);
+                    Vec::new()
+                }
+                KeyCode::Enter => {
+                    let call = sheet.call;
+                    let feedback = sheet.submit_reject();
+                    self.overlay = Overlay::None;
+                    vec![Op::ResolvePlan {
+                        call,
+                        decision: goat_protocol::PlanDecision::Reject { feedback },
+                    }]
+                }
+                _ => Vec::new(),
+            };
+        }
+        match key.code {
+            KeyCode::Char('a') => {
+                let call = sheet.call;
+                self.overlay = Overlay::None;
+                vec![Op::ResolvePlan {
+                    call,
+                    decision: goat_protocol::PlanDecision::Approve {},
+                }]
+            }
+            KeyCode::Char('r') => {
+                sheet.begin_reject();
+                Vec::new()
+            }
+            KeyCode::PageUp => {
+                let page = sheet.page();
+                sheet.scroll_up(page);
+                Vec::new()
+            }
+            KeyCode::PageDown => {
+                let page = sheet.page();
+                sheet.scroll_down(page);
+                Vec::new()
+            }
+            KeyCode::Up => {
+                sheet.scroll_up(1);
+                Vec::new()
+            }
+            KeyCode::Down => {
+                sheet.scroll_down(1);
+                Vec::new()
+            }
+            KeyCode::Esc => {
+                self.overlay = Overlay::None;
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     pub(crate) fn on_normal_key(&mut self, key: KeyEvent) -> Vec<Op> {
         match key.code {
+            KeyCode::BackTab => {
+                let mode = self.mode.toggled();
+                self.mode = mode;
+                self.dirty = true;
+                vec![Op::SetMode { mode }]
+            }
             KeyCode::PageUp => {
                 self.scroll = self.scroll.saturating_sub(self.page_rows());
                 self.follow = false;
@@ -296,7 +373,7 @@ impl App {
             }
             KeyCode::Down => {
                 if self.composer.is_empty() && !self.run_targets().is_empty() {
-                    self.set_run_cursor(0);
+                    self.move_run_cursor(0);
                 } else if self.composer.on_last_row() {
                     self.composer.history_next();
                     self.dirty = true;
@@ -693,6 +770,7 @@ impl App {
             return vec![Op::Interrupt { id }];
         }
         if self.quit_arm.is_some() {
+            self.exit_requested = true;
             self.should_quit = true;
         } else {
             self.composer.discard();
@@ -705,15 +783,20 @@ impl App {
         self.dirty = true;
         match key.code {
             KeyCode::Esc => self.close_run_selector(),
+            KeyCode::Enter => {
+                if let Some(cursor) = self.run_selector() {
+                    self.open_run(cursor);
+                }
+            }
             KeyCode::Up => match self.run_selector() {
                 Some(0) | None => self.close_run_selector(),
-                Some(cursor) => self.set_run_cursor(cursor - 1),
+                Some(cursor) => self.move_run_cursor(cursor - 1),
             },
             KeyCode::Down => {
                 if let Some(cursor) = self.run_selector()
                     && cursor + 1 < self.run_targets().len()
                 {
-                    self.set_run_cursor(cursor + 1);
+                    self.move_run_cursor(cursor + 1);
                 }
             }
             KeyCode::PageUp => {

@@ -2349,6 +2349,8 @@ dependencies = [
  "goat-auth",
  "goat-channel",
  "goat-channel-discord",
+ "goat-channel-slack",
+ "goat-client",
  "goat-config",
  "goat-console",
  "goat-integration",
@@ -2359,6 +2361,7 @@ dependencies = [
  "goat-skills",
  "goat-store",
  "goat-types",
+ "goat-wire",
  "inventory",
  "open",
  "serde_json",
@@ -2394,6 +2397,15 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "goat-agent-config"
+version = "0.1.27"
+dependencies = [
+ "goat-model",
+ "goat-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -2578,13 +2590,13 @@ dependencies = [
  "chrono",
  "futures",
  "goat-agent-command",
+ "goat-agent-config",
  "goat-agent-tool",
  "goat-auth",
  "goat-bus",
  "goat-channel",
  "goat-memory",
  "goat-model",
- "goat-profile",
  "goat-provider",
  "goat-providers",
  "goat-render",
@@ -2615,10 +2627,12 @@ version = "0.1.27"
 dependencies = [
  "async-trait",
  "goat-agent-command",
+ "goat-auth",
  "goat-types",
  "inventory",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -2649,11 +2663,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-channel-slack"
+version = "0.1.27"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "goat-agent-command",
+ "goat-channel",
+ "goat-types",
+ "inventory",
+ "reqwest 0.12.28",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+]
+
+[[package]]
 name = "goat-client"
 version = "0.1.27"
 dependencies = [
  "futures",
  "goat-protocol",
+ "goat-remote",
  "goat-wire",
  "thiserror 2.0.19",
  "tokio",
@@ -2678,11 +2713,14 @@ dependencies = [
  "goat-agent-tool-skill",
  "goat-auth",
  "goat-channel-discord",
+ "goat-channel-slack",
  "goat-client",
  "goat-config",
  "goat-console",
  "goat-daemon",
+ "goat-git",
  "goat-integration-github",
+ "goat-integration-langfuse",
  "goat-integration-linear",
  "goat-integration-notion",
  "goat-integration-posthog",
@@ -2693,6 +2731,7 @@ dependencies = [
  "goat-provider",
  "goat-providers",
  "goat-proxy",
+ "goat-remote",
  "goat-runtime",
  "goat-store",
  "goat-tool-search",
@@ -2771,9 +2810,9 @@ name = "goat-config"
 version = "0.1.27"
 dependencies = [
  "anyhow",
+ "goat-agent-config",
  "goat-channel",
  "goat-model",
- "goat-profile",
  "goat-search-provider",
  "goat-types",
  "serde",
@@ -2819,15 +2858,11 @@ dependencies = [
  "goat-remote",
  "goat-store",
  "goat-wire",
- "rcgen",
  "rustls",
- "rustls-pemfile",
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
- "tokio-rustls",
- "tokio-tungstenite",
  "tokio-util",
  "tracing",
 ]
@@ -2880,12 +2915,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-git"
+version = "0.1.27"
+dependencies = [
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "goat-github"
 version = "0.1.27"
 dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]
@@ -2916,15 +2961,27 @@ dependencies = [
  "async-trait",
  "goat-agent-tool",
  "goat-auth",
- "goat-bus",
  "goat-github",
  "goat-integration",
- "goat-store",
+ "goat-integration-mcp",
  "goat-types",
  "inventory",
  "serde",
  "serde_json",
- "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "goat-integration-langfuse"
+version = "0.1.27"
+dependencies = [
+ "goat-auth",
+ "goat-integration",
+ "goat-integration-mcp",
+ "goat-types",
+ "inventory",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-util",
  "tracing",
@@ -2934,25 +2991,17 @@ dependencies = [
 name = "goat-integration-linear"
 version = "0.1.27"
 dependencies = [
- "async-trait",
- "chrono",
- "goat-agent-tool",
  "goat-auth",
- "goat-bus",
  "goat-integration",
- "goat-memory",
- "goat-store",
+ "goat-integration-mcp",
+ "goat-mcp",
  "goat-types",
  "inventory",
- "reqwest 0.13.4",
- "rmcp",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
- "url",
 ]
 
 [[package]]
@@ -2960,6 +3009,7 @@ name = "goat-integration-mcp"
 version = "0.1.27"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "goat-agent-tool",
  "goat-auth",
  "goat-integration",
@@ -2977,89 +3027,66 @@ dependencies = [
 name = "goat-integration-notion"
 version = "0.1.27"
 dependencies = [
- "async-trait",
- "chrono",
- "goat-agent-tool",
  "goat-auth",
- "goat-bus",
  "goat-integration",
- "goat-store",
+ "goat-integration-mcp",
+ "goat-mcp",
  "goat-types",
  "inventory",
- "reqwest 0.13.4",
- "rmcp",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
- "url",
 ]
 
 [[package]]
 name = "goat-integration-posthog"
 version = "0.1.27"
 dependencies = [
- "async-trait",
- "chrono",
- "goat-agent-tool",
  "goat-auth",
  "goat-integration",
+ "goat-integration-mcp",
+ "goat-mcp",
  "goat-types",
  "inventory",
- "reqwest 0.13.4",
- "rmcp",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
- "url",
 ]
 
 [[package]]
 name = "goat-integration-sentry"
 version = "0.1.27"
 dependencies = [
- "async-trait",
- "chrono",
- "goat-agent-tool",
  "goat-auth",
- "goat-bus",
  "goat-integration",
- "goat-store",
+ "goat-integration-mcp",
+ "goat-mcp",
  "goat-types",
  "inventory",
- "reqwest 0.13.4",
- "rmcp",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
- "url",
 ]
 
 [[package]]
 name = "goat-integration-slack"
 version = "0.1.27"
 dependencies = [
- "async-trait",
- "goat-agent-tool",
  "goat-auth",
- "goat-bus",
  "goat-integration",
- "goat-store",
+ "goat-integration-mcp",
+ "goat-mcp",
  "goat-types",
  "inventory",
- "reqwest 0.13.4",
- "rmcp",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
@@ -3069,24 +3096,17 @@ dependencies = [
 name = "goat-integration-tiro"
 version = "0.1.27"
 dependencies = [
- "async-trait",
- "chrono",
- "goat-agent-tool",
  "goat-auth",
- "goat-bus",
  "goat-integration",
- "goat-store",
+ "goat-integration-mcp",
+ "goat-mcp",
  "goat-types",
  "inventory",
- "reqwest 0.13.4",
- "rmcp",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
- "url",
 ]
 
 [[package]]
@@ -3176,15 +3196,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "goat-profile"
-version = "0.1.27"
-dependencies = [
- "goat-model",
- "goat-types",
- "serde_json",
-]
-
-[[package]]
 name = "goat-protocol"
 version = "0.1.27"
 dependencies = [
@@ -3228,12 +3239,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "goat-provider-deepseek"
+name = "goat-provider-builtin"
 version = "0.1.27"
 dependencies = [
  "goat-auth",
+ "goat-model",
  "goat-provider",
  "goat-provider-openai-compat",
+ "reqwest 0.12.28",
 ]
 
 [[package]]
@@ -3256,24 +3269,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "goat-provider-groq"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
-name = "goat-provider-kimi"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
 name = "goat-provider-kimi-code"
 version = "0.1.27"
 dependencies = [
@@ -3286,41 +3281,6 @@ dependencies = [
  "serde",
  "thiserror 2.0.19",
  "tokio",
-]
-
-[[package]]
-name = "goat-provider-local"
-version = "0.1.27"
-dependencies = [
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
-name = "goat-provider-minimax"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
-name = "goat-provider-mistral"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
-name = "goat-provider-openai"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
 ]
 
 [[package]]
@@ -3358,34 +3318,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "goat-provider-openrouter"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
-name = "goat-provider-qwen"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
- "reqwest 0.12.28",
-]
-
-[[package]]
-name = "goat-provider-vercel"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
 name = "goat-provider-xai"
 version = "0.1.27"
 dependencies = [
@@ -3401,46 +3333,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "goat-provider-zai"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
-name = "goat-provider-zai-coding"
-version = "0.1.27"
-dependencies = [
- "goat-auth",
- "goat-provider",
- "goat-provider-openai-compat",
-]
-
-[[package]]
 name = "goat-providers"
 version = "0.1.27"
 dependencies = [
  "goat-auth",
+ "goat-config",
  "goat-provider",
  "goat-provider-anthropic",
- "goat-provider-deepseek",
+ "goat-provider-builtin",
  "goat-provider-gemini",
- "goat-provider-groq",
- "goat-provider-kimi",
  "goat-provider-kimi-code",
- "goat-provider-local",
- "goat-provider-minimax",
- "goat-provider-mistral",
- "goat-provider-openai",
  "goat-provider-openai-codex",
- "goat-provider-openrouter",
- "goat-provider-qwen",
- "goat-provider-vercel",
  "goat-provider-xai",
- "goat-provider-zai",
- "goat-provider-zai-coding",
  "goat-proxy",
  "tokio",
 ]
@@ -3513,6 +3417,7 @@ dependencies = [
  "chrono",
  "futures",
  "goat-agent-command",
+ "goat-agent-config",
  "goat-agent-tool",
  "goat-agent-tool-code",
  "goat-agent-tool-goal",
@@ -3532,7 +3437,6 @@ dependencies = [
  "goat-memory",
  "goat-model",
  "goat-plugin",
- "goat-profile",
  "goat-provider",
  "goat-providers",
  "goat-proxy",
@@ -3541,6 +3445,7 @@ dependencies = [
  "goat-sleep",
  "goat-store",
  "goat-types",
+ "goat-wire",
  "inventory",
  "serde_json",
  "tempfile",
@@ -3779,6 +3684,7 @@ dependencies = [
 name = "goat-tool-shell"
 version = "0.1.27"
 dependencies = [
+ "goat-git",
  "goat-process",
  "goat-protocol",
  "goat-sandbox",
@@ -3848,6 +3754,7 @@ dependencies = [
  "futures",
  "goat-commands",
  "goat-config",
+ "goat-git",
  "goat-github",
  "goat-protocol",
  "goat-tool",
@@ -3896,6 +3803,7 @@ dependencies = [
 name = "goat-worktree"
 version = "0.1.27"
 dependencies = [
+ "goat-git",
  "ignore",
  "serde",
  "serde_json",
@@ -4133,7 +4041,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]
@@ -6511,7 +6419,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams 0.4.2",
  "web-sys",
- "webpki-roots",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]
@@ -7951,8 +7859,12 @@ checksum = "d25a406cddcc431a75d3d9afc6a7c0f7428d4891dd973e4d54c56b46127bf857"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -8212,6 +8124,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.5",
+ "rustls",
+ "rustls-pki-types",
  "sha1 0.10.7",
  "thiserror 2.0.19",
  "utf-8",
@@ -8781,6 +8695,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]
