@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AccountEntry, InputAttachment, LoginProvider, ModelEntry, ModelTarget, ProcessExitReason,
+    AccountEntry, InputAttachment, LoginProvider, Mode, ModelEntry, ModelTarget, ProcessExitReason,
     ProcessInfo, RateLimitSnapshot, RunId, SkillInfo, SubagentGroupMember, TaskId, ThreadSummary,
     ToolCall, ToolCallId, ToolOutcome, TranscriptEntry, Usage,
 };
@@ -66,6 +66,17 @@ pub enum Event {
     },
     ModelSelected {
         target: ModelTarget,
+    },
+    ModeChanged {
+        mode: Mode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan_path: Option<String>,
+    },
+    PlanProposed {
+        id: TaskId,
+        call: ToolCallId,
+        plan: String,
+        path: String,
     },
     ThreadsListed {
         threads: Vec<ThreadSummary>,

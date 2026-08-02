@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{InputAttachment, LoginCredential, ModelTarget, RunId, TaskId, ToolCallId};
+use crate::{
+    InputAttachment, LoginCredential, Mode, ModelTarget, PlanDecision, RunId, TaskId, ToolCallId,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type")]
@@ -23,6 +25,13 @@ pub enum Op {
     Clear {},
     SelectModel {
         target: ModelTarget,
+    },
+    SetMode {
+        mode: Mode,
+    },
+    ResolvePlan {
+        call: ToolCallId,
+        decision: PlanDecision,
     },
     Login {
         provider: String,

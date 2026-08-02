@@ -68,6 +68,7 @@ pub(crate) fn call_display(tools: &ToolRegistry, name: &str, input: &str) -> Too
         SUBAGENT_TOOL_NAME => subagent_call_display(input),
         crate::delegate::SUBAGENT_KILL_TOOL_NAME => crate::delegate::subagent_kill_display(input),
         ASK_TOOL_NAME => ask_call_display(input),
+        crate::plan::PROPOSE_PLAN_TOOL_NAME => crate::plan::propose_plan_call_display(input),
         WEB_SEARCH_TOOL_NAME => web_search_display(input),
         _ if crate::bash_tools::is_bash_run_tool(name) => {
             crate::bash_tools::call_display(name, input)
@@ -151,6 +152,16 @@ async fn execute_tool(
         crate::bash_tools::start_background(ctx, env, prep.input_json, token).await
     } else if prep.name == ASK_TOOL_NAME && env.allow_ask {
         Some(run_ask(ctx, run, prep.input_json, ToolCallId(prep.tui_id), token).await)
+    } else if prep.name == crate::plan::PROPOSE_PLAN_TOOL_NAME && env.plan {
+        Some(
+            crate::plan::run_propose_plan(
+                ctx,
+                run,
+                env.plan_path.as_deref(),
+                ToolCallId(prep.tui_id),
+            )
+            .await,
+        )
     } else if prep.name == crate::delegate::SUBAGENT_KILL_TOOL_NAME && env.allow_delegate {
         Some(
             crate::delegate::run_subagent_kill(ctx, prep.input_json)
@@ -339,6 +350,7 @@ pub(crate) fn build_tool_defs(
     selection: Option<&ToolSelection>,
     allow_delegate: bool,
     allow_ask: bool,
+    plan: bool,
 ) -> Vec<ToolDefinition> {
     if !provider.capabilities().tools {
         return Vec::new();
@@ -373,6 +385,9 @@ pub(crate) fn build_tool_defs(
     }
     if allow_ask {
         defs.push(ask_tool_def());
+    }
+    if plan {
+        defs.push(crate::plan::propose_plan_tool_def());
     }
     defs
 }

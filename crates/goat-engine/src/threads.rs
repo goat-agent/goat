@@ -335,6 +335,7 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
                 skills,
                 instructions,
                 date,
+                None,
             ),
         ),
         None,

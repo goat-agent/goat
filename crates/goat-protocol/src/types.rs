@@ -292,6 +292,38 @@ impl fmt::Display for Effort {
     }
 }
 
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    #[default]
+    Normal,
+    Plan,
+}
+
+impl Mode {
+    #[must_use]
+    pub fn is_plan(self) -> bool {
+        matches!(self, Self::Plan)
+    }
+
+    #[must_use]
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Normal => Self::Plan,
+            Self::Plan => Self::Normal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "type")]
+pub enum PlanDecision {
+    Approve {},
+    Reject { feedback: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModelTarget {
     pub provider: String,

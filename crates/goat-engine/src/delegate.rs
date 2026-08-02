@@ -271,7 +271,14 @@ async fn run_child_inner(
         account: origin.target.account.clone(),
         effort,
     };
-    let tool_defs = build_tool_defs(ctx, provider.as_ref(), Some(&spec.tools), false, false);
+    let tool_defs = build_tool_defs(
+        ctx,
+        provider.as_ref(),
+        Some(&spec.tools),
+        false,
+        false,
+        false,
+    );
     let mut conversation = Conversation::new();
     conversation.push(
         Message::text(
@@ -301,6 +308,8 @@ async fn run_child_inner(
         cwd: origin.cwd.clone(),
         allow_delegate: false,
         allow_ask: false,
+        plan: false,
+        plan_path: None,
         exec_policy: crate::subagent::tighter(&origin.exec_policy, &spec.exec_policy),
     };
     let outcome = Box::pin(core_loop(

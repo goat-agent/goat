@@ -139,6 +139,75 @@ mod tests {
     }
 
     #[test]
+    fn op_set_mode_roundtrips() {
+        let op = Op::SetMode {
+            mode: super::Mode::Plan,
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert_eq!(json, r#"{"type":"SetMode","mode":"plan"}"#);
+        let back: Op = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, op);
+    }
+
+    #[test]
+    fn plan_decision_unit_variant_serializes_as_type_object() {
+        let op = Op::ResolvePlan {
+            call: ToolCallId(3),
+            decision: super::PlanDecision::Approve {},
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains(r#""decision":{"type":"Approve"}"#));
+        let back: Op = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, op);
+    }
+
+    #[test]
+    fn plan_decision_reject_carries_feedback() {
+        let op = Op::ResolvePlan {
+            call: ToolCallId(4),
+            decision: super::PlanDecision::Reject {
+                feedback: "too big".to_owned(),
+            },
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        let back: Op = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, op);
+    }
+
+    #[test]
+    fn mode_changed_omits_absent_plan_path() {
+        let ev = Event::ModeChanged {
+            mode: super::Mode::Normal,
+            plan_path: None,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(!json.contains("plan_path"));
+        let back: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ev);
+    }
+
+    #[test]
+    fn plan_proposed_roundtrips() {
+        let ev = Event::PlanProposed {
+            id: TaskId(1),
+            call: ToolCallId(2),
+            plan: "# Plan".to_owned(),
+            path: "/plans/1-demo.md".to_owned(),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ev);
+    }
+
+    #[test]
+    fn mode_toggles_and_defaults_to_normal() {
+        assert_eq!(super::Mode::default(), super::Mode::Normal);
+        assert!(!super::Mode::Normal.is_plan());
+        assert!(super::Mode::Normal.toggled().is_plan());
+        assert!(!super::Mode::Plan.toggled().is_plan());
+    }
+
+    #[test]
     fn task_id_serializes_as_string() {
         assert_eq!(serde_json::to_string(&TaskId(42)).unwrap(), r#""42""#);
     }
