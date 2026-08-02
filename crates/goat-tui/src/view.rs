@@ -178,7 +178,8 @@ fn render_main(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
     render_full_body_overlay(frame, body, app, theme);
     render_panel(frame, panel_area, app, theme, &panel);
     render_composer_preview(frame, preview_area, app, theme);
-    app.composer().render(frame, composer_area, theme, focused);
+    app.composer()
+        .render(frame, composer_area, theme, focused, app.plan_mode());
     render_hint(frame, footer_area, app, theme, &panel);
 }
 
@@ -230,8 +231,10 @@ fn is_full_body_overlay(app: &App) -> bool {
             | Overlay::Model(_)
             | Overlay::Effort(_)
             | Overlay::Thread(_)
+            | Overlay::Rewind(_)
             | Overlay::Usage
             | Overlay::Help
+            | Overlay::Plan(_)
     )
 }
 
@@ -247,12 +250,16 @@ fn render_full_body_overlay(frame: &mut Frame, body: Rect, app: &mut App, theme:
         Overlay::Model(picker) => picker.render(frame, body, theme),
         Overlay::Effort(picker) => picker.render(frame, body, theme),
         Overlay::Thread(picker) => picker.render(frame, body, theme),
+        Overlay::Rewind(picker) => picker.render(frame, body, theme),
         Overlay::Usage => {
             let view = app.build_usage_view();
             view.render(frame, body, theme);
         }
         Overlay::Help => crate::help::render(frame, body, theme),
         _ => {}
+    }
+    if let Overlay::Plan(sheet) = app.overlay_mut() {
+        sheet.render(frame, body, theme);
     }
 }
 
@@ -389,7 +396,11 @@ fn render_toasts(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
 }
 
 fn footer_visible(app: &App) -> bool {
-    app.quit_armed() || app.is_busy() || app.clear_armed() || app.process_summary().is_some()
+    app.quit_armed()
+        || app.is_busy()
+        || app.clear_armed()
+        || app.rewind_armed()
+        || app.process_summary().is_some()
 }
 
 fn render_selection(frame: &mut Frame, app: &mut App, theme: Theme) {
@@ -872,6 +883,14 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             Paragraph::new(Line::from(vec![
                 Span::styled(symbols::key::ESC, theme.hint_key()),
                 Span::styled(" again to clear", theme.muted()),
+            ])),
+            inner,
+        );
+    } else if app.rewind_armed() {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(symbols::key::ESC, theme.hint_key()),
+                Span::styled(" again to rewind", theme.muted()),
             ])),
             inner,
         );

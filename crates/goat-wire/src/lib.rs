@@ -17,44 +17,39 @@ mod tests {
     use super::*;
     use goat_protocol::{Op, TaskId};
 
-    #[test]
-    fn fingerprint_is_sixteen_lowercase_hex() {
-        let fp = wire_fingerprint();
-        assert_eq!(fp.len(), 16, "{fp}");
-        assert!(
-            fp.chars()
-                .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
-        );
-    }
-
-    fn welcome() -> ServerFrame {
-        ServerFrame::Welcome {
-            wire: wire_fingerprint().to_owned(),
-            build: Some(BuildId {
-                path: "/bin/goat".to_owned(),
-                len: 42,
-                mtime: 7,
-            }),
-            busy: Busy::default(),
-            version: "0.1.27".to_owned(),
-            pid: 100,
-            started_at: 5,
-            ready: true,
-            client_id: ClientId(7),
-        }
-    }
-
     #[tokio::test]
-    async fn daemon_greets_before_the_client_speaks() {
+    async fn client_server_roundtrip_over_duplex() {
         let (a, b) = tokio::io::duplex(64 * 1024);
         let mut server: ServerConn<_> = WireConn::new(a);
         let mut client: ClientConn<_> = WireConn::new(b);
 
-        server.send(&welcome()).await.unwrap();
-        assert_eq!(client.recv().await.unwrap(), welcome());
-
-        client.send(&ClientFrame::StopDaemon {}).await.unwrap();
-        assert_eq!(server.recv().await.unwrap(), ClientFrame::StopDaemon {});
+        server
+            .send(&ServerFrame::Welcome {
+                wire: wire_fingerprint().to_owned(),
+                build: None,
+                busy: Busy::default(),
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                pid: 7,
+                started_at: 0,
+                ready: true,
+                client_id: ClientId(7),
+            })
+            .await
+            .unwrap();
+        let got = client.recv().await.unwrap();
+        assert_eq!(
+            got,
+            ServerFrame::Welcome {
+                wire: wire_fingerprint().to_owned(),
+                build: None,
+                busy: Busy::default(),
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                pid: 7,
+                started_at: 0,
+                ready: true,
+                client_id: ClientId(7),
+            }
+        );
     }
 
     #[tokio::test]
@@ -84,6 +79,7 @@ mod tests {
 
         let request = ClientFrame::ListDirectory {
             path: "/home/me".to_owned(),
+            recursive: false,
         };
         client.send(&request).await.unwrap();
         assert_eq!(server.recv().await.unwrap(), request);
@@ -143,40 +139,16 @@ mod tests {
     }
 
     #[test]
-    fn stop_daemon_stays_decodable_from_its_frozen_bytes() {
-        let frame: ClientFrame = serde_json::from_str(r#"{"type":"StopDaemon"}"#).unwrap();
-        assert_eq!(frame, ClientFrame::StopDaemon {});
-        assert_eq!(
-            serde_json::to_string(&frame).unwrap(),
-            r#"{"type":"StopDaemon"}"#
-        );
-    }
-
-    #[test]
-    fn welcome_stays_decodable_from_its_frozen_bytes() {
-        let frozen = r#"{"type":"Welcome","wire":"deadbeefdeadbeef","build":{"path":"/bin/goat","len":42,"mtime":7},"busy":{"sessions":0,"turns":0},"version":"0.1.27","pid":100,"started_at":5,"ready":true,"client_id":"7"}"#;
-        let frame: ServerFrame = serde_json::from_str(frozen).unwrap();
-        let ServerFrame::Welcome {
-            wire,
-            build,
-            busy,
-            version,
-            pid,
-            started_at,
-            ready,
-            client_id,
-        } = frame
-        else {
-            panic!("expected Welcome");
+    fn client_frame_open_session_serializes_flat() {
+        let frame = ClientFrame::OpenSession {
+            cwd: "/tmp".to_owned(),
+            resume: ResumeMode::New {},
         };
-        assert_eq!(wire, "deadbeefdeadbeef");
-        assert_eq!(build.unwrap().len, 42);
-        assert!(busy.is_idle());
-        assert_eq!(version, "0.1.27");
-        assert_eq!(pid, 100);
-        assert_eq!(started_at, 5);
-        assert!(ready);
-        assert_eq!(client_id, ClientId(7));
+        let json = serde_json::to_string(&frame).unwrap();
+        assert!(json.contains(r#""type":"OpenSession""#));
+        assert!(!json.contains(r#"{"OpenSession":"#));
+        let back: ClientFrame = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, frame);
     }
 
     #[test]

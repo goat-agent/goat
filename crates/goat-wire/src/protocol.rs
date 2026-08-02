@@ -131,6 +131,7 @@ pub enum ClientFrame {
     },
     ListDirectory {
         path: String,
+        recursive: bool,
     },
     KillSession {
         session: SessionId,
@@ -172,6 +173,7 @@ pub enum ServerFrame {
     },
     SessionOpened {
         session: SessionId,
+        cwd: String,
     },
     Detached {
         session: SessionId,

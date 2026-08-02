@@ -14,6 +14,7 @@ pub mod markdown;
 mod notification;
 mod overlay;
 mod picker;
+mod plan;
 mod screenshot;
 mod select;
 pub mod symbols;
@@ -25,6 +26,6 @@ pub(crate) mod usage;
 mod view;
 mod wrap;
 
-pub use app::{ExitReason, run};
+pub use app::{ExitReason, Origin, run};
 pub use theme::Theme;
 pub use tui::install_hooks;

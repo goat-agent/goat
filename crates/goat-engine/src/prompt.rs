@@ -68,6 +68,7 @@ pub(crate) fn build_system_prompt(
     skills: &[SkillInfo],
     instructions: Option<&str>,
     date: &str,
+    plan: Option<&std::path::Path>,
 ) -> String {
     let mut prompt = String::from(PRINCIPLES);
     prompt.push_str(&env_segment(cwd, std::env::consts::OS, date));
@@ -80,7 +81,46 @@ pub(crate) fn build_system_prompt(
     if let Some(content) = instructions {
         let _ = write!(prompt, "\n\n{content}");
     }
+    if let Some(path) = plan {
+        prompt.push_str(&plan_segment(path));
+    }
     prompt
+}
+
+pub(crate) fn plan_segment(path: &std::path::Path) -> String {
+    format!(
+        concat!(
+            "\n\n# 계획 모드\n\n",
+            "지금은 계획 단계다. 목표는 실행 전에 \"끝\"을 정의하는 것이다.\n",
+            "플랜은 {} 에 쓴다. 없으면 새로 만든다.\n\n",
+            "## 순서\n",
+            "1. 코드를 먼저 읽어라. 저장소를 보면 알 수 있는 것은 절대 사용자에게 묻지 않는다.\n",
+            "2. 그러고도 남는 것 중 사용자만 답할 수 있는 것만 Ask로 묻는다.\n",
+            "3. 플랜을 쓴다.\n",
+            "4. ProposePlan을 부른다.\n\n",
+            "## 질문\n",
+            "- 한 번에 하나만 묻는다.\n",
+            "- 선택지를 2개 이상 제시하고 추천을 표시한다. 하나만 제시하면 사용자는 그냥 승인해버린다.\n",
+            "- 답이 없으면 가정으로 기록하고 진행한다. 막히지 마라.\n",
+            "- 되돌릴 수 없는 것(데이터 삭제, 프로덕션, 외부로 나가는 쓰기)은 가정하지 말고 반드시 묻는다.\n\n",
+            "## 추측 금지\n",
+            "확인한 것과 가정한 것을 섞지 마라.\n",
+            "- 코드에서 확인한 주장에는 파일 경로를 댄다. 못 대면 그것은 가정이다.\n",
+            "- 가정은 한곳에 모아라. 사용자가 승인 화면에서 읽는 것이 그 목록이다.\n",
+            "- 답이 필요해 막힌 것은 따로 적어라.\n\n",
+            "## 완료 조건\n",
+            "검사할 수 없는 문장은 조건이 아니다.\n",
+            "  나쁨: \"플랜 모드가 잘 동작해야 함\"\n",
+            "  좋음: \"`cargo nextest run -p goat-engine plan::` 가 통과한다\"\n",
+            "명령·경로·구체적 문자열을 그대로 적어라.\n",
+            "작업이 크면 조건 개수를 늘리지 말고 층을 나눠라. 맨 위 조건도 검사 가능해야 한다.\n\n",
+            "## 제약\n",
+            "계획 중에도 도구는 전부 쓸 수 있다. 파일을 읽고, 문서를 쓰고, 테스트를 돌려도 된다.\n",
+            "막히는 것은 없다. 다만 \"일을 하는 것\"과 \"일을 계획하는 것\"을 구분하라 — ",
+            "구현을 시작하지는 마라."
+        ),
+        path.display()
+    )
 }
 
 pub(crate) fn compose_child_system(base_prompt: &str, instructions: Option<&str>) -> String {
@@ -102,7 +142,7 @@ mod tests {
     #[test]
     fn system_prompt_starts_with_principles_and_lists_environment() {
         let prompt =
-            super::build_system_prompt(Path::new("/work/project"), &[], None, "2025-01-15");
+            super::build_system_prompt(Path::new("/work/project"), &[], None, "2025-01-15", None);
         assert!(prompt.starts_with(super::PRINCIPLES));
         assert!(prompt.contains("# Environment"));
         assert!(prompt.contains("cwd: /work/project"));
@@ -140,7 +180,7 @@ mod tests {
 
     #[test]
     fn system_prompt_carries_authority_principle() {
-        let prompt = super::build_system_prompt(Path::new("/work"), &[], None, "2025-01-15");
+        let prompt = super::build_system_prompt(Path::new("/work"), &[], None, "2025-01-15", None);
         assert!(prompt.contains("authoritative over your trained memory"));
         assert!(prompt.contains("mirror what the project already does"));
     }
@@ -156,11 +196,46 @@ mod tests {
             }],
             None,
             "2025-01-15",
+            None,
         );
         assert!(prompt.contains("# Skills"));
         assert!(prompt.contains("demo"));
         assert!(prompt.contains("does the demo"));
         assert!(prompt.contains("Skill tool"));
+    }
+
+    #[test]
+    fn plan_segment_is_absent_outside_plan_mode() {
+        let prompt = super::build_system_prompt(Path::new("/work"), &[], None, "2025-01-15", None);
+        assert!(!prompt.contains("계획 모드"));
+        assert!(!prompt.contains("ProposePlan"));
+    }
+
+    #[test]
+    fn plan_segment_names_the_plan_file_and_lands_last() {
+        let prompt = super::build_system_prompt(
+            Path::new("/work"),
+            &[],
+            Some("# Project instructions (repo/AGENTS.md)\n\nrule"),
+            "2025-01-15",
+            Some(Path::new("/plans/1-demo.md")),
+        );
+        assert!(prompt.contains("/plans/1-demo.md"));
+        assert!(prompt.contains("ProposePlan"));
+        let instructions = prompt.find("# Project instructions").unwrap();
+        let plan = prompt.find("# 계획 모드").unwrap();
+        assert!(
+            instructions < plan,
+            "the plan segment must come after project instructions so the mode banner is the last word"
+        );
+    }
+
+    #[test]
+    fn plan_segment_permits_tools_and_forbids_implementing() {
+        let prompt = super::plan_segment(Path::new("/plans/1-demo.md"));
+        assert!(prompt.contains("도구는 전부 쓸 수 있다"));
+        assert!(prompt.contains("구현을 시작하지는 마라"));
+        assert!(prompt.contains("선택지를 2개 이상"));
     }
 
     #[test]
@@ -170,13 +245,14 @@ mod tests {
             &[],
             Some("always use snake_case"),
             "2025-01-15",
+            None,
         );
         assert!(prompt.contains("always use snake_case"));
     }
 
     #[test]
     fn system_prompt_no_instructions_omits_section() {
-        let prompt = super::build_system_prompt(Path::new("/work"), &[], None, "2025-01-15");
+        let prompt = super::build_system_prompt(Path::new("/work"), &[], None, "2025-01-15", None);
         assert!(!prompt.contains("Project instructions"));
     }
 
@@ -184,8 +260,13 @@ mod tests {
     fn system_prompt_appends_project_instructions_verbatim() {
         let heading = "# Project instructions (repo/AGENTS.md)";
         let instructions = format!("{heading}\n\nalways use snake_case");
-        let prompt =
-            super::build_system_prompt(Path::new("/work"), &[], Some(&instructions), "2025-01-15");
+        let prompt = super::build_system_prompt(
+            Path::new("/work"),
+            &[],
+            Some(&instructions),
+            "2025-01-15",
+            None,
+        );
         assert_eq!(prompt.matches(heading).count(), 1);
         assert!(prompt.ends_with(&instructions));
         assert!(!prompt.contains("# Project instructions (AGENTS.md)\n\n# Project instructions"));
@@ -214,7 +295,7 @@ mod tests {
 
     #[test]
     fn principles_carry_build_discipline() {
-        let prompt = super::build_system_prompt(Path::new("/work"), &[], None, "2025-01-15");
+        let prompt = super::build_system_prompt(Path::new("/work"), &[], None, "2025-01-15", None);
         assert!(prompt.contains("Build only what the request needs"));
         assert!(prompt.contains("reduced or staged version"));
         assert!(prompt.contains("never drop validation, security, or data-safety"));
@@ -232,6 +313,7 @@ mod tests {
             }],
             Some("# Project instructions (repo/AGENTS.md)\n\nrule"),
             "2025-01-15",
+            None,
         );
         let base = prompt.find(super::PRINCIPLES).unwrap();
         let env = prompt.find("# Environment").unwrap();
@@ -244,7 +326,7 @@ mod tests {
 
     #[test]
     fn system_prompt_carries_language_policy() {
-        let prompt = super::build_system_prompt(Path::new("/work"), &[], None, "2025-01-15");
+        let prompt = super::build_system_prompt(Path::new("/work"), &[], None, "2025-01-15", None);
         assert!(prompt.contains("Reply to the user in their language"));
         assert!(prompt.contains("keep code, identifiers, paths, commands, tool arguments"));
         assert!(prompt.contains("project's prevailing language"));

@@ -82,8 +82,9 @@ pub async fn serve(config: DaemonConfig) -> Result<(), DaemonError> {
         goat_config::UserProviders::at(config.config_json.clone()),
         config.db_path.clone(),
     );
-    manager.mark_ready();
     let lock = acquire(&config.lock_path, std::time::Duration::ZERO).await?;
+    let bound = bind_daemon(config, &lock)?;
+    manager.mark_ready();
     let shutdown = CancellationToken::new();
     let signal = shutdown.clone();
     tokio::spawn(async move {
@@ -91,7 +92,7 @@ pub async fn serve(config: DaemonConfig) -> Result<(), DaemonError> {
         tracing::info!("received termination signal, shutting down");
         signal.cancel();
     });
-    serve_with(config, manager, shutdown, &lock).await
+    serve_bound(bound, manager, shutdown).await
 }
 
 pub struct Bound {

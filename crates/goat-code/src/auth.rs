@@ -40,13 +40,11 @@ pub async fn run_setup() -> color_eyre::Result<()> {
     ui::blank();
     let agent = setup_agent(&paths).await?;
 
-    apply_to_daemon().await;
-
     ui::blank();
     ui::section("Ready");
     ui::pair("code", "goat code");
     match agent {
-        Some(slug) => ui::pair("agent", &format!("{slug} — `goat daemon start` runs it")),
+        Some(slug) => ui::pair("agent", &format!("{slug} — runs while the daemon is up")),
         None => ui::pair("agent", "goat agent add"),
     }
     Ok(())
@@ -164,7 +162,7 @@ pub async fn run_provider(command: ProviderCommand) -> color_eyre::Result<()> {
                 ui::note("cancelled");
                 return Ok(());
             };
-            if login(
+            if !login(
                 &store,
                 &user,
                 &provider,
@@ -175,8 +173,6 @@ pub async fn run_provider(command: ProviderCommand) -> color_eyre::Result<()> {
             )
             .await?
             {
-                apply_to_daemon().await;
-            } else {
                 ui::note("cancelled");
             }
             Ok(())
@@ -194,9 +190,7 @@ pub async fn run_provider(command: ProviderCommand) -> color_eyre::Result<()> {
         }
         ProviderCommand::Info { provider } => provider_info(&store, &user, &provider),
         ProviderCommand::Logout { provider, account } => {
-            logout(&store, &provider, &account, CredentialService::Model)?;
-            apply_to_daemon().await;
-            Ok(())
+            logout(&store, &provider, &account, CredentialService::Model)
         }
     }
 }
@@ -274,7 +268,26 @@ async fn add_custom(
 }
 
 async fn apply_to_daemon() {
-    goat_agent::cli::apply::config_changed(None).await;
+    let Some(socket_path) = goat_config::socket_path() else {
+        return;
+    };
+    let goat_client::Daemon::Reachable(them) = goat_client::greet(&socket_path).await else {
+        return;
+    };
+    if !matches!(
+        goat_client::decide(&goat_client::mine(), &them),
+        goat_client::Action::Attach
+    ) {
+        return;
+    }
+    let Ok(link) = crate::remote::local() else {
+        return;
+    };
+    if let Err(e) = goat_client::reload(&link, None).await {
+        ui::note(&format!(
+            "could not apply to the running daemon: {e}; run `goat reload`"
+        ));
+    }
 }
 
 async fn remove_custom(
@@ -856,6 +869,16 @@ fn logout(
         CredentialService::Channel => {
             return Err(color_eyre::eyre::eyre!(
                 "channel secrets are scoped to one agent and one slot; remove them with `goat agent channel rm {provider}`"
+            ));
+        }
+        CredentialService::Remote => {
+            return Err(color_eyre::eyre::eyre!(
+                "device key material belongs to a remote; remove it with `goat remote rm {provider}`"
+            ));
+        }
+        CredentialService::Mcp => {
+            return Err(color_eyre::eyre::eyre!(
+                "MCP credentials are scoped to one server; remove them with `goat mcp logout {provider}`"
             ));
         }
     };

@@ -2,7 +2,11 @@ mod auth;
 mod cli;
 mod headless;
 mod logging;
+mod mcp;
+mod mcp_import;
+mod mcp_secrets;
 mod proxy_ops;
+mod remote;
 mod search;
 mod ui;
 mod update;
@@ -13,7 +17,8 @@ use color_eyre::eyre::eyre;
 use crate::ui::{ColorMode, Palette, pair};
 
 use crate::cli::{
-    Cli, CodeArgs, CodeCommand, Command, DaemonCommand, RemoteCommand, WorktreeCommand,
+    Cli, CodeArgs, CodeCommand, Command, DaemonCommand, DeviceCommand, RemoteCommand,
+    SessionCommand, WorktreeCommand,
 };
 
 use goat_agent_command_skill as _;
@@ -60,7 +65,9 @@ async fn main() -> color_eyre::Result<()> {
         Some(Command::Reload { agent }) => run_reload(agent).await,
         Some(Command::Update { force }) => update::run(force).await,
         Some(Command::Provider(command)) => auth::run_provider(command).await,
+        Some(Command::Mcp(command)) => mcp::run(command).await,
         Some(Command::Daemon(command)) => run_daemon_command(command).await,
+        Some(Command::Device(command)) => run_device_command(command).await,
         Some(Command::Remote(command)) => run_remote_command(command).await,
     }
 }
@@ -79,7 +86,7 @@ async fn run_reload(agent: Option<String>) -> color_eyre::Result<()> {
         goat_client::Daemon::Silent => {
             return ui::fail_hint(
                 "a process is holding the daemon socket and is not answering",
-                "kill it with `pkill -f 'goat daemon serve'`",
+                "kill it with `pkill -f 'goat daemon serve'",
             );
         }
         goat_client::Daemon::Reachable(them) => {
@@ -98,9 +105,10 @@ async fn run_reload(agent: Option<String>) -> color_eyre::Result<()> {
         }
     }
 
-    let report = goat_client::reload(&socket_path, agent)
+    let link = remote::local()?;
+    let report = goat_client::reload(&link, agent)
         .await
-        .map_err(|e| ui::daemon_client_error(&e))?;
+        .map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
 
     for warning in &report.warnings {
         println!(
@@ -158,49 +166,82 @@ async fn run_code(args: CodeArgs) -> color_eyre::Result<()> {
             return result.map_err(color_eyre::Report::from);
         }
         Some(CodeCommand::Search(command)) => return search::run(command),
-        Some(CodeCommand::Session(command)) => return run_session_command(command).await,
+        Some(CodeCommand::Session(command)) => {
+            return run_session_command(command, args.remote.as_deref()).await;
+        }
         None => {}
     }
+    let link = std::sync::Arc::new(remote::resolve(args.remote.as_deref())?);
     if args.print_log_path {
-        if let Some(dir) = goat_config::log_dir() {
-            println!("{}", dir.display());
+        if link.is_local() {
+            if let Some(dir) = goat_config::log_dir() {
+                println!("{}", dir.display());
+            }
+        } else {
+            ui::warning("the log lives on the daemon host; run this there");
         }
         return Ok(());
     }
     if args.headless || args.print {
-        run_headless(args.worktree, args.r#continue, &args.protocol, args.print).await
+        run_headless(&link, &args, args.print).await
     } else {
-        run_tui(args.worktree, args.r#continue).await
+        run_tui(&link, &args).await
     }
 }
 
 async fn connect_session(
-    worktree_label: Option<String>,
-    r#continue: bool,
+    link: &std::sync::Arc<goat_client::Link>,
+    args: &CodeArgs,
+    approve_project_mcp: bool,
 ) -> color_eyre::Result<goat_client::Attachment> {
-    let cwd = if let Some(label) = worktree_label.as_deref() {
-        goat_worktree::enter(label).map_err(ui::worktree_entry)?
-    } else {
-        std::env::current_dir()?
-    };
-
-    let socket_path = goat_config::socket_path()
-        .ok_or_else(|| color_eyre::eyre::eyre!(goat_config::HOME_NOT_FOUND))?;
-    let daemon_exe = std::env::current_exe()?;
-    let resume = if r#continue {
+    let cwd = session_cwd(link, args)?;
+    if approve_project_mcp && link.is_local() {
+        mcp::approve_project_servers(&cwd)?;
+    }
+    let resume = if args.r#continue {
         goat_wire::ResumeMode::Latest {}
     } else {
         goat_wire::ResumeMode::New {}
     };
 
-    let (attachment, attached) = goat_client::connect(&socket_path, &daemon_exe, cwd, resume)
-        .await
-        .map_err(|e| ui::daemon_client_error(&e))?;
+    let (attachment, attached) = goat_client::connect(link.clone(), cwd, resume).await?;
     ui::daemon_swapped(&attached);
+    remote::remember_dir(link, &attachment.cwd);
     Ok(attachment)
 }
 
-async fn run_tui(worktree_label: Option<String>, r#continue: bool) -> color_eyre::Result<()> {
+fn session_cwd(
+    link: &goat_client::Link,
+    args: &CodeArgs,
+) -> color_eyre::Result<std::path::PathBuf> {
+    if link.is_local() {
+        return match args.worktree.as_deref() {
+            Some(label) => goat_worktree::enter(label).map_err(ui::worktree_entry),
+            None => std::env::current_dir().map_err(color_eyre::Report::from),
+        };
+    }
+    if args.worktree.is_some() {
+        return Err(eyre!(
+            "--worktree builds a git worktree on this machine; it does not apply to a remote daemon"
+        ));
+    }
+    if let Some(dir) = args.dir.clone() {
+        return Ok(std::path::PathBuf::from(dir));
+    }
+    remote::last_dir(link.name())
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| {
+            eyre!(
+                "remote `{}` has no directory yet; pass --dir <path on the daemon host>",
+                link.name()
+            )
+        })
+}
+
+async fn run_tui(
+    link: &std::sync::Arc<goat_client::Link>,
+    args: &CodeArgs,
+) -> color_eyre::Result<()> {
     goat_tui::install_hooks()?;
     let _guard = logging::init();
 
@@ -210,20 +251,31 @@ async fn run_tui(worktree_label: Option<String>, r#continue: bool) -> color_eyre
         goat_config::ThemeChoice::Light => goat_tui::Theme::light(),
     };
 
-    let attachment = connect_session(worktree_label, r#continue).await?;
-    let managed = std::env::current_dir()
-        .ok()
-        .and_then(|cwd| goat_worktree::workspace(&cwd).ok())
+    let attachment = connect_session(link, args, true).await?;
+    let managed = link
+        .is_local()
+        .then(|| {
+            std::env::current_dir()
+                .ok()
+                .and_then(|cwd| goat_worktree::workspace(&cwd).ok())
+        })
+        .flatten()
         .filter(|workspace| matches!(workspace.kind, goat_worktree::WorkspaceKind::Managed { .. }));
     let goat_client::Attachment {
         ops,
         events,
         presence,
+        cwd,
         mut pump,
         ..
     } = attachment;
+    let origin = if link.is_local() {
+        goat_tui::Origin::local(cwd)
+    } else {
+        goat_tui::Origin::remote(cwd, link.name().to_owned())
+    };
 
-    let exit = goat_tui::run(ops, events, presence, theme, Vec::new()).await?;
+    let exit = goat_tui::run(ops, events, presence, theme, origin, Vec::new()).await?;
     if tokio::time::timeout(std::time::Duration::from_secs(1), &mut pump)
         .await
         .is_err()
@@ -247,11 +299,11 @@ async fn prompt_worktree_removal(workspace: goat_worktree::Workspace) -> color_e
         return Ok(());
     }
 
-    let Some(socket_path) = goat_config::socket_path() else {
+    let Ok(link) = remote::local() else {
         ui::warning("keeping worktree because the daemon socket is unavailable");
         return Ok(());
     };
-    match worktree_has_live_sessions(&socket_path, &workspace.repo_root).await {
+    match worktree_has_live_sessions(&link, &workspace.repo_root).await {
         Ok(true) => {
             ui::warning("keeping worktree because another code session is using it");
             return Ok(());
@@ -274,11 +326,11 @@ async fn prompt_worktree_removal(workspace: goat_worktree::Workspace) -> color_e
 }
 
 async fn worktree_has_live_sessions(
-    socket_path: &std::path::Path,
+    link: &goat_client::Link,
     root: &std::path::Path,
 ) -> Result<bool, goat_client::ClientError> {
     for attempt in 0..5 {
-        let sessions = goat_client::status(socket_path).await?;
+        let sessions = goat_client::status(link).await?;
         let in_use = sessions.iter().any(|session| {
             let cwd = std::path::Path::new(&session.cwd);
             cwd.canonicalize()
@@ -295,15 +347,14 @@ async fn worktree_has_live_sessions(
 }
 
 async fn run_headless(
-    worktree_label: Option<String>,
-    r#continue: bool,
-    protocol: &str,
+    link: &std::sync::Arc<goat_client::Link>,
+    args: &CodeArgs,
     one_shot: bool,
 ) -> color_eyre::Result<()> {
     let _guard = logging::init();
 
-    let codec = headless::codec_for(protocol)?;
-    let attachment = connect_session(worktree_label, r#continue).await?;
+    let codec = headless::codec_for(&args.protocol)?;
+    let attachment = connect_session(link, args, false).await?;
     let goat_client::Attachment {
         ops, events, pump, ..
     } = attachment;
@@ -351,26 +402,37 @@ async fn run_unified_daemon(
         detach_from_terminal();
     }
 
-    let home_err = || color_eyre::eyre::eyre!(goat_config::HOME_NOT_FOUND);
-    let paths = goat_config::GoatPaths::default_layout().map_err(|e| color_eyre::eyre::eyre!(e))?;
+    let paths = goat_config::GoatPaths::default_layout().map_err(|e| eyre!(e))?;
     let wait = if detached { LOCK_WAIT } else { NO_WAIT };
     let lock = match goat_daemon::acquire(&paths.daemon_lock, wait).await {
         Ok(lock) => lock,
         Err(err) => {
             tracing::info!(%err, "another daemon owns this home; exiting");
-            if !detached {
-                return ui::fail_hint(
-                    "another daemon already owns this home",
-                    "`goat daemon status` shows which one, `goat daemon stop` ends it",
-                );
+            if detached {
+                return Ok(());
             }
-            return Ok(());
+            return ui::fail_hint(
+                "another daemon already owns this home",
+                "`goat daemon status` shows which one, `goat daemon stop` ends it",
+            );
         }
     };
 
-    let auth_path = paths.credentials_json.clone();
     let db_path = paths.state_db.clone();
-    let remote = remote_settings()?;
+    let manager = goat_daemon::Manager::new(
+        paths.credentials_json.clone(),
+        goat_config::UserProviders::at(paths.config_json.clone()),
+        db_path.clone(),
+    );
+    let config = goat_daemon::DaemonConfig {
+        socket_path,
+        lock_path: paths.daemon_lock.clone(),
+        auth_path: paths.credentials_json.clone(),
+        config_json: paths.config_json.clone(),
+        db_path: db_path.clone(),
+        remote: remote_settings()?,
+    };
+    let bound = goat_daemon::bind_daemon(config, &lock)?;
 
     let shutdown = CancellationToken::new();
     {
@@ -381,22 +443,6 @@ async fn run_unified_daemon(
             shutdown.cancel();
         });
     }
-
-    let manager = goat_daemon::Manager::new(
-        auth_path,
-        goat_config::UserProviders::at(paths.config_json.clone()),
-        db_path.clone(),
-    );
-
-    let config = goat_daemon::DaemonConfig {
-        socket_path,
-        lock_path: paths.daemon_lock.clone(),
-        auth_path: goat_config::auth_path().ok_or_else(home_err)?,
-        config_json: goat_config::config_path().ok_or_else(home_err)?,
-        db_path: db_path.clone(),
-        remote,
-    };
-    let bound = goat_daemon::bind_daemon(config, &lock)?;
     let serve = tokio::spawn(goat_daemon::serve_bound(
         bound,
         manager.clone(),
@@ -426,9 +472,16 @@ async fn run_unified_daemon(
         }
     }
 
-    let goat = goat_runtime::Goat::boot_with_code_metered(Some(manager.clone()), agent_meter)
+    let goat = match goat_runtime::Goat::boot_with_code_metered(Some(manager.clone()), agent_meter)
         .await
-        .map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
+    {
+        Ok(goat) => goat,
+        Err(err) => {
+            shutdown.cancel();
+            let _ = serve.await;
+            return Err(eyre!(err.to_string()));
+        }
+    };
     let agent = tokio::spawn(goat.run_until(shutdown.clone()));
 
     if let Some((proxy_store, bind, creds, ops)) = proxy_http {
@@ -459,15 +512,13 @@ async fn run_unified_daemon(
     let serve_result = serve.await;
 
     shutdown.cancel();
-    if let Err(e) = agent.await {
-        tracing::warn!(error = ?e, "agent runtime task join failed");
+    if let Err(err) = agent.await {
+        tracing::warn!(error = ?err, "agent runtime task join failed");
     }
     drop(lock);
     match serve_result {
         Ok(result) => result.map_err(color_eyre::Report::from),
-        Err(err) => Err(color_eyre::eyre::eyre!(
-            "daemon listener task failed: {err}"
-        )),
+        Err(err) => Err(eyre!("daemon listener task failed: {err}")),
     }
 }
 
@@ -512,7 +563,7 @@ async fn run_daemon_command(command: DaemonCommand) -> color_eyre::Result<()> {
             let exe = std::env::current_exe()?;
             let attached = goat_client::start(&socket_path, &exe)
                 .await
-                .map_err(|e| ui::daemon_client_error(&e))?;
+                .map_err(|err| ui::daemon_client_error(&err))?;
             match attached {
                 goat_client::Attached::Reused => {
                     println!("{}", color.paint("already running", Palette::Muted));
@@ -523,7 +574,7 @@ async fn run_daemon_command(command: DaemonCommand) -> color_eyre::Result<()> {
         }
         DaemonCommand::Status => print_daemon_status(&socket_path).await,
         DaemonCommand::Stop => {
-            match goat_client::greet(&socket_path).await {
+            let stopped = match goat_client::greet(&socket_path).await {
                 goat_client::Daemon::Absent => {
                     println!("{}", color.paint("no daemon is running", Palette::Muted));
                     return Ok(());
@@ -531,14 +582,15 @@ async fn run_daemon_command(command: DaemonCommand) -> color_eyre::Result<()> {
                 goat_client::Daemon::Silent => {
                     return ui::fail_hint(
                         "a process is holding the daemon socket and is not answering",
-                        "kill it with `pkill -f 'goat daemon serve'`",
+                        "kill it with `pkill -f 'goat daemon serve'",
                     );
                 }
-                goat_client::Daemon::Reachable(_) => {}
-            }
-            let stopped = goat_client::stop(&socket_path)
+                goat_client::Daemon::Reachable(identity) => identity,
+            };
+            let link = remote::local()?;
+            goat_client::stop(&link)
                 .await
-                .map_err(|e| ui::daemon_client_error(&e))?;
+                .map_err(|err| ui::daemon_client_error(&err))?;
             println!(
                 "{}",
                 color.paint(
@@ -567,12 +619,13 @@ async fn print_daemon_status(socket_path: &std::path::Path) -> color_eyre::Resul
             let ours = goat_client::mine();
             let (label, palette) = match goat_client::decide(&ours, &them) {
                 goat_client::Action::Attach => ("running", Palette::Success),
-                goat_client::Action::AttachStale | goat_client::Action::Replace
-                    if them.wire == ours.wire =>
-                {
+                goat_client::Action::AttachStale => ("running an older build", Palette::Warning),
+                goat_client::Action::Replace if them.wire == ours.wire => {
                     ("running an older build", Palette::Warning)
                 }
-                _ => ("running a different protocol", Palette::Warning),
+                goat_client::Action::Replace | goat_client::Action::Refuse => {
+                    ("running a different protocol", Palette::Warning)
+                }
             };
             println!("{}", color.paint(label, palette));
             pair("version", &them.version);
@@ -594,15 +647,15 @@ async fn print_daemon_status(socket_path: &std::path::Path) -> color_eyre::Resul
     Ok(())
 }
 
-async fn run_session_command(command: cli::SessionCommand) -> color_eyre::Result<()> {
-    let socket_path = goat_config::socket_path()
-        .ok_or_else(|| color_eyre::eyre::eyre!(goat_config::HOME_NOT_FOUND))?;
+async fn run_session_command(
+    command: SessionCommand,
+    target: Option<&str>,
+) -> color_eyre::Result<()> {
+    let link = remote::resolve(target)?;
     let color = ColorMode::detect();
     match command {
-        cli::SessionCommand::List => {
-            let sessions = goat_client::status(&socket_path)
-                .await
-                .map_err(|e| ui::daemon_client_error(&e))?;
+        SessionCommand::List => {
+            let sessions = goat_client::status(&link).await?;
             if sessions.is_empty() {
                 println!("{}", color.paint("no live sessions", Palette::Muted));
                 return Ok(());
@@ -629,10 +682,8 @@ async fn run_session_command(command: cli::SessionCommand) -> color_eyre::Result
             }
             Ok(())
         }
-        cli::SessionCommand::Kill { session } => {
-            goat_client::kill_session(&socket_path, session)
-                .await
-                .map_err(|e| ui::daemon_client_error(&e))?;
+        SessionCommand::Kill { session } => {
+            goat_client::kill_session(&link, session).await?;
             println!("killed session #{session}");
             Ok(())
         }
@@ -653,24 +704,23 @@ fn remote_settings() -> color_eyre::Result<Option<goat_daemon::RemoteSettings>> 
         return Ok(None);
     };
     let bind = config
-        .remote
+        .devices
         .bind
         .parse()
-        .map_err(|e| color_eyre::eyre::eyre!("invalid remote bind address: {e}"))?;
+        .map_err(|e| color_eyre::eyre::eyre!("invalid device bind address: {e}"))?;
     Ok(Some(goat_daemon::RemoteSettings {
         remote_dir,
         bind,
-        advertised: config.remote.advertised,
+        advertised: config.devices.advertised,
     }))
 }
 
-async fn run_remote_command(command: RemoteCommand) -> color_eyre::Result<()> {
-    let socket_path = goat_config::socket_path()
-        .ok_or_else(|| color_eyre::eyre::eyre!(goat_config::HOME_NOT_FOUND))?;
+async fn run_device_command(command: DeviceCommand) -> color_eyre::Result<()> {
+    let link = remote::local()?;
     match command {
-        RemoteCommand::Pair { label } => {
+        DeviceCommand::Add { label } => {
             let label = label.unwrap_or_else(|| "device".to_owned());
-            let info = goat_client::pair_device(&socket_path, label).await?;
+            let info = goat_client::pair_device(&link, label).await?;
             let color = ColorMode::detect();
             println!("{}", color.paint("pairing", Palette::Provider));
             pair("code", &info.code);
@@ -684,8 +734,8 @@ async fn run_remote_command(command: RemoteCommand) -> color_eyre::Result<()> {
             print_pairing_qr(&info);
             Ok(())
         }
-        RemoteCommand::List => {
-            let devices = goat_client::list_devices(&socket_path).await?;
+        DeviceCommand::List => {
+            let devices = goat_client::list_devices(&link).await?;
             let color = ColorMode::detect();
             if devices.is_empty() {
                 println!("{}", color.paint("no paired devices", Palette::Muted));
@@ -708,13 +758,63 @@ async fn run_remote_command(command: RemoteCommand) -> color_eyre::Result<()> {
             }
             Ok(())
         }
-        RemoteCommand::Revoke { device } => {
-            let ok = goat_client::revoke_device(&socket_path, device.clone()).await?;
+        DeviceCommand::Remove { device } => {
+            let ok = goat_client::revoke_device(&link, device.clone()).await?;
             if ok {
                 println!("revoked device {device}");
             } else {
                 println!("no such device: {device}");
             }
+            Ok(())
+        }
+    }
+}
+
+async fn run_remote_command(command: RemoteCommand) -> color_eyre::Result<()> {
+    let color = ColorMode::detect();
+    match command {
+        RemoteCommand::Add {
+            name,
+            host,
+            fingerprint,
+            code,
+        } => {
+            let promoted = remote::add(&name, &host, &fingerprint, &code).await?;
+            ui::success(&format!("paired with {host} as `{name}`"));
+            if promoted {
+                println!(
+                    "{}",
+                    color.paint(
+                        format!("`{name}` is now the default; `goat remote use local` goes back"),
+                        Palette::Muted,
+                    )
+                );
+            }
+            Ok(())
+        }
+        RemoteCommand::List => {
+            for row in remote::list() {
+                let marker = if row.active { "*" } else { " " };
+                println!(
+                    "{} {} {}",
+                    color.paint(marker, Palette::Success),
+                    color.cell(row.name, Palette::Provider, 16),
+                    color.paint(row.address, Palette::Value)
+                );
+            }
+            Ok(())
+        }
+        RemoteCommand::Remove { name } => {
+            if remote::remove(&name)? {
+                println!("forgot remote {name}");
+            } else {
+                println!("no such remote: {name}");
+            }
+            Ok(())
+        }
+        RemoteCommand::Use { name } => {
+            remote::select(&name)?;
+            ui::success(&format!("`{name}` is now the default"));
             Ok(())
         }
     }

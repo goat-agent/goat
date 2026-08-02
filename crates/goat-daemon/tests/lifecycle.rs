@@ -103,7 +103,7 @@ async fn busy_counts_a_live_session_and_clears_when_it_is_killed() {
     .await
     .unwrap();
     let session = loop {
-        if let ServerFrame::SessionOpened { session } = conn.recv().await.unwrap() {
+        if let ServerFrame::SessionOpened { session, .. } = conn.recv().await.unwrap() {
             break session;
         }
     };

@@ -72,11 +72,26 @@ async fn drain_steering(ctx: &Ctx, run: &Run<'_>, conversation: &mut Conversatio
             break;
         };
         let message = crate::turn::user_message(&input.text, &input.attachments);
-        let db_id = match run.ids() {
+        let created = match run.ids() {
             Some(ids) => persist_message(ctx, ids, &message).await,
             None => None,
         };
-        conversation.push(message, db_id);
+        if input.checkpoint
+            && let (Some(created), Some(thread_id)) = (
+                created.as_ref(),
+                run.ids().and_then(|ids| ids.stored_thread),
+            )
+        {
+            let draft = input.display.as_deref().unwrap_or(&input.text).to_owned();
+            if let Err(err) = ctx
+                .checkpoints
+                .begin(thread_id, created, draft, &input.attachments, &ctx.cwd)
+                .await
+            {
+                tracing::warn!(%err, "failed to create steering checkpoint");
+            }
+        }
+        conversation.push(message, created.map(|message| message.id));
         let _ = ctx
             .events
             .send(Event::UserMessage {
@@ -362,7 +377,7 @@ pub(crate) async fn process_round_output(
             Some(ids) => persist_message(ctx, ids, &message).await,
             None => None,
         };
-        conversation.push(message, db_id);
+        conversation.push(message, db_id.map(|message| message.id));
     }
     if let Some(usage) = &round.usage {
         tracker.record(conversation.len(), usage);
@@ -398,7 +413,7 @@ pub(crate) async fn process_round_output(
             Some(ids) => persist_message(ctx, ids, &message).await,
             None => None,
         };
-        conversation.push(message, db_id);
+        conversation.push(message, db_id.map(|message| message.id));
         return RoundOutcome::Done;
     }
     let batch = run_tool_batch(ctx, run, env, &pending_calls, call_seq, tool_ctx, token).await;
@@ -410,7 +425,7 @@ pub(crate) async fn process_round_output(
         Some(ids) => persist_message(ctx, ids, &message).await,
         None => None,
     };
-    conversation.push(message, db_id);
+    conversation.push(message, db_id.map(|message| message.id));
     if batch.cancelled {
         RoundOutcome::Cancelled
     } else {

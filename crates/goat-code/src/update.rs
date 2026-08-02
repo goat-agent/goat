@@ -66,11 +66,9 @@ pub async fn run(force: bool) -> color_eyre::Result<()> {
 
     let bin_path = install_bin_path()?;
     pair("install", &bin_path.display().to_string());
-
     let was_running = drain_daemon(force).await?;
     replace_binary(&bin_path, &staged_bin)?;
     pair_styled("installed", &latest.to_string(), Palette::Success);
-
     if was_running {
         restart_daemon(&bin_path).await;
     }
@@ -97,7 +95,8 @@ async fn drain_daemon(force: bool) -> color_eyre::Result<bool> {
             busy.sessions
         ));
     }
-    let _ = goat_client::stop(&socket).await;
+    let link = crate::remote::local()?;
+    goat_client::stop(&link).await?;
     Ok(true)
 }
 

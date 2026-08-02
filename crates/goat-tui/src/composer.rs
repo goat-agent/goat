@@ -561,15 +561,19 @@ impl Composer {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: Theme, focused: bool) {
-        let border = match (self.shell, focused) {
-            (true, true) => theme.shell(),
-            (true, false) => theme.shell_dim(),
-            (false, true) => theme.border(),
-            (false, false) => theme.border_dim(),
+    pub fn render(&self, frame: &mut Frame, area: Rect, theme: Theme, focused: bool, plan: bool) {
+        let border = match (self.shell, plan, focused) {
+            (true, _, true) => theme.shell(),
+            (true, _, false) => theme.shell_dim(),
+            (false, true, true) => theme.plan(),
+            (false, true, false) => theme.plan_dim(),
+            (false, false, true) => theme.border(),
+            (false, false, false) => theme.border_dim(),
         };
         let (marker, marker_style) = if self.shell {
             (symbols::marker::SHELL, theme.shell())
+        } else if plan {
+            (symbols::marker::PROMPT, theme.plan())
         } else {
             (symbols::marker::PROMPT, theme.accent())
         };
@@ -577,6 +581,9 @@ impl Composer {
             .border_type(BorderType::Rounded)
             .border_style(border)
             .padding(Padding::horizontal(1));
+        if plan && !self.shell {
+            block = block.title_top(Line::from(Span::styled(" plan ", theme.plan())));
+        }
         if let Some((pos, total)) = self.history_position() {
             block = block.title_top(
                 Line::from(Span::styled(format!(" {pos}/{total} "), theme.muted())).right_aligned(),

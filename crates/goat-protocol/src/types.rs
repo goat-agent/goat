@@ -310,6 +310,38 @@ impl fmt::Display for Effort {
     }
 }
 
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    #[default]
+    Normal,
+    Plan,
+}
+
+impl Mode {
+    #[must_use]
+    pub fn is_plan(self) -> bool {
+        matches!(self, Self::Plan)
+    }
+
+    #[must_use]
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Normal => Self::Plan,
+            Self::Plan => Self::Normal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "type")]
+pub enum PlanDecision {
+    Approve {},
+    Reject { feedback: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModelTarget {
     pub provider: String,
@@ -346,6 +378,29 @@ pub struct ThreadSummary {
     pub updated_at: i64,
     #[serde(default)]
     pub live: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RewindScope {
+    CodeAndConversation,
+    Conversation,
+    Code,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RewindPoint {
+    pub checkpoint_id: i64,
+    pub prompt: String,
+    pub created_at: i64,
+    pub code_changes: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RewindDraft {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<InputAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

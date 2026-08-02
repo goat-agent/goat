@@ -260,7 +260,7 @@ async fn rebind_moves_one_window_leaving_others() {
     .unwrap();
     let moved = loop {
         match tokio::time::timeout(Duration::from_secs(5), b.recv()).await {
-            Ok(Ok(ServerFrame::SessionOpened { session })) => break session,
+            Ok(Ok(ServerFrame::SessionOpened { session, .. })) => break session,
             Ok(Ok(_)) => {}
             other => panic!("expected SessionOpened, got {other:?}"),
         }
@@ -332,7 +332,7 @@ async fn daemon_intercepts_clear_as_rebind() {
                 assert_eq!(session, first);
                 detached = true;
             }
-            Ok(Ok(ServerFrame::SessionOpened { session })) => {
+            Ok(Ok(ServerFrame::SessionOpened { session, .. })) => {
                 opened = Some(session);
                 break;
             }

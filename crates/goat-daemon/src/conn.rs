@@ -131,8 +131,10 @@ async fn dispatch(
         ClientFrame::OpenSession { cwd, resume } => {
             let cwd_path = PathBuf::from(&cwd);
             match manager.open_or_attach(cwd_path, resume).await {
-                Ok(session) => {
-                    let _ = out_tx.send(ServerFrame::SessionOpened { session }).await;
+                Ok((session, cwd)) => {
+                    let _ = out_tx
+                        .send(ServerFrame::SessionOpened { session, cwd })
+                        .await;
                     let _ = manager.subscribe(session, client_id, out_tx.clone()).await;
                 }
                 Err(message) => {
@@ -196,8 +198,8 @@ async fn dispatch(
             let _ = out_tx.send(ServerFrame::Threads { threads }).await;
             Disposition::Continue
         }
-        ClientFrame::ListDirectory { path } => {
-            match Manager::list_directory(&path) {
+        ClientFrame::ListDirectory { path, recursive } => {
+            match Manager::list_directory(&path, recursive) {
                 Ok(children) => {
                     let _ = out_tx.send(ServerFrame::Directory { path, children }).await;
                 }
@@ -230,33 +232,37 @@ async fn dispatch(
                     }
                 }
             } else {
-                let _ = out_tx
-                    .send(ServerFrame::Error {
-                        message: "pairing is local-only".to_owned(),
-                    })
-                    .await;
+                let _ = out_tx.send(local_only("PairDevice")).await;
             }
             Disposition::Continue
         }
         ClientFrame::ListDevices {} => {
-            match manager.list_devices().await {
-                Ok(devices) => {
-                    let _ = out_tx.send(ServerFrame::Devices { devices }).await;
+            if origin.is_local() {
+                match manager.list_devices().await {
+                    Ok(devices) => {
+                        let _ = out_tx.send(ServerFrame::Devices { devices }).await;
+                    }
+                    Err(message) => {
+                        let _ = out_tx.send(ServerFrame::Error { message }).await;
+                    }
                 }
-                Err(message) => {
-                    let _ = out_tx.send(ServerFrame::Error { message }).await;
-                }
+            } else {
+                let _ = out_tx.send(local_only("ListDevices")).await;
             }
             Disposition::Continue
         }
         ClientFrame::RevokeDevice { device } => {
-            match manager.revoke_device(&device).await {
-                Ok(ok) => {
-                    let _ = out_tx.send(ServerFrame::DeviceRevoked { ok }).await;
+            if origin.is_local() {
+                match manager.revoke_device(&device).await {
+                    Ok(ok) => {
+                        let _ = out_tx.send(ServerFrame::DeviceRevoked { ok }).await;
+                    }
+                    Err(message) => {
+                        let _ = out_tx.send(ServerFrame::Error { message }).await;
+                    }
                 }
-                Err(message) => {
-                    let _ = out_tx.send(ServerFrame::Error { message }).await;
-                }
+            } else {
+                let _ = out_tx.send(local_only("RevokeDevice")).await;
             }
             Disposition::Continue
         }
@@ -265,11 +271,7 @@ async fn dispatch(
                 shutdown.cancel();
                 Disposition::Draining
             } else {
-                let _ = out_tx
-                    .send(ServerFrame::Error {
-                        message: "StopDaemon is local-only".to_owned(),
-                    })
-                    .await;
+                let _ = out_tx.send(local_only("StopDaemon")).await;
                 Disposition::Continue
             }
         }
@@ -281,15 +283,17 @@ async fn dispatch(
                 };
                 let _ = out_tx.send(frame).await;
             } else {
-                let _ = out_tx
-                    .send(ServerFrame::Error {
-                        message: "ReloadAgents is local-only".to_owned(),
-                    })
-                    .await;
+                let _ = out_tx.send(local_only("ReloadAgents")).await;
             }
             Disposition::Continue
         }
         ClientFrame::Goodbye {} => Disposition::Closed,
+    }
+}
+
+fn local_only(frame: &str) -> ServerFrame {
+    ServerFrame::Error {
+        message: format!("{frame} is local-only; run it on the daemon host"),
     }
 }
 

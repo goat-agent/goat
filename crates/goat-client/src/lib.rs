@@ -3,16 +3,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use goat_protocol::{Event, Op};
-use goat_wire::transport::{self, Stream};
-use goat_wire::{
-    BuildId, Busy, ClientConn, ClientFrame, ResumeMode, ServerFrame, SessionId, WireError,
-};
+use goat_wire::{BuildId, Busy, ClientFrame, ResumeMode, ServerFrame, SessionId, WireError};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::idmap::IdMap;
+use crate::link::Conn;
 
 mod idmap;
+mod link;
+
+pub use link::{LOCAL, Link};
 
 pub const GREET_TIMEOUT: Duration = Duration::from_secs(2);
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -27,6 +28,8 @@ pub enum ClientError {
     Io(#[from] std::io::Error),
     #[error("wire error: {0}")]
     Wire(#[from] WireError),
+    #[error("remote error: {0}")]
+    Remote(#[from] goat_remote::RemoteError),
     #[error("the daemon did not answer within {0:?}")]
     Timeout(Duration),
     #[error("unexpected daemon response during handshake")]
@@ -35,6 +38,8 @@ pub enum ClientError {
         "the running daemon speaks a different protocol and is busy ({sessions} session(s), {turns} agent turn(s))"
     )]
     BusyIncompatible { sessions: usize, turns: usize },
+    #[error("the remote daemon speaks a different protocol")]
+    RemoteIncompatible,
     #[error("daemon did not open a session: {0}")]
     OpenFailed(String),
     #[error("could not start daemon: {0}")]
@@ -77,6 +82,7 @@ pub enum Attached {
     Stale(Box<Identity>),
 }
 
+#[must_use]
 pub fn mine() -> Identity {
     Identity {
         wire: goat_wire::wire_fingerprint().to_owned(),
@@ -89,6 +95,7 @@ pub fn mine() -> Identity {
     }
 }
 
+#[must_use]
 pub fn decide(mine: &Identity, theirs: &Identity) -> Action {
     let incompatible = theirs.wire != mine.wire;
     let stale = match (mine.build.as_ref(), theirs.build.as_ref()) {
@@ -108,6 +115,7 @@ pub struct Attachment {
     pub events: mpsc::Receiver<Event>,
     pub presence: mpsc::Receiver<usize>,
     pub client_id: u64,
+    pub cwd: String,
     pub pump: JoinHandle<()>,
 }
 
@@ -115,9 +123,49 @@ const OPS_CAPACITY: usize = 32;
 const EVENTS_CAPACITY: usize = 512;
 const PRESENCE_CAPACITY: usize = 16;
 
-async fn open(socket_path: &Path) -> Result<(ClientConn<Stream>, Identity, u64), ClientError> {
-    let stream = transport::connect(socket_path).await?;
-    let mut conn: ClientConn<Stream> = ClientConn::new(stream);
+pub async fn connect(
+    link: Arc<Link>,
+    cwd: PathBuf,
+    resume: ResumeMode,
+) -> Result<(Attachment, Attached), ClientError> {
+    let (mut conn, _identity, client_id, attached) = ensure(&link).await?;
+
+    conn.send(ClientFrame::OpenSession {
+        cwd: cwd.display().to_string(),
+        resume,
+    })
+    .await?;
+    let (session, opened_cwd) = match request(&mut conn).await? {
+        ServerFrame::SessionOpened { session, cwd } => (session, cwd),
+        ServerFrame::Error { message } => return Err(ClientError::OpenFailed(message)),
+        _ => return Err(ClientError::Handshake),
+    };
+
+    Ok((
+        spawn_pumps(conn, session, client_id, opened_cwd, link),
+        attached,
+    ))
+}
+
+pub async fn start(socket_path: &Path, daemon_exe: &Path) -> Result<Attached, ClientError> {
+    let link = Link::local(socket_path.to_path_buf(), daemon_exe.to_path_buf());
+    let (_, _, _, attached) = ensure(&link).await?;
+    Ok(attached)
+}
+
+pub async fn greet(socket_path: &Path) -> Daemon {
+    let link = Link::local(socket_path.to_path_buf(), PathBuf::new());
+    match open(&link).await {
+        Ok((_, identity, _)) => Daemon::Reachable(identity),
+        Err(ClientError::Timeout(_) | ClientError::Handshake) => Daemon::Silent,
+        Err(_) => Daemon::Absent,
+    }
+}
+
+async fn open(link: &Link) -> Result<(Conn, Identity, u64), ClientError> {
+    let mut conn = tokio::time::timeout(GREET_TIMEOUT, link.dial())
+        .await
+        .map_err(|_| ClientError::Timeout(GREET_TIMEOUT))??;
     let frame = tokio::time::timeout(GREET_TIMEOUT, conn.recv())
         .await
         .map_err(|_| ClientError::Timeout(GREET_TIMEOUT))??;
@@ -134,46 +182,46 @@ async fn open(socket_path: &Path) -> Result<(ClientConn<Stream>, Identity, u64),
     else {
         return Err(ClientError::Handshake);
     };
-    let identity = Identity {
-        wire,
-        build,
-        version,
-        pid,
-        started_at,
-        ready,
-        busy,
-    };
-    Ok((conn, identity, client_id.0))
+    Ok((
+        conn,
+        Identity {
+            wire,
+            build,
+            version,
+            pid,
+            started_at,
+            ready,
+            busy,
+        },
+        client_id.0,
+    ))
 }
 
-async fn request(conn: &mut ClientConn<Stream>) -> Result<ServerFrame, ClientError> {
+async fn request(conn: &mut Conn) -> Result<ServerFrame, ClientError> {
     tokio::time::timeout(REQUEST_TIMEOUT, conn.recv())
         .await
         .map_err(|_| ClientError::Timeout(REQUEST_TIMEOUT))?
         .map_err(ClientError::Wire)
 }
 
-pub async fn greet(socket_path: &Path) -> Daemon {
-    match open(socket_path).await {
-        Ok((_, identity, _)) => Daemon::Reachable(identity),
-        Err(ClientError::Timeout(_) | ClientError::Handshake) => Daemon::Silent,
-        Err(_) => Daemon::Absent,
-    }
-}
-
-pub async fn ensure(
-    socket_path: &Path,
-    daemon_exe: &Path,
-) -> Result<(ClientConn<Stream>, Identity, u64, Attached), ClientError> {
+async fn ensure(link: &Link) -> Result<(Conn, Identity, u64, Attached), ClientError> {
     let ours = mine();
-    let opened = match open(socket_path).await {
+    let opened = open(link).await;
+    if link.local_parts().is_none() {
+        let (conn, identity, client_id) = opened?;
+        if identity.wire != ours.wire {
+            return Err(ClientError::RemoteIncompatible);
+        }
+        return Ok((conn, identity, client_id, Attached::Reused));
+    }
+
+    let opened = match opened {
         Ok(opened) => Some(opened),
         Err(err @ (ClientError::Timeout(_) | ClientError::Handshake)) => return Err(err),
         Err(_) => None,
     };
-
     let Some((conn, identity, client_id)) = opened else {
-        let (conn, identity, client_id) = spawn_and_wait(socket_path, daemon_exe).await?;
+        let (conn, identity, client_id) = spawn_and_wait(link).await?;
         return Ok((conn, identity, client_id, Attached::Started));
     };
 
@@ -190,7 +238,7 @@ pub async fn ensure(
         Action::Replace => {
             let replaced = identity.clone();
             shutdown_and_wait(conn).await;
-            let (conn, identity, client_id) = spawn_and_wait(socket_path, daemon_exe).await?;
+            let (conn, identity, client_id) = spawn_and_wait(link).await?;
             Ok((
                 conn,
                 identity,
@@ -201,21 +249,18 @@ pub async fn ensure(
     }
 }
 
-async fn shutdown_and_wait(mut conn: ClientConn<Stream>) {
-    if conn.send(&ClientFrame::StopDaemon {}).await.is_err() {
+async fn shutdown_and_wait(mut conn: Conn) {
+    if conn.send(ClientFrame::StopDaemon {}).await.is_err() {
         return;
     }
     let _ = tokio::time::timeout(STOP_TIMEOUT, async { while conn.recv().await.is_ok() {} }).await;
 }
 
-async fn spawn_and_wait(
-    socket_path: &Path,
-    daemon_exe: &Path,
-) -> Result<(ClientConn<Stream>, Identity, u64), ClientError> {
-    spawn_daemon(daemon_exe)?;
+async fn spawn_and_wait(link: &Link) -> Result<(Conn, Identity, u64), ClientError> {
+    link.spawn_local()?;
     let deadline = tokio::time::Instant::now() + SPAWN_BUDGET;
     loop {
-        match open(socket_path).await {
+        match open(link).await {
             Ok(opened) => return Ok(opened),
             Err(err) if tokio::time::Instant::now() >= deadline => {
                 return Err(ClientError::SpawnFailed(format!(
@@ -227,37 +272,10 @@ async fn spawn_and_wait(
     }
 }
 
-pub async fn connect(
-    socket_path: &Path,
-    daemon_exe: &Path,
-    cwd: PathBuf,
-    resume: ResumeMode,
-) -> Result<(Attachment, Attached), ClientError> {
-    let (mut conn, _identity, client_id, attached) = ensure(socket_path, daemon_exe).await?;
-
-    conn.send(&ClientFrame::OpenSession {
-        cwd: cwd.display().to_string(),
-        resume,
-    })
-    .await?;
-    let session = match tokio::time::timeout(REQUEST_TIMEOUT, conn.recv())
-        .await
-        .map_err(|_| ClientError::Timeout(REQUEST_TIMEOUT))??
-    {
-        ServerFrame::SessionOpened { session, .. } => session,
-        ServerFrame::Error { message } => return Err(ClientError::OpenFailed(message)),
-        _ => return Err(ClientError::Handshake),
-    };
-
-    Ok((
-        spawn_pumps(conn, session, client_id, &cwd, socket_path.to_path_buf()),
-        attached,
-    ))
-}
-
 enum Outbound {
     Op(Op),
     ListThreads,
+    ListFiles,
 }
 
 struct Shared {
@@ -268,22 +286,23 @@ struct Shared {
 }
 
 fn spawn_pumps(
-    conn: ClientConn<Stream>,
+    conn: Conn,
     session: SessionId,
     client_id: u64,
-    cwd: &Path,
-    socket_path: PathBuf,
+    cwd: String,
+    link: Arc<Link>,
 ) -> Attachment {
     let (ops_tx, mut ops_rx) = mpsc::channel::<Op>(OPS_CAPACITY);
     let (events_tx, events_rx) = mpsc::channel::<Event>(EVENTS_CAPACITY);
     let (presence_tx, presence_rx) = mpsc::channel::<usize>(PRESENCE_CAPACITY);
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<Outbound>(OPS_CAPACITY + 8);
 
+    let opened_cwd = cwd.clone();
     let shared = Arc::new(Shared {
         current: Mutex::new(session),
         current_thread: Mutex::new(None),
         idmap: Mutex::new(IdMap::new()),
-        cwd: cwd.display().to_string(),
+        cwd,
     });
 
     let cmd_for_ops = cmd_tx.clone();
@@ -291,6 +310,7 @@ fn spawn_pumps(
         while let Some(op) = ops_rx.recv().await {
             let cmd = match op {
                 Op::ListThreads {} => Outbound::ListThreads,
+                Op::ListFiles {} => Outbound::ListFiles,
                 other => Outbound::Op(other),
             };
             if cmd_for_ops.send(cmd).await.is_err() {
@@ -304,7 +324,7 @@ fn spawn_pumps(
         loop {
             let this_conn = match conn.take() {
                 Some(c) => c,
-                None => match reconnect(&socket_path, &shared).await {
+                None => match reconnect(&link, &shared, &events_tx).await {
                     Some(c) => c,
                     None => break,
                 },
@@ -322,71 +342,67 @@ fn spawn_pumps(
         events: events_rx,
         presence: presence_rx,
         client_id,
+        cwd: opened_cwd,
         pump,
     }
 }
 
-const RECONNECT_BUDGET: Duration = Duration::from_secs(20);
-const RECONNECT_POLL: Duration = Duration::from_millis(200);
-
-async fn reconnect(socket_path: &Path, shared: &Arc<Shared>) -> Option<ClientConn<Stream>> {
-    let ours = mine();
-    let deadline = tokio::time::Instant::now() + RECONNECT_BUDGET;
-    while tokio::time::Instant::now() < deadline {
-        match reconnect_once(socket_path, shared, &ours).await {
-            Ok(conn) => return Some(conn),
-            Err(true) => return None,
-            Err(false) => tokio::time::sleep(RECONNECT_POLL).await,
+async fn reconnect(
+    link: &Arc<Link>,
+    shared: &Arc<Shared>,
+    events_tx: &mpsc::Sender<Event>,
+) -> Option<Conn> {
+    for _ in 0..100 {
+        let Ok((mut conn, identity, _)) = open(link).await else {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        };
+        if identity.wire != mine().wire {
+            report_incompatible(events_tx).await;
+            return None;
+        }
+        let resume = match *shared.current_thread.lock().await {
+            Some(thread_id) => ResumeMode::Thread { thread_id },
+            None => ResumeMode::New {},
+        };
+        if conn
+            .send(ClientFrame::OpenSession {
+                cwd: shared.cwd.clone(),
+                resume,
+            })
+            .await
+            .is_err()
+        {
+            continue;
+        }
+        if let Ok(ServerFrame::SessionOpened { session, .. }) = request(&mut conn).await {
+            *shared.current.lock().await = session;
+            shared.idmap.lock().await.reset();
+            return Some(conn);
         }
     }
     None
 }
 
-async fn reconnect_once(
-    socket_path: &Path,
-    shared: &Arc<Shared>,
-    ours: &Identity,
-) -> Result<ClientConn<Stream>, bool> {
-    let Ok((mut conn, identity, _)) = open(socket_path).await else {
-        return Err(false);
-    };
-    if identity.wire != ours.wire {
-        return Err(true);
-    }
-    let resume = match *shared.current_thread.lock().await {
-        Some(thread_id) => ResumeMode::Thread { thread_id },
-        None => ResumeMode::New {},
-    };
-    if conn
-        .send(&ClientFrame::OpenSession {
-            cwd: shared.cwd.clone(),
-            resume,
+async fn report_incompatible(events_tx: &mpsc::Sender<Event>) {
+    let _ = events_tx
+        .send(Event::Error {
+            id: None,
+            message: "the daemon protocol changed while reconnecting".to_owned(),
+            hint: Some("restart the daemon with this goat build".to_owned()),
         })
-        .await
-        .is_err()
-    {
-        return Err(false);
-    }
-    match tokio::time::timeout(REQUEST_TIMEOUT, conn.recv()).await {
-        Ok(Ok(ServerFrame::SessionOpened { session })) => {
-            *shared.current.lock().await = session;
-            shared.idmap.lock().await.reset();
-            Ok(conn)
-        }
-        _ => Err(false),
-    }
+        .await;
 }
 
 async fn run_connection(
-    conn: ClientConn<Stream>,
+    conn: Conn,
     shared: &Arc<Shared>,
     cmd_rx: &mut mpsc::Receiver<Outbound>,
     events_tx: &mpsc::Sender<Event>,
     presence_tx: &mpsc::Sender<usize>,
 ) -> bool {
     use futures::{SinkExt, StreamExt};
-    let (sink, mut source) = conn.split();
-    let mut sink = Box::pin(sink);
+    let (mut sink, mut source) = conn.split();
     let mut expected_seq: Option<u64> = None;
     let mut replaying = false;
 
@@ -398,6 +414,10 @@ async fn run_connection(
                 let frame = match cmd {
                     Outbound::ListThreads => ClientFrame::ListThreads {
                         cwd: shared.cwd.clone(),
+                    },
+                    Outbound::ListFiles => ClientFrame::ListDirectory {
+                        path: shared.cwd.clone(),
+                        recursive: true,
                     },
                     Outbound::Op(op) => {
                         let session = *shared.current.lock().await;
@@ -434,7 +454,7 @@ async fn run_connection(
                 let Some(item) = item else { return true };
                 let Ok(frame) = item else { return true };
                 match &frame {
-                    ServerFrame::SessionOpened { session: new } => {
+                    ServerFrame::SessionOpened { session: new, .. } => {
                         *shared.current.lock().await = *new;
                         *shared.current_thread.lock().await = None;
                         continue;
@@ -588,6 +608,17 @@ fn frame_to_events(frame: ServerFrame) -> Vec<Event> {
                 })
                 .collect(),
         }],
+        ServerFrame::Directory { children, .. } => vec![Event::FilesListed {
+            entries: children
+                .into_iter()
+                .map(|entry| match entry.kind {
+                    goat_wire::DirEntryKind::Directory {} => format!("{}/", entry.name),
+                    goat_wire::DirEntryKind::File {} | goat_wire::DirEntryKind::Symlink {} => {
+                        entry.name
+                    }
+                })
+                .collect(),
+        }],
         ServerFrame::Error { message } => vec![Event::Error {
             id: None,
             message,
@@ -597,59 +628,58 @@ fn frame_to_events(frame: ServerFrame) -> Vec<Event> {
     }
 }
 
-pub async fn status(socket_path: &Path) -> Result<Vec<goat_wire::SessionInfo>, ClientError> {
-    let (mut conn, _identity, _client_id) = open(socket_path).await?;
-    conn.send(&ClientFrame::ListSessions {}).await?;
-    match request(&mut conn).await? {
+pub async fn status(link: &Link) -> Result<Vec<goat_wire::SessionInfo>, ClientError> {
+    match ask(link, ClientFrame::ListSessions {}).await? {
         ServerFrame::Sessions { sessions } => Ok(sessions),
-        _ => Err(ClientError::Handshake),
+        other => Err(refusal(other)),
     }
 }
 
 pub async fn list_threads(
-    socket_path: &Path,
+    link: &Link,
     cwd: &Path,
 ) -> Result<Vec<goat_wire::ThreadInfo>, ClientError> {
-    let (mut conn, _identity, _client_id) = open(socket_path).await?;
-    conn.send(&ClientFrame::ListThreads {
+    let frame = ClientFrame::ListThreads {
         cwd: cwd.display().to_string(),
-    })
-    .await?;
-    match request(&mut conn).await? {
+    };
+    match ask(link, frame).await? {
         ServerFrame::Threads { threads } => Ok(threads),
-        _ => Err(ClientError::Handshake),
+        other => Err(refusal(other)),
     }
 }
 
-pub async fn stop(socket_path: &Path) -> Result<Identity, ClientError> {
-    let (mut conn, identity, _client_id) = open(socket_path).await?;
-    conn.send(&ClientFrame::StopDaemon {}).await?;
-    tokio::time::timeout(STOP_TIMEOUT, async { while conn.recv().await.is_ok() {} })
-        .await
-        .map_err(|_| ClientError::Timeout(STOP_TIMEOUT))?;
-    Ok(identity)
+pub async fn stop(link: &Link) -> Result<(), ClientError> {
+    let (mut conn, _, _) = open(link).await?;
+    conn.send(ClientFrame::StopDaemon {}).await?;
+    tokio::time::timeout(STOP_TIMEOUT, async {
+        loop {
+            match conn.recv().await {
+                Ok(ServerFrame::Error { message }) => return Err(ClientError::Refused(message)),
+                Ok(_) => {}
+                Err(WireError::Closed) => return Ok(()),
+                Err(err) => return Err(ClientError::Wire(err)),
+            }
+        }
+    })
+    .await
+    .map_err(|_| ClientError::Timeout(STOP_TIMEOUT))?
 }
 
 pub async fn reload(
-    socket_path: &Path,
+    link: &Link,
     agent: Option<String>,
 ) -> Result<goat_wire::ReloadReport, ClientError> {
-    let (mut conn, _identity, _client_id) = open(socket_path).await?;
-    conn.send(&ClientFrame::ReloadAgents { agent }).await?;
-    match request(&mut conn).await? {
+    match ask(link, ClientFrame::ReloadAgents { agent }).await? {
         ServerFrame::Reloaded { report } => Ok(report),
-        ServerFrame::Error { message } => Err(ClientError::Refused(message)),
-        _ => Err(ClientError::Handshake),
+        other => Err(refusal(other)),
     }
 }
 
-pub async fn kill_session(socket_path: &Path, session: u64) -> Result<(), ClientError> {
-    let (mut conn, _identity, _client_id) = open(socket_path).await?;
-    conn.send(&ClientFrame::KillSession {
+pub async fn kill_session(link: &Link, session: u64) -> Result<(), ClientError> {
+    let frame = ClientFrame::KillSession {
         session: SessionId(session),
-    })
-    .await?;
-    Ok(())
+    };
+    tell(link, frame).await
 }
 
 pub struct PairingInfo {
@@ -658,10 +688,8 @@ pub struct PairingInfo {
     pub advertised: Vec<String>,
 }
 
-pub async fn pair_device(socket_path: &Path, label: String) -> Result<PairingInfo, ClientError> {
-    let (mut conn, _identity, _client_id) = open(socket_path).await?;
-    conn.send(&ClientFrame::PairDevice { label }).await?;
-    match request(&mut conn).await? {
+pub async fn pair_device(link: &Link, label: String) -> Result<PairingInfo, ClientError> {
+    match ask(link, ClientFrame::PairDevice { label }).await? {
         ServerFrame::PairingCode {
             code,
             server_fingerprint,
@@ -671,48 +699,41 @@ pub async fn pair_device(socket_path: &Path, label: String) -> Result<PairingInf
             server_fingerprint,
             advertised,
         }),
-        ServerFrame::Error { message } => Err(ClientError::OpenFailed(message)),
-        _ => Err(ClientError::Handshake),
+        other => Err(refusal(other)),
     }
 }
 
-pub async fn list_devices(socket_path: &Path) -> Result<Vec<goat_wire::DeviceInfo>, ClientError> {
-    let (mut conn, _identity, _client_id) = open(socket_path).await?;
-    conn.send(&ClientFrame::ListDevices {}).await?;
-    match request(&mut conn).await? {
+pub async fn list_devices(link: &Link) -> Result<Vec<goat_wire::DeviceInfo>, ClientError> {
+    match ask(link, ClientFrame::ListDevices {}).await? {
         ServerFrame::Devices { devices } => Ok(devices),
-        ServerFrame::Error { message } => Err(ClientError::OpenFailed(message)),
-        _ => Err(ClientError::Handshake),
+        other => Err(refusal(other)),
     }
 }
 
-pub async fn revoke_device(socket_path: &Path, device: String) -> Result<bool, ClientError> {
-    let (mut conn, _identity, _client_id) = open(socket_path).await?;
-    conn.send(&ClientFrame::RevokeDevice { device }).await?;
-    match request(&mut conn).await? {
+pub async fn revoke_device(link: &Link, device: String) -> Result<bool, ClientError> {
+    match ask(link, ClientFrame::RevokeDevice { device }).await? {
         ServerFrame::DeviceRevoked { ok } => Ok(ok),
-        ServerFrame::Error { message } => Err(ClientError::OpenFailed(message)),
-        _ => Err(ClientError::Handshake),
+        other => Err(refusal(other)),
     }
 }
 
-fn spawn_daemon(daemon_exe: &Path) -> Result<(), ClientError> {
-    use std::process::{Command, Stdio};
-    Command::new(daemon_exe)
-        .arg("daemon")
-        .arg("serve")
-        .arg("--detached")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| ClientError::SpawnFailed(e.to_string()))?;
+async fn tell(link: &Link, frame: ClientFrame) -> Result<(), ClientError> {
+    let (mut conn, _, _) = open(link).await?;
+    conn.send(frame).await?;
     Ok(())
 }
 
-pub async fn start(socket_path: &Path, daemon_exe: &Path) -> Result<Attached, ClientError> {
-    let (_conn, _identity, _client_id, attached) = ensure(socket_path, daemon_exe).await?;
-    Ok(attached)
+async fn ask(link: &Link, frame: ClientFrame) -> Result<ServerFrame, ClientError> {
+    let (mut conn, _, _) = open(link).await?;
+    conn.send(frame).await?;
+    request(&mut conn).await
+}
+
+fn refusal(frame: ServerFrame) -> ClientError {
+    match frame {
+        ServerFrame::Error { message } => ClientError::Refused(message),
+        _ => ClientError::Handshake,
+    }
 }
 
 #[cfg(test)]
@@ -742,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn decision_table() {
+    fn decision_table_preserves_busy_daemons() {
         let idle = Busy::default();
         let busy = Busy {
             sessions: 1,
@@ -767,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_build_is_never_stale() {
+    fn unknown_build_is_not_stale() {
         let ours = peer("aaaa", 1, Busy::default());
         let mut theirs = peer("aaaa", 2, Busy::default());
         theirs.build = None;

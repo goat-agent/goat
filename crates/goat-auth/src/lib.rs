@@ -61,6 +61,8 @@ pub enum CredentialService {
     Search,
     Integration,
     Channel,
+    Remote,
+    Mcp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -108,6 +110,28 @@ impl CredentialKey {
     ) -> Self {
         Self {
             service: CredentialService::Channel,
+            provider: provider.into(),
+            account: account.into(),
+            slot: Some(slot.into()),
+        }
+    }
+
+    pub fn remote(remote: impl Into<String>, slot: impl Into<String>) -> Self {
+        Self {
+            service: CredentialService::Remote,
+            provider: remote.into(),
+            account: "device".to_owned(),
+            slot: Some(slot.into()),
+        }
+    }
+
+    pub fn mcp(
+        provider: impl Into<String>,
+        account: impl Into<String>,
+        slot: impl Into<String>,
+    ) -> Self {
+        Self {
+            service: CredentialService::Mcp,
             provider: provider.into(),
             account: account.into(),
             slot: Some(slot.into()),

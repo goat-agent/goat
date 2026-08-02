@@ -6,7 +6,7 @@ use crate::{
     ask::AskOutcome,
     config::ConfigOutcome,
     keymap,
-    picker::{EffortOutcome, PickerOutcome, ThreadOutcome},
+    picker::{EffortOutcome, PickerOutcome, RewindOutcome, ThreadOutcome},
 };
 
 impl App {
@@ -21,9 +21,11 @@ impl App {
             Overlay::Account(_) => return self.on_account_menu_key(key),
             Overlay::Effort(_) => return self.on_effort_picker_key(key),
             Overlay::Thread(_) => return self.on_thread_picker_key(key),
+            Overlay::Rewind(_) => return self.on_rewind_picker_key(key),
             Overlay::Config(_) => return self.on_config_key(key),
             Overlay::Runs(_) => return self.on_run_selector_key(key),
             Overlay::Ask(_, _) => return self.on_ask_picker_key(key),
+            Overlay::Plan(_) => return self.on_plan_sheet_key(key),
             Overlay::Commands(_) => {
                 if let Some(result) = self.on_command_menu_key(key) {
                     return result;
@@ -48,6 +50,7 @@ impl App {
             }
             self.quit_arm = None;
             self.clear_arm = None;
+            self.rewind_arm = None;
             match ch {
                 'a' => {
                     self.dirty |= self.composer.move_home();
@@ -70,6 +73,7 @@ impl App {
         self.quit_arm = None;
         if !matches!(key.code, KeyCode::Esc) {
             self.clear_arm = None;
+            self.rewind_arm = None;
         }
         self.on_normal_key(key)
     }
@@ -197,9 +201,85 @@ impl App {
         }
     }
 
+    pub(crate) fn on_plan_sheet_key(&mut self, key: KeyEvent) -> Vec<Op> {
+        let Overlay::Plan(sheet) = &mut self.overlay else {
+            return Vec::new();
+        };
+        self.dirty = true;
+        if sheet.rejecting() {
+            return match key.code {
+                KeyCode::Esc => {
+                    sheet.cancel_reject();
+                    Vec::new()
+                }
+                KeyCode::Backspace => {
+                    sheet.pop_feedback();
+                    Vec::new()
+                }
+                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    sheet.push_feedback(ch);
+                    Vec::new()
+                }
+                KeyCode::Enter => {
+                    let call = sheet.call;
+                    let feedback = sheet.submit_reject();
+                    self.overlay = Overlay::None;
+                    vec![Op::ResolvePlan {
+                        call,
+                        decision: goat_protocol::PlanDecision::Reject { feedback },
+                    }]
+                }
+                _ => Vec::new(),
+            };
+        }
+        match key.code {
+            KeyCode::Char('a') => {
+                let call = sheet.call;
+                self.overlay = Overlay::None;
+                vec![Op::ResolvePlan {
+                    call,
+                    decision: goat_protocol::PlanDecision::Approve {},
+                }]
+            }
+            KeyCode::Char('r') => {
+                sheet.begin_reject();
+                Vec::new()
+            }
+            KeyCode::PageUp => {
+                let page = sheet.page();
+                sheet.scroll_up(page);
+                Vec::new()
+            }
+            KeyCode::PageDown => {
+                let page = sheet.page();
+                sheet.scroll_down(page);
+                Vec::new()
+            }
+            KeyCode::Up => {
+                sheet.scroll_up(1);
+                Vec::new()
+            }
+            KeyCode::Down => {
+                sheet.scroll_down(1);
+                Vec::new()
+            }
+            KeyCode::Esc => {
+                self.overlay = Overlay::None;
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     pub(crate) fn on_normal_key(&mut self, key: KeyEvent) -> Vec<Op> {
         match key.code {
+            KeyCode::BackTab => {
+                let mode = self.mode.toggled();
+                self.mode = mode;
+                self.dirty = true;
+                vec![Op::SetMode { mode }]
+            }
             KeyCode::PageUp => {
                 self.scroll = self.scroll.saturating_sub(self.page_rows());
                 self.follow = false;
@@ -309,14 +389,24 @@ impl App {
                 }
                 if let Some(id) = self.turn.active {
                     self.clear_arm = None;
+                    self.rewind_arm = None;
                     return vec![Op::Interrupt { id }];
                 }
                 self.overlay = Overlay::None;
                 if self.composer.is_empty() {
                     self.clear_arm = None;
-                    self.composer.exit_shell();
+                    if self.composer.shell() {
+                        self.rewind_arm = None;
+                        self.composer.exit_shell();
+                        return Vec::new();
+                    }
+                    if self.rewind_arm.take().is_some() {
+                        return self.request_rewind();
+                    }
+                    self.rewind_arm = Some(CLEAR_ARM_TICKS);
                     return Vec::new();
                 }
+                self.rewind_arm = None;
                 if self.clear_arm.take().is_some() {
                     self.composer.discard();
                 } else {
@@ -445,6 +535,57 @@ impl App {
                 {
                     self.overlay = Overlay::None;
                     return vec![Op::Resume { thread_id }];
+                }
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    pub(crate) fn on_rewind_picker_key(&mut self, key: KeyEvent) -> Vec<Op> {
+        self.dirty = true;
+        if let Some(ch) = keymap::ctrl_key(&key) {
+            if ch == 'c' {
+                self.overlay = Overlay::None;
+            }
+            return Vec::new();
+        }
+        match key.code {
+            KeyCode::Esc => {
+                if let Overlay::Rewind(picker) = &mut self.overlay
+                    && matches!(picker.escape(), RewindOutcome::Close)
+                {
+                    self.overlay = Overlay::None;
+                }
+            }
+            KeyCode::Up => {
+                if let Overlay::Rewind(picker) = &mut self.overlay {
+                    picker.move_up();
+                }
+            }
+            KeyCode::Down => {
+                if let Overlay::Rewind(picker) = &mut self.overlay {
+                    picker.move_down();
+                }
+            }
+            KeyCode::Enter => {
+                let outcome = match &mut self.overlay {
+                    Overlay::Rewind(picker) => picker.enter(),
+                    _ => RewindOutcome::NoOp,
+                };
+                match outcome {
+                    RewindOutcome::NoOp => {}
+                    RewindOutcome::Close => self.overlay = Overlay::None,
+                    RewindOutcome::Selected {
+                        checkpoint_id,
+                        scope,
+                    } => {
+                        self.overlay = Overlay::None;
+                        return vec![Op::Rewind {
+                            checkpoint_id,
+                            scope,
+                        }];
+                    }
                 }
             }
             _ => {}

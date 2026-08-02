@@ -22,12 +22,14 @@ mod accounts;
 mod ask;
 mod background;
 mod bash_tools;
+mod checkpoint;
 mod compaction;
 mod conversation;
 mod delegate;
 mod instructions;
 mod mcp_tools;
 mod persist;
+mod plan;
 mod prompt;
 mod rate_limit_cache;
 mod retry;
@@ -51,6 +53,7 @@ pub async fn model_list_entries(
 }
 
 const CHILD_ID_BASE: u64 = 1 << 32;
+const PLAN_ID_BASE: u64 = 1 << 40;
 const WAKE_ID_BASE: u64 = 1 << 48;
 
 pub struct GoatAgent {
@@ -76,7 +79,19 @@ impl GoatAgent {
         meter: Option<goat_proxy::Meter>,
     ) -> Self {
         let config = goat_config::Config::load();
-        let mcp = goat_mcp::load_manager(goat_config::mcp_config_path().as_deref(), &cwd).await;
+        let project_root = goat_worktree::workspace(&cwd)
+            .map_or_else(|_| cwd.clone(), |workspace| workspace.repo_root);
+        let paths = goat_config::GoatPaths::default_layout().ok();
+        let mcp = goat_mcp::load_scoped_manager(
+            paths.as_ref().map(|paths| paths.mcp_json.as_path()),
+            paths
+                .as_ref()
+                .map(|paths| paths.mcp_approvals_json.as_path()),
+            &project_root,
+            &credentials,
+            &cwd,
+        )
+        .await;
         let mcp_tools = mcp_tools::adapt(&mcp);
         let tool_count = mcp_tools.len();
         let mut tools = ToolRegistry::builtin().with_many(mcp_tools);
@@ -125,12 +140,14 @@ pub(crate) struct Shared {
     pub(crate) instructions: Option<String>,
     pub(crate) semaphore: Arc<Semaphore>,
     pub(crate) child_ids: AtomicU64,
+    pub(crate) plan_ids: AtomicU64,
     pub(crate) wake_ids: AtomicU64,
     pub(crate) background: Arc<background::Runs>,
     pub(crate) asks: Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>>,
     pub(crate) rl_cache: std::sync::Mutex<rate_limit_cache::RateLimitCache>,
     pub(crate) rl_path: Option<PathBuf>,
     pub(crate) meter: Option<goat_proxy::Meter>,
+    pub(crate) checkpoints: checkpoint::CheckpointTracker,
     pub(crate) cwd: PathBuf,
     pub(crate) date: String,
 }
@@ -169,9 +186,21 @@ pub(crate) enum Flow {
 
 pub(crate) struct SessionState {
     pub(crate) target: Option<ModelTarget>,
+    pub(crate) mode: goat_protocol::Mode,
+    pub(crate) plan_path: Option<PathBuf>,
     pub(crate) conversation: conversation::Conversation,
     pub(crate) tracker: compaction::ContextTracker,
     pub(crate) thread_id: Option<i64>,
+}
+
+impl SessionState {
+    pub(crate) fn plan_prompt_path(&self) -> Option<&std::path::Path> {
+        if self.mode.is_plan() {
+            self.plan_path.as_deref()
+        } else {
+            None
+        }
+    }
 }
 
 pub(crate) struct TurnIds {
@@ -185,6 +214,7 @@ pub(crate) struct UserInput {
     pub(crate) text: String,
     pub(crate) display: Option<String>,
     pub(crate) attachments: Vec<goat_protocol::InputAttachment>,
+    pub(crate) checkpoint: bool,
 }
 
 pub(crate) type SteeringQueue = std::sync::Mutex<std::collections::VecDeque<UserInput>>;
@@ -252,6 +282,8 @@ pub(crate) struct LoopEnv {
     pub(crate) cwd: PathBuf,
     pub(crate) allow_delegate: bool,
     pub(crate) allow_ask: bool,
+    pub(crate) plan: bool,
+    pub(crate) plan_path: Option<PathBuf>,
     pub(crate) exec_policy: SandboxPolicy,
 }
 
@@ -270,6 +302,8 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     } = agent;
     let mut state = SessionState {
         target,
+        mode: goat_protocol::Mode::Normal,
+        plan_path: None,
         conversation: conversation::Conversation::new(),
         tracker: compaction::ContextTracker::new(),
         thread_id: None,
@@ -286,6 +320,14 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
         state.target.as_ref(),
     )
     .await;
+    if let Some(message) = mcp.startup_message() {
+        let _ = events
+            .send(Event::Notify {
+                kind: goat_protocol::NotifyKind::Info,
+                message,
+            })
+            .await;
+    }
 
     let skills = prompt::load_skill_infos(&cwd);
     let subagents = SubagentRegistry::load(&cwd);
@@ -293,10 +335,12 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     let session_date = prompt::current_utc_date();
     let semaphore = Arc::new(Semaphore::new(delegate::MAX_CONCURRENT_SUBAGENTS));
     let child_ids = AtomicU64::new(CHILD_ID_BASE);
+    let plan_ids = AtomicU64::new(PLAN_ID_BASE);
     let wake_ids = AtomicU64::new(WAKE_ID_BASE);
     let wake = Arc::new(tokio::sync::Notify::new());
     let processes = background::Runs::new(events.clone(), wake.clone(), Some(store.clone()));
     let asks: Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>> = Mutex::new(HashMap::new());
+    let checkpoints = checkpoint::CheckpointTracker::new(store.clone());
     let _ = events
         .send(Event::SkillsChanged {
             skills: skills.clone(),
@@ -338,12 +382,14 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
         instructions: project_instructions,
         semaphore,
         child_ids,
+        plan_ids,
         wake_ids,
         background: processes,
         asks,
         rl_cache,
         rl_path,
         meter,
+        checkpoints,
         cwd,
         date: session_date,
     }));
@@ -378,8 +424,11 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                     break;
                 }
             }
-            Op::Interrupt { .. } | Op::Answer { .. } | Op::DequeueMessage { .. } | Op::Clear {} => {
-            }
+            Op::Interrupt { .. }
+            | Op::Answer { .. }
+            | Op::DequeueMessage { .. }
+            | Op::Clear {}
+            | Op::ListFiles {} => {}
             Op::ProcessKill { process } => {
                 let _ = ctx.background.kill(process, None).await;
             }
@@ -400,17 +449,15 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                     break;
                 }
             }
-            Op::SelectModel { .. } => {
-                turn::handle_idle_op(
-                    op,
-                    &ctx.store,
-                    &ctx.cwd,
-                    state.thread_id,
-                    &mut state.target,
-                    &ctx.events,
-                    &ctx.background,
-                )
-                .await;
+            Op::SelectModel { .. } | Op::SetMode { .. } => {
+                turn::handle_idle_op(op, &ctx, &mut state).await;
+            }
+            Op::ResolvePlan { decision, .. } => {
+                if let Flow::Shutdown =
+                    turn::handle_plan_decision(&ctx, decision, &mut state, &mut ops).await
+                {
+                    break;
+                }
             }
             Op::Login {
                 provider,
@@ -441,11 +488,22 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
             Op::ListThreads {} => {
                 threads::handle_list_threads(&ctx.store, &ctx.cwd, &ctx.events).await;
             }
+            Op::ListRewindPoints {} => {
+                threads::handle_list_rewind_points(&ctx, state.thread_id).await;
+            }
+            Op::Rewind {
+                checkpoint_id,
+                scope,
+            } => {
+                threads::handle_rewind(&ctx, checkpoint_id, scope, &mut state).await;
+            }
             Op::Resume { thread_id: tid } => {
+                ctx.checkpoints.clear();
                 threads::handle_resume(&ctx, tid, &mut state).await;
                 accounts::refresh_model_list(&ctx).await;
             }
             Op::ResumeLatest {} => {
+                ctx.checkpoints.clear();
                 threads::handle_resume_latest(&ctx, &mut state).await;
                 accounts::refresh_model_list(&ctx).await;
             }

@@ -1,8 +1,10 @@
 mod ca;
+pub mod client;
 mod devices;
 mod pairing;
 mod server;
 mod verify;
+mod ws;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -14,7 +16,7 @@ use goat_wire::{ClientFrame, ServerFrame, WireError};
 pub use ca::{Authority, SignedDevice, fingerprint_der, fingerprint_pem};
 pub use devices::{Device, Devices};
 pub use pairing::Pairing;
-pub use verify::{Allowlist, DeviceVerifier};
+pub use verify::{Allowlist, DeviceVerifier, PinnedServer};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RemoteError {
@@ -30,6 +32,10 @@ pub enum RemoteError {
     Pem,
     #[error("bind error: {0}")]
     Bind(String),
+    #[error("pairing failed: {0}")]
+    Pairing(String),
+    #[error("handshake failed: {0}")]
+    Handshake(String),
 }
 
 pub type RemoteSink = Pin<Box<dyn Sink<ServerFrame, Error = WireError> + Send>>;

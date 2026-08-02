@@ -36,6 +36,8 @@ pub struct Palette {
     pub panel: Color,
     pub shell: Color,
     pub shell_dim: Color,
+    pub plan: Color,
+    pub plan_dim: Color,
     pub selection: Color,
     pub code: CodePalette,
 }
@@ -60,6 +62,8 @@ impl Palette {
             panel: Color::Rgb(0x1b, 0x1b, 0x1e),
             shell: Color::Rgb(0xdb, 0x4b, 0x4b),
             shell_dim: Color::Rgb(0x54, 0x29, 0x2e),
+            plan: Color::Rgb(0x5c, 0x8f, 0xd6),
+            plan_dim: Color::Rgb(0x27, 0x37, 0x4d),
             selection: Color::Rgb(0x2d, 0x3c, 0x52),
             code: CodePalette {
                 bg: Color::Reset,
@@ -96,6 +100,8 @@ impl Palette {
             panel: Color::Rgb(0xf0, 0xf1, 0xf4),
             shell: Color::Rgb(0xa3, 0x15, 0x45),
             shell_dim: Color::Rgb(0xf0, 0xd4, 0xdc),
+            plan: Color::Rgb(0x12, 0x4e, 0xa8),
+            plan_dim: Color::Rgb(0xd2, 0xdf, 0xf2),
             selection: Color::Rgb(0xc7, 0xdd, 0xf5),
             code: CodePalette {
                 bg: Color::Reset,
@@ -201,6 +207,14 @@ impl Theme {
 
     pub fn shell_dim(self) -> ratatui::style::Style {
         ratatui::style::Style::new().fg(self.palette.shell_dim)
+    }
+
+    pub fn plan(self) -> ratatui::style::Style {
+        ratatui::style::Style::new().fg(self.palette.plan)
+    }
+
+    pub fn plan_dim(self) -> ratatui::style::Style {
+        ratatui::style::Style::new().fg(self.palette.plan_dim)
     }
 
     pub fn role_user(self) -> ratatui::style::Style {

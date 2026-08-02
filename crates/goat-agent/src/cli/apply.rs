@@ -23,7 +23,11 @@ pub async fn config_changed(agent: Option<&str>) {
             }
         }
     }
-    match goat_client::reload(&socket_path, agent.map(str::to_owned)).await {
+    let Ok(daemon_exe) = std::env::current_exe() else {
+        return;
+    };
+    let link = goat_client::Link::local(socket_path, daemon_exe);
+    match goat_client::reload(&link, agent.map(str::to_owned)).await {
         Ok(report) => {
             for failure in &report.failed {
                 ui::warning(&format!("{}: {}", failure.agent, failure.reason));

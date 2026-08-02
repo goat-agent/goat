@@ -1,8 +1,7 @@
 use std::fmt::Write as _;
 
-use goat_protocol::{Event, InputAttachment, ModelTarget, Op, TaskId};
+use goat_protocol::{Event, InputAttachment, Op, TaskId};
 use goat_provider::{ContentBlock, Message, MessageRole, Provider, ToolDefinition};
-use goat_store::CodeStore as Store;
 use goat_tool::{SandboxPolicy, ToolContext, ToolError};
 use goat_tools::ToolRegistry;
 use tokio::sync::mpsc;
@@ -41,8 +40,13 @@ pub(crate) fn user_message(text: &str, attachments: &[InputAttachment]) -> Messa
     }
 }
 
-fn top_regime(ctx: &Ctx, provider: &dyn Provider, allow_ask: bool) -> Vec<ToolDefinition> {
-    build_tool_defs(ctx, provider, None, true, allow_ask)
+fn top_regime(
+    ctx: &Ctx,
+    provider: &dyn Provider,
+    allow_ask: bool,
+    plan: bool,
+) -> Vec<ToolDefinition> {
+    build_tool_defs(ctx, provider, None, true, allow_ask, plan)
 }
 
 const SHELL_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(10);
@@ -98,21 +102,16 @@ pub(crate) async fn emit_task_error(ctx: &Ctx, id: TaskId, message: String, hint
         .await;
 }
 
-pub(crate) async fn handle_idle_op(
-    op: Op,
-    store: &Store,
-    cwd: &std::path::Path,
-    thread_id: Option<i64>,
-    target: &mut Option<ModelTarget>,
-    events: &mpsc::Sender<Event>,
-    processes: &std::sync::Arc<crate::background::Runs>,
-) {
+pub(crate) async fn handle_idle_op(op: Op, ctx: &Ctx, state: &mut SessionState) {
+    let store = &ctx.store;
+    let events = &ctx.events;
+    let thread_id = state.thread_id;
     match op {
         Op::ProcessKill { process } => {
-            let _ = processes.kill(process, None).await;
+            let _ = ctx.background.kill(process, None).await;
         }
         Op::ProcessWatch { process, on } => {
-            let _ = processes.set_watch(process, on).await;
+            let _ = ctx.background.set_watch(process, on).await;
         }
         Op::SelectModel { target: chosen } => {
             if let Some(tid) = thread_id
@@ -129,18 +128,23 @@ pub(crate) async fn handle_idle_op(
             {
                 tracing::warn!(%err, "failed to update thread model");
             }
-            *target = Some(chosen.clone());
+            state.target = Some(chosen.clone());
             let _ = events.send(Event::ModelSelected { target: chosen }).await;
+        }
+        Op::SetMode { mode } => {
+            apply_mode(ctx, state, mode).await;
         }
         Op::RenameThread { title } => {
             crate::threads::handle_rename(store, thread_id, title, events).await;
         }
         Op::ListThreads {} => {
-            crate::threads::handle_list_threads(store, cwd, events).await;
+            crate::threads::handle_list_threads(store, &ctx.cwd, events).await;
         }
         Op::Login { .. }
         | Op::AddAccount { .. }
         | Op::RemoveAccount { .. }
+        | Op::ListRewindPoints { .. }
+        | Op::Rewind { .. }
         | Op::Resume { .. }
         | Op::ResumeLatest { .. } => {
             let _ = events
@@ -153,6 +157,101 @@ pub(crate) async fn handle_idle_op(
         }
         _ => {}
     }
+}
+
+async fn bind_plan_path(ctx: &Ctx, state: &mut SessionState, thread_id: Option<i64>, seed: &str) {
+    if !state.mode.is_plan() || state.plan_path.is_some() {
+        return;
+    }
+    let Some(tid) = thread_id else { return };
+    let Some(dir) = goat_config::plans_dir() else {
+        return;
+    };
+    if let Err(err) = tokio::fs::create_dir_all(&dir).await {
+        tracing::warn!(%err, "failed to create plans directory");
+        return;
+    }
+    let seed = seed.to_owned();
+    let Ok(path) =
+        tokio::task::spawn_blocking(move || crate::plan::resolve_path(&dir, tid, &seed)).await
+    else {
+        return;
+    };
+    state.plan_path = Some(path.clone());
+    let _ = ctx
+        .events
+        .send(Event::ModeChanged {
+            mode: state.mode,
+            plan_path: Some(path.display().to_string()),
+        })
+        .await;
+}
+
+pub(crate) async fn apply_mode(ctx: &Ctx, state: &mut SessionState, mode: goat_protocol::Mode) {
+    state.mode = mode;
+    if !mode.is_plan() {
+        state.plan_path = None;
+    }
+    let _ = ctx
+        .events
+        .send(Event::ModeChanged {
+            mode,
+            plan_path: state.plan_path.as_ref().map(|p| p.display().to_string()),
+        })
+        .await;
+}
+
+pub(crate) async fn handle_plan_decision(
+    ctx: &Ctx,
+    decision: goat_protocol::PlanDecision,
+    state: &mut SessionState,
+    ops: &mut mpsc::Receiver<Op>,
+) -> Flow {
+    let Some(input) = plan_decision_input(ctx, state, &decision) else {
+        return Flow::Continue;
+    };
+    if matches!(decision, goat_protocol::PlanDecision::Approve {}) {
+        apply_mode(ctx, state, goat_protocol::Mode::Normal).await;
+    }
+    run_turn_chain(
+        ctx,
+        input,
+        std::collections::VecDeque::new(),
+        state,
+        ops,
+        true,
+    )
+    .await
+}
+
+fn plan_decision_input(
+    ctx: &Ctx,
+    state: &SessionState,
+    decision: &goat_protocol::PlanDecision,
+) -> Option<crate::UserInput> {
+    let (text, display) = match decision {
+        goat_protocol::PlanDecision::Approve {} => {
+            let path = state.plan_path.as_ref()?;
+            (
+                crate::plan::approved_input(path),
+                "(plan approved)".to_owned(),
+            )
+        }
+        goat_protocol::PlanDecision::Reject { feedback } => (
+            crate::plan::rejected_input(feedback),
+            "(plan rejected)".to_owned(),
+        ),
+    };
+    Some(crate::UserInput {
+        id: TaskId(
+            ctx.plan_ids
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ),
+        text,
+        display: Some(display),
+        attachments: Vec::new(),
+        checkpoint: false,
+    })
 }
 
 enum TurnFlow {
@@ -189,6 +288,7 @@ async fn pump_op(
                     text: msg_text,
                     display,
                     attachments,
+                    checkpoint: true,
                 });
             PumpAction::Continue
         }
@@ -277,6 +377,7 @@ pub(crate) async fn handle_wake(
             text: body,
             display: Some("(background activity)".to_owned()),
             attachments: Vec::new(),
+            checkpoint: false,
         },
         std::collections::VecDeque::new(),
         state,
@@ -302,6 +403,7 @@ pub(crate) async fn handle_turn(
             text,
             display,
             attachments,
+            checkpoint: true,
         },
         std::collections::VecDeque::new(),
         state,
@@ -359,17 +461,15 @@ async fn drain_deferred(
                     return Flow::Shutdown;
                 }
             }
+            Op::ResolvePlan { decision, .. } => {
+                if let Flow::Shutdown =
+                    Box::pin(handle_plan_decision(ctx, decision, state, ops)).await
+                {
+                    return Flow::Shutdown;
+                }
+            }
             other => {
-                handle_idle_op(
-                    other,
-                    &ctx.store,
-                    &ctx.cwd,
-                    state.thread_id,
-                    &mut state.target,
-                    &ctx.events,
-                    &ctx.background,
-                )
-                .await;
+                handle_idle_op(other, ctx, state).await;
             }
         }
     }
@@ -434,6 +534,7 @@ pub(crate) async fn handle_shell(
                     &ctx.skills,
                     ctx.instructions.as_deref(),
                     &ctx.date,
+                    state.plan_prompt_path(),
                 ),
             ),
             None,
@@ -518,7 +619,7 @@ pub(crate) async fn handle_compact(
         return Flow::Shutdown;
     }
     let cwd = resolve_thread_cwd(ctx, state.thread_id).await;
-    let tool_defs = top_regime(ctx, provider.as_ref(), true);
+    let tool_defs = top_regime(ctx, provider.as_ref(), true, false);
     let ids = crate::TurnIds {
         stored_thread: state.thread_id,
         turn_db_id: None,
@@ -533,6 +634,8 @@ pub(crate) async fn handle_compact(
         cwd,
         allow_delegate: true,
         allow_ask: true,
+        plan: false,
+        plan_path: None,
         exec_policy: SandboxPolicy::Full,
     };
     let token = CancellationToken::new();
@@ -624,7 +727,9 @@ async fn run_one_turn(
 ) -> (TurnFlow, Vec<Op>) {
     let id = input.id;
     let text = input.text;
+    let draft = input.display.as_deref().unwrap_or(&text).to_owned();
     let attachments = input.attachments;
+    let checkpoint = input.checkpoint;
     let Some(resolved) = state.target.clone() else {
         emit_task_error(
             ctx,
@@ -657,16 +762,20 @@ async fn run_one_turn(
         id,
         &message,
         &text,
+        &draft,
         &attachments,
         &resolved,
         &mut state.thread_id,
+        checkpoint,
     )
     .await;
+    bind_plan_path(ctx, state, ids.stored_thread, &text).await;
     let system = build_system_prompt(
         &ctx.cwd,
         &ctx.skills,
         ctx.instructions.as_deref(),
         &ctx.date,
+        state.plan_prompt_path(),
     );
     if state.conversation.is_empty() {
         state
@@ -696,7 +805,7 @@ async fn run_one_turn(
     }
 
     let cwd = resolve_thread_cwd(ctx, ids.stored_thread).await;
-    let tool_defs = top_regime(ctx, provider.as_ref(), allow_ask);
+    let tool_defs = top_regime(ctx, provider.as_ref(), allow_ask, state.mode.is_plan());
     let steering: crate::SteeringQueue = std::sync::Mutex::new(seed);
     let run = Run::top(id, &ids, &steering);
     let env = crate::LoopEnv {
@@ -706,6 +815,8 @@ async fn run_one_turn(
         cwd,
         allow_delegate: true,
         allow_ask,
+        plan: state.mode.is_plan(),
+        plan_path: state.plan_path.clone(),
         exec_policy: SandboxPolicy::Full,
     };
     let token = CancellationToken::new();
