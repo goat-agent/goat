@@ -2846,6 +2846,7 @@ dependencies = [
 name = "goat-daemon"
 version = "0.1.27"
 dependencies = [
+ "bytes",
  "futures",
  "goat-auth",
  "goat-config",
