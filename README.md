@@ -25,8 +25,10 @@ curl -fsSL https://raw.githubusercontent.com/goat-agent/goat/main/install.sh | s
 
 The installer downloads the latest release binary, verifies its checksum when local tooling is
 available, and installs `goat` into `~/.goat/bin`. macOS and Linux on x86_64 and arm64; there is no
-Windows build. Nothing is registered as a system service — the daemon is spawned on demand by the
-first command that needs it and stays resident until `goat daemon stop`.
+Windows build. Nothing is registered as a system service — `goat code` spawns the daemon on demand,
+`goat daemon start` brings it up on its own, and either way it detaches from the terminal and stays
+resident until `goat daemon stop`. A daemon left over from an older build is replaced automatically
+while it is idle, and reported instead of replaced while it is busy.
 
 ## Commands
 
@@ -36,12 +38,14 @@ goat setup               first-run setup — providers, then an optional agent
 goat code                launch the coding TUI (-c resume, -w worktree)
 goat code worktree       manage git worktrees
 goat code search         manage search providers
+goat code session        list or end live coding sessions
 goat agent add | list    manage agents
 goat agent show | remove inspect or archive an agent
 goat agent channel       bind an agent to a chat channel (verifies the secrets)
 goat agent status | log  show state and recent actions
 goat provider            manage LLM keys
-goat daemon | remote     manage the local daemon and paired devices
+goat daemon              start | stop | status | serve the local daemon
+goat remote              manage paired devices
 goat doctor | update     diagnose config; update the binary
 ```
 

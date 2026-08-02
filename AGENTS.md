@@ -271,10 +271,29 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
 - Sessions are keyed by `SessionId`, with a secondary index by `thread_id`. There is no cwd map:
   `goat code` defaults to a **new** session, and only `-c` resolves cwd to the latest thread through
   a database query. Several live sessions can share a cwd.
-- `goat daemon serve` builds one `Manager`, opens `ProxyStore`, spawns a `Recorder` with two
-  `Meter`s (one code, one agent), boots the agent runtime via `Goat::boot_with_code_metered`,
-  backfills `rate_limits.json`, serves the proxy dashboard, and runs `serve_with` — all under one
-  shutdown token. The `code_task` tool drives that same `Manager` in-process, no wire hop.
+- `goat daemon serve` takes `~/.goat/daemon.lock` first, builds one `Manager`, **binds the socket
+  and starts accepting**, and only then opens `ProxyStore`, spawns a `Recorder` with two `Meter`s
+  (one code, one agent), boots the agent runtime via `Goat::boot_with_code_metered`, backfills
+  `rate_limits.json` and serves the proxy dashboard — all under one shutdown token. Binding before
+  the boot is deliberate: nothing that touches the network may come before the socket, or every
+  client wait budget is a lie. `Welcome.ready` is false until the agent runtime is up; code sessions
+  never wait on it. The `code_task` tool drives that same `Manager` in-process, no wire hop.
+- **The daemon greets first and never judges a client.** On accept it sends `ServerFrame::Welcome`
+  carrying the wire fingerprint, the exe identity, and a `Busy` snapshot; there is no `Hello` and no
+  version gate. The client decides (`goat_client::decide`): a different wire means they cannot talk,
+  a different exe means the daemon runs older logic, and `Busy` decides whether replacing it is
+  allowed. `StopDaemon` is never gated by any of that — it is the escape hatch. `goat daemon stop`
+  waits for EOF, which the daemon sends only after it has fully drained.
+- **The lock, not the socket, is the handoff barrier.** `transport::cleanup` unlinks the socket
+  while the runtime still has up to 10 s of drain left, so "socket gone" does not mean "process
+  gone". An `flock` is released by the kernel on process death, SIGKILL included, so a replacement
+  daemon blocks on `goat_daemon::acquire` until the old one is really out. That is also what makes
+  the global boot sweeps (`WHERE status = 'running'`) safe.
+- **Detaching is a spawn contract, not a guess.** `goat daemon serve` stays in the foreground so a
+  supervisor can own it; `goat daemon start` spawns it with the hidden `--detached`, and only then
+  does it call `rustix::process::setsid()`. Deciding from job control instead would be wrong in a
+  non-interactive shell, where the process is not a group leader and would detach from its
+  supervisor.
 - `goat integration` manages the global connection to a service; `goat agent integration` binds an
   already-connected service to one agent. Both take `-a <agent>` where an agent is implied.
 - `interact::pick` is the one non-cancellable picker: it promotes Esc to `ConsoleError("cancelled")`,
