@@ -2,6 +2,9 @@ mod auth;
 mod cli;
 mod headless;
 mod logging;
+mod mcp;
+mod mcp_import;
+mod mcp_secrets;
 mod proxy_ops;
 mod remote;
 mod search;
@@ -62,6 +65,7 @@ async fn main() -> color_eyre::Result<()> {
         Some(Command::Reload { agent }) => run_reload(agent).await,
         Some(Command::Update { force }) => update::run(force).await,
         Some(Command::Provider(command)) => auth::run_provider(command).await,
+        Some(Command::Mcp(command)) => mcp::run(command).await,
         Some(Command::Daemon { remote, command }) => {
             run_daemon_command(command, remote.as_deref()).await
         }
@@ -169,8 +173,12 @@ async fn run_code(args: CodeArgs) -> color_eyre::Result<()> {
 async fn connect_session(
     link: &std::sync::Arc<goat_client::Link>,
     args: &CodeArgs,
+    approve_project_mcp: bool,
 ) -> color_eyre::Result<goat_client::Attachment> {
     let cwd = session_cwd(link, args)?;
+    if approve_project_mcp && link.is_local() {
+        mcp::approve_project_servers(&cwd)?;
+    }
     let resume = if args.r#continue {
         goat_wire::ResumeMode::Latest {}
     } else {
@@ -223,7 +231,7 @@ async fn run_tui(
         goat_config::ThemeChoice::Light => goat_tui::Theme::light(),
     };
 
-    let attachment = connect_session(link, args).await?;
+    let attachment = connect_session(link, args, true).await?;
     let managed = link
         .is_local()
         .then(|| {
@@ -326,7 +334,7 @@ async fn run_headless(
     let _guard = logging::init();
 
     let codec = headless::codec_for(&args.protocol)?;
-    let attachment = connect_session(link, args).await?;
+    let attachment = connect_session(link, args, false).await?;
     let goat_client::Attachment {
         ops, events, pump, ..
     } = attachment;

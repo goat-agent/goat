@@ -4,8 +4,8 @@ use color_eyre::eyre::{Report, Result, eyre};
 use goat_provider::AuthMethod;
 
 pub use goat_console::{
-    Cell, ColorMode, Palette, Table, blank, confirm, note, pair, pair_styled, prompt, secret,
-    section, select_index, success, truncate_to_width, warning,
+    Cell, ColorMode, Palette, Table, blank, confirm, note, pair, pair_styled, prompt, raw, secret,
+    section, select_index, select_indices, success, truncate_to_width, warning,
 };
 
 pub fn report(message: impl Into<String>) -> Report {

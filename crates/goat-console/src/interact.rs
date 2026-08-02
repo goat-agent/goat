@@ -1,6 +1,6 @@
 use std::io::IsTerminal;
 
-use dialoguer::{Confirm, Input, Password, Select};
+use dialoguer::{Confirm, Input, MultiSelect, Password, Select};
 
 use crate::color::{ColorMode, Palette};
 use crate::error::{ConsoleResult, dialoguer_error, fail, report};
@@ -36,6 +36,24 @@ pub fn select_index(prompt: &str, labels: &[String]) -> ConsoleResult<Option<usi
         .with_prompt(prompt)
         .items(labels)
         .default(0)
+        .report(false)
+        .interact_opt()
+        .map_err(dialoguer_error)
+}
+
+pub fn select_indices(
+    prompt: &str,
+    labels: &[String],
+    defaults: &[bool],
+) -> ConsoleResult<Option<Vec<usize>>> {
+    require_terminal()?;
+    if labels.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    MultiSelect::with_theme(goat_theme())
+        .with_prompt(prompt)
+        .items(labels)
+        .defaults(defaults)
         .report(false)
         .interact_opt()
         .map_err(dialoguer_error)

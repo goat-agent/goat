@@ -68,6 +68,10 @@ pub fn line(text: &str) {
     println!("{INDENT}{text}");
 }
 
+pub fn raw(text: &str) {
+    println!("{text}");
+}
+
 pub fn pair(key: &str, value: &str) {
     pair_styled(key, value, Palette::Value);
 }
