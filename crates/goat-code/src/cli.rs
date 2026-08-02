@@ -1,4 +1,6 @@
-use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(
@@ -92,6 +94,8 @@ when it does not check out nothing is replaced and the running agents keep their
         #[arg(long, short, help = "Reload only this agent")]
         agent: Option<String>,
     },
+    #[command(subcommand, about = "Manage MCP servers for code sessions")]
+    Mcp(McpCommand),
     #[command(about = "Update goat")]
     Update {
         #[arg(long)]
@@ -121,6 +125,113 @@ Common flow:
   goat remote use local       (go back to the local daemon)"
     )]
     Remote(RemoteCommand),
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum McpScope {
+    User,
+    Project,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum ConflictPolicy {
+    Error,
+    Skip,
+    Replace,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum SecretPolicy {
+    Error,
+    Store,
+    Literal,
+    Omit,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum UnsupportedPolicy {
+    Error,
+    Skip,
+    Accept,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum McpCommand {
+    #[command(visible_alias = "ls", about = "List effective MCP servers")]
+    List {
+        #[arg(long, value_enum)]
+        scope: Option<McpScope>,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Show one MCP server")]
+    Get {
+        name: String,
+        #[arg(long, value_enum)]
+        scope: Option<McpScope>,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(
+        about = "Add an MCP server",
+        after_help = "Examples:
+  goat mcp add context7 -- npx -y @upstash/context7-mcp
+  goat mcp add remote --url https://example.com/mcp
+  goat mcp add local --scope project --env TOKEN=value -- command"
+    )]
+    Add {
+        name: String,
+        #[arg(long, value_enum, default_value = "user")]
+        scope: McpScope,
+        #[arg(long, value_name = "URL")]
+        url: Option<String>,
+        #[arg(long, value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        #[arg(long, value_name = "ENV_VAR")]
+        bearer_token_env_var: Option<String>,
+        #[arg(long)]
+        force: bool,
+        #[arg(last = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+    #[command(visible_alias = "rm", about = "Remove an MCP server")]
+    Remove {
+        name: String,
+        #[arg(long, value_enum, default_value = "user")]
+        scope: McpScope,
+    },
+    #[command(about = "Import MCP servers from another config")]
+    Import {
+        path: Option<PathBuf>,
+        #[arg(long, value_enum)]
+        scope: Option<McpScope>,
+        #[arg(long)]
+        all: bool,
+        #[arg(long, value_enum)]
+        on_conflict: Option<ConflictPolicy>,
+        #[arg(long, value_enum)]
+        on_secret: Option<SecretPolicy>,
+        #[arg(long, value_enum)]
+        on_unsupported: Option<UnsupportedPolicy>,
+        #[arg(long, value_name = "OLD=NEW")]
+        rename: Vec<String>,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    #[command(about = "Sign in to an HTTP MCP server with OAuth")]
+    Login {
+        name: String,
+        #[arg(long, value_enum)]
+        scope: Option<McpScope>,
+    },
+    #[command(about = "Remove OAuth credentials for an HTTP MCP server")]
+    Logout {
+        name: String,
+        #[arg(long, value_enum)]
+        scope: Option<McpScope>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -270,7 +381,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        Cli, CodeCommand, Command, DaemonCommand, ProviderCommand, RemoteCommand, WorktreeCommand,
+        Cli, CodeCommand, Command, ConflictPolicy, DaemonCommand, McpCommand, McpScope,
+        ProviderCommand, RemoteCommand, SecretPolicy, UnsupportedPolicy, WorktreeCommand,
     };
 
     fn code_args(args: &[&str]) -> super::CodeArgs {
@@ -629,5 +741,93 @@ mod tests {
             code_args(&["--headless", "--protocol", "json"]).protocol,
             "json"
         );
+    }
+
+    #[test]
+    fn parses_mcp_add_stdio() {
+        let cli = Cli::try_parse_from([
+            "goat",
+            "mcp",
+            "add",
+            "context7",
+            "--scope",
+            "project",
+            "--env",
+            "TOKEN=value",
+            "--",
+            "npx",
+            "-y",
+            "pkg",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Mcp(McpCommand::Add {
+                name,
+                scope: McpScope::Project,
+                command,
+                ..
+            })) if name == "context7" && command == ["npx", "-y", "pkg"]
+        ));
+    }
+
+    #[test]
+    fn parses_mcp_add_http() {
+        let cli = Cli::try_parse_from([
+            "goat",
+            "mcp",
+            "add",
+            "remote",
+            "--url",
+            "https://example.test/mcp",
+            "--bearer-token-env-var",
+            "TOKEN",
+            "--force",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Mcp(McpCommand::Add {
+                url: Some(url),
+                bearer_token_env_var: Some(variable),
+                force: true,
+                ..
+            })) if url == "https://example.test/mcp" && variable == "TOKEN"
+        ));
+    }
+
+    #[test]
+    fn parses_noninteractive_mcp_import_policies() {
+        let cli = Cli::try_parse_from([
+            "goat",
+            "mcp",
+            "import",
+            ".mcp.json",
+            "--scope",
+            "project",
+            "--all",
+            "--on-conflict",
+            "replace",
+            "--on-secret",
+            "store",
+            "--on-unsupported",
+            "skip",
+            "--rename",
+            "old=new",
+            "--yes",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Mcp(McpCommand::Import {
+                scope: Some(McpScope::Project),
+                all: true,
+                on_conflict: Some(ConflictPolicy::Replace),
+                on_secret: Some(SecretPolicy::Store),
+                on_unsupported: Some(UnsupportedPolicy::Skip),
+                yes: true,
+                ..
+            }))
+        ));
     }
 }

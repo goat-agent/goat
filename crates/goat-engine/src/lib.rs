@@ -78,7 +78,19 @@ impl GoatAgent {
         meter: Option<goat_proxy::Meter>,
     ) -> Self {
         let config = goat_config::Config::load();
-        let mcp = goat_mcp::load_manager(goat_config::mcp_config_path().as_deref(), &cwd).await;
+        let project_root = goat_worktree::workspace(&cwd)
+            .map_or_else(|_| cwd.clone(), |workspace| workspace.repo_root);
+        let paths = goat_config::GoatPaths::default_layout().ok();
+        let mcp = goat_mcp::load_scoped_manager(
+            paths.as_ref().map(|paths| paths.mcp_json.as_path()),
+            paths
+                .as_ref()
+                .map(|paths| paths.mcp_approvals_json.as_path()),
+            &project_root,
+            &credentials,
+            &cwd,
+        )
+        .await;
         let mcp_tools = mcp_tools::adapt(&mcp);
         let tool_count = mcp_tools.len();
         let mut tools = ToolRegistry::builtin().with_many(mcp_tools);
@@ -305,6 +317,14 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
         state.target.as_ref(),
     )
     .await;
+    if let Some(message) = mcp.startup_message() {
+        let _ = events
+            .send(Event::Notify {
+                kind: goat_protocol::NotifyKind::Info,
+                message,
+            })
+            .await;
+    }
 
     let skills = prompt::load_skill_infos(&cwd);
     let subagents = SubagentRegistry::load(&cwd);

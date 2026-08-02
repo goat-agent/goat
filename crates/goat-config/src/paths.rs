@@ -8,6 +8,7 @@ pub struct GoatPaths {
     pub credentials_json: PathBuf,
     pub config_json: PathBuf,
     pub mcp_json: PathBuf,
+    pub mcp_approvals_json: PathBuf,
     pub rate_limits_json: PathBuf,
     pub agents_dir: PathBuf,
     pub subagents_dir: PathBuf,
@@ -33,6 +34,7 @@ impl GoatPaths {
             credentials_json: root.join("credentials.json"),
             config_json: root.join("config.json"),
             mcp_json: root.join("mcp.json"),
+            mcp_approvals_json: root.join("mcp_approvals.json"),
             rate_limits_json: root.join("rate_limits.json"),
             agents_dir: root.join("agents"),
             subagents_dir: root.join("subagents"),
@@ -76,6 +78,10 @@ pub fn config_path() -> Option<PathBuf> {
 
 pub fn mcp_config_path() -> Option<PathBuf> {
     resolved().map(|p| p.mcp_json)
+}
+
+pub fn mcp_approvals_path() -> Option<PathBuf> {
+    resolved().map(|p| p.mcp_approvals_json)
 }
 
 pub fn auth_path() -> Option<PathBuf> {

@@ -9,8 +9,9 @@ pub use error::{
     ConsoleError, ConsoleResult, fail, fail_hint, format_failure, report, report_hint,
 };
 pub use interact::{
-    confirm, note, pick, prompt, require_terminal, secret, select_index, success, warning,
+    confirm, note, pick, prompt, require_terminal, secret, select_index, select_indices, success,
+    warning,
 };
 pub use layout::{
-    Cell, Footer, Table, blank, cell, cell_async, dim, line, pair, pair_styled, section,
+    Cell, Footer, Table, blank, cell, cell_async, dim, line, pair, pair_styled, raw, section,
 };
