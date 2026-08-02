@@ -1096,20 +1096,15 @@ impl Store for SqliteStore {
     }
 
     async fn reclaim_stale_runs(&self, stale_before: DateTime<Utc>) -> StoreResult<usize> {
-        let now = Utc::now().to_rfc3339();
         let stale_str = stale_before.to_rfc3339();
         let result = sqlx::query(
             r"UPDATE task_runs
-               SET status = 'failed',
-                   finished_at = ?,
-                   running_since = NULL,
-                   result_summary = COALESCE(result_summary,
-                                             'lease stale: handler did not finish in time')
+               SET status = 'pending',
+                   running_since = NULL
                WHERE status = 'running'
                  AND running_since IS NOT NULL
                  AND running_since < ?",
         )
-        .bind(now)
         .bind(stale_str)
         .execute(&*self.pool)
         .await?;
