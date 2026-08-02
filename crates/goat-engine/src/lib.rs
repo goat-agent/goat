@@ -22,6 +22,7 @@ use tokio::{
 mod accounts;
 mod agent;
 mod ask;
+mod checkpoint;
 mod compaction;
 mod conversation;
 mod delegate;
@@ -125,6 +126,7 @@ pub(crate) struct Ctx<'a> {
     pub(crate) rl_cache: &'a std::sync::Mutex<rate_limit_cache::RateLimitCache>,
     pub(crate) rl_path: Option<&'a std::path::Path>,
     pub(crate) meter: &'a Option<goat_proxy::Meter>,
+    pub(crate) checkpoints: &'a checkpoint::CheckpointTracker,
     pub(crate) cwd: &'a std::path::Path,
     pub(crate) date: &'a str,
 }
@@ -152,6 +154,7 @@ pub(crate) struct UserInput {
     pub(crate) text: String,
     pub(crate) display: Option<String>,
     pub(crate) attachments: Vec<goat_protocol::InputAttachment>,
+    pub(crate) checkpoint: bool,
 }
 
 pub(crate) type SteeringQueue = std::sync::Mutex<std::collections::VecDeque<UserInput>>;
@@ -257,6 +260,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     let processes =
         process::ProcessRegistry::new(events.clone(), wake.clone(), Some(store.clone()));
     let asks: Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>> = Mutex::new(HashMap::new());
+    let checkpoints = checkpoint::CheckpointTracker::new(store.clone());
     let _ = events
         .send(Event::SkillsChanged {
             skills: skills.clone(),
@@ -305,6 +309,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                 rl_cache: &rl_cache,
                 rl_path: rl_path.as_deref(),
                 meter: &meter,
+                checkpoints: &checkpoints,
                 cwd: &cwd,
                 date: &session_date,
             }
@@ -425,7 +430,29 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
             Op::ListThreads {} => {
                 threads::handle_list_threads(&store, &cwd, &events).await;
             }
+            Op::ListRewindPoints {} => {
+                threads::handle_list_rewind_points(&checkpoints, state.thread_id, &events).await;
+            }
+            Op::Rewind {
+                checkpoint_id,
+                scope,
+            } => {
+                threads::handle_rewind(
+                    &store,
+                    &checkpoints,
+                    &skills,
+                    &tools,
+                    project_instructions.as_deref(),
+                    &session_date,
+                    checkpoint_id,
+                    scope,
+                    &mut state,
+                    &events,
+                )
+                .await;
+            }
             Op::Resume { thread_id: tid } => {
+                checkpoints.clear();
                 threads::handle_resume(
                     &store,
                     &skills,
@@ -440,6 +467,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                 accounts::refresh_model_list(&events, &registry, &credentials).await;
             }
             Op::ResumeLatest {} => {
+                checkpoints.clear();
                 threads::handle_resume_latest(
                     &store,
                     &skills,

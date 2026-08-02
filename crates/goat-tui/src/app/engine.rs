@@ -42,6 +42,18 @@ impl App {
                 },
                 None => {}
             },
+            EngineEvent::RewindPointsListed { points } => {
+                self.overlay = Overlay::Rewind(crate::picker::RewindPicker::new(points));
+                self.rewind_arm = None;
+                self.dirty = true;
+            }
+            EngineEvent::ConversationRewound { draft } => {
+                self.composer.clear();
+                self.composer.insert_str(&draft.text);
+                self.composer.push_attachments(draft.attachments);
+                self.follow = true;
+                self.dirty = true;
+            }
             EngineEvent::ConversationRestored {
                 target,
                 entries,

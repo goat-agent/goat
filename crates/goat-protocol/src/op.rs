@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{InputAttachment, LoginCredential, ModelTarget, ProcessId, TaskId, ToolCallId};
+use crate::{
+    InputAttachment, LoginCredential, ModelTarget, ProcessId, RewindScope, TaskId, ToolCallId,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type")]
@@ -38,6 +40,11 @@ pub enum Op {
         name: String,
     },
     ListThreads {},
+    ListRewindPoints {},
+    Rewind {
+        checkpoint_id: i64,
+        scope: RewindScope,
+    },
     Resume {
         thread_id: i64,
     },

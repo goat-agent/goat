@@ -146,6 +146,8 @@ pub(crate) async fn handle_idle_op(
         Op::Login { .. }
         | Op::AddAccount { .. }
         | Op::RemoveAccount { .. }
+        | Op::ListRewindPoints { .. }
+        | Op::Rewind { .. }
         | Op::Resume { .. }
         | Op::ResumeLatest { .. } => {
             let _ = events
@@ -194,6 +196,7 @@ async fn pump_op(
                     text: msg_text,
                     display,
                     attachments,
+                    checkpoint: true,
                 });
             PumpAction::Continue
         }
@@ -270,6 +273,7 @@ pub(crate) async fn handle_wake(
             text: body,
             display: Some("(process activity)".to_owned()),
             attachments: Vec::new(),
+            checkpoint: false,
         },
         std::collections::VecDeque::new(),
         state,
@@ -295,6 +299,7 @@ pub(crate) async fn handle_turn(
             text,
             display,
             attachments,
+            checkpoint: true,
         },
         std::collections::VecDeque::new(),
         state,
@@ -612,7 +617,9 @@ async fn run_one_turn(
 ) -> (TurnFlow, Vec<Op>) {
     let id = input.id;
     let text = input.text;
+    let draft = input.display.as_deref().unwrap_or(&text).to_owned();
     let attachments = input.attachments;
+    let checkpoint = input.checkpoint;
     let Some(resolved) = state.target.clone() else {
         emit_task_error(
             ctx,
@@ -645,9 +652,11 @@ async fn run_one_turn(
         id,
         &message,
         &text,
+        &draft,
         &attachments,
         &resolved,
         &mut state.thread_id,
+        checkpoint,
     )
     .await;
     let system = build_system_prompt(ctx.cwd, ctx.skills, ctx.instructions, ctx.date);

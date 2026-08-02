@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use goat_protocol::{Effort, Event, ModelTarget, TaskId, ToolOutcome};
 use goat_provider::{ContentBlock, Message, MessageRole};
-use goat_store::{CodeStore as Store, NewMessage, NewThread, NewToolCall, NewTurn};
+use goat_store::{CodeStore as Store, CreatedMessage, NewMessage, NewThread, NewToolCall, NewTurn};
 
 use crate::{Ctx, TurnIds, turn::TurnEnd};
 
@@ -115,9 +115,11 @@ pub(crate) async fn init_db_turn(
     id: TaskId,
     message: &Message,
     text: &str,
+    draft: &str,
     attachments: &[goat_protocol::InputAttachment],
     target: &ModelTarget,
     thread_id: &mut Option<i64>,
+    checkpoint: bool,
 ) -> TurnIds {
     let title = if text.trim().is_empty() {
         attachments
@@ -132,7 +134,7 @@ pub(crate) async fn init_db_turn(
     }
     let (turn_db_id, user_message_db_id) = if let Some(tid) = stored_thread {
         let body = serde_json::to_string(&message.content).unwrap_or_else(|_| text.to_owned());
-        let user_message_db_id = match ctx
+        let created_message = match ctx
             .store
             .create_message(NewMessage {
                 thread_id: tid,
@@ -149,6 +151,26 @@ pub(crate) async fn init_db_turn(
                 None
             }
         };
+        if checkpoint {
+            if let Some(created) = &created_message {
+                if let Err(err) = ctx
+                    .checkpoints
+                    .begin(tid, created, draft.to_owned(), attachments, ctx.cwd)
+                    .await
+                {
+                    tracing::warn!(%err, "failed to create code checkpoint");
+                    let _ = ctx
+                        .events
+                        .send(Event::Notify {
+                            kind: goat_protocol::NotifyKind::Error,
+                            message: "could not create a rewind checkpoint".to_owned(),
+                        })
+                        .await;
+                }
+            }
+        } else {
+            ctx.checkpoints.clear();
+        }
         let turn_db_id = ctx
             .store
             .create_turn(NewTurn {
@@ -163,7 +185,7 @@ pub(crate) async fn init_db_turn(
             })
             .await
             .ok();
-        (turn_db_id, user_message_db_id)
+        (turn_db_id, created_message.map(|message| message.id))
     } else {
         (None, None)
     };
@@ -178,7 +200,7 @@ pub(crate) async fn persist_message(
     ctx: &Ctx<'_>,
     ids: &TurnIds,
     message: &Message,
-) -> Option<i64> {
+) -> Option<CreatedMessage> {
     let role = match message.role {
         MessageRole::System => return None,
         MessageRole::User => "user",
@@ -227,7 +249,7 @@ pub(crate) async fn persist_shell_message(
         })
         .await
     {
-        Ok(row) => Some(row),
+        Ok(row) => Some(row.id),
         Err(err) => {
             tracing::warn!(%err, "failed to persist shell message");
             None

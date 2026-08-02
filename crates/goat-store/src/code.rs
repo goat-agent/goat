@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use sha2::{Digest, Sha256};
 use sqlx::ConnectOptions;
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
@@ -68,10 +69,58 @@ pub struct NewMessage {
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct StoredMessage {
     pub id: i64,
+    pub parent_message_id: Option<i64>,
     pub turn_id: Option<i64>,
     pub role: String,
     pub body: String,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatedMessage {
+    pub id: i64,
+    pub parent_message_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewCodeCheckpoint {
+    pub thread_id: i64,
+    pub prompt_message_id: i64,
+    pub parent_message_id: Option<i64>,
+    pub draft: String,
+    pub attachments: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeCheckpoint {
+    pub id: i64,
+    pub prompt_message_id: i64,
+    pub parent_message_id: Option<i64>,
+    pub draft: String,
+    pub attachments: String,
+    pub files_available: bool,
+    pub touched: bool,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckpointFileVersion {
+    pub checkpoint_id: i64,
+    pub path: String,
+    pub content: Option<Vec<u8>>,
+    pub mode: Option<u32>,
+    pub supported: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewCheckpointFile {
+    pub checkpoint_id: i64,
+    pub path: String,
+    pub content: Option<Vec<u8>>,
+    pub mode: Option<u32>,
+    pub supported: bool,
+    pub touched: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,8 +358,18 @@ impl CodeStore {
 
     pub async fn get_messages(&self, thread_id: i64) -> CodeResult<Vec<StoredMessage>> {
         let messages = sqlx::query_as::<_, StoredMessage>(
-            "SELECT id, turn_id, role, body, created_at
-             FROM code_messages WHERE thread_id = ? ORDER BY id ASC",
+            "WITH RECURSIVE active(id, parent_message_id, turn_id, role, body, created_at) AS (
+                 SELECT m.id, m.parent_message_id, m.turn_id, m.role, m.body, m.created_at
+                 FROM code_messages m
+                 JOIN code_threads t ON t.head_message_id = m.id
+                 WHERE t.id = ?
+                 UNION ALL
+                 SELECT m.id, m.parent_message_id, m.turn_id, m.role, m.body, m.created_at
+                 FROM code_messages m
+                 JOIN active a ON a.parent_message_id = m.id
+             )
+             SELECT id, parent_message_id, turn_id, role, body, created_at
+             FROM active ORDER BY id ASC",
         )
         .bind(thread_id)
         .fetch_all(&self.readers)
@@ -439,20 +498,244 @@ impl CodeStore {
         Ok(orphans)
     }
 
-    pub async fn create_message(&self, message: NewMessage) -> CodeResult<i64> {
+    pub async fn create_message(&self, message: NewMessage) -> CodeResult<CreatedMessage> {
+        let mut tx = self.writer.begin().await?;
+        let parent_message_id: Option<i64> =
+            sqlx::query_scalar("SELECT head_message_id FROM code_threads WHERE id = ?")
+                .bind(message.thread_id)
+                .fetch_one(&mut *tx)
+                .await?;
         let id = sqlx::query(
-            "INSERT INTO code_messages (thread_id, turn_id, role, body, created_at)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO code_messages
+             (thread_id, parent_message_id, turn_id, role, body, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(message.thread_id)
+        .bind(parent_message_id)
         .bind(message.turn_id)
         .bind(message.role)
         .bind(message.body)
         .bind(message.created_at)
-        .execute(&self.writer)
+        .execute(&mut *tx)
         .await?
         .last_insert_rowid();
+        sqlx::query("UPDATE code_threads SET head_message_id = ?, updated_at = ? WHERE id = ?")
+            .bind(id)
+            .bind(message.created_at)
+            .bind(message.thread_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(CreatedMessage {
+            id,
+            parent_message_id,
+        })
+    }
+
+    pub async fn create_code_checkpoint(&self, checkpoint: NewCodeCheckpoint) -> CodeResult<i64> {
+        let mut tx = self.writer.begin().await?;
+        let id = sqlx::query(
+            "INSERT INTO code_checkpoints
+             (thread_id, prompt_message_id, parent_message_id, draft, attachments, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(checkpoint.thread_id)
+        .bind(checkpoint.prompt_message_id)
+        .bind(checkpoint.parent_message_id)
+        .bind(checkpoint.draft)
+        .bind(checkpoint.attachments)
+        .bind(checkpoint.created_at)
+        .execute(&mut *tx)
+        .await?
+        .last_insert_rowid();
+        sqlx::query(
+            "UPDATE code_checkpoints SET files_available = 0
+             WHERE thread_id = ? AND id NOT IN (
+                 SELECT id FROM code_checkpoints
+                 WHERE thread_id = ? ORDER BY id DESC LIMIT 100
+             )",
+        )
+        .bind(checkpoint.thread_id)
+        .bind(checkpoint.thread_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "DELETE FROM code_checkpoint_files
+             WHERE checkpoint_id IN (
+                 SELECT id FROM code_checkpoints
+                 WHERE thread_id = ? AND files_available = 0
+             )",
+        )
+        .bind(checkpoint.thread_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "DELETE FROM code_checkpoint_blobs
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM code_checkpoint_files
+                 WHERE blob_hash = code_checkpoint_blobs.hash
+             )",
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(id)
+    }
+
+    pub async fn active_code_checkpoints(&self, thread_id: i64) -> CodeResult<Vec<CodeCheckpoint>> {
+        let rows = sqlx::query(
+            "WITH RECURSIVE active_messages(id, parent_message_id) AS (
+                 SELECT m.id, m.parent_message_id
+                 FROM code_messages m
+                 JOIN code_threads t ON t.head_message_id = m.id
+                 WHERE t.id = ?
+                 UNION ALL
+                 SELECT m.id, m.parent_message_id
+                 FROM code_messages m
+                 JOIN active_messages a ON a.parent_message_id = m.id
+             )
+             SELECT c.id, c.prompt_message_id, c.parent_message_id, c.draft,
+                    c.attachments, c.files_available, c.created_at,
+                    EXISTS(
+                        SELECT 1 FROM code_checkpoint_files f
+                        WHERE f.checkpoint_id = c.id AND f.touched = 1
+                    ) AS touched
+             FROM code_checkpoints c
+             JOIN active_messages a ON a.id = c.prompt_message_id
+             WHERE c.thread_id = ?
+             ORDER BY c.id DESC",
+        )
+        .bind(thread_id)
+        .bind(thread_id)
+        .fetch_all(&self.readers)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| CodeCheckpoint {
+                id: row.get("id"),
+                prompt_message_id: row.get("prompt_message_id"),
+                parent_message_id: row.get("parent_message_id"),
+                draft: row.get("draft"),
+                attachments: row.get("attachments"),
+                files_available: row.get::<i64, _>("files_available") != 0,
+                touched: row.get::<i64, _>("touched") != 0,
+                created_at: row.get("created_at"),
+            })
+            .collect())
+    }
+
+    pub async fn tracked_checkpoint_paths(&self, thread_id: i64) -> CodeResult<Vec<String>> {
+        let paths = sqlx::query_scalar(
+            "SELECT DISTINCT f.path
+             FROM code_checkpoint_files f
+             JOIN code_checkpoints c ON c.id = f.checkpoint_id
+             WHERE c.thread_id = ? AND c.files_available = 1
+             ORDER BY f.path",
+        )
+        .bind(thread_id)
+        .fetch_all(&self.readers)
+        .await?;
+        Ok(paths)
+    }
+
+    pub async fn record_checkpoint_file(&self, file: NewCheckpointFile) -> CodeResult<()> {
+        let mut tx = self.writer.begin().await?;
+        let blob_hash = file.content.as_ref().map(|bytes| {
+            let mut digest = Sha256::new();
+            digest.update(bytes);
+            digest
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        });
+        if let (Some(hash), Some(bytes)) = (&blob_hash, file.content) {
+            sqlx::query(
+                "INSERT OR IGNORE INTO code_checkpoint_blobs (hash, content) VALUES (?, ?)",
+            )
+            .bind(hash)
+            .bind(bytes)
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query(
+            "INSERT INTO code_checkpoint_files
+             (checkpoint_id, path, present, blob_hash, mode, supported, touched)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(checkpoint_id, path) DO UPDATE SET
+                 touched = MAX(touched, excluded.touched)",
+        )
+        .bind(file.checkpoint_id)
+        .bind(file.path)
+        .bind(if blob_hash.is_some() { 1 } else { 0 })
+        .bind(blob_hash)
+        .bind(file.mode.map(i64::from))
+        .bind(if file.supported { 1 } else { 0 })
+        .bind(if file.touched { 1 } else { 0 })
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn active_checkpoint_file_versions(
+        &self,
+        thread_id: i64,
+    ) -> CodeResult<Vec<CheckpointFileVersion>> {
+        let rows = sqlx::query(
+            "WITH RECURSIVE active_messages(id, parent_message_id) AS (
+                 SELECT m.id, m.parent_message_id
+                 FROM code_messages m
+                 JOIN code_threads t ON t.head_message_id = m.id
+                 WHERE t.id = ?
+                 UNION ALL
+                 SELECT m.id, m.parent_message_id
+                 FROM code_messages m
+                 JOIN active_messages a ON a.parent_message_id = m.id
+             )
+             SELECT f.checkpoint_id, f.path, f.present, f.mode, f.supported, b.content
+             FROM code_checkpoint_files f
+             JOIN code_checkpoints c ON c.id = f.checkpoint_id
+             JOIN active_messages a ON a.id = c.prompt_message_id
+             LEFT JOIN code_checkpoint_blobs b ON b.hash = f.blob_hash
+             WHERE c.thread_id = ? AND c.files_available = 1
+             ORDER BY f.checkpoint_id ASC, f.path ASC",
+        )
+        .bind(thread_id)
+        .bind(thread_id)
+        .fetch_all(&self.readers)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| CheckpointFileVersion {
+                checkpoint_id: row.get("checkpoint_id"),
+                path: row.get("path"),
+                content: if row.get::<i64, _>("present") == 0 {
+                    None
+                } else {
+                    Some(row.get::<Vec<u8>, _>("content"))
+                },
+                mode: row
+                    .get::<Option<i64>, _>("mode")
+                    .and_then(|mode| u32::try_from(mode).ok()),
+                supported: row.get::<i64, _>("supported") != 0,
+            })
+            .collect())
+    }
+
+    pub async fn set_thread_head(
+        &self,
+        thread_id: i64,
+        head_message_id: Option<i64>,
+        updated_at: i64,
+    ) -> CodeResult<()> {
+        sqlx::query("UPDATE code_threads SET head_message_id = ?, updated_at = ? WHERE id = ?")
+            .bind(head_message_id)
+            .bind(updated_at)
+            .bind(thread_id)
+            .execute(&self.writer)
+            .await?;
+        Ok(())
     }
 
     pub async fn create_tool_call(&self, call: NewToolCall) -> CodeResult<i64> {
@@ -622,7 +905,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(m1, 1, "message ids start at 1 and are stable");
+        assert_eq!(m1.id, 1, "message ids start at 1 and are stable");
         store
             .create_tool_call(NewToolCall {
                 thread_id,
@@ -656,5 +939,107 @@ mod tests {
         let comps = store.compactions_for_thread(thread_id).await.unwrap();
         assert_eq!(comps[0].preserved_message_ids, vec![1, 2, 3]);
         assert_eq!(comps[0].after_message_id, 0);
+    }
+
+    #[tokio::test]
+    async fn message_head_selects_one_conversation_branch() {
+        let store = CodeStore::open_in_memory().await.unwrap();
+        let thread_id = store.create_thread(sample_thread()).await.unwrap();
+        let first = store
+            .create_message(NewMessage {
+                thread_id,
+                turn_id: None,
+                role: "user".into(),
+                body: "first".into(),
+                created_at: 101,
+            })
+            .await
+            .unwrap();
+        let abandoned = store
+            .create_message(NewMessage {
+                thread_id,
+                turn_id: None,
+                role: "assistant".into(),
+                body: "old branch".into(),
+                created_at: 102,
+            })
+            .await
+            .unwrap();
+        store
+            .set_thread_head(thread_id, Some(first.id), 103)
+            .await
+            .unwrap();
+        let replacement = store
+            .create_message(NewMessage {
+                thread_id,
+                turn_id: None,
+                role: "assistant".into(),
+                body: "new branch".into(),
+                created_at: 104,
+            })
+            .await
+            .unwrap();
+
+        let messages = store.get_messages(thread_id).await.unwrap();
+        let ids: Vec<_> = messages.iter().map(|message| message.id).collect();
+        assert_eq!(ids, vec![first.id, replacement.id]);
+        assert_eq!(replacement.parent_message_id, Some(first.id));
+        assert!(!ids.contains(&abandoned.id));
+    }
+
+    #[tokio::test]
+    async fn checkpoints_follow_the_active_conversation_branch() {
+        let store = CodeStore::open_in_memory().await.unwrap();
+        let thread_id = store.create_thread(sample_thread()).await.unwrap();
+        let first = store
+            .create_message(NewMessage {
+                thread_id,
+                turn_id: None,
+                role: "user".into(),
+                body: "first".into(),
+                created_at: 101,
+            })
+            .await
+            .unwrap();
+        let first_checkpoint = store
+            .create_code_checkpoint(NewCodeCheckpoint {
+                thread_id,
+                prompt_message_id: first.id,
+                parent_message_id: first.parent_message_id,
+                draft: "first".into(),
+                attachments: "[]".into(),
+                created_at: 101,
+            })
+            .await
+            .unwrap();
+        let second = store
+            .create_message(NewMessage {
+                thread_id,
+                turn_id: None,
+                role: "user".into(),
+                body: "second".into(),
+                created_at: 102,
+            })
+            .await
+            .unwrap();
+        store
+            .create_code_checkpoint(NewCodeCheckpoint {
+                thread_id,
+                prompt_message_id: second.id,
+                parent_message_id: second.parent_message_id,
+                draft: "second".into(),
+                attachments: "[]".into(),
+                created_at: 102,
+            })
+            .await
+            .unwrap();
+        store
+            .set_thread_head(thread_id, Some(first.id), 103)
+            .await
+            .unwrap();
+
+        let checkpoints = store.active_code_checkpoints(thread_id).await.unwrap();
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(checkpoints[0].id, first_checkpoint);
     }
 }

@@ -1,6 +1,6 @@
 use goat_protocol::{
-    Effort, Event, ModelTarget, NotifyKind, SkillInfo, ThreadSummary, ToolCall, ToolCallId,
-    ToolOutcome, TranscriptEntry,
+    Effort, Event, ModelTarget, NotifyKind, RewindDraft, RewindPoint, RewindScope, SkillInfo,
+    ThreadSummary, ToolCall, ToolCallId, ToolOutcome, TranscriptEntry,
 };
 use goat_provider::{ContentBlock, Message, MessageRole};
 use goat_store::CodeStore as Store;
@@ -106,6 +106,175 @@ pub(crate) async fn handle_rename(
     }
 }
 
+pub(crate) async fn handle_list_rewind_points(
+    checkpoints: &crate::checkpoint::CheckpointTracker,
+    thread_id: Option<i64>,
+    events: &mpsc::Sender<Event>,
+) {
+    let Some(thread_id) = thread_id else {
+        let _ = events
+            .send(Event::RewindPointsListed { points: Vec::new() })
+            .await;
+        return;
+    };
+    let stored = match checkpoints.points(thread_id).await {
+        Ok(points) => points,
+        Err(err) => {
+            tracing::warn!(%err, "failed to list rewind checkpoints");
+            let _ = events
+                .send(Event::Notify {
+                    kind: NotifyKind::Error,
+                    message: "could not load rewind checkpoints".to_owned(),
+                })
+                .await;
+            return;
+        }
+    };
+    let mut later_code_changes = false;
+    let points = stored
+        .into_iter()
+        .map(|checkpoint| {
+            later_code_changes |= checkpoint.touched;
+            RewindPoint {
+                checkpoint_id: checkpoint.id,
+                prompt: checkpoint.draft,
+                created_at: checkpoint.created_at,
+                code_changes: checkpoint.files_available && later_code_changes,
+            }
+        })
+        .collect();
+    let _ = events.send(Event::RewindPointsListed { points }).await;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn handle_rewind(
+    store: &Store,
+    checkpoints: &crate::checkpoint::CheckpointTracker,
+    skills: &[SkillInfo],
+    tools: &ToolRegistry,
+    instructions: Option<&str>,
+    date: &str,
+    checkpoint_id: i64,
+    scope: RewindScope,
+    state: &mut crate::SessionState,
+    events: &mpsc::Sender<Event>,
+) {
+    let Some(thread_id) = state.thread_id else {
+        rewind_error(events, "no active conversation to rewind").await;
+        return;
+    };
+    let points = match checkpoints.points(thread_id).await {
+        Ok(points) => points,
+        Err(err) => {
+            tracing::warn!(%err, "failed to read rewind checkpoint");
+            rewind_error(events, "could not load that rewind checkpoint").await;
+            return;
+        }
+    };
+    let Some(checkpoint) = points
+        .into_iter()
+        .find(|checkpoint| checkpoint.id == checkpoint_id)
+    else {
+        rewind_error(
+            events,
+            "that checkpoint is no longer part of this conversation",
+        )
+        .await;
+        return;
+    };
+    let attachments = serde_json::from_str(&checkpoint.attachments).unwrap_or_default();
+    let restore_code = matches!(scope, RewindScope::Code | RewindScope::CodeAndConversation);
+    let restore_conversation = matches!(
+        scope,
+        RewindScope::Conversation | RewindScope::CodeAndConversation
+    );
+    let mut report = None;
+    if restore_code {
+        let Some(thread) = store.get_thread(thread_id).await.ok().flatten() else {
+            rewind_error(events, "could not resolve the checkpoint workspace").await;
+            return;
+        };
+        match checkpoints
+            .restore(thread_id, checkpoint_id, std::path::Path::new(&thread.cwd))
+            .await
+        {
+            Ok(restored) => report = Some(restored),
+            Err(err) => {
+                tracing::warn!(%err, "failed to restore checkpoint files");
+                rewind_error(events, &format!("could not restore code: {err}")).await;
+                return;
+            }
+        }
+    }
+    if restore_conversation {
+        if let Err(err) = store
+            .set_thread_head(
+                thread_id,
+                checkpoint.parent_message_id,
+                crate::persist::now_ms(),
+            )
+            .await
+        {
+            tracing::warn!(%err, "failed to rewind conversation head");
+            rewind_error(events, "could not restore the conversation").await;
+            return;
+        }
+        checkpoints.clear();
+        handle_resume(
+            store,
+            skills,
+            tools,
+            instructions,
+            date,
+            thread_id,
+            state,
+            events,
+        )
+        .await;
+        let _ = events
+            .send(Event::ConversationRewound {
+                draft: RewindDraft {
+                    text: checkpoint.draft,
+                    attachments,
+                },
+            })
+            .await;
+    }
+    if let Some(report) = report {
+        let restored = match report.restored {
+            1 => "restored 1 file".to_owned(),
+            count => format!("restored {count} files"),
+        };
+        let message = if report.skipped == 0 {
+            restored
+        } else {
+            format!(
+                "{restored}; skipped {} linked or unsupported paths",
+                report.skipped
+            )
+        };
+        let _ = events
+            .send(Event::Notify {
+                kind: if report.skipped == 0 {
+                    NotifyKind::Success
+                } else {
+                    NotifyKind::Info
+                },
+                message,
+            })
+            .await;
+    }
+}
+
+async fn rewind_error(events: &mpsc::Sender<Event>, message: &str) {
+    let _ = events
+        .send(Event::Notify {
+            kind: NotifyKind::Error,
+            message: message.to_owned(),
+        })
+        .await;
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_resume(
     store: &Store,
@@ -172,6 +341,15 @@ pub(crate) async fn handle_resume(
             return;
         }
     };
+    let active_message_ids: std::collections::HashSet<i64> =
+        messages.iter().map(|message| message.id).collect();
+    let compactions: Vec<_> = compactions
+        .into_iter()
+        .filter(|compaction| {
+            compaction.after_message_id == 0
+                || active_message_ids.contains(&compaction.after_message_id)
+        })
+        .collect();
     let mut parsed: Vec<(i64, MessageRole, Vec<ContentBlock>)> = Vec::new();
     let mut entries: Vec<TranscriptEntry> = Vec::new();
     let mut tool_uses: std::collections::HashMap<String, (String, String)> =
