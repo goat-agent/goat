@@ -90,6 +90,7 @@ pub(crate) enum Overlay {
     Files(FileMenu),
     Runs(usize),
     Ask(AskPicker, ToolCallId),
+    Plan(Box<crate::plan::PlanSheet>),
     Usage,
     Help,
     ImageZoom(Box<goat_protocol::ToolImageData>),
@@ -165,6 +166,8 @@ pub struct App {
     pub(crate) models: Vec<ModelEntry>,
     pub(crate) models_loaded: bool,
     pub(crate) model: Option<ModelTarget>,
+    pub(crate) mode: goat_protocol::Mode,
+    pub(crate) plan_path: Option<String>,
     pub(crate) overlay: Overlay,
     pub(crate) pending: PendingState,
     pub(crate) account_entries: Vec<AccountEntry>,
@@ -296,6 +299,8 @@ impl App {
             models: Vec::new(),
             models_loaded: false,
             model: None,
+            mode: goat_protocol::Mode::Normal,
+            plan_path: None,
             overlay: Overlay::None,
             pending: PendingState::default(),
             account_entries: Vec::new(),
@@ -389,6 +394,11 @@ impl App {
                     }
                     Overlay::Ask(picker, _) => {
                         picker.insert_str(&text);
+                    }
+                    Overlay::Plan(sheet) if sheet.rejecting() => {
+                        for ch in text.chars() {
+                            sheet.push_feedback(ch);
+                        }
                     }
                     _ => {
                         match crate::attachment::attachments_from_paste(&text) {
@@ -484,6 +494,12 @@ impl App {
                 Vec::new()
             }
             CommandEffect::SelectModelNamed(query) => self.select_model_named(&query),
+            CommandEffect::TogglePlanMode => {
+                let mode = self.mode.toggled();
+                self.mode = mode;
+                self.dirty = true;
+                vec![Op::SetMode { mode }]
+            }
             CommandEffect::OpenEffortPicker => {
                 let efforts = self.current_efforts();
                 let label = self.model.as_ref().map_or_else(
@@ -988,10 +1004,13 @@ impl App {
     }
 
     pub(crate) fn overlay_captures_text(&self) -> bool {
-        matches!(
-            self.overlay,
-            Overlay::Model(_) | Overlay::Account(_) | Overlay::Config(_) | Overlay::Ask(_, _)
-        )
+        match &self.overlay {
+            Overlay::Model(_) | Overlay::Account(_) | Overlay::Config(_) | Overlay::Ask(_, _) => {
+                true
+            }
+            Overlay::Plan(sheet) => sheet.rejecting(),
+            _ => false,
+        }
     }
 
     pub(crate) fn selection_allowed(&self) -> bool {
@@ -1377,6 +1396,12 @@ impl App {
     }
     pub(crate) fn overlay(&self) -> &Overlay {
         &self.overlay
+    }
+    pub(crate) fn overlay_mut(&mut self) -> &mut Overlay {
+        &mut self.overlay
+    }
+    pub(crate) fn plan_mode(&self) -> bool {
+        self.mode.is_plan()
     }
     pub(crate) fn follow(&self) -> bool {
         self.follow
@@ -1863,6 +1888,132 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         }
+    }
+
+    #[test]
+    fn shift_tab_toggles_plan_mode() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        assert!(!app.plan_mode());
+        let ops = app.on_key(press(KeyCode::BackTab, KeyModifiers::NONE));
+        assert!(
+            matches!(ops.as_slice(), [Op::SetMode { mode }] if mode.is_plan()),
+            "shift+tab must ask the engine to enter plan mode"
+        );
+        assert!(
+            app.plan_mode(),
+            "the label flips without waiting for the echo"
+        );
+        let ops = app.on_key(press(KeyCode::BackTab, KeyModifiers::NONE));
+        assert!(matches!(ops.as_slice(), [Op::SetMode { mode }] if !mode.is_plan()));
+        assert!(!app.plan_mode());
+    }
+
+    #[test]
+    fn slash_plan_toggles_the_same_way() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        app.composer.insert_str("/plan");
+        let ops = app.submit();
+        assert!(matches!(ops.as_slice(), [Op::SetMode { mode }] if mode.is_plan()));
+        assert!(app.plan_mode());
+    }
+
+    fn proposed(app: &mut App) -> Vec<Op> {
+        app.on_engine(EngineEvent::PlanProposed {
+            id: TaskId(1),
+            call: goat_protocol::ToolCallId(7),
+            plan: "# Plan\n\n- [ ] `cargo nextest run` passes\n".to_owned(),
+            path: "/plans/1-demo.md".to_owned(),
+        })
+    }
+
+    #[test]
+    fn plan_proposed_opens_the_sheet_and_approve_resolves_it() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        proposed(&mut app);
+        assert!(matches!(app.overlay, Overlay::Plan(_)));
+        let ops = app.on_key(press(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert!(matches!(
+            ops.as_slice(),
+            [Op::ResolvePlan {
+                decision: goat_protocol::PlanDecision::Approve {},
+                ..
+            }]
+        ));
+        assert!(matches!(app.overlay, Overlay::None));
+    }
+
+    #[test]
+    fn reject_collects_feedback_before_resolving() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        proposed(&mut app);
+        let ops = app.on_key(press(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert!(ops.is_empty(), "asking for changes must not resolve yet");
+        for ch in "too big".chars() {
+            assert!(
+                app.on_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
+                    .is_empty()
+            );
+        }
+        let ops = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
+        match ops.as_slice() {
+            [
+                Op::ResolvePlan {
+                    decision: goat_protocol::PlanDecision::Reject { feedback },
+                    ..
+                },
+            ] => assert_eq!(feedback, "too big"),
+            other => panic!("expected a reject with feedback, got {other:?}"),
+        }
+        assert!(matches!(app.overlay, Overlay::None));
+    }
+
+    #[test]
+    fn pasting_into_the_reject_field_is_not_grabbed_as_an_attachment() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        proposed(&mut app);
+        assert!(
+            !app.overlay_captures_text(),
+            "while reviewing, paste still belongs to the composer"
+        );
+        app.on_key(press(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert!(
+            app.overlay_captures_text(),
+            "while typing changes, paste must reach the sheet"
+        );
+        app.update(super::AppEvent::Input(crossterm::event::Event::Paste(
+            "split step 2".to_owned(),
+        )));
+        let ops = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
+        match ops.as_slice() {
+            [
+                Op::ResolvePlan {
+                    decision: goat_protocol::PlanDecision::Reject { feedback },
+                    ..
+                },
+            ] => assert_eq!(feedback, "split step 2"),
+            other => panic!("expected the pasted text as feedback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn esc_leaves_the_sheet_without_deciding() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        proposed(&mut app);
+        let ops = app.on_key(press(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(ops.is_empty(), "esc must not send a decision");
+        assert!(matches!(app.overlay, Overlay::None));
+    }
+
+    #[test]
+    fn leaving_plan_mode_closes_a_stale_sheet() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        proposed(&mut app);
+        app.on_engine(EngineEvent::ModeChanged {
+            mode: goat_protocol::Mode::Normal,
+            plan_path: None,
+        });
+        assert!(matches!(app.overlay, Overlay::None));
+        assert!(!app.plan_mode());
     }
 
     #[test]

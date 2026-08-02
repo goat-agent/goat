@@ -28,6 +28,7 @@ mod delegate;
 mod instructions;
 mod mcp_tools;
 mod persist;
+mod plan;
 mod prompt;
 mod rate_limit_cache;
 mod retry;
@@ -51,6 +52,7 @@ pub async fn model_list_entries(
 }
 
 const CHILD_ID_BASE: u64 = 1 << 32;
+const PLAN_ID_BASE: u64 = 1 << 40;
 const WAKE_ID_BASE: u64 = 1 << 48;
 
 pub struct GoatAgent {
@@ -125,6 +127,7 @@ pub(crate) struct Shared {
     pub(crate) instructions: Option<String>,
     pub(crate) semaphore: Arc<Semaphore>,
     pub(crate) child_ids: AtomicU64,
+    pub(crate) plan_ids: AtomicU64,
     pub(crate) wake_ids: AtomicU64,
     pub(crate) background: Arc<background::Runs>,
     pub(crate) asks: Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>>,
@@ -169,9 +172,21 @@ pub(crate) enum Flow {
 
 pub(crate) struct SessionState {
     pub(crate) target: Option<ModelTarget>,
+    pub(crate) mode: goat_protocol::Mode,
+    pub(crate) plan_path: Option<PathBuf>,
     pub(crate) conversation: conversation::Conversation,
     pub(crate) tracker: compaction::ContextTracker,
     pub(crate) thread_id: Option<i64>,
+}
+
+impl SessionState {
+    pub(crate) fn plan_prompt_path(&self) -> Option<&std::path::Path> {
+        if self.mode.is_plan() {
+            self.plan_path.as_deref()
+        } else {
+            None
+        }
+    }
 }
 
 pub(crate) struct TurnIds {
@@ -252,6 +267,8 @@ pub(crate) struct LoopEnv {
     pub(crate) cwd: PathBuf,
     pub(crate) allow_delegate: bool,
     pub(crate) allow_ask: bool,
+    pub(crate) plan: bool,
+    pub(crate) plan_path: Option<PathBuf>,
     pub(crate) exec_policy: SandboxPolicy,
 }
 
@@ -270,6 +287,8 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     } = agent;
     let mut state = SessionState {
         target,
+        mode: goat_protocol::Mode::Normal,
+        plan_path: None,
         conversation: conversation::Conversation::new(),
         tracker: compaction::ContextTracker::new(),
         thread_id: None,
@@ -293,6 +312,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     let session_date = prompt::current_utc_date();
     let semaphore = Arc::new(Semaphore::new(delegate::MAX_CONCURRENT_SUBAGENTS));
     let child_ids = AtomicU64::new(CHILD_ID_BASE);
+    let plan_ids = AtomicU64::new(PLAN_ID_BASE);
     let wake_ids = AtomicU64::new(WAKE_ID_BASE);
     let wake = Arc::new(tokio::sync::Notify::new());
     let processes = background::Runs::new(events.clone(), wake.clone(), Some(store.clone()));
@@ -338,6 +358,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
         instructions: project_instructions,
         semaphore,
         child_ids,
+        plan_ids,
         wake_ids,
         background: processes,
         asks,
@@ -403,17 +424,15 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                     break;
                 }
             }
-            Op::SelectModel { .. } => {
-                turn::handle_idle_op(
-                    op,
-                    &ctx.store,
-                    &ctx.cwd,
-                    state.thread_id,
-                    &mut state.target,
-                    &ctx.events,
-                    &ctx.background,
-                )
-                .await;
+            Op::SelectModel { .. } | Op::SetMode { .. } => {
+                turn::handle_idle_op(op, &ctx, &mut state).await;
+            }
+            Op::ResolvePlan { decision, .. } => {
+                if let Flow::Shutdown =
+                    turn::handle_plan_decision(&ctx, decision, &mut state, &mut ops).await
+                {
+                    break;
+                }
             }
             Op::Login {
                 provider,

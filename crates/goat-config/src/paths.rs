@@ -11,6 +11,7 @@ pub struct GoatPaths {
     pub rate_limits_json: PathBuf,
     pub agents_dir: PathBuf,
     pub subagents_dir: PathBuf,
+    pub plans_dir: PathBuf,
     pub memory_dir: PathBuf,
     pub skills_dir: PathBuf,
     pub logs_dir: PathBuf,
@@ -35,6 +36,7 @@ impl GoatPaths {
             rate_limits_json: root.join("rate_limits.json"),
             agents_dir: root.join("agents"),
             subagents_dir: root.join("subagents"),
+            plans_dir: root.join("plans"),
             memory_dir: root.join("memory"),
             skills_dir: root.join("skills"),
             logs_dir: root.join("logs"),
@@ -118,6 +120,10 @@ pub fn agents_dir() -> Option<PathBuf> {
 
 pub fn subagents_dir() -> Option<PathBuf> {
     resolved().map(|p| p.subagents_dir)
+}
+
+pub fn plans_dir() -> Option<PathBuf> {
+    resolved().map(|p| p.plans_dir)
 }
 
 pub fn rate_limits_path() -> Option<PathBuf> {

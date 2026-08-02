@@ -178,7 +178,8 @@ fn render_main(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
     render_full_body_overlay(frame, body, app, theme);
     render_panel(frame, panel_area, app, theme, &panel);
     render_composer_preview(frame, preview_area, app, theme);
-    app.composer().render(frame, composer_area, theme, focused);
+    app.composer()
+        .render(frame, composer_area, theme, focused, app.plan_mode());
     render_hint(frame, footer_area, app, theme, &panel);
 }
 
@@ -232,6 +233,7 @@ fn is_full_body_overlay(app: &App) -> bool {
             | Overlay::Thread(_)
             | Overlay::Usage
             | Overlay::Help
+            | Overlay::Plan(_)
     )
 }
 
@@ -253,6 +255,9 @@ fn render_full_body_overlay(frame: &mut Frame, body: Rect, app: &mut App, theme:
         }
         Overlay::Help => crate::help::render(frame, body, theme),
         _ => {}
+    }
+    if let Overlay::Plan(sheet) = app.overlay_mut() {
+        sheet.render(frame, body, theme);
     }
 }
 
