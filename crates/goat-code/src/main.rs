@@ -69,20 +69,38 @@ async fn run_reload(agent: Option<String>) -> color_eyre::Result<()> {
     let color = ColorMode::detect();
     let socket_path = goat_config::socket_path()
         .ok_or_else(|| color_eyre::eyre::eyre!(goat_config::HOME_NOT_FOUND))?;
-    if !goat_daemon::already_running(&socket_path) {
-        println!(
-            "{}",
-            color.paint(
-                "no daemon is running; the new config loads the next time goat starts",
-                Palette::Muted,
-            )
-        );
-        return Ok(());
+    let ours = goat_client::mine();
+    match goat_client::greet(&socket_path).await {
+        goat_client::Daemon::Absent => {
+            println!("{}", color.paint("no daemon is running", Palette::Muted));
+            pair("start", "goat daemon start");
+            return Ok(());
+        }
+        goat_client::Daemon::Silent => {
+            return ui::fail_hint(
+                "a process is holding the daemon socket and is not answering",
+                "kill it with `pkill -f 'goat daemon serve'`",
+            );
+        }
+        goat_client::Daemon::Reachable(them) => {
+            if !matches!(
+                goat_client::decide(&ours, &them),
+                goat_client::Action::Attach
+            ) {
+                return ui::fail_hint(
+                    format!(
+                        "the running daemon is a different build (goat {})",
+                        them.version
+                    ),
+                    "run `goat daemon start` to replace it, which also applies the new config",
+                );
+            }
+        }
     }
 
     let report = goat_client::reload(&socket_path, agent)
         .await
-        .map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
+        .map_err(|e| ui::daemon_client_error(&e))?;
 
     for warning in &report.warnings {
         println!(
@@ -140,6 +158,7 @@ async fn run_code(args: CodeArgs) -> color_eyre::Result<()> {
             return result.map_err(color_eyre::Report::from);
         }
         Some(CodeCommand::Search(command)) => return search::run(command),
+        Some(CodeCommand::Session(command)) => return run_session_command(command).await,
         None => {}
     }
     if args.print_log_path {
@@ -174,9 +193,11 @@ async fn connect_session(
         goat_wire::ResumeMode::New {}
     };
 
-    goat_client::connect(&socket_path, &daemon_exe, cwd, resume)
+    let (attachment, attached) = goat_client::connect(&socket_path, &daemon_exe, cwd, resume)
         .await
-        .map_err(color_eyre::Report::from)
+        .map_err(|e| ui::daemon_client_error(&e))?;
+    ui::daemon_swapped(&attached);
+    Ok(attachment)
 }
 
 async fn run_tui(worktree_label: Option<String>, r#continue: bool) -> color_eyre::Result<()> {
@@ -319,16 +340,34 @@ fn install_daemon_panic_hook() {
     }));
 }
 
-async fn run_unified_daemon(socket_path: std::path::PathBuf) -> color_eyre::Result<()> {
+async fn run_unified_daemon(
+    socket_path: std::path::PathBuf,
+    detached: bool,
+) -> color_eyre::Result<()> {
     use tokio_util::sync::CancellationToken;
 
     install_daemon_panic_hook();
-    if goat_daemon::already_running(&socket_path) {
-        eprintln!("a daemon is already running at {}", socket_path.display());
-        std::process::exit(1);
+    if detached {
+        detach_from_terminal();
     }
+
     let home_err = || color_eyre::eyre::eyre!(goat_config::HOME_NOT_FOUND);
     let paths = goat_config::GoatPaths::default_layout().map_err(|e| color_eyre::eyre::eyre!(e))?;
+    let wait = if detached { LOCK_WAIT } else { NO_WAIT };
+    let lock = match goat_daemon::acquire(&paths.daemon_lock, wait).await {
+        Ok(lock) => lock,
+        Err(err) => {
+            tracing::info!(%err, "another daemon owns this home; exiting");
+            if !detached {
+                return ui::fail_hint(
+                    "another daemon already owns this home",
+                    "`goat daemon status` shows which one, `goat daemon stop` ends it",
+                );
+            }
+            return Ok(());
+        }
+    };
+
     let auth_path = paths.credentials_json.clone();
     let db_path = paths.state_db.clone();
     let remote = remote_settings()?;
@@ -348,6 +387,21 @@ async fn run_unified_daemon(socket_path: std::path::PathBuf) -> color_eyre::Resu
         goat_config::UserProviders::at(paths.config_json.clone()),
         db_path.clone(),
     );
+
+    let config = goat_daemon::DaemonConfig {
+        socket_path,
+        lock_path: paths.daemon_lock.clone(),
+        auth_path: goat_config::auth_path().ok_or_else(home_err)?,
+        config_json: goat_config::config_path().ok_or_else(home_err)?,
+        db_path: db_path.clone(),
+        remote,
+    };
+    let bound = goat_daemon::bind_daemon(config, &lock)?;
+    let serve = tokio::spawn(goat_daemon::serve_bound(
+        bound,
+        manager.clone(),
+        shutdown.clone(),
+    ));
 
     let proxy_config = goat_config::Config::load().proxy;
     let mut agent_meter = None;
@@ -401,20 +455,30 @@ async fn run_unified_daemon(socket_path: std::path::PathBuf) -> color_eyre::Resu
         }
     }
 
-    let config = goat_daemon::DaemonConfig {
-        socket_path,
-        auth_path: goat_config::auth_path().ok_or_else(home_err)?,
-        config_json: goat_config::config_path().ok_or_else(home_err)?,
-        db_path,
-        remote,
-    };
-    let serve_result = goat_daemon::serve_with(config, manager, shutdown.clone()).await;
+    manager.mark_ready();
+    let serve_result = serve.await;
 
     shutdown.cancel();
     if let Err(e) = agent.await {
         tracing::warn!(error = ?e, "agent runtime task join failed");
     }
-    serve_result.map_err(color_eyre::Report::from)
+    drop(lock);
+    match serve_result {
+        Ok(result) => result.map_err(color_eyre::Report::from),
+        Err(err) => Err(color_eyre::eyre::eyre!(
+            "daemon listener task failed: {err}"
+        )),
+    }
+}
+
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+const NO_WAIT: std::time::Duration = std::time::Duration::ZERO;
+
+fn detach_from_terminal() {
+    #[cfg(unix)]
+    if rustix::process::setsid().is_err() {
+        tracing::warn!("could not start a new session; the daemon stays attached to its terminal");
+    }
 }
 
 #[cfg(unix)]
@@ -441,44 +505,134 @@ async fn wait_for_signal() {
 async fn run_daemon_command(command: DaemonCommand) -> color_eyre::Result<()> {
     let socket_path = goat_config::socket_path()
         .ok_or_else(|| color_eyre::eyre::eyre!(goat_config::HOME_NOT_FOUND))?;
+    let color = ColorMode::detect();
     match command {
-        DaemonCommand::Serve => run_unified_daemon(socket_path).await,
-        DaemonCommand::List => {
-            let sessions = goat_client::status(&socket_path).await?;
-            let color = ColorMode::detect();
-            if sessions.is_empty() {
-                println!("{}", color.paint("no live sessions", Palette::Muted));
-            } else {
-                println!(
-                    "  {} {} {} {} {}",
-                    color.cell("session", Palette::Muted, 10),
-                    color.cell("state", Palette::Muted, 14),
-                    color.cell("windows", Palette::Muted, 8),
-                    color.cell("age", Palette::Muted, 8),
-                    color.paint("cwd", Palette::Muted)
-                );
-                for session in sessions {
-                    let (state, palette) = daemon_state(session.state);
-                    println!(
-                        "{} {} {} {} {} {}",
-                        color.paint("●", palette),
-                        color.cell(format!("#{}", session.session.0), Palette::Provider, 10),
-                        color.cell(state, palette, 14),
-                        color.cell(session.windows.to_string(), Palette::Value, 8),
-                        color.cell(format!("{}s", session.age_ms / 1000), Palette::Value, 8),
-                        color.paint(session.cwd, Palette::Value)
+        DaemonCommand::Serve { detached } => run_unified_daemon(socket_path, detached).await,
+        DaemonCommand::Start => {
+            let exe = std::env::current_exe()?;
+            let attached = goat_client::start(&socket_path, &exe)
+                .await
+                .map_err(|e| ui::daemon_client_error(&e))?;
+            match attached {
+                goat_client::Attached::Reused => {
+                    println!("{}", color.paint("already running", Palette::Muted));
+                }
+                _ => ui::daemon_swapped(&attached),
+            }
+            print_daemon_status(&socket_path).await
+        }
+        DaemonCommand::Status => print_daemon_status(&socket_path).await,
+        DaemonCommand::Stop => {
+            match goat_client::greet(&socket_path).await {
+                goat_client::Daemon::Absent => {
+                    println!("{}", color.paint("no daemon is running", Palette::Muted));
+                    return Ok(());
+                }
+                goat_client::Daemon::Silent => {
+                    return ui::fail_hint(
+                        "a process is holding the daemon socket and is not answering",
+                        "kill it with `pkill -f 'goat daemon serve'`",
                     );
                 }
+                goat_client::Daemon::Reachable(_) => {}
+            }
+            let stopped = goat_client::stop(&socket_path)
+                .await
+                .map_err(|e| ui::daemon_client_error(&e))?;
+            println!(
+                "{}",
+                color.paint(
+                    format!("stopped goat {} (pid {})", stopped.version, stopped.pid),
+                    Palette::Success
+                )
+            );
+            Ok(())
+        }
+    }
+}
+
+async fn print_daemon_status(socket_path: &std::path::Path) -> color_eyre::Result<()> {
+    let color = ColorMode::detect();
+    match goat_client::greet(socket_path).await {
+        goat_client::Daemon::Absent => {
+            println!("{}", color.paint("not running", Palette::Muted));
+            pair("start", "goat daemon start");
+        }
+        goat_client::Daemon::Silent => {
+            println!("{}", color.paint("not answering", Palette::Warning));
+            pair("socket", &socket_path.display().to_string());
+            pair("recover", "pkill -f 'goat daemon serve'");
+        }
+        goat_client::Daemon::Reachable(them) => {
+            let ours = goat_client::mine();
+            let (label, palette) = match goat_client::decide(&ours, &them) {
+                goat_client::Action::Attach => ("running", Palette::Success),
+                goat_client::Action::AttachStale | goat_client::Action::Replace
+                    if them.wire == ours.wire =>
+                {
+                    ("running an older build", Palette::Warning)
+                }
+                _ => ("running a different protocol", Palette::Warning),
+            };
+            println!("{}", color.paint(label, palette));
+            pair("version", &them.version);
+            pair("pid", &them.pid.to_string());
+            pair("up", &ui::age(ui::now_ms() - them.started_at));
+            pair("state", if them.ready { "ready" } else { "starting" });
+            pair("busy", &ui::busy_summary(them.busy));
+            if let Some(build) = &them.build {
+                pair("binary", &build.path);
+            }
+            if !matches!(
+                goat_client::decide(&ours, &them),
+                goat_client::Action::Attach
+            ) {
+                pair("refresh", "goat daemon start");
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn run_session_command(command: cli::SessionCommand) -> color_eyre::Result<()> {
+    let socket_path = goat_config::socket_path()
+        .ok_or_else(|| color_eyre::eyre::eyre!(goat_config::HOME_NOT_FOUND))?;
+    let color = ColorMode::detect();
+    match command {
+        cli::SessionCommand::List => {
+            let sessions = goat_client::status(&socket_path)
+                .await
+                .map_err(|e| ui::daemon_client_error(&e))?;
+            if sessions.is_empty() {
+                println!("{}", color.paint("no live sessions", Palette::Muted));
+                return Ok(());
+            }
+            println!(
+                "  {} {} {} {} {}",
+                color.cell("session", Palette::Muted, 10),
+                color.cell("state", Palette::Muted, 14),
+                color.cell("windows", Palette::Muted, 8),
+                color.cell("age", Palette::Muted, 8),
+                color.paint("cwd", Palette::Muted)
+            );
+            for session in sessions {
+                let (state, palette) = daemon_state(session.state);
+                println!(
+                    "{} {} {} {} {} {}",
+                    color.paint("●", palette),
+                    color.cell(format!("#{}", session.session.0), Palette::Provider, 10),
+                    color.cell(state, palette, 14),
+                    color.cell(session.windows.to_string(), Palette::Value, 8),
+                    color.cell(ui::age(session.age_ms), Palette::Value, 8),
+                    color.paint(session.cwd, Palette::Value)
+                );
             }
             Ok(())
         }
-        DaemonCommand::Stop => {
-            goat_client::stop(&socket_path).await?;
-            println!("daemon stopped");
-            Ok(())
-        }
-        DaemonCommand::Kill { session } => {
-            goat_client::kill_session(&socket_path, session).await?;
+        cli::SessionCommand::Kill { session } => {
+            goat_client::kill_session(&socket_path, session)
+                .await
+                .map_err(|e| ui::daemon_client_error(&e))?;
             println!("killed session #{session}");
             Ok(())
         }

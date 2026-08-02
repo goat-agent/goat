@@ -28,7 +28,7 @@ pub async fn run(args: Args) -> Result<()> {
         None
     };
 
-    let daemon_running = goat_config::socket_path().is_some_and(|p| p.exists());
+    let daemon = daemon_line().await;
 
     let mut warnings = 0usize;
     let mut hint: Option<(&'static str, String)> = None;
@@ -53,14 +53,11 @@ pub async fn run(args: Args) -> Result<()> {
 
         ui::blank();
         ui::section("Coding");
-        ui::pair(
-            "daemon",
-            if daemon_running {
-                "running"
-            } else {
-                "not running"
-            },
-        );
+        ui::pair("daemon", &daemon.0);
+        if let Some(extra) = &daemon.1 {
+            ui::pair("", extra);
+            warnings += 1;
+        }
 
         if let Some(rows) = &probes {
             ui::blank();
@@ -81,6 +78,34 @@ pub async fn run(args: Args) -> Result<()> {
         Ok(footer)
     })?;
     Ok(())
+}
+
+async fn daemon_line() -> (String, Option<String>) {
+    let Some(socket) = goat_config::socket_path() else {
+        return ("not running".to_owned(), None);
+    };
+    match goat_client::greet(&socket).await {
+        goat_client::Daemon::Absent => ("not running".to_owned(), None),
+        goat_client::Daemon::Silent => (
+            "not answering".to_owned(),
+            Some("kill it with `pkill -f 'goat daemon serve'`".to_owned()),
+        ),
+        goat_client::Daemon::Reachable(them) => {
+            let ours = goat_client::mine();
+            let running = format!("running goat {} (pid {})", them.version, them.pid);
+            if matches!(
+                goat_client::decide(&ours, &them),
+                goat_client::Action::Attach
+            ) {
+                (running, None)
+            } else {
+                (
+                    running,
+                    Some("a different build than this binary; run `goat daemon start`".to_owned()),
+                )
+            }
+        }
+    }
 }
 
 fn provider_ids(registry: &Registry) -> Vec<String> {

@@ -4,7 +4,47 @@ use goat_protocol::{
     AccountEntry, Event, ModelEntry, ModelTarget, Op, RateLimitSnapshot, SkillInfo, TranscriptEntry,
 };
 
-pub const PROTOCOL_VERSION: u32 = 8;
+pub fn wire_fingerprint() -> &'static str {
+    include_str!("wire_fingerprint.txt").trim_ascii_end()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct BuildId {
+    pub path: String,
+    pub len: u64,
+    pub mtime: i64,
+}
+
+impl BuildId {
+    pub fn current() -> Option<Self> {
+        let path = std::env::current_exe().ok()?;
+        let meta = std::fs::metadata(&path).ok()?;
+        let mtime = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        Some(Self {
+            path: path.display().to_string(),
+            len: meta.len(),
+            mtime: i64::try_from(mtime.as_millis()).unwrap_or(i64::MAX),
+        })
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+pub struct Busy {
+    pub sessions: usize,
+    pub turns: usize,
+}
+
+impl Busy {
+    pub fn is_idle(self) -> bool {
+        self.sessions == 0 && self.turns == 0
+    }
+}
 
 fn id_json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
     <String as schemars::JsonSchema>::json_schema(generator)
@@ -67,9 +107,6 @@ impl schemars::JsonSchema for ClientId {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type")]
 pub enum ClientFrame {
-    Hello {
-        version: u32,
-    },
     OpenSession {
         cwd: String,
         resume: ResumeMode,
@@ -124,7 +161,13 @@ pub enum ResumeMode {
 #[serde(tag = "type")]
 pub enum ServerFrame {
     Welcome {
-        version: u32,
+        wire: String,
+        build: Option<BuildId>,
+        busy: Busy,
+        version: String,
+        pid: u32,
+        started_at: i64,
+        ready: bool,
         client_id: ClientId,
     },
     SessionOpened {
@@ -185,9 +228,6 @@ pub enum ServerFrame {
     },
     Error {
         message: String,
-    },
-    VersionMismatch {
-        daemon_version: u32,
     },
     Reloaded {
         report: ReloadReport,
@@ -264,4 +304,49 @@ pub enum DirEntryKind {
     Directory {},
     File {},
     Symlink {},
+}
+
+#[cfg(test)]
+mod fingerprint {
+    use std::fmt::Write as _;
+
+    use sha2::{Digest, Sha256};
+
+    use super::{ClientFrame, ServerFrame, wire_fingerprint};
+
+    fn render() -> String {
+        let schemas = [
+            serde_json::to_value(schemars::schema_for!(ClientFrame)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(ServerFrame)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(goat_protocol::Op)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(goat_protocol::Event)).unwrap(),
+        ];
+        let mut out = String::new();
+        for schema in schemas {
+            out.push_str(&serde_json::to_string_pretty(&schema).unwrap());
+            out.push('\n');
+        }
+        out
+    }
+
+    fn digest() -> String {
+        let hash = Sha256::digest(render().as_bytes());
+        let mut out = String::with_capacity(16);
+        for byte in hash.iter().take(8) {
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
+    }
+
+    #[test]
+    fn matches_fixture() {
+        assert_eq!(digest(), wire_fingerprint());
+    }
+
+    #[test]
+    #[ignore = "rewrites wire_fingerprint.txt; run after a deliberate wire change"]
+    fn regenerate() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/wire_fingerprint.txt");
+        std::fs::write(path, format!("{}\n", digest())).unwrap();
+    }
 }

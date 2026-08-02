@@ -42,6 +42,16 @@ pub enum CodeCommand {
     Worktree(WorktreeCommand),
     #[command(subcommand, about = "Manage search providers")]
     Search(SearchCommand),
+    #[command(subcommand, about = "Inspect and end live coding sessions")]
+    Session(SessionCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SessionCommand {
+    #[command(visible_alias = "ls", about = "List live coding sessions")]
+    List,
+    #[command(about = "End one live coding session")]
+    Kill { session: u64 },
 }
 
 #[derive(Subcommand)]
@@ -105,12 +115,24 @@ pub enum RemoteCommand {
 
 #[derive(Subcommand)]
 pub enum DaemonCommand {
-    Serve,
-    #[command(visible_alias = "ls", about = "List daemon sessions")]
-    List,
+    #[command(
+        about = "Make sure a daemon of this build is running in the background",
+        after_help = "Idempotent. A daemon left over from an older build is replaced when it is \
+idle, and reported when it is busy."
+    )]
+    Start,
+    #[command(about = "Stop the running daemon and wait for it to exit")]
     Stop,
-    Kill {
-        session: u64,
+    #[command(about = "Report which daemon is running, and what it is doing")]
+    Status,
+    #[command(
+        about = "Run the daemon in this process",
+        after_help = "Stays in the foreground, so a supervisor can own it. `goat daemon start` \
+spawns this with --detached."
+    )]
+    Serve {
+        #[arg(long, hide = true)]
+        detached: bool,
     },
 }
 
@@ -474,18 +496,39 @@ mod tests {
     }
 
     #[test]
-    fn parses_daemon_list_alias() {
-        let cli = Cli::try_parse_from(["goat", "daemon", "ls"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Daemon(DaemonCommand::List))
-        ));
+    fn parses_the_four_daemon_verbs() {
+        for (args, expected) in [
+            (["goat", "daemon", "start"], DaemonCommand::Start),
+            (["goat", "daemon", "stop"], DaemonCommand::Stop),
+            (["goat", "daemon", "status"], DaemonCommand::Status),
+            (
+                ["goat", "daemon", "serve"],
+                DaemonCommand::Serve { detached: false },
+            ),
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Some(Command::Daemon(got)) = cli.command else {
+                panic!("expected a daemon subcommand for {args:?}");
+            };
+            assert_eq!(
+                std::mem::discriminant(&got),
+                std::mem::discriminant(&expected)
+            );
+        }
     }
 
     #[test]
-    fn daemon_status_is_removed() {
-        let result = Cli::try_parse_from(["goat", "daemon", "status"]);
-        assert!(result.is_err());
+    fn session_verbs_moved_off_the_daemon_noun() {
+        assert!(Cli::try_parse_from(["goat", "daemon", "ls"]).is_err());
+        assert!(Cli::try_parse_from(["goat", "daemon", "kill", "1"]).is_err());
+        assert!(matches!(
+            code_sub(&["session", "ls"]),
+            CodeCommand::Session(super::SessionCommand::List)
+        ));
+        assert!(matches!(
+            code_sub(&["session", "kill", "3"]),
+            CodeCommand::Session(super::SessionCommand::Kill { session: 3 })
+        ));
     }
 
     #[test]

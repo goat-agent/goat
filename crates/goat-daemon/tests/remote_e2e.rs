@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
 use goat_wire::transport::{self, Stream};
-use goat_wire::{ClientConn, ClientFrame, PROTOCOL_VERSION, ResumeMode, ServerFrame, WireConn};
+use goat_wire::{ClientConn, ClientFrame, ResumeMode, ServerFrame, WireConn};
 use rustls::pki_types::{CertificateDer, ServerName};
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::Message;
@@ -13,6 +13,7 @@ async fn start_remote_daemon(dir: &std::path::Path, port: u16) -> PathBuf {
     let socket = dir.join("d.sock");
     let cfg = goat_daemon::DaemonConfig {
         socket_path: socket.clone(),
+        lock_path: dir.join("daemon.lock"),
         auth_path: dir.join("auth.json"),
         config_json: dir.join("config.json"),
         db_path: dir.join("store.sqlite"),
@@ -37,11 +38,6 @@ async fn start_remote_daemon(dir: &std::path::Path, port: u16) -> PathBuf {
 async fn local_conn(socket: &std::path::Path) -> ClientConn<Stream> {
     let stream = transport::connect(socket).await.unwrap();
     let mut conn: ClientConn<Stream> = WireConn::new(stream);
-    conn.send(&ClientFrame::Hello {
-        version: PROTOCOL_VERSION,
-    })
-    .await
-    .unwrap();
     match conn.recv().await.unwrap() {
         ServerFrame::Welcome { .. } => {}
         other => panic!("expected Welcome, got {other:?}"),
@@ -225,15 +221,8 @@ async fn remote_pair_and_open_session_over_mtls() {
         .await
         .expect("ws upgrade");
 
-    send_frame(
-        &mut ws,
-        &ClientFrame::Hello {
-            version: PROTOCOL_VERSION,
-        },
-    )
-    .await;
     match recv_frame(&mut ws).await {
-        ServerFrame::Welcome { version, .. } => assert_eq!(version, PROTOCOL_VERSION),
+        ServerFrame::Welcome { wire, .. } => assert_eq!(wire, goat_wire::wire_fingerprint()),
         other => panic!("expected Welcome, got {other:?}"),
     }
 
@@ -304,11 +293,8 @@ async fn revoked_device_cannot_reconnect() {
         let (mut ws, _) = tokio_tungstenite::client_async("ws://127.0.0.1/ws", tls)
             .await
             .map_err(|e| std::io::Error::other(e.to_string()))?;
-        let hello = serde_json::to_string(&ClientFrame::Hello {
-            version: PROTOCOL_VERSION,
-        })
-        .unwrap();
-        ws.send(Message::Text(hello.into()))
+        let probe = serde_json::to_string(&ClientFrame::ListSessions {}).unwrap();
+        ws.send(Message::Text(probe.into()))
             .await
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         match ws.next().await {

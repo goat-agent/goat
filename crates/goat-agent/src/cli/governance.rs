@@ -4,15 +4,15 @@ use goat_store::{SqliteStore, Store};
 
 use super::ui::{self, Footer, Palette, Table};
 
-pub fn status() -> Result<()> {
+pub async fn status() -> Result<()> {
     let paths = GoatPaths::default_layout()?;
-    let daemon_up = goat_config::socket_path().is_some_and(|p| p.exists());
+    let daemon = daemon_state().await;
     let agents = goat_config::load_from(paths.clone())
         .map(|c| c.agents)
         .unwrap_or_default();
 
     ui::cell("Status", || {
-        ui::pair("daemon", if daemon_up { "running" } else { "stopped" });
+        ui::pair("daemon", &daemon);
         ui::blank();
         ui::section("Agents");
         if agents.is_empty() {
@@ -39,6 +39,27 @@ pub fn status() -> Result<()> {
         }
         Ok(Footer::None)
     })
+}
+
+async fn daemon_state() -> String {
+    let Some(socket) = goat_config::socket_path() else {
+        return "stopped".to_owned();
+    };
+    match goat_client::greet(&socket).await {
+        goat_client::Daemon::Absent => "stopped".to_owned(),
+        goat_client::Daemon::Silent => "not answering".to_owned(),
+        goat_client::Daemon::Reachable(them) => {
+            let ours = goat_client::mine();
+            if matches!(
+                goat_client::decide(&ours, &them),
+                goat_client::Action::Attach
+            ) {
+                format!("running goat {}", them.version)
+            } else {
+                format!("running goat {} (older build)", them.version)
+            }
+        }
+    }
 }
 
 pub async fn log(limit: usize) -> Result<()> {

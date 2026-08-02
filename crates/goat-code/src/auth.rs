@@ -40,11 +40,13 @@ pub async fn run_setup() -> color_eyre::Result<()> {
     ui::blank();
     let agent = setup_agent(&paths).await?;
 
+    apply_to_daemon().await;
+
     ui::blank();
     ui::section("Ready");
     ui::pair("code", "goat code");
     match agent {
-        Some(slug) => ui::pair("agent", &format!("{slug} — runs while the daemon is up")),
+        Some(slug) => ui::pair("agent", &format!("{slug} — `goat daemon start` runs it")),
         None => ui::pair("agent", "goat agent add"),
     }
     Ok(())
@@ -162,7 +164,7 @@ pub async fn run_provider(command: ProviderCommand) -> color_eyre::Result<()> {
                 ui::note("cancelled");
                 return Ok(());
             };
-            if !login(
+            if login(
                 &store,
                 &user,
                 &provider,
@@ -173,6 +175,8 @@ pub async fn run_provider(command: ProviderCommand) -> color_eyre::Result<()> {
             )
             .await?
             {
+                apply_to_daemon().await;
+            } else {
                 ui::note("cancelled");
             }
             Ok(())
@@ -190,7 +194,9 @@ pub async fn run_provider(command: ProviderCommand) -> color_eyre::Result<()> {
         }
         ProviderCommand::Info { provider } => provider_info(&store, &user, &provider),
         ProviderCommand::Logout { provider, account } => {
-            logout(&store, &provider, &account, CredentialService::Model)
+            logout(&store, &provider, &account, CredentialService::Model)?;
+            apply_to_daemon().await;
+            Ok(())
         }
     }
 }
@@ -268,17 +274,7 @@ async fn add_custom(
 }
 
 async fn apply_to_daemon() {
-    let Some(socket_path) = goat_config::socket_path() else {
-        return;
-    };
-    if !goat_wire::transport::probe_alive(&socket_path) {
-        return;
-    }
-    if let Err(e) = goat_client::reload(&socket_path, None).await {
-        ui::note(&format!(
-            "could not apply to the running daemon: {e}; run `goat reload`"
-        ));
-    }
+    goat_agent::cli::apply::config_changed(None).await;
 }
 
 async fn remove_custom(

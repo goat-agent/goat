@@ -117,6 +117,9 @@ impl Goat {
         ));
 
         let agent_turns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        if let Some(manager) = &code {
+            manager.set_agent_turns(agent_turns.clone());
+        }
 
         let base = RuntimeBase {
             paths: cfg.paths.clone(),
