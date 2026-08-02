@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 use tokio::sync::{mpsc, oneshot};
 
 const SUBSCRIBER_QUEUE: usize = 1024;
+const WALK_CAP: usize = 4000;
 
 use crate::session::{LiveSession, SessionInner, SessionTable};
 
@@ -184,16 +185,33 @@ impl Manager {
         &self,
         cwd: PathBuf,
         resume: ResumeMode,
-    ) -> Result<SessionId, String> {
+    ) -> Result<(SessionId, String), String> {
         let normalized = Self::normalize_cwd(&cwd);
         let thread_id = self.resolve_thread_id(&normalized, resume).await;
         if let Some(tid) = thread_id {
-            let threads = self.inner.threads.lock().await;
-            if let Some(existing) = threads.get(&tid).copied() {
-                return Ok(existing);
+            let existing = {
+                let threads = self.inner.threads.lock().await;
+                threads.get(&tid).copied()
+            };
+            if let Some(existing) = existing {
+                return Ok((existing, self.live_cwd(existing, &normalized).await));
             }
         }
-        self.open_session(cwd, normalized, thread_id).await
+        let id = self
+            .open_session(cwd, normalized.clone(), thread_id)
+            .await?;
+        Ok((id, self.live_cwd(id, &normalized).await))
+    }
+
+    async fn live_cwd(&self, session: SessionId, fallback: &str) -> String {
+        let live = {
+            let table = self.inner.sessions.lock().await;
+            table.get(&session).cloned()
+        };
+        match live {
+            Some(live) => live.inner.lock().await.cwd.clone(),
+            None => fallback.to_owned(),
+        }
     }
 
     async fn resolve_thread_id(&self, normalized: &str, resume: ResumeMode) -> Option<i64> {
@@ -457,13 +475,16 @@ impl Manager {
             let inner = live.inner.lock().await;
             inner.cwd.clone()
         };
-        let new = self.open_or_attach(PathBuf::from(cwd), resume).await?;
+        let (new, opened_cwd) = self.open_or_attach(PathBuf::from(cwd), resume).await?;
         self.unsubscribe(from, client).await;
         let _ = client_sender
             .send(ServerFrame::Detached { session: from })
             .await;
         let _ = client_sender
-            .send(ServerFrame::SessionOpened { session: new })
+            .send(ServerFrame::SessionOpened {
+                session: new,
+                cwd: opened_cwd,
+            })
             .await;
         self.subscribe(new, client, client_sender.clone()).await
     }
@@ -506,7 +527,7 @@ impl Manager {
         cwd: PathBuf,
         prompt: String,
     ) -> Result<mpsc::Receiver<goat_protocol::Event>, String> {
-        let session = self.open_or_attach(cwd, ResumeMode::New {}).await?;
+        let (session, _cwd) = self.open_or_attach(cwd, ResumeMode::New {}).await?;
         let client = self.next_client_id();
         let (frame_tx, mut frame_rx) = mpsc::channel::<ServerFrame>(SUBSCRIBER_QUEUE);
         self.subscribe(session, client, frame_tx.clone()).await?;
@@ -578,23 +599,56 @@ impl Manager {
         ops.send(op).await.map_err(|_| "engine closed".to_owned())
     }
 
-    pub(crate) fn list_directory(path: &str) -> Result<Vec<goat_wire::DirEntry>, String> {
-        let dir = std::fs::read_dir(path).map_err(|e| format!("read_dir: {e}"))?;
+    pub(crate) fn list_directory(
+        path: &str,
+        recursive: bool,
+    ) -> Result<Vec<goat_wire::DirEntry>, String> {
+        let root = std::path::Path::new(path);
         let mut children = Vec::new();
-        for entry in dir.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let file_type = entry.file_type().map_err(|e| format!("file_type: {e}"))?;
-            let kind = if file_type.is_symlink() {
-                goat_wire::DirEntryKind::Symlink {}
-            } else if file_type.is_dir() {
-                goat_wire::DirEntryKind::Directory {}
-            } else {
-                goat_wire::DirEntryKind::File {}
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            if children.len() >= WALK_CAP {
+                break;
+            }
+            let read = match std::fs::read_dir(&dir) {
+                Ok(read) => read,
+                Err(e) if dir == root => return Err(format!("read_dir: {e}")),
+                Err(_) => continue,
             };
-            children.push(goat_wire::DirEntry { name, kind });
+            for entry in read.flatten() {
+                let file_name = entry.file_name();
+                let file_name = file_name.to_string_lossy();
+                if recursive && Self::skipped(&file_name) {
+                    continue;
+                }
+                let path = entry.path();
+                let Ok(name) = path.strip_prefix(root) else {
+                    continue;
+                };
+                let name = name.to_string_lossy().replace('\\', "/");
+                let file_type = entry.file_type().map_err(|e| format!("file_type: {e}"))?;
+                let kind = if file_type.is_symlink() {
+                    goat_wire::DirEntryKind::Symlink {}
+                } else if file_type.is_dir() {
+                    if recursive {
+                        stack.push(path);
+                    }
+                    goat_wire::DirEntryKind::Directory {}
+                } else {
+                    goat_wire::DirEntryKind::File {}
+                };
+                children.push(goat_wire::DirEntry { name, kind });
+                if children.len() >= WALK_CAP {
+                    break;
+                }
+            }
         }
         children.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(children)
+    }
+
+    fn skipped(name: &str) -> bool {
+        name.starts_with('.') || name == "target" || name == "node_modules"
     }
 
     pub(crate) async fn list_threads(&self, cwd: &str) -> Vec<goat_wire::ThreadInfo> {
@@ -844,10 +898,56 @@ fn thread_unregister_owner(threads: &mut HashMap<i64, SessionId>, session: Sessi
 #[cfg(test)]
 mod tests {
     use super::{
-        HashMap, SessionId, spawn_subscriber_bridge, thread_register, thread_unregister_owner,
+        HashMap, Manager, SessionId, spawn_subscriber_bridge, thread_register,
+        thread_unregister_owner,
     };
     use goat_wire::ServerFrame;
     use tokio::sync::mpsc;
+
+    fn tree() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/deep")).unwrap();
+        std::fs::create_dir_all(dir.path().join("target/debug")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join("README.md"), "x").unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "x").unwrap();
+        std::fs::write(dir.path().join("src/deep/mod.rs"), "x").unwrap();
+        std::fs::write(dir.path().join("target/debug/goat"), "x").unwrap();
+        std::fs::write(dir.path().join(".git/HEAD"), "x").unwrap();
+        dir
+    }
+
+    fn names(entries: &[goat_wire::DirEntry]) -> Vec<String> {
+        entries.iter().map(|e| e.name.clone()).collect()
+    }
+
+    #[test]
+    fn a_flat_listing_stays_one_level_deep() {
+        let dir = tree();
+        let listed = Manager::list_directory(&dir.path().display().to_string(), false).unwrap();
+        assert_eq!(names(&listed), vec![".git", "README.md", "src", "target"]);
+    }
+
+    #[test]
+    fn a_recursive_listing_walks_and_skips_noise() {
+        let dir = tree();
+        let listed = Manager::list_directory(&dir.path().display().to_string(), true).unwrap();
+        assert_eq!(
+            names(&listed),
+            vec![
+                "README.md",
+                "src",
+                "src/deep",
+                "src/deep/mod.rs",
+                "src/main.rs"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unreadable_root_is_an_error() {
+        assert!(Manager::list_directory("/definitely/not/here", true).is_err());
+    }
 
     #[test]
     fn register_is_first_writer_wins() {

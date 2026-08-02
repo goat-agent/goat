@@ -81,6 +81,9 @@ pub enum Event {
     ThreadsListed {
         threads: Vec<ThreadSummary>,
     },
+    FilesListed {
+        entries: Vec<String>,
+    },
     ConversationRestored {
         target: ModelTarget,
         entries: Vec<TranscriptEntry>,

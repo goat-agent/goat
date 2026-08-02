@@ -57,6 +57,11 @@ pub(crate) struct SubagentGroupView {
 }
 
 #[derive(Debug)]
+pub(crate) struct GitRun {
+    pub(crate) ops: Vec<goat_git::GitOp>,
+}
+
+#[derive(Debug)]
 pub(crate) enum Item {
     User(UserMessage),
     Agent(String),
@@ -70,6 +75,7 @@ pub(crate) enum Item {
         display: ToolDisplay,
         status: ToolStatus,
         image: Option<Box<crate::screenshot::TranscriptImage>>,
+        git: Option<GitRun>,
     },
     SubagentGroup(SubagentGroupView),
     Shell {

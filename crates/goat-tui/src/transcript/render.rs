@@ -11,7 +11,7 @@ use crate::{
 
 use super::ImagePlacement;
 use super::item::{
-    Item, ShellStatus, SubagentGroupView, SubagentMemberStatus, ToolStatus, Working,
+    GitRun, Item, ShellStatus, SubagentGroupView, SubagentMemberStatus, ToolStatus, Working,
 };
 use super::tool_gist::ToolLineCtx;
 use super::tool_line::{ToolRowInput, tool_marker, tool_row};
@@ -262,7 +262,9 @@ pub(super) fn build_static_lines(
         };
         lines.extend(rows);
         if let Item::Tool {
-            image: Some(img), ..
+            image: Some(img),
+            git: None,
+            ..
         } = item
         {
             let rows = img.rows();
@@ -373,17 +375,33 @@ pub(super) fn item_signature(item: &Item) -> u64 {
             name,
             display,
             status,
+            git,
             ..
         } => {
             6u8.hash(&mut hasher);
             name.hash(&mut hasher);
             display.primary.hash(&mut hasher);
+            if let Some(run) = git {
+                for op in &run.ops {
+                    op.verb.hash(&mut hasher);
+                    op.target.hash(&mut hasher);
+                    op.remote.hash(&mut hasher);
+                    op.number.hash(&mut hasher);
+                }
+            }
             match status {
                 ToolStatus::Running => 0u8.hash(&mut hasher),
                 ToolStatus::Done(outcome) => {
                     1u8.hash(&mut hasher);
                     outcome.ok.hash(&mut hasher);
                     outcome.summary.hash(&mut hasher);
+                    if let Some(facts) = &outcome.git {
+                        facts.head.hash(&mut hasher);
+                        facts.subject.hash(&mut hasher);
+                        facts.branch.hash(&mut hasher);
+                        facts.upstream.hash(&mut hasher);
+                        facts.pr.hash(&mut hasher);
+                    }
                 }
             }
         }
@@ -469,6 +487,11 @@ pub(super) fn item_rows(
         }
         Item::SubagentGroup(group) => subagent_group_rows(group, theme, width),
         Item::Tool {
+            git: Some(run),
+            status,
+            ..
+        } => git_rows(run, status, theme, width),
+        Item::Tool {
             name,
             display,
             status,
@@ -495,6 +518,297 @@ pub(super) fn item_rows(
             rows
         }
     }
+}
+
+struct GitPhrase {
+    verb: String,
+    subject: Option<String>,
+    relation: Option<(&'static str, String)>,
+    note: Option<String>,
+    unfinished: bool,
+    failed: bool,
+}
+
+fn git_rows(run: &GitRun, status: &ToolStatus, theme: Theme, width: u16) -> Vec<Line<'static>> {
+    let (marker, marker_style) = tool_marker(status, theme);
+    let phrases = match status {
+        ToolStatus::Done(outcome) if outcome.ok => run
+            .ops
+            .iter()
+            .map(|op| landed_phrase(op, outcome.git.as_deref()))
+            .collect(),
+        ToolStatus::Done(outcome) => vec![GitPhrase {
+            verb: format!("Failed to {}", listed(&run.ops, GitWording::Bare)),
+            subject: None,
+            relation: None,
+            note: outcome.summary.as_deref().map(|s| git_reason(s).to_owned()),
+            unfinished: false,
+            failed: true,
+        }],
+        ToolStatus::Running => vec![running_phrase(run)],
+    };
+    phrases
+        .iter()
+        .map(|phrase| git_row(phrase, marker, marker_style, theme, width))
+        .collect()
+}
+
+fn running_phrase(run: &GitRun) -> GitPhrase {
+    let mut phrase = match run.ops.as_slice() {
+        [op] => landed_phrase(op, None),
+        _ => GitPhrase {
+            verb: String::new(),
+            subject: None,
+            relation: None,
+            note: None,
+            unfinished: false,
+            failed: false,
+        },
+    };
+    phrase.verb = listed(&run.ops, GitWording::Running);
+    phrase.note = None;
+    phrase.unfinished = true;
+    phrase
+}
+
+#[derive(Clone, Copy)]
+enum GitWording {
+    Running,
+    Bare,
+}
+
+fn listed(ops: &[goat_git::GitOp], wording: GitWording) -> String {
+    let words: Vec<String> = ops
+        .iter()
+        .enumerate()
+        .map(|(index, op)| {
+            let word = git_wording(op.verb, wording);
+            if index == 0 {
+                word.to_owned()
+            } else {
+                word.to_lowercase()
+            }
+        })
+        .collect();
+    match words.as_slice() {
+        [] => String::new(),
+        [only] => only.clone(),
+        [head @ .., last] => format!("{} and {last}", head.join(", ")),
+    }
+}
+
+fn git_wording(verb: goat_git::GitVerb, wording: GitWording) -> &'static str {
+    use goat_git::GitVerb;
+    match (verb, wording) {
+        (GitVerb::Commit, GitWording::Running) => "Committing",
+        (GitVerb::Commit, GitWording::Bare) => "commit",
+        (GitVerb::Amend, GitWording::Running) => "Amending",
+        (GitVerb::Amend, GitWording::Bare) => "amend",
+        (GitVerb::Push, GitWording::Running) => "Pushing",
+        (GitVerb::Push, GitWording::Bare) => "push",
+        (GitVerb::ForcePush, GitWording::Running) => "Force-pushing",
+        (GitVerb::ForcePush, GitWording::Bare) => "force-push",
+        (GitVerb::Pull, GitWording::Running) => "Pulling",
+        (GitVerb::Pull, GitWording::Bare) => "pull",
+        (GitVerb::Fetch, GitWording::Running) => "Fetching",
+        (GitVerb::Fetch, GitWording::Bare) => "fetch",
+        (GitVerb::Merge, GitWording::Running) => "Merging",
+        (GitVerb::Merge, GitWording::Bare) => "merge",
+        (GitVerb::Rebase, GitWording::Running) => "Rebasing",
+        (GitVerb::Rebase, GitWording::Bare) => "rebase",
+        (GitVerb::Branch, GitWording::Running) => "Creating a branch",
+        (GitVerb::Branch, GitWording::Bare) => "create a branch",
+        (GitVerb::Switch, GitWording::Running) => "Switching",
+        (GitVerb::Switch, GitWording::Bare) => "switch branches",
+        (GitVerb::Tag, GitWording::Running) => "Tagging",
+        (GitVerb::Tag, GitWording::Bare) => "tag",
+        (GitVerb::Stash, GitWording::Running) => "Stashing changes",
+        (GitVerb::Stash, GitWording::Bare) => "stash changes",
+        (GitVerb::Reset, GitWording::Running) => "Resetting",
+        (GitVerb::Reset, GitWording::Bare) => "reset",
+        (GitVerb::HardReset, GitWording::Running) => "Hard resetting",
+        (GitVerb::HardReset, GitWording::Bare) => "hard reset",
+        (GitVerb::Revert, GitWording::Running) => "Reverting",
+        (GitVerb::Revert, GitWording::Bare) => "revert",
+        (GitVerb::CherryPick, GitWording::Running) => "Cherry-picking",
+        (GitVerb::CherryPick, GitWording::Bare) => "cherry-pick",
+        (GitVerb::PrCreate, GitWording::Running) => "Opening a pull request",
+        (GitVerb::PrCreate, GitWording::Bare) => "open a pull request",
+        (GitVerb::PrMerge, GitWording::Running) => "Merging the pull request",
+        (GitVerb::PrMerge, GitWording::Bare) => "merge the pull request",
+        (GitVerb::PrClose, GitWording::Running) => "Closing the pull request",
+        (GitVerb::PrClose, GitWording::Bare) => "close the pull request",
+        _ => "Running git",
+    }
+}
+
+fn landed_phrase(op: &goat_git::GitOp, facts: Option<&goat_protocol::GitFacts>) -> GitPhrase {
+    use goat_git::GitVerb;
+    let phrase = said("");
+    let branch = || {
+        op.target
+            .clone()
+            .or_else(|| facts.and_then(|f| f.branch.clone()))
+    };
+    match op.verb {
+        GitVerb::Commit => said("Committed")
+            .about(facts.and_then(|f| f.head.clone()))
+            .quoting(facts.and_then(|f| f.subject.clone())),
+        GitVerb::Amend => said("Amended")
+            .about(facts.and_then(|f| f.head.clone()))
+            .quoting(facts.and_then(|f| f.subject.clone())),
+        GitVerb::Push | GitVerb::ForcePush => said(if op.verb == GitVerb::ForcePush {
+            "Force-pushed"
+        } else {
+            "Pushed"
+        })
+        .about(branch())
+        .toward(
+            "to",
+            op.remote
+                .clone()
+                .or_else(|| facts.and_then(|f| upstream_remote(f.upstream.as_deref()))),
+        ),
+        GitVerb::Pull => said("Pulled").toward("from", op.target.clone()),
+        GitVerb::Fetch => said("Fetched").toward("from", op.target.clone()),
+        GitVerb::Merge => said("Merged").about(op.target.clone()),
+        GitVerb::Rebase => said("Rebased").toward("onto", op.target.clone()),
+        GitVerb::Branch => said("Created").toward("branch", branch()),
+        GitVerb::Switch => said("Switched").toward("to", branch()),
+        GitVerb::Tag => said("Tagged").about(op.target.clone()),
+        GitVerb::Stash => said("Stashed changes"),
+        GitVerb::Reset => said("Reset").toward("to", op.target.clone()),
+        GitVerb::HardReset => said("Hard reset").toward("to", op.target.clone()),
+        GitVerb::Revert => said("Reverted").about(op.target.clone()),
+        GitVerb::CherryPick => said("Cherry-picked").about(op.target.clone()),
+        GitVerb::PrCreate | GitVerb::PrMerge | GitVerb::PrClose => {
+            let action = match op.verb {
+                GitVerb::PrCreate => "Opened",
+                GitVerb::PrMerge => "Merged",
+                _ => "Closed",
+            };
+            match pull_request_label(op, facts) {
+                Some(label) => said(action).about(Some(label)),
+                None => GitPhrase {
+                    verb: format!("{action} the pull request"),
+                    ..phrase
+                },
+            }
+        }
+        _ => said("Ran git"),
+    }
+}
+
+fn said(verb: &str) -> GitPhrase {
+    GitPhrase {
+        verb: verb.to_owned(),
+        subject: None,
+        relation: None,
+        note: None,
+        unfinished: false,
+        failed: false,
+    }
+}
+
+impl GitPhrase {
+    fn about(mut self, subject: Option<String>) -> Self {
+        self.subject = subject;
+        self
+    }
+
+    fn toward(mut self, word: &'static str, value: Option<String>) -> Self {
+        self.relation = value.map(|value| (word, value));
+        self
+    }
+
+    fn quoting(mut self, note: Option<String>) -> Self {
+        self.note = note;
+        self
+    }
+}
+
+fn pull_request_label(
+    op: &goat_git::GitOp,
+    facts: Option<&goat_protocol::GitFacts>,
+) -> Option<String> {
+    op.number
+        .or_else(|| facts.and_then(|f| f.pr))
+        .map(|number| format!("PR #{number}"))
+}
+
+fn git_reason(summary: &str) -> &str {
+    let trimmed = summary
+        .split_once(symbols::ui::SEPARATOR)
+        .map_or(summary, |(head, tail)| {
+            if head.starts_with("exit ") {
+                tail
+            } else {
+                summary
+            }
+        });
+    trimmed.trim()
+}
+
+fn upstream_remote(upstream: Option<&str>) -> Option<String> {
+    upstream?
+        .split_once('/')
+        .map(|(remote, _)| remote.to_owned())
+}
+
+fn git_row(
+    phrase: &GitPhrase,
+    marker: &str,
+    marker_style: Style,
+    theme: Theme,
+    width: u16,
+) -> Line<'static> {
+    let mut budget = usize::from(width.saturating_sub(2));
+    let mut spans = vec![Span::styled(format!("{marker} "), marker_style)];
+    push_clipped(&mut spans, &phrase.verb, theme.tool_fn(), &mut budget);
+    if let Some(subject) = &phrase.subject {
+        push_clipped(&mut spans, " ", theme.muted(), &mut budget);
+        push_clipped(&mut spans, subject, theme.text(), &mut budget);
+    }
+    if let Some((word, value)) = &phrase.relation {
+        push_clipped(&mut spans, &format!(" {word} "), theme.muted(), &mut budget);
+        push_clipped(&mut spans, value, theme.text(), &mut budget);
+    }
+    if phrase.unfinished {
+        push_clipped(
+            &mut spans,
+            symbols::ui::ELLIPSIS,
+            theme.muted(),
+            &mut budget,
+        );
+    }
+    if let Some(note) = &phrase.note {
+        let style = if phrase.failed {
+            theme.error_body()
+        } else {
+            theme.muted()
+        };
+        push_clipped(
+            &mut spans,
+            symbols::ui::SEPARATOR,
+            theme.muted(),
+            &mut budget,
+        );
+        push_clipped(&mut spans, note, style, &mut budget);
+    }
+    Line::from(spans)
+}
+
+fn push_clipped(spans: &mut Vec<Span<'static>>, text: &str, style: Style, budget: &mut usize) {
+    if *budget == 0 || text.is_empty() {
+        return;
+    }
+    let clipped = if text.width() > *budget {
+        goat_tool::gist::clip_to_width(text, *budget)
+    } else {
+        text.to_owned()
+    };
+    *budget = budget.saturating_sub(clipped.width());
+    spans.push(Span::styled(clipped, style));
 }
 
 fn subagent_group_rows(group: &SubagentGroupView, theme: Theme, width: u16) -> Vec<Line<'static>> {

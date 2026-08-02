@@ -62,6 +62,14 @@ impl App {
                 },
                 None => {}
             },
+            EngineEvent::FilesListed { entries } => {
+                self.files = entries;
+                self.files_loaded = true;
+                if let Overlay::Files(menu) = &mut self.overlay {
+                    let query = self.composer.at_query().unwrap_or_default();
+                    menu.fill(self.files.clone(), &query);
+                }
+            }
             EngineEvent::ConversationRestored {
                 target,
                 entries,
@@ -352,8 +360,12 @@ impl App {
                         self.transcript.finish_subagent(id, call, outcome);
                     }
                 } else {
+                    let touched = outcome.ok && self.transcript.touches_pull_request(call);
                     self.transcript
                         .finish_tool(call, outcome, self.picker.as_ref());
+                    if touched {
+                        self.forget_pull_request();
+                    }
                 }
             }
             EngineEvent::ShellDone { id, output } => {
@@ -395,6 +407,7 @@ impl App {
                                 ok,
                                 summary: None,
                                 image: None,
+                                git: None,
                             },
                         );
                     }

@@ -972,6 +972,7 @@ mod tests {
         let ws = goat_worktree::Workspace {
             owner_root: std::path::PathBuf::from("/x/goat-code"),
             repo_root: std::path::PathBuf::from("/x/goat-code"),
+            git_dir: std::path::PathBuf::from("/x/goat-code/.git"),
             git_branch: "main".to_owned(),
             kind: WorkspaceKind::Main,
         };
@@ -983,6 +984,7 @@ mod tests {
         let ws = goat_worktree::Workspace {
             owner_root: std::path::PathBuf::from("/x/goat-code"),
             repo_root: std::path::PathBuf::from("/x/goat-code/.goat/worktrees/plan"),
+            git_dir: std::path::PathBuf::from("/x/goat-code/.goat/worktrees/plan/.git"),
             git_branch: "worktree-plan".to_owned(),
             kind: WorkspaceKind::Managed {
                 label: "plan".to_owned(),

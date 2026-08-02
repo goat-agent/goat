@@ -3,16 +3,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use goat_protocol::{Event, Op};
-use goat_wire::transport::{self, Stream};
-use goat_wire::{
-    ClientConn, ClientFrame, PROTOCOL_VERSION, ResumeMode, ServerFrame, SessionId, WireError,
-};
+use goat_wire::{ClientFrame, PROTOCOL_VERSION, ResumeMode, ServerFrame, SessionId, WireError};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::idmap::IdMap;
+use crate::link::Conn;
 
 mod idmap;
+mod link;
+
+pub use link::{LOCAL, Link};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
@@ -20,6 +21,8 @@ pub enum ClientError {
     Io(#[from] std::io::Error),
     #[error("wire error: {0}")]
     Wire(#[from] WireError),
+    #[error("remote error: {0}")]
+    Remote(#[from] goat_remote::RemoteError),
     #[error("daemon protocol version {0} does not match client {PROTOCOL_VERSION}")]
     VersionMismatch(u32),
     #[error("unexpected daemon response during handshake")]
@@ -37,7 +40,9 @@ pub struct Attachment {
     pub events: mpsc::Receiver<Event>,
     pub presence: mpsc::Receiver<usize>,
     pub client_id: u64,
+    pub cwd: String,
     pub pump: JoinHandle<()>,
+    events_in: mpsc::Sender<Event>,
 }
 
 const OPS_CAPACITY: usize = 32;
@@ -45,24 +50,27 @@ const EVENTS_CAPACITY: usize = 512;
 const PRESENCE_CAPACITY: usize = 16;
 
 pub async fn connect(
-    socket_path: &Path,
-    daemon_exe: &Path,
+    link: Arc<Link>,
     cwd: PathBuf,
     resume: ResumeMode,
 ) -> Result<Attachment, ClientError> {
-    let stream = connect_or_spawn(socket_path, daemon_exe).await?;
-    let mut conn: ClientConn<Stream> = ClientConn::new(stream);
+    let mut conn = link.dial_or_spawn().await?;
 
-    conn.send(&ClientFrame::Hello {
+    conn.send(ClientFrame::Hello {
         version: PROTOCOL_VERSION,
+        build: goat_wire::BUILD.to_owned(),
     })
     .await?;
-    let client_id = match conn.recv().await? {
-        ServerFrame::Welcome { version, client_id } => {
+    let (client_id, daemon_build) = match conn.recv().await? {
+        ServerFrame::Welcome {
+            version,
+            build,
+            client_id,
+        } => {
             if version != PROTOCOL_VERSION {
                 return Err(ClientError::VersionMismatch(version));
             }
-            client_id.0
+            (client_id.0, build)
         }
         ServerFrame::VersionMismatch { daemon_version } => {
             return Err(ClientError::VersionMismatch(daemon_version));
@@ -70,29 +78,34 @@ pub async fn connect(
         _ => return Err(ClientError::Handshake),
     };
 
-    conn.send(&ClientFrame::OpenSession {
+    conn.send(ClientFrame::OpenSession {
         cwd: cwd.display().to_string(),
         resume,
     })
     .await?;
-    let session = match conn.recv().await? {
-        ServerFrame::SessionOpened { session, .. } => session,
+    let (session, opened_cwd) = match conn.recv().await? {
+        ServerFrame::SessionOpened { session, cwd } => (session, cwd),
         ServerFrame::Error { message } => return Err(ClientError::OpenFailed(message)),
         _ => return Err(ClientError::Handshake),
     };
 
-    Ok(spawn_pumps(
-        conn,
-        session,
-        client_id,
-        &cwd,
-        socket_path.to_path_buf(),
-    ))
+    let attachment = spawn_pumps(conn, session, client_id, opened_cwd, link);
+    if daemon_build != goat_wire::BUILD {
+        let _ = attachment.events_in.try_send(Event::Notify {
+            kind: goat_protocol::NotifyKind::Info,
+            message: format!(
+                "daemon is goat {daemon_build}, this client is goat {}",
+                goat_wire::BUILD
+            ),
+        });
+    }
+    Ok(attachment)
 }
 
 enum Outbound {
     Op(Op),
     ListThreads,
+    ListFiles,
 }
 
 struct Shared {
@@ -103,22 +116,24 @@ struct Shared {
 }
 
 fn spawn_pumps(
-    conn: ClientConn<Stream>,
+    conn: Conn,
     session: SessionId,
     client_id: u64,
-    cwd: &Path,
-    socket_path: PathBuf,
+    cwd: String,
+    link: Arc<Link>,
 ) -> Attachment {
     let (ops_tx, mut ops_rx) = mpsc::channel::<Op>(OPS_CAPACITY);
     let (events_tx, events_rx) = mpsc::channel::<Event>(EVENTS_CAPACITY);
     let (presence_tx, presence_rx) = mpsc::channel::<usize>(PRESENCE_CAPACITY);
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<Outbound>(OPS_CAPACITY + 8);
+    let events_for_caller = events_tx.clone();
 
+    let opened_cwd = cwd.clone();
     let shared = Arc::new(Shared {
         current: Mutex::new(session),
         current_thread: Mutex::new(None),
         idmap: Mutex::new(IdMap::new()),
-        cwd: cwd.display().to_string(),
+        cwd,
     });
 
     let cmd_for_ops = cmd_tx.clone();
@@ -126,6 +141,7 @@ fn spawn_pumps(
         while let Some(op) = ops_rx.recv().await {
             let cmd = match op {
                 Op::ListThreads {} => Outbound::ListThreads,
+                Op::ListFiles {} => Outbound::ListFiles,
                 other => Outbound::Op(other),
             };
             if cmd_for_ops.send(cmd).await.is_err() {
@@ -139,7 +155,7 @@ fn spawn_pumps(
         loop {
             let this_conn = match conn.take() {
                 Some(c) => c,
-                None => match reconnect(&socket_path, &shared).await {
+                None => match reconnect(&link, &shared, &events_tx).await {
                     Some(c) => c,
                     None => break,
                 },
@@ -157,20 +173,26 @@ fn spawn_pumps(
         events: events_rx,
         presence: presence_rx,
         client_id,
+        cwd: opened_cwd,
         pump,
+        events_in: events_for_caller,
     }
 }
 
-async fn reconnect(socket_path: &Path, shared: &Arc<Shared>) -> Option<ClientConn<Stream>> {
+async fn reconnect(
+    link: &Arc<Link>,
+    shared: &Arc<Shared>,
+    events_tx: &mpsc::Sender<Event>,
+) -> Option<Conn> {
     for _ in 0..100 {
-        let Ok(stream) = transport::connect(socket_path).await else {
+        let Ok(mut conn) = link.dial().await else {
             tokio::time::sleep(Duration::from_millis(200)).await;
             continue;
         };
-        let mut conn: ClientConn<Stream> = ClientConn::new(stream);
         if conn
-            .send(&ClientFrame::Hello {
+            .send(ClientFrame::Hello {
                 version: PROTOCOL_VERSION,
+                build: goat_wire::BUILD.to_owned(),
             })
             .await
             .is_err()
@@ -179,6 +201,15 @@ async fn reconnect(socket_path: &Path, shared: &Arc<Shared>) -> Option<ClientCon
         }
         match conn.recv().await {
             Ok(ServerFrame::Welcome { version, .. }) if version == PROTOCOL_VERSION => {}
+            Ok(
+                ServerFrame::Welcome { version, .. }
+                | ServerFrame::VersionMismatch {
+                    daemon_version: version,
+                },
+            ) => {
+                report_mismatch(events_tx, version).await;
+                return None;
+            }
             _ => continue,
         }
         let resume = match *shared.current_thread.lock().await {
@@ -186,7 +217,7 @@ async fn reconnect(socket_path: &Path, shared: &Arc<Shared>) -> Option<ClientCon
             None => ResumeMode::New {},
         };
         if conn
-            .send(&ClientFrame::OpenSession {
+            .send(ClientFrame::OpenSession {
                 cwd: shared.cwd.clone(),
                 resume,
             })
@@ -195,7 +226,7 @@ async fn reconnect(socket_path: &Path, shared: &Arc<Shared>) -> Option<ClientCon
         {
             continue;
         }
-        if let Ok(ServerFrame::SessionOpened { session }) = conn.recv().await {
+        if let Ok(ServerFrame::SessionOpened { session, .. }) = conn.recv().await {
             *shared.current.lock().await = session;
             shared.idmap.lock().await.reset();
             return Some(conn);
@@ -204,16 +235,25 @@ async fn reconnect(socket_path: &Path, shared: &Arc<Shared>) -> Option<ClientCon
     None
 }
 
+async fn report_mismatch(events_tx: &mpsc::Sender<Event>, daemon_version: u32) {
+    let _ = events_tx
+        .send(Event::Error {
+            id: None,
+            message: ClientError::VersionMismatch(daemon_version).to_string(),
+            hint: Some("update the daemon and this client to the same build".to_owned()),
+        })
+        .await;
+}
+
 async fn run_connection(
-    conn: ClientConn<Stream>,
+    conn: Conn,
     shared: &Arc<Shared>,
     cmd_rx: &mut mpsc::Receiver<Outbound>,
     events_tx: &mpsc::Sender<Event>,
     presence_tx: &mpsc::Sender<usize>,
 ) -> bool {
     use futures::{SinkExt, StreamExt};
-    let (sink, mut source) = conn.split();
-    let mut sink = Box::pin(sink);
+    let (mut sink, mut source) = conn.split();
     let mut expected_seq: Option<u64> = None;
     let mut replaying = false;
 
@@ -225,6 +265,10 @@ async fn run_connection(
                 let frame = match cmd {
                     Outbound::ListThreads => ClientFrame::ListThreads {
                         cwd: shared.cwd.clone(),
+                    },
+                    Outbound::ListFiles => ClientFrame::ListDirectory {
+                        path: shared.cwd.clone(),
+                        recursive: true,
                     },
                     Outbound::Op(op) => {
                         let session = *shared.current.lock().await;
@@ -261,7 +305,7 @@ async fn run_connection(
                 let Some(item) = item else { return true };
                 let Ok(frame) = item else { return true };
                 match &frame {
-                    ServerFrame::SessionOpened { session: new } => {
+                    ServerFrame::SessionOpened { session: new, .. } => {
                         *shared.current.lock().await = *new;
                         *shared.current_thread.lock().await = None;
                         continue;
@@ -415,6 +459,17 @@ fn frame_to_events(frame: ServerFrame) -> Vec<Event> {
                 })
                 .collect(),
         }],
+        ServerFrame::Directory { children, .. } => vec![Event::FilesListed {
+            entries: children
+                .into_iter()
+                .map(|entry| match entry.kind {
+                    goat_wire::DirEntryKind::Directory {} => format!("{}/", entry.name),
+                    goat_wire::DirEntryKind::File {} | goat_wire::DirEntryKind::Symlink {} => {
+                        entry.name
+                    }
+                })
+                .collect(),
+        }],
         ServerFrame::Error { message } => vec![Event::Error {
             id: None,
             message,
@@ -424,86 +479,45 @@ fn frame_to_events(frame: ServerFrame) -> Vec<Event> {
     }
 }
 
-pub async fn status(socket_path: &Path) -> Result<Vec<goat_wire::SessionInfo>, ClientError> {
-    let stream = transport::connect(socket_path).await?;
-    let mut conn: ClientConn<Stream> = ClientConn::new(stream);
-    conn.send(&ClientFrame::Hello {
-        version: PROTOCOL_VERSION,
-    })
-    .await?;
-    expect_welcome(&mut conn).await?;
-    conn.send(&ClientFrame::ListSessions {}).await?;
-    match conn.recv().await? {
+pub async fn status(link: &Link) -> Result<Vec<goat_wire::SessionInfo>, ClientError> {
+    match ask(link, ClientFrame::ListSessions {}).await? {
         ServerFrame::Sessions { sessions } => Ok(sessions),
-        _ => Err(ClientError::Handshake),
+        other => Err(refusal(other)),
     }
 }
 
 pub async fn list_threads(
-    socket_path: &Path,
+    link: &Link,
     cwd: &Path,
 ) -> Result<Vec<goat_wire::ThreadInfo>, ClientError> {
-    let stream = transport::connect(socket_path).await?;
-    let mut conn: ClientConn<Stream> = ClientConn::new(stream);
-    conn.send(&ClientFrame::Hello {
-        version: PROTOCOL_VERSION,
-    })
-    .await?;
-    expect_welcome(&mut conn).await?;
-    conn.send(&ClientFrame::ListThreads {
+    let frame = ClientFrame::ListThreads {
         cwd: cwd.display().to_string(),
-    })
-    .await?;
-    match conn.recv().await? {
+    };
+    match ask(link, frame).await? {
         ServerFrame::Threads { threads } => Ok(threads),
-        _ => Err(ClientError::Handshake),
+        other => Err(refusal(other)),
     }
 }
 
-pub async fn stop(socket_path: &Path) -> Result<(), ClientError> {
-    let stream = transport::connect(socket_path).await?;
-    let mut conn: ClientConn<Stream> = ClientConn::new(stream);
-    conn.send(&ClientFrame::Hello {
-        version: PROTOCOL_VERSION,
-    })
-    .await?;
-    expect_welcome(&mut conn).await?;
-    conn.send(&ClientFrame::StopDaemon {}).await?;
-    Ok(())
+pub async fn stop(link: &Link) -> Result<(), ClientError> {
+    tell(link, ClientFrame::StopDaemon {}).await
 }
 
 pub async fn reload(
-    socket_path: &Path,
+    link: &Link,
     agent: Option<String>,
 ) -> Result<goat_wire::ReloadReport, ClientError> {
-    let stream = transport::connect(socket_path).await?;
-    let mut conn: ClientConn<Stream> = ClientConn::new(stream);
-    conn.send(&ClientFrame::Hello {
-        version: PROTOCOL_VERSION,
-    })
-    .await?;
-    expect_welcome(&mut conn).await?;
-    conn.send(&ClientFrame::ReloadAgents { agent }).await?;
-    match conn.recv().await? {
+    match ask(link, ClientFrame::ReloadAgents { agent }).await? {
         ServerFrame::Reloaded { report } => Ok(report),
-        ServerFrame::Error { message } => Err(ClientError::Refused(message)),
-        _ => Err(ClientError::Handshake),
+        other => Err(refusal(other)),
     }
 }
 
-pub async fn kill_session(socket_path: &Path, session: u64) -> Result<(), ClientError> {
-    let stream = transport::connect(socket_path).await?;
-    let mut conn: ClientConn<Stream> = ClientConn::new(stream);
-    conn.send(&ClientFrame::Hello {
-        version: PROTOCOL_VERSION,
-    })
-    .await?;
-    expect_welcome(&mut conn).await?;
-    conn.send(&ClientFrame::KillSession {
+pub async fn kill_session(link: &Link, session: u64) -> Result<(), ClientError> {
+    let frame = ClientFrame::KillSession {
         session: SessionId(session),
-    })
-    .await?;
-    Ok(())
+    };
+    tell(link, frame).await
 }
 
 pub struct PairingInfo {
@@ -512,16 +526,8 @@ pub struct PairingInfo {
     pub advertised: Vec<String>,
 }
 
-pub async fn pair_device(socket_path: &Path, label: String) -> Result<PairingInfo, ClientError> {
-    let stream = transport::connect(socket_path).await?;
-    let mut conn: ClientConn<Stream> = ClientConn::new(stream);
-    conn.send(&ClientFrame::Hello {
-        version: PROTOCOL_VERSION,
-    })
-    .await?;
-    expect_welcome(&mut conn).await?;
-    conn.send(&ClientFrame::PairDevice { label }).await?;
-    match conn.recv().await? {
+pub async fn pair_device(link: &Link, label: String) -> Result<PairingInfo, ClientError> {
+    match ask(link, ClientFrame::PairDevice { label }).await? {
         ServerFrame::PairingCode {
             code,
             server_fingerprint,
@@ -531,104 +537,57 @@ pub async fn pair_device(socket_path: &Path, label: String) -> Result<PairingInf
             server_fingerprint,
             advertised,
         }),
-        ServerFrame::Error { message } => Err(ClientError::OpenFailed(message)),
-        _ => Err(ClientError::Handshake),
+        other => Err(refusal(other)),
     }
 }
 
-pub async fn list_devices(socket_path: &Path) -> Result<Vec<goat_wire::DeviceInfo>, ClientError> {
-    let stream = transport::connect(socket_path).await?;
-    let mut conn: ClientConn<Stream> = ClientConn::new(stream);
-    conn.send(&ClientFrame::Hello {
-        version: PROTOCOL_VERSION,
-    })
-    .await?;
-    expect_welcome(&mut conn).await?;
-    conn.send(&ClientFrame::ListDevices {}).await?;
-    match conn.recv().await? {
+pub async fn list_devices(link: &Link) -> Result<Vec<goat_wire::DeviceInfo>, ClientError> {
+    match ask(link, ClientFrame::ListDevices {}).await? {
         ServerFrame::Devices { devices } => Ok(devices),
-        ServerFrame::Error { message } => Err(ClientError::OpenFailed(message)),
-        _ => Err(ClientError::Handshake),
+        other => Err(refusal(other)),
     }
 }
 
-pub async fn revoke_device(socket_path: &Path, device: String) -> Result<bool, ClientError> {
-    let stream = transport::connect(socket_path).await?;
-    let mut conn: ClientConn<Stream> = ClientConn::new(stream);
-    conn.send(&ClientFrame::Hello {
-        version: PROTOCOL_VERSION,
-    })
-    .await?;
-    expect_welcome(&mut conn).await?;
-    conn.send(&ClientFrame::RevokeDevice { device }).await?;
-    match conn.recv().await? {
+pub async fn revoke_device(link: &Link, device: String) -> Result<bool, ClientError> {
+    match ask(link, ClientFrame::RevokeDevice { device }).await? {
         ServerFrame::DeviceRevoked { ok } => Ok(ok),
-        ServerFrame::Error { message } => Err(ClientError::OpenFailed(message)),
-        _ => Err(ClientError::Handshake),
+        other => Err(refusal(other)),
     }
 }
 
-async fn expect_welcome(conn: &mut ClientConn<Stream>) -> Result<(), ClientError> {
-    match conn.recv().await? {
-        ServerFrame::Welcome { version, .. } => {
-            if version != PROTOCOL_VERSION {
-                return Err(ClientError::VersionMismatch(version));
-            }
-            Ok(())
-        }
-        ServerFrame::VersionMismatch { daemon_version } => {
-            Err(ClientError::VersionMismatch(daemon_version))
-        }
-        _ => Err(ClientError::Handshake),
-    }
-}
-
-async fn connect_or_spawn(socket_path: &Path, daemon_exe: &Path) -> Result<Stream, ClientError> {
-    if let Ok(stream) = transport::connect(socket_path).await {
-        return Ok(stream);
-    }
-    spawn_daemon(daemon_exe, socket_path)?;
-    for _ in 0..50 {
-        if let Ok(stream) = transport::connect(socket_path).await {
-            return Ok(stream);
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Err(ClientError::SpawnFailed(
-        "daemon did not become reachable".to_owned(),
-    ))
-}
-
-fn spawn_daemon(daemon_exe: &Path, socket_path: &Path) -> Result<(), ClientError> {
-    use std::process::{Command, Stdio};
-    let stderr = daemon_stderr(socket_path);
-    Command::new(daemon_exe)
-        .arg("daemon")
-        .arg("serve")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(stderr)
-        .spawn()
-        .map_err(|e| ClientError::SpawnFailed(e.to_string()))?;
+async fn tell(link: &Link, frame: ClientFrame) -> Result<(), ClientError> {
+    let mut conn = greet(link).await?;
+    conn.send(frame).await?;
     Ok(())
 }
 
-fn daemon_stderr(socket_path: &Path) -> std::process::Stdio {
-    use std::process::Stdio;
-    let Some(home) = socket_path.parent() else {
-        return Stdio::null();
-    };
-    let log_dir = home.join("logs");
-    if std::fs::create_dir_all(&log_dir).is_err() {
-        return Stdio::null();
+async fn ask(link: &Link, frame: ClientFrame) -> Result<ServerFrame, ClientError> {
+    let mut conn = greet(link).await?;
+    conn.send(frame).await?;
+    Ok(conn.recv().await?)
+}
+
+async fn greet(link: &Link) -> Result<Conn, ClientError> {
+    let mut conn = link.dial().await?;
+    conn.send(ClientFrame::Hello {
+        version: PROTOCOL_VERSION,
+        build: goat_wire::BUILD.to_owned(),
+    })
+    .await?;
+    match conn.recv().await? {
+        ServerFrame::Welcome { version, .. } if version == PROTOCOL_VERSION => Ok(conn),
+        ServerFrame::Welcome { version, .. }
+        | ServerFrame::VersionMismatch {
+            daemon_version: version,
+        } => Err(ClientError::VersionMismatch(version)),
+        _ => Err(ClientError::Handshake),
     }
-    match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_dir.join("daemon-stderr.log"))
-    {
-        Ok(file) => Stdio::from(file),
-        Err(_) => Stdio::null(),
+}
+
+fn refusal(frame: ServerFrame) -> ClientError {
+    match frame {
+        ServerFrame::Error { message } => ClientError::Refused(message),
+        _ => ClientError::Handshake,
     }
 }
 

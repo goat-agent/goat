@@ -7,7 +7,8 @@ goat is a single-user, single-host personal AI product in Rust with two capabili
   messages, runs `once`/`cron` tasks it registers for itself through the `schedule` tool,
   consolidates memory nightly at 04:00, and delegates coding to the code engine in-process.
 - **code** — a terminal coding agent rendered as a full-screen TUI, always spoken to through the
-  resident daemon.
+  resident daemon. The daemon it speaks to need not be on this machine: `goat remote` names other
+  hosts' daemons and `goat code --remote <name>` attaches to one over mTLS.
 
 One binary (`goat`), one daemon, one database (`~/.goat/goat.db`), one config tree (`~/.goat/`).
 `CLAUDE.md` imports this file. When a crate grows its own conventions, add
@@ -159,6 +160,11 @@ Placements that contradict the naming:
   provider, covering thirteen hosted providers plus the local trio (ollama, lmstudio, llama-cpp).
 - `goat-integration-mcp` registers nothing either — same idea, one family over. It is the shared base
   every hosted-MCP integration builds on, so a leaf is a `McpService` descriptor plus its parser.
+- `goat-remote` holds **both halves** of the mTLS surface: `server` (accept, pair, verify) and
+  `client` (enroll, connect). `ws::adapt` is the one WebSocket↔frame adapter, used in both
+  directions. Keep new transport work here rather than growing a second remote path — the daemon
+  serves remote clients through the same `serve_connection` as the local socket, and that is what
+  keeps the two from drifting.
 - `goat-mcp` is the **protocol** crate: transports (stdio and streamable HTTP), session lifecycle,
   result extraction, error classification, OAuth. It knows neither tool system — `goat-engine` owns
   the `goat_tool::Tool` adapter for local stdio servers, `goat-integration-mcp` owns the
@@ -279,6 +285,44 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   already-connected service to one agent. Both take `-a <agent>` where an agent is implied.
 - `interact::pick` is the one non-cancellable picker: it promotes Esc to `ConsoleError("cancelled")`,
   while `select_index` and `Table::pick` return `None`.
+- **`device` and `remote` are opposite directions, and both are CLI nouns.** `goat device
+  {add,ls,rm}` runs on the daemon host and manages who may reach it — `add` mints a one-time pairing
+  code (3 min, `goat-remote::pairing`) and prints the server fingerprint. `goat remote
+  {add,ls,rm,use}` runs on the client and manages which daemons *this* machine reaches. `local` is a
+  reserved remote naming the daemon on this machine; it is always in `goat remote ls`, and
+  `goat remote use local` is how you turn remote off — there is no separate enable flag. The
+  matching config keys are `devices` (bind/advertised, server side; still accepts the old `remote`
+  key via serde alias) and `remotes` + `default_remote` (client side). `default_remote: None` means
+  `local`, so local has exactly one representation.
+- **The server never proves its name, only its key.** `ca.rs` issues a SAN-less leaf when
+  `advertised` is empty and skips regeneration once `server.crt` exists, so the client pins the
+  server fingerprint (`verify::PinnedServer`) instead of validating a hostname. Addresses can then
+  be bare IPs, Tailscale names, or port-forwards without touching the certificate. Do not add
+  hostname validation on top; it would re-introduce the certificate-name problem pinning removes.
+- **Device key material is one identity in `credentials.json`**, under
+  `{service: remote, provider: <remote name>, account: "device", slot: "key"|"cert"|"ca"}`.
+  The three slots are stored together on purpose — a half-restored remote is a broken remote.
+  `config.json` keeps only addressing: `host`, `fingerprint`, `last_dir`.
+- **A remote client never sends its own cwd.** `ServerFrame::SessionOpened` carries the cwd the
+  daemon actually normalized, the client records it as that remote's `last_dir`, and the next
+  `goat code --remote <name>` reuses it (`--dir` overrides). Sending the local cwd would open a
+  session on a path that does not exist on the daemon host, which `goat-tool`'s `ToolContext`
+  then fails on for every call. `-w` is refused for remote targets because worktrees are local git.
+- `goat-client` is transport-agnostic: `Link::{Local,Remote}` dials either a unix socket or
+  mTLS+WebSocket and hands back the same `Sink<ClientFrame>`/`Stream<ServerFrame>` pair, so nothing
+  above it knows which it got. Local-daemon autostart lives behind `Link::dial_or_spawn` and fires
+  only for `Link::Local` — a remote target that cannot connect must fail, never silently start a
+  second daemon here.
+- `Hello`/`Welcome` carry `build` alongside `PROTOCOL_VERSION`. A protocol mismatch is fatal; a
+  build mismatch is only reported, because remote client and daemon update independently.
+- **Config writing has three doors and only one of them crosses the wire.** `Op::AddAccount` /
+  `Op::RemoveAccount` reach the daemon and write *its* `credentials.json`; the CLI
+  (`goat setup`, `goat provider login`, `goat search login`) and the `/search` slash command
+  (`goat-command-settings`) write the *client's* files directly; and `/config`'s browser and
+  computer-use toggles write the client's `config.json` while the consumer is
+  `goat-engine`'s `GoatAgent::new`. Locally these coincide by accident. Against a remote daemon
+  they do not, and the toggles are already ineffective locally until the daemon restarts.
+  Collapsing the first two doors into the third is the intended direction; do not add a fourth.
 
 ## Vestigial — present in code, does nothing
 
@@ -310,9 +354,13 @@ Two `goat-brain` test names still say `self_tick` — they exercise `TurnMode::S
 ## Testing
 
 The full-screen TUI needs a real tty, so it is not driven headlessly. Test the pure `App::update`
-reducer and the engine's `Op → Event` behavior instead. Non-TUI binary paths (`--version`,
-`--help`, `update`, `--print-log-path`) are safe anywhere. The headless bridge needs no tty; its
-codec round-trips and shutdown handshake are unit-tested in `goat-code`'s `headless` module.
+reducer and the engine's `Op → Event` behavior instead. `App::new` takes an `Origin`, so a remote
+session is testable without a daemon — that is how the header's local git/gh chrome is proven off
+for remote targets. Non-TUI binary paths (`--version`, `--help`, `update`, `--print-log-path`) are
+safe anywhere. The headless bridge needs no tty; its codec round-trips and shutdown handshake are
+unit-tested in `goat-code`'s `headless` module. `goat-daemon`'s `remote_e2e` drives the real
+`goat_remote::client` rather than a hand-rolled TLS helper, so the client half is covered by the
+same test that covers the server half.
 
 Tests are inline `#[cfg(test)]` modules by default, concentrated in `goat-tui` and `goat-engine`.
 The only `tests/` directories are `goat-daemon`, `goat-remote`, and `goat-tool-browser` (real
