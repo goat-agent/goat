@@ -2410,7 +2410,7 @@ mod tests {
 
     #[test]
     fn double_esc_on_empty_composer_requests_rewind_points() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         let first = app.on_key(press(KeyCode::Esc, KeyModifiers::NONE));
         assert!(first.is_empty());
         assert!(app.rewind_armed());
@@ -2422,7 +2422,7 @@ mod tests {
 
     #[test]
     fn rewind_picker_selects_code_and_conversation() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::RewindPointsListed {
             points: vec![RewindPoint {
                 checkpoint_id: 7,
@@ -2448,7 +2448,7 @@ mod tests {
 
     #[test]
     fn conversation_rewind_restores_prompt_to_composer() {
-        let mut app = App::new(Theme::dark());
+        let mut app = App::new(Theme::dark(), &test_origin());
         app.composer.insert_str("discard me");
 
         app.on_engine(EngineEvent::ConversationRewound {

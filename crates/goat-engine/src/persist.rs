@@ -110,6 +110,7 @@ pub(crate) async fn ensure_thread(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn init_db_turn(
     ctx: &Ctx,
     id: TaskId,
@@ -151,24 +152,22 @@ pub(crate) async fn init_db_turn(
                 None
             }
         };
-        if checkpoint {
-            if let Some(created) = &created_message {
-                if let Err(err) = ctx
-                    .checkpoints
-                    .begin(tid, created, draft.to_owned(), attachments, &ctx.cwd)
-                    .await
-                {
-                    tracing::warn!(%err, "failed to create code checkpoint");
-                    let _ = ctx
-                        .events
-                        .send(Event::Notify {
-                            kind: goat_protocol::NotifyKind::Error,
-                            message: "could not create a rewind checkpoint".to_owned(),
-                        })
-                        .await;
-                }
-            }
-        } else {
+        if checkpoint
+            && let Some(created) = &created_message
+            && let Err(err) = ctx
+                .checkpoints
+                .begin(tid, created, draft.to_owned(), attachments, &ctx.cwd)
+                .await
+        {
+            tracing::warn!(%err, "failed to create code checkpoint");
+            let _ = ctx
+                .events
+                .send(Event::Notify {
+                    kind: goat_protocol::NotifyKind::Error,
+                    message: "could not create a rewind checkpoint".to_owned(),
+                })
+                .await;
+        } else if !checkpoint {
             ctx.checkpoints.clear();
         }
         let turn_db_id = ctx

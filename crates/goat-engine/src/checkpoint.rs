@@ -228,9 +228,13 @@ async fn snapshot(path: &Path) -> Result<FileImage, String> {
     let content = tokio::fs::read(path)
         .await
         .map_err(|err| format!("{}: {err}", path.display()))?;
+    #[cfg(unix)]
+    let mode = Some(file_mode(&metadata));
+    #[cfg(not(unix))]
+    let mode = None;
     Ok(FileImage {
         content: Some(content),
-        mode: file_mode(&metadata),
+        mode,
         supported: true,
     })
 }
@@ -278,15 +282,10 @@ fn linked(_metadata: &std::fs::Metadata) -> bool {
 }
 
 #[cfg(unix)]
-fn file_mode(metadata: &std::fs::Metadata) -> Option<u32> {
+fn file_mode(metadata: &std::fs::Metadata) -> u32 {
     use std::os::unix::fs::PermissionsExt;
 
-    Some(metadata.permissions().mode())
-}
-
-#[cfg(not(unix))]
-fn file_mode(_metadata: &std::fs::Metadata) -> Option<u32> {
-    None
+    metadata.permissions().mode()
 }
 
 #[cfg(unix)]

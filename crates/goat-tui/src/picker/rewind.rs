@@ -120,7 +120,7 @@ impl RewindPicker {
     }
 
     pub fn desired_height(&self) -> u16 {
-        clamp_u16(self.len().min(LIST_MAX).max(1)).saturating_add(OVERLAY_CHROME)
+        clamp_u16(self.len().clamp(1, LIST_MAX)).saturating_add(OVERLAY_CHROME)
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: Theme) {

@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::path::Path;
 use std::time::Duration;
 
@@ -646,8 +647,10 @@ impl CodeStore {
             digest
                 .finalize()
                 .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
+                .fold(String::with_capacity(64), |mut hash, byte| {
+                    write!(&mut hash, "{byte:02x}").expect("writing to a string cannot fail");
+                    hash
+                })
         });
         if let (Some(hash), Some(bytes)) = (&blob_hash, file.content) {
             sqlx::query(
@@ -667,11 +670,11 @@ impl CodeStore {
         )
         .bind(file.checkpoint_id)
         .bind(file.path)
-        .bind(if blob_hash.is_some() { 1 } else { 0 })
+        .bind(i32::from(blob_hash.is_some()))
         .bind(blob_hash)
         .bind(file.mode.map(i64::from))
-        .bind(if file.supported { 1 } else { 0 })
-        .bind(if file.touched { 1 } else { 0 })
+        .bind(i32::from(file.supported))
+        .bind(i32::from(file.touched))
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
