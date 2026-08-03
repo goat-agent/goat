@@ -2337,7 +2337,7 @@ dependencies = [
 
 [[package]]
 name = "goat-agent"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2373,7 +2373,7 @@ dependencies = [
 
 [[package]]
 name = "goat-agent-command"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-types",
@@ -2387,7 +2387,7 @@ dependencies = [
 
 [[package]]
 name = "goat-agent-command-skill"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-agent-command",
@@ -2401,7 +2401,7 @@ dependencies = [
 
 [[package]]
 name = "goat-agent-config"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-model",
  "goat-types",
@@ -2410,7 +2410,7 @@ dependencies = [
 
 [[package]]
 name = "goat-agent-tool"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-types",
@@ -2423,7 +2423,7 @@ dependencies = [
 
 [[package]]
 name = "goat-agent-tool-code"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-agent-tool",
@@ -2439,7 +2439,7 @@ dependencies = [
 
 [[package]]
 name = "goat-agent-tool-fs"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "globset",
@@ -2456,7 +2456,7 @@ dependencies = [
 
 [[package]]
 name = "goat-agent-tool-goal"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2472,7 +2472,7 @@ dependencies = [
 
 [[package]]
 name = "goat-agent-tool-memory"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-agent-tool",
@@ -2488,7 +2488,7 @@ dependencies = [
 
 [[package]]
 name = "goat-agent-tool-observation"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-agent-tool",
@@ -2502,7 +2502,7 @@ dependencies = [
 
 [[package]]
 name = "goat-agent-tool-pty"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-agent-tool",
@@ -2521,7 +2521,7 @@ dependencies = [
 
 [[package]]
 name = "goat-agent-tool-schedule"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2538,7 +2538,7 @@ dependencies = [
 
 [[package]]
 name = "goat-agent-tool-shell"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-agent-tool",
@@ -2553,7 +2553,7 @@ dependencies = [
 
 [[package]]
 name = "goat-agent-tool-skill"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-agent-tool",
@@ -2567,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "goat-auth"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "fs2",
@@ -2583,7 +2583,7 @@ dependencies = [
 
 [[package]]
 name = "goat-brain"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2612,7 +2612,7 @@ dependencies = [
 
 [[package]]
 name = "goat-bus"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2624,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "goat-channel"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-agent-command",
@@ -2642,7 +2642,7 @@ dependencies = [
 
 [[package]]
 name = "goat-channel-discord"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2665,7 +2665,7 @@ dependencies = [
 
 [[package]]
 name = "goat-channel-slack"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2685,7 +2685,7 @@ dependencies = [
 
 [[package]]
 name = "goat-client"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "futures",
  "goat-protocol",
@@ -2698,7 +2698,7 @@ dependencies = [
 
 [[package]]
 name = "goat-code"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2763,32 +2763,32 @@ dependencies = [
 
 [[package]]
 name = "goat-command"
-version = "0.1.27"
+version = "0.1.0"
 
 [[package]]
 name = "goat-command-app"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-command",
 ]
 
 [[package]]
 name = "goat-command-conversation"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-command",
 ]
 
 [[package]]
 name = "goat-command-help"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-command",
 ]
 
 [[package]]
 name = "goat-command-settings"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-command",
@@ -2799,7 +2799,7 @@ dependencies = [
 
 [[package]]
 name = "goat-commands"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-command",
  "goat-command-app",
@@ -2811,7 +2811,7 @@ dependencies = [
 
 [[package]]
 name = "goat-config"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "goat-agent-config",
@@ -2830,7 +2830,7 @@ dependencies = [
 
 [[package]]
 name = "goat-console"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "dialoguer",
  "thiserror 2.0.19",
@@ -2839,7 +2839,7 @@ dependencies = [
 
 [[package]]
 name = "goat-core"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-protocol",
  "tokio",
@@ -2848,7 +2848,7 @@ dependencies = [
 
 [[package]]
 name = "goat-daemon"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "futures",
@@ -2874,7 +2874,7 @@ dependencies = [
 
 [[package]]
 name = "goat-embedding"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-auth",
@@ -2887,7 +2887,7 @@ dependencies = [
 
 [[package]]
 name = "goat-engine"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2921,7 +2921,7 @@ dependencies = [
 
 [[package]]
 name = "goat-git"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "tempfile",
  "thiserror 2.0.19",
@@ -2929,7 +2929,7 @@ dependencies = [
 
 [[package]]
 name = "goat-github"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2940,7 +2940,7 @@ dependencies = [
 
 [[package]]
 name = "goat-integration"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-agent-tool",
@@ -2961,7 +2961,7 @@ dependencies = [
 
 [[package]]
 name = "goat-integration-github"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-agent-tool",
@@ -2978,7 +2978,7 @@ dependencies = [
 
 [[package]]
 name = "goat-integration-langfuse"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-integration",
@@ -2994,7 +2994,7 @@ dependencies = [
 
 [[package]]
 name = "goat-integration-linear"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-integration",
@@ -3011,7 +3011,7 @@ dependencies = [
 
 [[package]]
 name = "goat-integration-mcp"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3030,7 +3030,7 @@ dependencies = [
 
 [[package]]
 name = "goat-integration-notion"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-integration",
@@ -3048,7 +3048,7 @@ dependencies = [
 
 [[package]]
 name = "goat-integration-posthog"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-integration",
@@ -3065,7 +3065,7 @@ dependencies = [
 
 [[package]]
 name = "goat-integration-sentry"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-integration",
@@ -3082,7 +3082,7 @@ dependencies = [
 
 [[package]]
 name = "goat-integration-slack"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-integration",
@@ -3099,7 +3099,7 @@ dependencies = [
 
 [[package]]
 name = "goat-integration-tiro"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-integration",
@@ -3116,7 +3116,7 @@ dependencies = [
 
 [[package]]
 name = "goat-loop"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "cron",
@@ -3131,7 +3131,7 @@ dependencies = [
 
 [[package]]
 name = "goat-mcp"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3153,7 +3153,7 @@ dependencies = [
 
 [[package]]
 name = "goat-memory"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3172,7 +3172,7 @@ dependencies = [
 
 [[package]]
 name = "goat-model"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-provider",
  "serde",
@@ -3181,7 +3181,7 @@ dependencies = [
 
 [[package]]
 name = "goat-plugin"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3195,7 +3195,7 @@ dependencies = [
 
 [[package]]
 name = "goat-process"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "rustix 1.1.4",
  "thiserror 2.0.19",
@@ -3203,7 +3203,7 @@ dependencies = [
 
 [[package]]
 name = "goat-protocol"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "schemars",
  "serde",
@@ -3212,7 +3212,7 @@ dependencies = [
 
 [[package]]
 name = "goat-provider"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3227,7 +3227,7 @@ dependencies = [
 
 [[package]]
 name = "goat-provider-anthropic"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3246,7 +3246,7 @@ dependencies = [
 
 [[package]]
 name = "goat-provider-builtin"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-model",
@@ -3257,7 +3257,7 @@ dependencies = [
 
 [[package]]
 name = "goat-provider-gemini"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3276,7 +3276,7 @@ dependencies = [
 
 [[package]]
 name = "goat-provider-kimi-code"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-auth",
@@ -3291,7 +3291,7 @@ dependencies = [
 
 [[package]]
 name = "goat-provider-openai-codex"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3309,7 +3309,7 @@ dependencies = [
 
 [[package]]
 name = "goat-provider-openai-compat"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3325,7 +3325,7 @@ dependencies = [
 
 [[package]]
 name = "goat-provider-xai"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-auth",
@@ -3340,7 +3340,7 @@ dependencies = [
 
 [[package]]
 name = "goat-providers"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-config",
@@ -3357,7 +3357,7 @@ dependencies = [
 
 [[package]]
 name = "goat-proxy"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3378,7 +3378,7 @@ dependencies = [
 
 [[package]]
 name = "goat-remote"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -3403,7 +3403,7 @@ dependencies = [
 
 [[package]]
 name = "goat-render"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -3416,7 +3416,7 @@ dependencies = [
 
 [[package]]
 name = "goat-runtime"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3465,14 +3465,14 @@ dependencies = [
 
 [[package]]
 name = "goat-sandbox"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "thiserror 2.0.19",
 ]
 
 [[package]]
 name = "goat-search-provider"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "reqwest 0.12.28",
@@ -3482,7 +3482,7 @@ dependencies = [
 
 [[package]]
 name = "goat-search-provider-brave"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-search-provider",
@@ -3492,7 +3492,7 @@ dependencies = [
 
 [[package]]
 name = "goat-search-provider-duckduckgo"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "chromiumoxide",
  "futures",
@@ -3505,7 +3505,7 @@ dependencies = [
 
 [[package]]
 name = "goat-search-provider-searxng"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-search-provider",
@@ -3515,7 +3515,7 @@ dependencies = [
 
 [[package]]
 name = "goat-search-provider-tavily"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-search-provider",
@@ -3525,7 +3525,7 @@ dependencies = [
 
 [[package]]
 name = "goat-search-providers"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-search-provider",
@@ -3537,7 +3537,7 @@ dependencies = [
 
 [[package]]
 name = "goat-skill"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-config",
  "goat-protocol",
@@ -3549,7 +3549,7 @@ dependencies = [
 
 [[package]]
 name = "goat-skills"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "goat-types",
@@ -3561,7 +3561,7 @@ dependencies = [
 
 [[package]]
 name = "goat-sleep"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3585,7 +3585,7 @@ dependencies = [
 
 [[package]]
 name = "goat-sqlite-vec"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "libsqlite3-sys",
  "sqlite-vec",
@@ -3593,7 +3593,7 @@ dependencies = [
 
 [[package]]
 name = "goat-store"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3612,7 +3612,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tool"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-protocol",
  "regex",
@@ -3625,7 +3625,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tool-browser"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chromiumoxide",
@@ -3643,7 +3643,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tool-computer"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "enigo",
@@ -3658,7 +3658,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tool-fs"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-protocol",
  "goat-tool",
@@ -3670,7 +3670,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tool-search"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-config",
@@ -3688,7 +3688,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tool-shell"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-git",
  "goat-process",
@@ -3704,7 +3704,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tool-skill"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-config",
  "goat-protocol",
@@ -3718,7 +3718,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tool-web"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "chromiumoxide",
  "dom_smoothie",
@@ -3739,7 +3739,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tools"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-tool",
  "goat-tool-fs",
@@ -3751,7 +3751,7 @@ dependencies = [
 
 [[package]]
 name = "goat-tui"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -3781,7 +3781,7 @@ dependencies = [
 
 [[package]]
 name = "goat-types"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3792,7 +3792,7 @@ dependencies = [
 
 [[package]]
 name = "goat-wire"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "futures",
@@ -3808,7 +3808,7 @@ dependencies = [
 
 [[package]]
 name = "goat-worktree"
-version = "0.1.27"
+version = "0.1.0"
 dependencies = [
  "goat-git",
  "ignore",
