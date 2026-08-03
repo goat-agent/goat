@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use goat_auth::CredentialStore;
 use goat_core::Session;
@@ -33,6 +33,10 @@ struct ManagerInner {
     remote: Mutex<Option<RemoteControls>>,
     meter: std::sync::OnceLock<goat_proxy::Meter>,
     reload: std::sync::OnceLock<mpsc::Sender<ReloadRequest>>,
+    build: Option<goat_wire::BuildId>,
+    started_at: i64,
+    ready: AtomicBool,
+    agent_turns: std::sync::OnceLock<Arc<AtomicUsize>>,
 }
 
 pub struct ReloadRequest {
@@ -65,12 +69,56 @@ impl Manager {
                 remote: Mutex::new(None),
                 meter: std::sync::OnceLock::new(),
                 reload: std::sync::OnceLock::new(),
+                build: goat_wire::BuildId::current(),
+                started_at: Self::now_ms(),
+                ready: AtomicBool::new(false),
+                agent_turns: std::sync::OnceLock::new(),
             }),
         }
     }
 
     pub fn set_meter(&self, meter: goat_proxy::Meter) {
         let _ = self.inner.meter.set(meter);
+    }
+
+    pub fn set_agent_turns(&self, turns: Arc<AtomicUsize>) {
+        let _ = self.inner.agent_turns.set(turns);
+    }
+
+    pub fn mark_ready(&self) {
+        self.inner.ready.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn build(&self) -> Option<goat_wire::BuildId> {
+        self.inner.build.clone()
+    }
+
+    pub(crate) fn started_at(&self) -> i64 {
+        self.inner.started_at
+    }
+
+    pub(crate) fn is_ready(&self) -> bool {
+        self.inner.ready.load(Ordering::Relaxed)
+    }
+
+    pub(crate) async fn busy(&self) -> goat_wire::Busy {
+        let lives: Vec<LiveSession> = {
+            let table = self.inner.sessions.lock().await;
+            table.values().cloned().collect()
+        };
+        let sessions = lives
+            .iter()
+            .filter(|live| match live.inner.try_lock() {
+                Ok(inner) => !inner.evictable(),
+                Err(_) => true,
+            })
+            .count();
+        let turns = self
+            .inner
+            .agent_turns
+            .get()
+            .map_or(0, |turns| turns.load(Ordering::Relaxed));
+        goat_wire::Busy { sessions, turns }
     }
 
     pub fn set_reload(&self, sender: mpsc::Sender<ReloadRequest>) {

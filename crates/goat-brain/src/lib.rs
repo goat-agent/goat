@@ -18,7 +18,7 @@ use goat_provider::{
     ChunkStream, ContentBlock, Message, MessageRole, Provider, Request, StreamChunk, StreamError,
     ToolChoice, ToolDefinition,
 };
-use goat_render::{RenderSummary, StreamRenderer};
+use goat_render::{OutgoingSink, RenderSummary, StreamRenderer};
 use goat_skills::SkillIndex;
 use goat_store::{
     Direction, HistoryRow, ScheduledTaskStatus, Store, TaskRunStatus, ToolInvocationRecord,
@@ -241,6 +241,52 @@ pub struct BrainDeps {
     pub integration_tools: Vec<String>,
     pub intake_debounce: std::time::Duration,
     pub intake_ceiling: std::time::Duration,
+    pub turns: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct TurnGuard(Arc<std::sync::atomic::AtomicUsize>);
+
+impl TurnGuard {
+    fn new(turns: &Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        turns.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(turns.clone())
+    }
+}
+
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+struct StoreSink {
+    store: Arc<dyn Store>,
+    agent: AgentId,
+    thread: ThreadId,
+    id: String,
+    reply_to: Option<MessageId>,
+}
+
+#[async_trait::async_trait]
+impl OutgoingSink for StoreSink {
+    async fn record(&self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if let Err(e) = self
+            .store
+            .upsert_outgoing_text(
+                self.agent,
+                &self.thread,
+                &self.id,
+                text,
+                self.reply_to.as_ref(),
+            )
+            .await
+        {
+            warn!(agent = %self.agent, error = ?e, "recording outgoing text");
+        }
+    }
 }
 
 pub struct Brain {
@@ -263,6 +309,7 @@ pub struct Brain {
     integration_tools: Vec<String>,
     intake_debounce: std::time::Duration,
     intake_ceiling: std::time::Duration,
+    turns: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Brain {
@@ -287,6 +334,7 @@ impl Brain {
             integration_tools: deps.integration_tools,
             intake_debounce: deps.intake_debounce,
             intake_ceiling: deps.intake_ceiling,
+            turns: deps.turns,
         }
     }
 
@@ -436,6 +484,15 @@ impl Brain {
         channels: &[Arc<dyn ChannelHandle>],
         msg: IncomingMessage,
     ) -> Result<()> {
+        let _busy = TurnGuard::new(&self.turns);
+        self.run_turn(channels, msg).await
+    }
+
+    async fn run_turn(
+        &self,
+        channels: &[Arc<dyn ChannelHandle>],
+        msg: IncomingMessage,
+    ) -> Result<()> {
         let handle = channels
             .iter()
             .find(|h| h.id() == msg.thread.channel && h.instance() == msg.thread.instance)
@@ -445,6 +502,13 @@ impl Brain {
         let turn = handle.prepare_turn(&msg).await?;
         let reply_to = turn.reply_to.clone();
         let _typing = turn.typing;
+        let sink: Arc<StoreSink> = Arc::new(StoreSink {
+            store: self.store.clone(),
+            agent: self.agent,
+            thread: msg.thread.clone(),
+            id: uuid::Uuid::new_v4().to_string(),
+            reply_to: Some(msg.id.clone()),
+        });
 
         let (summary, mut messages) = self.load_context(&msg.thread).await?;
         if let Some(call) = msg.command.clone() {
@@ -461,18 +525,11 @@ impl Brain {
                             msg.thread.clone(),
                             reply_to.clone(),
                             text_stream(self.default_model.clone(), text),
+                            Some(sink.clone()),
                         )
                         .await?;
                     if !summary.final_text.is_empty() {
-                        self.store
-                            .append_outgoing_text(
-                                self.agent,
-                                &msg.thread,
-                                &summary.final_text,
-                                Some(&msg.id),
-                            )
-                            .await
-                            .context("append outgoing")?;
+                        sink.record(&summary.final_text).await;
                     }
                     return Ok(());
                 }
@@ -494,7 +551,7 @@ impl Brain {
                 anchor: msg.id.clone(),
             });
 
-        let (summary, thread) = self
+        let (summary, _thread) = self
             .complete_with_tools(
                 handle,
                 TurnRoute {
@@ -506,14 +563,12 @@ impl Brain {
                 &mut messages,
                 TurnMode::Normal,
                 summary,
+                Some(sink.clone()),
             )
             .await?;
 
         if !summary.final_text.is_empty() {
-            self.store
-                .append_outgoing_text(self.agent, &thread, &summary.final_text, Some(&msg.id))
-                .await
-                .context("append outgoing")?;
+            sink.record(&summary.final_text).await;
         }
 
         Ok(())
@@ -718,6 +773,7 @@ impl Brain {
         messages: &mut Vec<LlmMessage>,
         mode: TurnMode,
         summary: Option<String>,
+        sink: Option<Arc<dyn OutgoingSink>>,
     ) -> Result<(RenderSummary, ThreadId)> {
         const MAX_TOOL_ROUNDS: usize = 1000;
 
@@ -820,6 +876,7 @@ impl Brain {
                         route.thread.clone(),
                         route.reply_to,
                         text_stream(self.default_model.clone(), final_text),
+                        sink.clone(),
                     )
                     .await?;
                 return Ok((summary, route.thread));
@@ -900,6 +957,7 @@ impl Brain {
                 route.thread.clone(),
                 route.reply_to,
                 text_stream(self.default_model.clone(), text),
+                sink.clone(),
             )
             .await?;
         Ok((summary, route.thread))
@@ -990,6 +1048,7 @@ impl Brain {
                 TurnMode::Schedule {
                     tools: task.tools.clone(),
                 },
+                None,
                 None,
             )
             .await
@@ -1090,6 +1149,7 @@ impl Brain {
                 &mut messages,
                 TurnMode::Integration { tools },
                 None,
+                None,
             )
             .await?;
 
@@ -1149,6 +1209,7 @@ impl Brain {
                 },
                 &mut messages,
                 TurnMode::Integration { tools },
+                None,
                 None,
             )
             .await?;

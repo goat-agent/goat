@@ -14,7 +14,7 @@ pub use crate::manager::{Manager, ReloadRequest};
 pub enum DaemonError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("a daemon is already running at {0}")]
+    #[error("another daemon holds {0}")]
     AlreadyRunning(PathBuf),
     #[error("remote error: {0}")]
     Remote(#[from] goat_remote::RemoteError),
@@ -22,10 +22,52 @@ pub enum DaemonError {
 
 pub struct DaemonConfig {
     pub socket_path: PathBuf,
+    pub lock_path: PathBuf,
     pub auth_path: PathBuf,
     pub config_json: PathBuf,
     pub db_path: PathBuf,
     pub remote: Option<RemoteSettings>,
+}
+
+pub struct DaemonLock {
+    file: std::fs::File,
+}
+
+const LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+pub async fn acquire(
+    lock_path: &Path,
+    wait: std::time::Duration,
+) -> Result<DaemonLock, DaemonError> {
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)?;
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(DaemonLock { file }),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(err)) => {
+                tracing::warn!(%err, path = %lock_path.display(), "daemon lock unavailable; continuing without exclusion");
+                return Ok(DaemonLock { file });
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(DaemonError::AlreadyRunning(lock_path.to_path_buf()));
+        }
+        tokio::time::sleep(LOCK_POLL).await;
+    }
+}
+
+impl Drop for DaemonLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 pub struct RemoteSettings {
@@ -40,6 +82,9 @@ pub async fn serve(config: DaemonConfig) -> Result<(), DaemonError> {
         goat_config::UserProviders::at(config.config_json.clone()),
         config.db_path.clone(),
     );
+    let lock = acquire(&config.lock_path, std::time::Duration::ZERO).await?;
+    let bound = bind_daemon(config, &lock)?;
+    manager.mark_ready();
     let shutdown = CancellationToken::new();
     let signal = shutdown.clone();
     tokio::spawn(async move {
@@ -47,19 +92,38 @@ pub async fn serve(config: DaemonConfig) -> Result<(), DaemonError> {
         tracing::info!("received termination signal, shutting down");
         signal.cancel();
     });
-    serve_with(config, manager, shutdown).await
+    serve_bound(bound, manager, shutdown).await
+}
+
+pub struct Bound {
+    listener: transport::Listener,
+    config: DaemonConfig,
+}
+
+pub fn bind_daemon(config: DaemonConfig, _lock: &DaemonLock) -> Result<Bound, DaemonError> {
+    let listener = bind(&config.socket_path)?;
+    tracing::info!(socket = %config.socket_path.display(), "daemon listening");
+    Ok(Bound { listener, config })
 }
 
 pub async fn serve_with(
     config: DaemonConfig,
     manager: Manager,
     shutdown: CancellationToken,
+    lock: &DaemonLock,
 ) -> Result<(), DaemonError> {
-    let listener = bind(&config.socket_path)?;
+    serve_bound(bind_daemon(config, lock)?, manager, shutdown).await
+}
+
+pub async fn serve_bound(
+    bound: Bound,
+    manager: Manager,
+    shutdown: CancellationToken,
+) -> Result<(), DaemonError> {
+    let Bound { listener, config } = bound;
     let db_path = config.db_path.clone();
     sweep_orphaned_turns(&config.db_path).await;
     sweep_orphaned_processes(&config.db_path).await;
-    tracing::info!(socket = %config.socket_path.display(), "daemon listening");
 
     if let Some(remote_settings) = config.remote {
         spawn_remote(&manager, &shutdown, remote_settings)?;
@@ -140,14 +204,8 @@ fn spawn_remote(
     Ok(())
 }
 
-pub fn already_running(socket_path: &Path) -> bool {
-    transport::exists(socket_path) && transport::probe_alive(socket_path)
-}
-
 fn bind(socket_path: &Path) -> Result<transport::Listener, DaemonError> {
-    if already_running(socket_path) {
-        return Err(DaemonError::AlreadyRunning(socket_path.to_path_buf()));
-    }
+    transport::cleanup(socket_path);
     Ok(transport::bind(socket_path)?)
 }
 

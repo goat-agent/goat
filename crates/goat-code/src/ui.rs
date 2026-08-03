@@ -23,6 +23,75 @@ pub fn fail_hint(message: impl Into<String>, hint: impl Into<String>) -> Result<
     Err(report_hint(message, hint))
 }
 
+pub fn age(millis: i64) -> String {
+    let secs = millis.max(0) / 1000;
+    match (secs / 86400, (secs % 86400) / 3600, (secs % 3600) / 60) {
+        (0, 0, 0) => format!("{secs}s"),
+        (0, 0, m) => format!("{m}m"),
+        (0, h, m) => format!("{h}h {m}m"),
+        (d, h, _) => format!("{d}d {h}h"),
+    }
+}
+
+pub fn busy_summary(busy: goat_wire::Busy) -> String {
+    let mut parts = Vec::new();
+    if busy.turns > 0 {
+        parts.push(format!("{} agent turn(s) in flight", busy.turns));
+    }
+    if busy.sessions > 0 {
+        parts.push(format!("{} live coding session(s)", busy.sessions));
+    }
+    if parts.is_empty() {
+        "idle".to_owned()
+    } else {
+        parts.join(", ")
+    }
+}
+
+pub fn daemon_swapped(attached: &goat_client::Attached) {
+    let color = ColorMode::detect();
+    let line = match attached {
+        goat_client::Attached::Reused => return,
+        goat_client::Attached::Started => "started the daemon".to_owned(),
+        goat_client::Attached::Replaced(old) => format!(
+            "replaced the daemon (goat {}, pid {}, up {})",
+            old.version,
+            old.pid,
+            age(now_ms() - old.started_at)
+        ),
+        goat_client::Attached::Stale(old) => format!(
+            "the running daemon is an older build (goat {}, up {}) — `goat daemon start` to refresh",
+            old.version,
+            age(now_ms() - old.started_at)
+        ),
+    };
+    println!("{}", color.paint(line, Palette::Muted));
+}
+
+pub fn daemon_client_error(err: &goat_client::ClientError) -> Report {
+    match err {
+        goat_client::ClientError::BusyIncompatible { .. } => report_hint(
+            err.to_string(),
+            "wait for it to finish, or force it with `goat daemon stop`",
+        ),
+        goat_client::ClientError::Timeout(_) => report_hint(
+            "a process is holding the daemon socket and is not answering",
+            "kill it with `pkill -f 'goat daemon serve'`",
+        ),
+        goat_client::ClientError::SpawnFailed(_) => report_hint(
+            err.to_string(),
+            "check the log with `goat code --print-log-path`",
+        ),
+        other => report(other.to_string()),
+    }
+}
+
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
 pub fn worktree_entry(err: goat_worktree::WorktreeError) -> Report {
     match &err {
         goat_worktree::WorktreeError::Git(goat_git::GitError::Missing) => report_hint(

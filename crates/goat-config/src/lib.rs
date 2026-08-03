@@ -12,8 +12,8 @@ pub use paths::{
     GoatPaths, HOME_NOT_FOUND, INSTRUCTIONS_MAX_BYTES, PROJECT_INSTRUCTIONS_FILE,
     PROJECT_INSTRUCTIONS_OVERRIDE_FILE, PROJECT_SKILLS_SUBDIR, PROJECT_SUBAGENTS_SUBDIR,
     agents_dir, auth_path, bin_dir, browser_dir, browser_profile_dir, config_path,
-    global_instructions_file, log_dir, mcp_approvals_path, mcp_config_path, plans_dir,
-    rate_limits_path, remote_dir, skills_dir, socket_path, subagents_dir, update_dir,
+    daemon_lock_path, global_instructions_file, log_dir, mcp_approvals_path, mcp_config_path,
+    plans_dir, rate_limits_path, remote_dir, skills_dir, socket_path, subagents_dir, update_dir,
 };
 pub use settings::{
     Config, DeviceConfig, LOCAL_REMOTE, RemoteEntry, SearchAccountConfig, SearchConfig,

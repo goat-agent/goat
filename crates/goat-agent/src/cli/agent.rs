@@ -42,7 +42,7 @@ pub async fn run(cmd: Cmd) -> Result<()> {
         Cmd::Remove { slug } => remove(&paths, &slug),
         Cmd::Channel(c) => super::channel::run(c).await,
         Cmd::Integration(c) => super::integration::run(c).await,
-        Cmd::Status => super::governance::status(),
+        Cmd::Status => super::governance::status().await,
         Cmd::Log { limit } => super::governance::log(limit).await,
     }
 }

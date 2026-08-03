@@ -23,7 +23,13 @@ pub trait StreamRenderer: Send + Sync {
         conv: ThreadId,
         reply_to: Option<MessageId>,
         stream: ChunkStream,
+        sink: Option<Arc<dyn OutgoingSink>>,
     ) -> ChannelResult<RenderSummary>;
+}
+
+#[async_trait]
+pub trait OutgoingSink: Send + Sync {
+    async fn record(&self, text: &str);
 }
 
 pub struct DefaultStreamRenderer;
@@ -39,6 +45,7 @@ impl StreamRenderer for DefaultStreamRenderer {
         conv: ThreadId,
         reply_to: Option<MessageId>,
         mut stream: ChunkStream,
+        sink: Option<Arc<dyn OutgoingSink>>,
     ) -> ChannelResult<RenderSummary> {
         let caps = handle.capabilities();
         let mut buf = String::new();
@@ -80,6 +87,9 @@ impl StreamRenderer for DefaultStreamRenderer {
                     current = None;
                     current_reply = None;
                     last_flush = Instant::now();
+                    if let Some(sink) = &sink {
+                        sink.record(&full_text).await;
+                    }
                 }
 
                 let due = last_flush.elapsed() >= caps.edit_min_interval;
@@ -95,6 +105,9 @@ impl StreamRenderer for DefaultStreamRenderer {
                     )
                     .await?;
                     last_flush = Instant::now();
+                    if let Some(sink) = &sink {
+                        sink.record(&full_text).await;
+                    }
                 }
             }
         }
@@ -282,7 +295,7 @@ mod tests {
         let instance = handle.instance();
         let stream = make_stream(vec![text_delta("hello")]);
         let summary = DefaultStreamRenderer
-            .render(handle.clone(), conv(instance), None, stream)
+            .render(handle.clone(), conv(instance), None, stream, None)
             .await
             .expect("render ok");
 
@@ -302,7 +315,7 @@ mod tests {
         assert_eq!(payload.chars().count(), 12);
         let stream = make_stream(vec![text_delta(payload)]);
         let summary = DefaultStreamRenderer
-            .render(handle.clone(), conv(instance), None, stream)
+            .render(handle.clone(), conv(instance), None, stream, None)
             .await
             .unwrap();
 
@@ -320,7 +333,7 @@ mod tests {
             .collect();
         let stream = make_stream(vec![text_delta(&payload)]);
         let summary = DefaultStreamRenderer
-            .render(handle.clone(), conv(instance), None, stream)
+            .render(handle.clone(), conv(instance), None, stream, None)
             .await
             .unwrap();
         assert_eq!(summary.final_text, payload);
@@ -342,7 +355,7 @@ mod tests {
             text_delta("after"),
         ]);
         let summary = DefaultStreamRenderer
-            .render(handle.clone(), conv(instance), None, stream)
+            .render(handle.clone(), conv(instance), None, stream, None)
             .await
             .unwrap();
         assert_eq!(summary.final_text, "beforeafter");
@@ -362,7 +375,7 @@ mod tests {
             text_delta("public"),
         ]);
         let summary = DefaultStreamRenderer
-            .render(handle.clone(), conv(instance), None, stream)
+            .render(handle.clone(), conv(instance), None, stream, None)
             .await
             .unwrap();
         assert_eq!(summary.final_text, "public");
@@ -375,7 +388,7 @@ mod tests {
         let instance = handle.instance();
         let stream = make_stream(vec![]);
         let summary = DefaultStreamRenderer
-            .render(handle.clone(), conv(instance), None, stream)
+            .render(handle.clone(), conv(instance), None, stream, None)
             .await
             .unwrap();
         assert_eq!(summary.messages_sent, 0);

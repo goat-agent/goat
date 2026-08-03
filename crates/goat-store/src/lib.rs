@@ -323,6 +323,15 @@ pub trait Store: Send + Sync + 'static {
         reply_to: Option<&MessageId>,
     ) -> StoreResult<()>;
 
+    async fn upsert_outgoing_text(
+        &self,
+        agent: AgentId,
+        conv: &ThreadId,
+        id: &str,
+        text: &str,
+        reply_to: Option<&MessageId>,
+    ) -> StoreResult<()>;
+
     async fn append_tool_invocation(&self, record: ToolInvocationRecord) -> StoreResult<()>;
 
     async fn recent_tool_invocations(&self, limit: usize) -> StoreResult<Vec<ToolLogRow>>;
@@ -672,6 +681,32 @@ impl Store for SqliteStore {
                VALUES (?, ?, ?, 'out', 'text', ?, NULL, ?, ?, NULL)",
         )
         .bind(Uuid::new_v4().to_string())
+        .bind(conv.to_key())
+        .bind(agent.to_string())
+        .bind(text)
+        .bind(reply_to.map(|m| m.0.clone()))
+        .bind(Utc::now().to_rfc3339())
+        .execute(&*self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn upsert_outgoing_text(
+        &self,
+        agent: AgentId,
+        conv: &ThreadId,
+        id: &str,
+        text: &str,
+        reply_to: Option<&MessageId>,
+    ) -> StoreResult<()> {
+        self.ensure_thread(conv, agent).await?;
+        sqlx::query(
+            r"INSERT INTO messages
+               (id, thread_id, agent_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
+               VALUES (?, ?, ?, 'out', 'text', ?, NULL, ?, ?, NULL)
+               ON CONFLICT(id) DO UPDATE SET text = excluded.text, ts = excluded.ts",
+        )
+        .bind(id)
         .bind(conv.to_key())
         .bind(agent.to_string())
         .bind(text)
@@ -1097,20 +1132,15 @@ impl Store for SqliteStore {
     }
 
     async fn reclaim_stale_runs(&self, stale_before: DateTime<Utc>) -> StoreResult<usize> {
-        let now = Utc::now().to_rfc3339();
         let stale_str = stale_before.to_rfc3339();
         let result = sqlx::query(
             r"UPDATE task_runs
-               SET status = 'failed',
-                   finished_at = ?,
-                   running_since = NULL,
-                   result_summary = COALESCE(result_summary,
-                                             'lease stale: handler did not finish in time')
+               SET status = 'pending',
+                   running_since = NULL
                WHERE status = 'running'
                  AND running_since IS NOT NULL
                  AND running_since < ?",
         )
-        .bind(now)
         .bind(stale_str)
         .execute(&*self.pool)
         .await?;

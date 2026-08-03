@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use goat_protocol::{Event, Op};
-use goat_wire::{ClientFrame, PROTOCOL_VERSION, ResumeMode, ServerFrame, SessionId, WireError};
+use goat_wire::{BuildId, Busy, ClientFrame, ResumeMode, ServerFrame, SessionId, WireError};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
@@ -15,6 +15,13 @@ mod link;
 
 pub use link::{LOCAL, Link};
 
+pub const GREET_TIMEOUT: Duration = Duration::from_secs(2);
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+pub const STOP_TIMEOUT: Duration = Duration::from_secs(20);
+pub const SPAWN_BUDGET: Duration = Duration::from_secs(45);
+
+const SPAWN_POLL: Duration = Duration::from_millis(100);
+
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error("io error: {0}")]
@@ -23,16 +30,84 @@ pub enum ClientError {
     Wire(#[from] WireError),
     #[error("remote error: {0}")]
     Remote(#[from] goat_remote::RemoteError),
-    #[error("daemon protocol version {0} does not match client {PROTOCOL_VERSION}")]
-    VersionMismatch(u32),
+    #[error("the daemon did not answer within {0:?}")]
+    Timeout(Duration),
     #[error("unexpected daemon response during handshake")]
     Handshake,
+    #[error(
+        "the running daemon speaks a different protocol and is busy ({sessions} session(s), {turns} agent turn(s))"
+    )]
+    BusyIncompatible { sessions: usize, turns: usize },
+    #[error("the remote daemon speaks a different protocol")]
+    RemoteIncompatible,
     #[error("daemon did not open a session: {0}")]
     OpenFailed(String),
     #[error("could not start daemon: {0}")]
     SpawnFailed(String),
     #[error("daemon refused the request: {0}")]
     Refused(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    pub wire: String,
+    pub build: Option<BuildId>,
+    pub version: String,
+    pub pid: u32,
+    pub started_at: i64,
+    pub ready: bool,
+    pub busy: Busy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Daemon {
+    Reachable(Identity),
+    Silent,
+    Absent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    Attach,
+    AttachStale,
+    Replace,
+    Refuse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Attached {
+    Reused,
+    Started,
+    Replaced(Box<Identity>),
+    Stale(Box<Identity>),
+}
+
+#[must_use]
+pub fn mine() -> Identity {
+    Identity {
+        wire: goat_wire::wire_fingerprint().to_owned(),
+        build: BuildId::current(),
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        pid: std::process::id(),
+        started_at: 0,
+        ready: true,
+        busy: Busy::default(),
+    }
+}
+
+#[must_use]
+pub fn decide(mine: &Identity, theirs: &Identity) -> Action {
+    let incompatible = theirs.wire != mine.wire;
+    let stale = match (mine.build.as_ref(), theirs.build.as_ref()) {
+        (Some(ours), Some(other)) => ours != other,
+        _ => false,
+    };
+    match (incompatible, stale, theirs.busy.is_idle()) {
+        (false, false, _) => Action::Attach,
+        (true, _, false) => Action::Refuse,
+        (false, true, false) => Action::AttachStale,
+        (_, _, true) => Action::Replace,
+    }
 }
 
 pub struct Attachment {
@@ -42,7 +117,6 @@ pub struct Attachment {
     pub client_id: u64,
     pub cwd: String,
     pub pump: JoinHandle<()>,
-    events_in: mpsc::Sender<Event>,
 }
 
 const OPS_CAPACITY: usize = 32;
@@ -53,53 +127,149 @@ pub async fn connect(
     link: Arc<Link>,
     cwd: PathBuf,
     resume: ResumeMode,
-) -> Result<Attachment, ClientError> {
-    let mut conn = link.dial_or_spawn().await?;
-
-    conn.send(ClientFrame::Hello {
-        version: PROTOCOL_VERSION,
-        build: goat_wire::BUILD.to_owned(),
-    })
-    .await?;
-    let (client_id, daemon_build) = match conn.recv().await? {
-        ServerFrame::Welcome {
-            version,
-            build,
-            client_id,
-        } => {
-            if version != PROTOCOL_VERSION {
-                return Err(ClientError::VersionMismatch(version));
-            }
-            (client_id.0, build)
-        }
-        ServerFrame::VersionMismatch { daemon_version } => {
-            return Err(ClientError::VersionMismatch(daemon_version));
-        }
-        _ => return Err(ClientError::Handshake),
-    };
+) -> Result<(Attachment, Attached), ClientError> {
+    let (mut conn, _identity, client_id, attached) = ensure(&link).await?;
 
     conn.send(ClientFrame::OpenSession {
         cwd: cwd.display().to_string(),
         resume,
     })
     .await?;
-    let (session, opened_cwd) = match conn.recv().await? {
+    let (session, opened_cwd) = match request(&mut conn).await? {
         ServerFrame::SessionOpened { session, cwd } => (session, cwd),
         ServerFrame::Error { message } => return Err(ClientError::OpenFailed(message)),
         _ => return Err(ClientError::Handshake),
     };
 
-    let attachment = spawn_pumps(conn, session, client_id, opened_cwd, link);
-    if daemon_build != goat_wire::BUILD {
-        let _ = attachment.events_in.try_send(Event::Notify {
-            kind: goat_protocol::NotifyKind::Info,
-            message: format!(
-                "daemon is goat {daemon_build}, this client is goat {}",
-                goat_wire::BUILD
-            ),
-        });
+    Ok((
+        spawn_pumps(conn, session, client_id, opened_cwd, link),
+        attached,
+    ))
+}
+
+pub async fn start(socket_path: &Path, daemon_exe: &Path) -> Result<Attached, ClientError> {
+    let link = Link::local(socket_path.to_path_buf(), daemon_exe.to_path_buf());
+    let (_, _, _, attached) = ensure(&link).await?;
+    Ok(attached)
+}
+
+pub async fn greet(socket_path: &Path) -> Daemon {
+    let link = Link::local(socket_path.to_path_buf(), PathBuf::new());
+    match open(&link).await {
+        Ok((_, identity, _)) => Daemon::Reachable(identity),
+        Err(ClientError::Timeout(_) | ClientError::Handshake) => Daemon::Silent,
+        Err(_) => Daemon::Absent,
     }
-    Ok(attachment)
+}
+
+async fn open(link: &Link) -> Result<(Conn, Identity, u64), ClientError> {
+    let mut conn = tokio::time::timeout(GREET_TIMEOUT, link.dial())
+        .await
+        .map_err(|_| ClientError::Timeout(GREET_TIMEOUT))??;
+    let frame = tokio::time::timeout(GREET_TIMEOUT, conn.recv())
+        .await
+        .map_err(|_| ClientError::Timeout(GREET_TIMEOUT))??;
+    let ServerFrame::Welcome {
+        wire,
+        build,
+        busy,
+        version,
+        pid,
+        started_at,
+        ready,
+        client_id,
+    } = frame
+    else {
+        return Err(ClientError::Handshake);
+    };
+    Ok((
+        conn,
+        Identity {
+            wire,
+            build,
+            version,
+            pid,
+            started_at,
+            ready,
+            busy,
+        },
+        client_id.0,
+    ))
+}
+
+async fn request(conn: &mut Conn) -> Result<ServerFrame, ClientError> {
+    tokio::time::timeout(REQUEST_TIMEOUT, conn.recv())
+        .await
+        .map_err(|_| ClientError::Timeout(REQUEST_TIMEOUT))?
+        .map_err(ClientError::Wire)
+}
+
+async fn ensure(link: &Link) -> Result<(Conn, Identity, u64, Attached), ClientError> {
+    let ours = mine();
+    let opened = open(link).await;
+    if link.local_parts().is_none() {
+        let (conn, identity, client_id) = opened?;
+        if identity.wire != ours.wire {
+            return Err(ClientError::RemoteIncompatible);
+        }
+        return Ok((conn, identity, client_id, Attached::Reused));
+    }
+
+    let opened = match opened {
+        Ok(opened) => Some(opened),
+        Err(err @ (ClientError::Timeout(_) | ClientError::Handshake)) => return Err(err),
+        Err(_) => None,
+    };
+    let Some((conn, identity, client_id)) = opened else {
+        let (conn, identity, client_id) = spawn_and_wait(link).await?;
+        return Ok((conn, identity, client_id, Attached::Started));
+    };
+
+    match decide(&ours, &identity) {
+        Action::Attach => Ok((conn, identity, client_id, Attached::Reused)),
+        Action::AttachStale => {
+            let stale = identity.clone();
+            Ok((conn, identity, client_id, Attached::Stale(Box::new(stale))))
+        }
+        Action::Refuse => Err(ClientError::BusyIncompatible {
+            sessions: identity.busy.sessions,
+            turns: identity.busy.turns,
+        }),
+        Action::Replace => {
+            let replaced = identity.clone();
+            shutdown_and_wait(conn).await;
+            let (conn, identity, client_id) = spawn_and_wait(link).await?;
+            Ok((
+                conn,
+                identity,
+                client_id,
+                Attached::Replaced(Box::new(replaced)),
+            ))
+        }
+    }
+}
+
+async fn shutdown_and_wait(mut conn: Conn) {
+    if conn.send(ClientFrame::StopDaemon {}).await.is_err() {
+        return;
+    }
+    let _ = tokio::time::timeout(STOP_TIMEOUT, async { while conn.recv().await.is_ok() {} }).await;
+}
+
+async fn spawn_and_wait(link: &Link) -> Result<(Conn, Identity, u64), ClientError> {
+    link.spawn_local()?;
+    let deadline = tokio::time::Instant::now() + SPAWN_BUDGET;
+    loop {
+        match open(link).await {
+            Ok(opened) => return Ok(opened),
+            Err(err) if tokio::time::Instant::now() >= deadline => {
+                return Err(ClientError::SpawnFailed(format!(
+                    "daemon did not become reachable: {err}"
+                )));
+            }
+            Err(_) => tokio::time::sleep(SPAWN_POLL).await,
+        }
+    }
 }
 
 enum Outbound {
@@ -126,7 +296,6 @@ fn spawn_pumps(
     let (events_tx, events_rx) = mpsc::channel::<Event>(EVENTS_CAPACITY);
     let (presence_tx, presence_rx) = mpsc::channel::<usize>(PRESENCE_CAPACITY);
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<Outbound>(OPS_CAPACITY + 8);
-    let events_for_caller = events_tx.clone();
 
     let opened_cwd = cwd.clone();
     let shared = Arc::new(Shared {
@@ -175,7 +344,6 @@ fn spawn_pumps(
         client_id,
         cwd: opened_cwd,
         pump,
-        events_in: events_for_caller,
     }
 }
 
@@ -185,32 +353,13 @@ async fn reconnect(
     events_tx: &mpsc::Sender<Event>,
 ) -> Option<Conn> {
     for _ in 0..100 {
-        let Ok(mut conn) = link.dial().await else {
+        let Ok((mut conn, identity, _)) = open(link).await else {
             tokio::time::sleep(Duration::from_millis(200)).await;
             continue;
         };
-        if conn
-            .send(ClientFrame::Hello {
-                version: PROTOCOL_VERSION,
-                build: goat_wire::BUILD.to_owned(),
-            })
-            .await
-            .is_err()
-        {
-            continue;
-        }
-        match conn.recv().await {
-            Ok(ServerFrame::Welcome { version, .. }) if version == PROTOCOL_VERSION => {}
-            Ok(
-                ServerFrame::Welcome { version, .. }
-                | ServerFrame::VersionMismatch {
-                    daemon_version: version,
-                },
-            ) => {
-                report_mismatch(events_tx, version).await;
-                return None;
-            }
-            _ => continue,
+        if identity.wire != mine().wire {
+            report_incompatible(events_tx).await;
+            return None;
         }
         let resume = match *shared.current_thread.lock().await {
             Some(thread_id) => ResumeMode::Thread { thread_id },
@@ -226,7 +375,7 @@ async fn reconnect(
         {
             continue;
         }
-        if let Ok(ServerFrame::SessionOpened { session, .. }) = conn.recv().await {
+        if let Ok(ServerFrame::SessionOpened { session, .. }) = request(&mut conn).await {
             *shared.current.lock().await = session;
             shared.idmap.lock().await.reset();
             return Some(conn);
@@ -235,12 +384,12 @@ async fn reconnect(
     None
 }
 
-async fn report_mismatch(events_tx: &mpsc::Sender<Event>, daemon_version: u32) {
+async fn report_incompatible(events_tx: &mpsc::Sender<Event>) {
     let _ = events_tx
         .send(Event::Error {
             id: None,
-            message: ClientError::VersionMismatch(daemon_version).to_string(),
-            hint: Some("update the daemon and this client to the same build".to_owned()),
+            message: "the daemon protocol changed while reconnecting".to_owned(),
+            hint: Some("restart the daemon with this goat build".to_owned()),
         })
         .await;
 }
@@ -500,7 +649,20 @@ pub async fn list_threads(
 }
 
 pub async fn stop(link: &Link) -> Result<(), ClientError> {
-    tell(link, ClientFrame::StopDaemon {}).await
+    let (mut conn, _, _) = open(link).await?;
+    conn.send(ClientFrame::StopDaemon {}).await?;
+    tokio::time::timeout(STOP_TIMEOUT, async {
+        loop {
+            match conn.recv().await {
+                Ok(ServerFrame::Error { message }) => return Err(ClientError::Refused(message)),
+                Ok(_) => {}
+                Err(WireError::Closed) => return Ok(()),
+                Err(err) => return Err(ClientError::Wire(err)),
+            }
+        }
+    })
+    .await
+    .map_err(|_| ClientError::Timeout(STOP_TIMEOUT))?
 }
 
 pub async fn reload(
@@ -556,32 +718,15 @@ pub async fn revoke_device(link: &Link, device: String) -> Result<bool, ClientEr
 }
 
 async fn tell(link: &Link, frame: ClientFrame) -> Result<(), ClientError> {
-    let mut conn = greet(link).await?;
+    let (mut conn, _, _) = open(link).await?;
     conn.send(frame).await?;
     Ok(())
 }
 
 async fn ask(link: &Link, frame: ClientFrame) -> Result<ServerFrame, ClientError> {
-    let mut conn = greet(link).await?;
+    let (mut conn, _, _) = open(link).await?;
     conn.send(frame).await?;
-    Ok(conn.recv().await?)
-}
-
-async fn greet(link: &Link) -> Result<Conn, ClientError> {
-    let mut conn = link.dial().await?;
-    conn.send(ClientFrame::Hello {
-        version: PROTOCOL_VERSION,
-        build: goat_wire::BUILD.to_owned(),
-    })
-    .await?;
-    match conn.recv().await? {
-        ServerFrame::Welcome { version, .. } if version == PROTOCOL_VERSION => Ok(conn),
-        ServerFrame::Welcome { version, .. }
-        | ServerFrame::VersionMismatch {
-            daemon_version: version,
-        } => Err(ClientError::VersionMismatch(version)),
-        _ => Err(ClientError::Handshake),
-    }
+    request(&mut conn).await
 }
 
 fn refusal(frame: ServerFrame) -> ClientError {
@@ -593,9 +738,62 @@ fn refusal(frame: ServerFrame) -> ClientError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Delivery, frame_to_events, sequenced_delivery};
+    use super::{Action, Delivery, Identity, decide, frame_to_events, sequenced_delivery};
     use goat_protocol::{Event, ModelTarget, SkillInfo, TaskId};
-    use goat_wire::{ServerFrame, SessionId};
+    use goat_wire::{BuildId, Busy, ServerFrame, SessionId};
+
+    fn build(len: u64) -> BuildId {
+        BuildId {
+            path: "/bin/goat".to_owned(),
+            len,
+            mtime: 1,
+        }
+    }
+
+    fn peer(wire: &str, len: u64, busy: Busy) -> Identity {
+        Identity {
+            wire: wire.to_owned(),
+            build: Some(build(len)),
+            version: "0.1.27".to_owned(),
+            pid: 9,
+            started_at: 0,
+            ready: true,
+            busy,
+        }
+    }
+
+    #[test]
+    fn decision_table_preserves_busy_daemons() {
+        let idle = Busy::default();
+        let busy = Busy {
+            sessions: 1,
+            turns: 0,
+        };
+        let ours = peer("aaaa", 1, idle);
+        for (wire, len, load, want) in [
+            ("aaaa", 1, idle, Action::Attach),
+            ("aaaa", 1, busy, Action::Attach),
+            ("aaaa", 2, idle, Action::Replace),
+            ("aaaa", 2, busy, Action::AttachStale),
+            ("bbbb", 1, idle, Action::Replace),
+            ("bbbb", 1, busy, Action::Refuse),
+            ("bbbb", 2, busy, Action::Refuse),
+        ] {
+            assert_eq!(
+                decide(&ours, &peer(wire, len, load)),
+                want,
+                "wire={wire} len={len} busy={load:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_build_is_not_stale() {
+        let ours = peer("aaaa", 1, Busy::default());
+        let mut theirs = peer("aaaa", 2, Busy::default());
+        theirs.build = None;
+        assert_eq!(decide(&ours, &theirs), Action::Attach);
+    }
 
     fn text(seq: u64) -> ServerFrame {
         ServerFrame::Event {

@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::time::Duration;
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use goat_remote::client::DeviceCredentials;
@@ -73,27 +72,27 @@ impl Link {
         }
     }
 
-    pub async fn dial_or_spawn(&self) -> Result<Conn, ClientError> {
+    pub(crate) fn spawn_local(&self) -> Result<(), ClientError> {
         let Self::Local {
             socket_path,
             daemon_exe,
         } = self
         else {
-            return self.dial().await;
+            return Err(ClientError::Refused(
+                "a remote daemon cannot be started from this machine".to_owned(),
+            ));
         };
-        if let Ok(conn) = self.dial().await {
-            return Ok(conn);
+        spawn_daemon(daemon_exe, socket_path)
+    }
+
+    pub(crate) fn local_parts(&self) -> Option<(&Path, &Path)> {
+        match self {
+            Self::Local {
+                socket_path,
+                daemon_exe,
+            } => Some((socket_path, daemon_exe)),
+            Self::Remote { .. } => None,
         }
-        spawn_daemon(daemon_exe, socket_path)?;
-        for _ in 0..50 {
-            if let Ok(conn) = self.dial().await {
-                return Ok(conn);
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        Err(ClientError::SpawnFailed(
-            "daemon did not become reachable".to_owned(),
-        ))
     }
 }
 
@@ -135,6 +134,7 @@ fn spawn_daemon(daemon_exe: &Path, socket_path: &Path) -> Result<(), ClientError
     Command::new(daemon_exe)
         .arg("daemon")
         .arg("serve")
+        .arg("--detached")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(stderr)
@@ -189,10 +189,9 @@ mod tests {
         assert_eq!(link.name(), "box");
     }
 
-    #[tokio::test]
-    async fn a_remote_link_never_spawns_a_daemon() {
+    #[test]
+    fn remote_link_has_no_local_spawn_target() {
         let link = Link::remote("box".to_owned(), "127.0.0.1:1".to_owned(), credentials());
-        let failure = link.dial_or_spawn().await;
-        assert!(matches!(failure, Err(ClientError::Remote(_))));
+        assert!(link.local_parts().is_none());
     }
 }

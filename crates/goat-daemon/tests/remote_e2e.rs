@@ -4,14 +4,13 @@ use std::time::Duration;
 use futures::{SinkExt, StreamExt};
 use goat_remote::client::DeviceCredentials;
 use goat_wire::transport::{self, Stream};
-use goat_wire::{
-    BUILD, ClientConn, ClientFrame, PROTOCOL_VERSION, ResumeMode, ServerFrame, WireConn,
-};
+use goat_wire::{ClientConn, ClientFrame, ResumeMode, ServerFrame, WireConn};
 
 async fn start_remote_daemon(dir: &std::path::Path, port: u16) -> PathBuf {
     let socket = dir.join("d.sock");
     let cfg = goat_daemon::DaemonConfig {
         socket_path: socket.clone(),
+        lock_path: dir.join("daemon.lock"),
         auth_path: dir.join("auth.json"),
         config_json: dir.join("config.json"),
         db_path: dir.join("store.sqlite"),
@@ -36,12 +35,6 @@ async fn start_remote_daemon(dir: &std::path::Path, port: u16) -> PathBuf {
 async fn local_conn(socket: &std::path::Path) -> ClientConn<Stream> {
     let stream = transport::connect(socket).await.unwrap();
     let mut conn: ClientConn<Stream> = WireConn::new(stream);
-    conn.send(&ClientFrame::Hello {
-        version: PROTOCOL_VERSION,
-        build: BUILD.to_owned(),
-    })
-    .await
-    .unwrap();
     match conn.recv().await.unwrap() {
         ServerFrame::Welcome { .. } => {}
         other => panic!("expected Welcome, got {other:?}"),
@@ -117,14 +110,8 @@ async fn remote_pair_and_open_session_over_mtls() {
         .await
         .expect("connect over mtls");
 
-    sink.send(ClientFrame::Hello {
-        version: PROTOCOL_VERSION,
-        build: BUILD.to_owned(),
-    })
-    .await
-    .unwrap();
     match stream.next().await.unwrap().unwrap() {
-        ServerFrame::Welcome { version, .. } => assert_eq!(version, PROTOCOL_VERSION),
+        ServerFrame::Welcome { wire, .. } => assert_eq!(wire, goat_wire::wire_fingerprint()),
         other => panic!("expected Welcome, got {other:?}"),
     }
 

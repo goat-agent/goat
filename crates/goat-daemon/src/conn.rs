@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use goat_wire::transport::Stream as LocalStream;
-use goat_wire::{ClientFrame, PROTOCOL_VERSION, ServerConn, ServerFrame};
+use goat_wire::{ClientFrame, ServerConn, ServerFrame};
 use tokio::sync::mpsc;
 
 use crate::manager::Manager;
@@ -52,42 +52,19 @@ pub(crate) async fn serve_connection<Si, St>(
 {
     let mut sink = Box::pin(sink);
 
-    match source.next().await {
-        Some(Ok(ClientFrame::Hello { version, build })) if version == PROTOCOL_VERSION => {
-            if build != goat_wire::BUILD {
-                tracing::warn!(
-                    client = %build,
-                    daemon = %goat_wire::BUILD,
-                    "client and daemon builds differ"
-                );
-            }
-        }
-        Some(Ok(ClientFrame::Hello { .. })) => {
-            let _ = sink
-                .send(ServerFrame::VersionMismatch {
-                    daemon_version: PROTOCOL_VERSION,
-                })
-                .await;
-            return;
-        }
-        _ => {
-            let _ = sink
-                .send(ServerFrame::Error {
-                    message: "expected Hello".to_owned(),
-                })
-                .await;
-            return;
-        }
-    }
-
     let client_id = manager.next_client_id();
     if let ClientOrigin::Remote { device } = &origin {
         tracing::info!(client = client_id.0, device = %device, "remote client connected");
     }
     if sink
         .send(ServerFrame::Welcome {
-            version: PROTOCOL_VERSION,
-            build: goat_wire::BUILD.to_owned(),
+            wire: goat_wire::wire_fingerprint().to_owned(),
+            build: manager.build(),
+            busy: manager.busy().await,
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            pid: std::process::id(),
+            started_at: manager.started_at(),
+            ready: manager.is_ready(),
             client_id,
         })
         .await
@@ -118,6 +95,10 @@ pub(crate) async fn serve_connection<Si, St>(
                         graceful = true;
                         break;
                     }
+                    Disposition::Draining => {
+                        std::future::pending::<()>().await;
+                        break;
+                    }
                 }
             }
         }
@@ -135,6 +116,7 @@ pub(crate) async fn serve_connection<Si, St>(
 enum Disposition {
     Continue,
     Closed,
+    Draining,
 }
 
 async fn dispatch(
@@ -146,7 +128,6 @@ async fn dispatch(
     frame: ClientFrame,
 ) -> Disposition {
     match frame {
-        ClientFrame::Hello { .. } => Disposition::Continue,
         ClientFrame::OpenSession { cwd, resume } => {
             let cwd_path = PathBuf::from(&cwd);
             match manager.open_or_attach(cwd_path, resume).await {
@@ -288,7 +269,7 @@ async fn dispatch(
         ClientFrame::StopDaemon {} => {
             if origin.is_local() {
                 shutdown.cancel();
-                Disposition::Closed
+                Disposition::Draining
             } else {
                 let _ = out_tx.send(local_only("StopDaemon")).await;
                 Disposition::Continue

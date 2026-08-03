@@ -38,7 +38,7 @@ fn build_asyncapi(client: &serde_json::Value, server: &serde_json::Value) -> ser
         "asyncapi": "3.0.0",
         "info": {
             "title": "goat-code daemon protocol",
-            "version": goat_wire::PROTOCOL_VERSION.to_string(),
+            "version": goat_wire::wire_fingerprint(),
             "description": "Length-delimited JSON frames over the daemon unix socket (and remote mTLS WebSocket). A client sends ClientFrame, the daemon replies with ServerFrame."
         },
         "defaultContentType": "application/json",

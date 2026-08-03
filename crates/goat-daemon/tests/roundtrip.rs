@@ -2,9 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use goat_wire::transport::{self, Stream};
-use goat_wire::{
-    BUILD, ClientConn, ClientFrame, PROTOCOL_VERSION, ResumeMode, ServerFrame, WireConn,
-};
+use goat_wire::{ClientConn, ClientFrame, ResumeMode, ServerFrame, WireConn};
 
 async fn start_daemon(dir: &std::path::Path) -> PathBuf {
     let socket = dir.join("d.sock");
@@ -12,6 +10,7 @@ async fn start_daemon(dir: &std::path::Path) -> PathBuf {
     let db = dir.join("store.sqlite");
     let cfg = goat_daemon::DaemonConfig {
         socket_path: socket.clone(),
+        lock_path: dir.join("daemon.lock"),
         auth_path: auth,
         config_json: dir.join("config.json"),
         db_path: db,
@@ -32,14 +31,8 @@ async fn start_daemon(dir: &std::path::Path) -> PathBuf {
 async fn connect(socket: &std::path::Path) -> ClientConn<Stream> {
     let stream = transport::connect(socket).await.unwrap();
     let mut conn: ClientConn<Stream> = WireConn::new(stream);
-    conn.send(&ClientFrame::Hello {
-        version: PROTOCOL_VERSION,
-        build: BUILD.to_owned(),
-    })
-    .await
-    .unwrap();
     match conn.recv().await.unwrap() {
-        ServerFrame::Welcome { version, .. } => assert_eq!(version, PROTOCOL_VERSION),
+        ServerFrame::Welcome { wire, .. } => assert_eq!(wire, goat_wire::wire_fingerprint()),
         other => panic!("expected Welcome, got {other:?}"),
     }
     conn

@@ -4,9 +4,9 @@ pub mod transport;
 
 pub use codec::{WireConn, WireError};
 pub use protocol::{
-    BUILD, ClientFrame, ClientId, DeviceInfo, DirEntry, DirEntryKind, PROTOCOL_VERSION,
-    RateLimitEntry, ReloadFailure, ReloadReport, ResumeMode, ServerFrame, SessionId, SessionInfo,
-    SessionLiveState, ThreadInfo,
+    BuildId, Busy, ClientFrame, ClientId, DeviceInfo, DirEntry, DirEntryKind, RateLimitEntry,
+    ReloadFailure, ReloadReport, ResumeMode, ServerFrame, SessionId, SessionInfo, SessionLiveState,
+    ThreadInfo, wire_fingerprint,
 };
 
 pub type ServerConn<S> = WireConn<S, ServerFrame, ClientFrame>;
@@ -23,26 +23,15 @@ mod tests {
         let mut server: ServerConn<_> = WireConn::new(a);
         let mut client: ClientConn<_> = WireConn::new(b);
 
-        client
-            .send(&ClientFrame::Hello {
-                version: PROTOCOL_VERSION,
-                build: BUILD.to_owned(),
-            })
-            .await
-            .unwrap();
-        let got = server.recv().await.unwrap();
-        assert_eq!(
-            got,
-            ClientFrame::Hello {
-                version: PROTOCOL_VERSION,
-                build: BUILD.to_owned(),
-            }
-        );
-
         server
             .send(&ServerFrame::Welcome {
-                version: PROTOCOL_VERSION,
-                build: BUILD.to_owned(),
+                wire: wire_fingerprint().to_owned(),
+                build: None,
+                busy: Busy::default(),
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                pid: 7,
+                started_at: 0,
+                ready: true,
                 client_id: ClientId(7),
             })
             .await
@@ -51,9 +40,14 @@ mod tests {
         assert_eq!(
             got,
             ServerFrame::Welcome {
-                version: PROTOCOL_VERSION,
-                build: BUILD.to_owned(),
-                client_id: ClientId(7)
+                wire: wire_fingerprint().to_owned(),
+                build: None,
+                busy: Busy::default(),
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                pid: 7,
+                started_at: 0,
+                ready: true,
+                client_id: ClientId(7),
             }
         );
     }
@@ -145,14 +139,14 @@ mod tests {
     }
 
     #[test]
-    fn client_frame_hello_serializes_flat() {
-        let frame = ClientFrame::Hello {
-            version: PROTOCOL_VERSION,
-            build: BUILD.to_owned(),
+    fn client_frame_open_session_serializes_flat() {
+        let frame = ClientFrame::OpenSession {
+            cwd: "/tmp".to_owned(),
+            resume: ResumeMode::New {},
         };
         let json = serde_json::to_string(&frame).unwrap();
-        assert!(json.contains(r#""type":"Hello""#));
-        assert!(!json.contains(r#"{"Hello":"#));
+        assert!(json.contains(r#""type":"OpenSession""#));
+        assert!(!json.contains(r#"{"OpenSession":"#));
         let back: ClientFrame = serde_json::from_str(&json).unwrap();
         assert_eq!(back, frame);
     }

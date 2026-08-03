@@ -116,6 +116,11 @@ impl Goat {
             goat_agent_tool_pty::MAX_SESSIONS,
         ));
 
+        let agent_turns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        if let Some(manager) = &code {
+            manager.set_agent_turns(agent_turns.clone());
+        }
+
         let base = RuntimeBase {
             paths: cfg.paths.clone(),
             store: store.clone(),
@@ -128,6 +133,7 @@ impl Goat {
             code: code.clone(),
             bus,
             renderer: Arc::new(DefaultStreamRenderer),
+            agent_turns,
         };
 
         let shared = build_shared(&base, &cfg.agents).await;
@@ -660,6 +666,7 @@ struct RuntimeShared {
     memory_engine: Arc<goat_memory::MemoryEngine>,
     renderer: Arc<dyn StreamRenderer>,
     bus: EventBus,
+    agent_turns: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 struct RuntimeBase {
@@ -674,6 +681,7 @@ struct RuntimeBase {
     code: Option<goat_daemon::Manager>,
     bus: EventBus,
     renderer: Arc<dyn StreamRenderer>,
+    agent_turns: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 async fn build_shared(base: &RuntimeBase, agents: &[AgentConfig]) -> RuntimeShared {
@@ -737,6 +745,7 @@ async fn build_shared(base: &RuntimeBase, agents: &[AgentConfig]) -> RuntimeShar
         memory_engine: base.memory_engine.clone(),
         renderer: base.renderer.clone(),
         bus: base.bus.clone(),
+        agent_turns: base.agent_turns.clone(),
     }
 }
 
@@ -1095,6 +1104,7 @@ async fn spawn_agent(
             .collect(),
         intake_debounce: raw.intake_debounce,
         intake_ceiling: raw.intake_ceiling,
+        turns: shared.agent_turns.clone(),
     }));
     let bus = shared.bus.clone();
     let cancel_for_brain = cancel.clone();
