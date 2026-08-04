@@ -336,6 +336,7 @@ mod tests {
                 conversation_id,
                 turn_id: None,
                 role: "user".into(),
+                kind: None,
                 body: "change files".into(),
                 created_at: 2,
             })
