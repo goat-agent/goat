@@ -365,6 +365,8 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
                     }
                     None => entries.push(TranscriptEntry::User {
                         text: text.clone(),
+                        display: None,
+                        system: false,
                         attachments: Vec::new(),
                     }),
                 }
@@ -378,6 +380,10 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
             _ => continue,
         };
         let content = parse_content_blocks(&stored.body);
+        let is_tool_result_message = role == MessageRole::User
+            && content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { .. }));
         let tool_count = content
             .iter()
             .filter(|block| matches!(block, ContentBlock::ToolUse { .. }))
@@ -391,30 +397,52 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
         } else {
             0
         };
+        let (system, display) = match stored.kind.as_deref() {
+            Some("wake") => (true, Some("(background activity)".to_owned())),
+            Some("plan_decision") => {
+                let first_text = content.iter().find_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                });
+                let label = if first_text
+                    .is_some_and(|text| text.starts_with(crate::plan::APPROVED_PREFIX))
+                {
+                    "(plan approved)"
+                } else {
+                    "(plan rejected)"
+                };
+                (true, Some(label.to_owned()))
+            }
+            _ => (false, None),
+        };
         let mut subagent_group = None;
         for block in &content {
             match block {
                 ContentBlock::Text { text } => match role {
-                    MessageRole::User => entries.push(TranscriptEntry::User {
-                        text: text.clone(),
-                        attachments: content
-                            .iter()
-                            .filter_map(|block| match block {
-                                ContentBlock::Image { media_type, data } => {
-                                    Some(goat_protocol::InputAttachment {
-                                        media_type: media_type.clone(),
-                                        data: data.clone(),
-                                        label: "image".to_owned(),
-                                    })
-                                }
-                                _ => None,
-                            })
-                            .collect(),
-                    }),
+                    MessageRole::User if !is_tool_result_message => {
+                        entries.push(TranscriptEntry::User {
+                            text: text.clone(),
+                            display: display.clone(),
+                            system,
+                            attachments: content
+                                .iter()
+                                .filter_map(|block| match block {
+                                    ContentBlock::Image { media_type, data } => {
+                                        Some(goat_protocol::InputAttachment {
+                                            media_type: media_type.clone(),
+                                            data: data.clone(),
+                                            label: "image".to_owned(),
+                                        })
+                                    }
+                                    _ => None,
+                                })
+                                .collect(),
+                        });
+                    }
+                    MessageRole::User | MessageRole::System => {}
                     MessageRole::Assistant => {
                         entries.push(TranscriptEntry::Assistant { text: text.clone() });
                     }
-                    MessageRole::System => {}
                 },
                 ContentBlock::ToolUse { id, name, input } => {
                     tool_seq += 1;

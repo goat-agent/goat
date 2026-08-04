@@ -94,6 +94,9 @@ pub(crate) enum Item {
         hint: Option<String>,
     },
     Interrupted,
+    System {
+        display: String,
+    },
     Compaction {
         tokens_before: u32,
         tokens_after: u32,
