@@ -421,6 +421,7 @@ impl App {
                             goat_protocol::ToolOutcome {
                                 ok,
                                 summary: None,
+                                body: None,
                                 image: None,
                                 git: None,
                             },

@@ -245,6 +245,8 @@ pub struct ToolOutcome {
     pub ok: bool,
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<ToolImageData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<Box<GitFacts>>,

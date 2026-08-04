@@ -3201,6 +3201,7 @@ mod tests {
                     outcome: ToolOutcome {
                         ok: true,
                         summary: Some("done".to_owned()),
+                        body: None,
                         image: None,
                         git: None,
                     },
@@ -3266,6 +3267,7 @@ mod tests {
             outcome: ToolOutcome {
                 ok: true,
                 summary: None,
+                body: None,
                 image: None,
                 git: None,
             },
@@ -3363,6 +3365,7 @@ mod tests {
             outcome: ToolOutcome {
                 ok: true,
                 summary: None,
+                body: None,
                 image: None,
                 git: None,
             },
@@ -3373,6 +3376,7 @@ mod tests {
             outcome: ToolOutcome {
                 ok: false,
                 summary: Some("failed".to_owned()),
+                body: None,
                 image: None,
                 git: None,
             },
@@ -3801,6 +3805,7 @@ mod tests {
             outcome: goat_protocol::ToolOutcome {
                 ok: true,
                 summary: None,
+                body: None,
                 image: None,
                 git: None,
             },

@@ -168,6 +168,13 @@ pub struct NewToolCall {
     pub started_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct StoredToolCallSummary {
+    pub turn_id: i64,
+    pub call_id: String,
+    pub summary: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewProcess {
     pub pgid: i64,
@@ -799,6 +806,20 @@ impl CodeStore {
         Ok(id)
     }
 
+    pub async fn tool_call_summaries_for_thread(
+        &self,
+        thread_id: i64,
+    ) -> CodeResult<Vec<StoredToolCallSummary>> {
+        let rows = sqlx::query_as::<_, StoredToolCallSummary>(
+            "SELECT turn_id, call_id, summary FROM code_tool_calls
+             WHERE thread_id = ? AND summary IS NOT NULL",
+        )
+        .bind(thread_id)
+        .fetch_all(&self.readers)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn compactions_for_thread(&self, thread_id: i64) -> CodeResult<Vec<Compaction>> {
         let rows = sqlx::query(
             "SELECT id, thread_id, summary, after_message_id, tail_from_message_id, preserved_message_ids, tokens_before, tokens_after, created_at
@@ -942,6 +963,70 @@ mod tests {
         let comps = store.compactions_for_thread(thread_id).await.unwrap();
         assert_eq!(comps[0].preserved_message_ids, vec![1, 2, 3]);
         assert_eq!(comps[0].after_message_id, 0);
+    }
+
+    #[tokio::test]
+    async fn tool_call_summaries_for_thread_returns_only_summarized_calls() {
+        let store = CodeStore::open_in_memory().await.unwrap();
+        let thread_id = store.create_thread(sample_thread()).await.unwrap();
+        let turn_id = store
+            .create_turn(NewTurn {
+                thread_id,
+                task_id: 1,
+                provider: "openai".into(),
+                model: "gpt-x".into(),
+                account: "default".into(),
+                effort: None,
+                status: "running".into(),
+                started_at: 110,
+            })
+            .await
+            .unwrap();
+        let summarized = store
+            .create_tool_call(NewToolCall {
+                thread_id,
+                turn_id,
+                call_id: "call-ask".into(),
+                name: "Ask".into(),
+                input: "{}".into(),
+                status: "running".into(),
+                started_at: 112,
+            })
+            .await
+            .unwrap();
+        store
+            .create_tool_call(NewToolCall {
+                thread_id,
+                turn_id,
+                call_id: "call-read".into(),
+                name: "Read".into(),
+                input: "file.rs".into(),
+                status: "running".into(),
+                started_at: 113,
+            })
+            .await
+            .unwrap();
+        store
+            .finish_tool_call(
+                summarized,
+                "done".into(),
+                Some("Deploy target? → production".into()),
+                114,
+            )
+            .await
+            .unwrap();
+        let summaries = store
+            .tool_call_summaries_for_thread(thread_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            summaries,
+            vec![StoredToolCallSummary {
+                turn_id,
+                call_id: "call-ask".into(),
+                summary: "Deploy target? → production".into(),
+            }]
+        );
     }
 
     #[tokio::test]

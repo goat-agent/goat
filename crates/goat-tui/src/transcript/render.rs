@@ -395,6 +395,7 @@ pub(super) fn item_signature(item: &Item) -> u64 {
                     1u8.hash(&mut hasher);
                     outcome.ok.hash(&mut hasher);
                     outcome.summary.hash(&mut hasher);
+                    outcome.body.hash(&mut hasher);
                     if let Some(facts) = &outcome.git {
                         facts.head.hash(&mut hasher);
                         facts.subject.hash(&mut hasher);
@@ -510,10 +511,14 @@ pub(super) fn item_rows(
             });
             if let ToolStatus::Done(outcome) = status
                 && outcome.ok
-                && let Some(summary) = outcome.summary.as_deref()
-                && is_diff_summary(summary)
             {
-                rows.extend(diff_body_rows(summary, theme, width));
+                if let Some(body) = outcome.body.as_deref() {
+                    rows.extend(body_rows(body, theme, width));
+                } else if let Some(summary) = outcome.summary.as_deref()
+                    && is_diff_summary(summary)
+                {
+                    rows.extend(diff_body_rows(summary, theme, width));
+                }
             }
             rows
         }
@@ -991,6 +996,19 @@ pub(super) fn diff_body_rows(summary: &str, theme: Theme, width: u16) -> Vec<Lin
     rows
 }
 
+pub(super) fn body_rows(body: &str, theme: Theme, width: u16) -> Vec<Line<'static>> {
+    let inner = width.saturating_sub(2);
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    for line in body.split('\n') {
+        let content = Line::from(Span::styled(line.to_owned(), theme.muted()));
+        for mut row in wrap::wrap_line(&content, inner) {
+            row.spans.insert(0, Span::raw("  "));
+            rows.push(row);
+        }
+    }
+    rows
+}
+
 fn diff_line_style(line: &str, theme: Theme) -> Style {
     if line.starts_with("+ ") {
         theme.role_agent()
@@ -1214,6 +1232,57 @@ mod tests {
     fn diff_body_rows_indent_two_columns() {
         let rows = diff_body_rows("- x", Theme::dark(), 40);
         assert_eq!(rows[0].spans[0].content.as_ref(), "  ");
+    }
+
+    #[test]
+    fn body_rows_render_each_line_muted_and_indented() {
+        use super::body_rows;
+        let theme = Theme::dark();
+        let rows = body_rows("Q1 → A1\nQ2 → —", theme, 40);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].spans[0].content.as_ref(), "  ");
+        assert!(rows[0].spans.iter().any(|s| s.content.contains("Q1 → A1")));
+        assert!(rows[1].spans.iter().any(|s| s.content.contains("Q2 → —")));
+        assert_eq!(rows[0].spans.last().unwrap().style.fg, theme.muted().fg);
+        assert_eq!(rows[1].spans.last().unwrap().style.fg, theme.muted().fg);
+    }
+
+    #[test]
+    fn tool_item_with_body_renders_body_rows() {
+        use super::{body_rows, item_rows};
+        use crate::highlight::PlainHighlighter;
+        use crate::transcript::item::{Item, ToolStatus};
+        use goat_protocol::{ToolCallId, ToolDisplay, ToolOutcome};
+        let theme = Theme::dark();
+        let hl = PlainHighlighter;
+        let item = Item::Tool {
+            id: ToolCallId(1),
+            name: "Ask".to_owned(),
+            display: ToolDisplay::primary("Ask(\"Deploy target?\")"),
+            status: ToolStatus::Done(ToolOutcome {
+                ok: true,
+                summary: Some("Answer: production".to_owned()),
+                body: Some("Deploy target? → production".to_owned()),
+                image: None,
+                git: None,
+            }),
+            image: None,
+            git: None,
+        };
+        let rows = item_rows(&item, theme, 80, &hl, "/tmp");
+        let body_rows = body_rows("Deploy target? → production", theme, 80);
+        let expected: Vec<String> = body_rows
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect();
+        let rendered: Vec<String> = rows
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect();
+        assert!(
+            rendered.windows(expected.len()).any(|w| w == expected),
+            "body rows should appear in rendered tool item; got {rendered:?}"
+        );
     }
 
     #[test]
