@@ -112,8 +112,9 @@ pub(crate) async fn run_ask(
     match result {
         Ok(answers) => {
             let summary = answer_summary(&args.questions, &answers);
+            let body = answer_body(&args.questions, &answers);
             serde_json::to_string(&answers)
-                .map(|json| ToolOutput::text(json).with_summary(summary))
+                .map(|json| ToolOutput::text(json).with_summary(summary).with_body(body))
                 .map_err(|err| format!("serialize error: {err}"))
         }
         Err(_) => Err("answer channel closed".to_owned()),
@@ -152,6 +153,23 @@ fn answer_summary(questions: &[AskQuestion], answers: &[String]) -> String {
     lines.join("\n")
 }
 
+fn answer_body(questions: &[AskQuestion], answers: &[String]) -> String {
+    let empty = String::new();
+    questions
+        .iter()
+        .enumerate()
+        .map(|(i, question)| {
+            let answer = answers.get(i).unwrap_or(&empty);
+            format!(
+                "{} → {}",
+                goat_tool::display::flatten(&question.question),
+                display_answer(answer)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn display_answer(answer: &str) -> String {
     let flattened = goat_tool::display::flatten(answer);
     if flattened.is_empty() {
@@ -183,7 +201,7 @@ fn truncate_display(text: &str, max_width: usize) -> String {
 mod tests {
     use goat_protocol::AskQuestion;
 
-    use super::{answer_summary, truncate_display};
+    use super::{answer_body, answer_summary, truncate_display};
 
     fn question(text: &str) -> AskQuestion {
         AskQuestion {
@@ -233,5 +251,24 @@ Run migrations? → —"
         assert!(summary.contains("Q4 → A4"));
         assert!(summary.contains("… 2 more"));
         assert!(!summary.contains("Q5 → A5"));
+    }
+
+    #[test]
+    fn single_answer_body() {
+        let body = answer_body(&[question("Deploy target?")], &["production".to_owned()]);
+        assert_eq!(body, "Deploy target? → production");
+    }
+
+    #[test]
+    fn multi_answer_body_lists_every_question() {
+        let questions: Vec<AskQuestion> = (0..7).map(|i| question(&format!("Q{i}"))).collect();
+        let mut answers: Vec<String> = (0..7).map(|i| format!("A{i}")).collect();
+        answers[3] = String::new();
+        let body = answer_body(&questions, &answers);
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 7);
+        assert_eq!(lines[0], "Q0 → A0");
+        assert_eq!(lines[3], "Q3 → —");
+        assert_eq!(lines[6], "Q6 → A6");
     }
 }
