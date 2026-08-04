@@ -338,6 +338,10 @@ pub(super) fn item_signature(item: &Item) -> u64 {
         Item::Interrupted => {
             7u8.hash(&mut hasher);
         }
+        Item::System { display } => {
+            11u8.hash(&mut hasher);
+            display.hash(&mut hasher);
+        }
         Item::Compaction {
             tokens_before,
             tokens_after,
@@ -451,6 +455,7 @@ pub(super) fn item_rows(
             exit_code,
         } => process_rows(command, output, *running, *exit_code, theme, width),
         Item::Error { message, hint } => error_rows(message, hint.as_deref(), theme, width),
+        Item::System { display } => system_rows(display, theme, width),
         Item::Interrupted => {
             let inner = width.saturating_sub(2);
             let line = Line::from(vec![
@@ -999,6 +1004,21 @@ fn diff_line_style(line: &str, theme: Theme) -> Style {
     } else {
         theme.muted()
     }
+}
+
+fn system_rows(display: &str, theme: Theme, width: u16) -> Vec<Line<'static>> {
+    let inner = width.saturating_sub(2);
+    let label = display
+        .strip_prefix('(')
+        .and_then(|text| text.strip_suffix(')'))
+        .unwrap_or(display);
+    let line = Line::from(Span::styled(label.to_owned(), theme.muted()));
+    let wrapped = wrap::wrap_line(&line, inner);
+    hang(
+        &wrapped,
+        Span::styled(symbols::marker::NOTICE, theme.muted()),
+        width,
+    )
 }
 
 fn error_rows(text: &str, hint: Option<&str>, theme: Theme, width: u16) -> Vec<Line<'static>> {

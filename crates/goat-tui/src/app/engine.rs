@@ -95,9 +95,18 @@ impl App {
                 self.follow = true;
                 for entry in entries {
                     match entry {
-                        TranscriptEntry::User { text, attachments } => {
-                            self.transcript
-                                .push_user_with_attachments(text, attachments);
+                        TranscriptEntry::User {
+                            text,
+                            display,
+                            system,
+                            attachments,
+                        } => {
+                            if system {
+                                self.transcript.push_system(display.unwrap_or(text));
+                            } else {
+                                self.transcript
+                                    .push_user_with_attachments(text, attachments);
+                            }
                         }
                         TranscriptEntry::Assistant { text } => {
                             self.transcript.commit_text(&text);
@@ -240,6 +249,7 @@ impl App {
                 id,
                 text,
                 display,
+                system,
                 attachments,
             } => {
                 let sent_by_us = self
@@ -252,14 +262,22 @@ impl App {
                     self.reset_subagents();
                     self.follow = true;
                 }
-                self.transcript
-                    .push_user_with_display(display.unwrap_or_else(|| text.clone()), attachments);
+                if system {
+                    self.transcript
+                        .push_system(display.unwrap_or_else(|| text.clone()));
+                } else {
+                    self.transcript.push_user_with_display(
+                        display.unwrap_or_else(|| text.clone()),
+                        attachments,
+                    );
+                }
                 self.dirty = true;
             }
             EngineEvent::MessageDequeued {
                 id,
                 text,
                 display: _,
+                system: _,
                 attachments,
             } => {
                 if let Some(pos) = self

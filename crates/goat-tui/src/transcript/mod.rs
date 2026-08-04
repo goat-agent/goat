@@ -148,6 +148,13 @@ impl Transcript {
         }));
     }
 
+    pub fn push_system(&mut self, display: impl Into<String>) {
+        self.bump_version();
+        self.items.push(Item::System {
+            display: display.into(),
+        });
+    }
+
     pub fn push_thinking_delta(&mut self, chunk: &str) {
         self.thinking_buffer
             .get_or_insert_with(String::new)
