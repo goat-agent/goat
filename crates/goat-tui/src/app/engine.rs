@@ -150,7 +150,10 @@ impl App {
                     self.transcript.push_thinking_delta(&chunk);
                 }
             }
-            EngineEvent::LoginProviders { .. } | EngineEvent::ThreadBound { .. } => {}
+            EngineEvent::LoginProviders { .. } => {}
+            EngineEvent::ThreadBound { thread_id } => {
+                self.thread_id = Some(thread_id);
+            }
             EngineEvent::ProcessListChanged { processes } => {
                 self.reconcile_processes(&processes);
                 self.processes = processes;

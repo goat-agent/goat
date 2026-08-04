@@ -36,7 +36,7 @@ impl App {
                     return result;
                 }
             }
-            Overlay::Usage | Overlay::Help => return self.on_usage_key(key),
+            Overlay::Usage | Overlay::Status | Overlay::Help => return self.on_usage_key(key),
             Overlay::ImageZoom(_) => {
                 self.overlay = Overlay::None;
                 self.dirty = true;

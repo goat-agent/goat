@@ -17,6 +17,7 @@ mod picker;
 mod plan;
 mod screenshot;
 mod select;
+pub(crate) mod status;
 pub mod symbols;
 mod theme;
 mod toast;

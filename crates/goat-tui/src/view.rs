@@ -233,6 +233,7 @@ fn is_full_body_overlay(app: &App) -> bool {
             | Overlay::Thread(_)
             | Overlay::Rewind(_)
             | Overlay::Usage
+            | Overlay::Status
             | Overlay::Help
             | Overlay::Plan(_)
     )
@@ -253,6 +254,11 @@ fn render_full_body_overlay(frame: &mut Frame, body: Rect, app: &mut App, theme:
         Overlay::Rewind(picker) => picker.render(frame, body, theme),
         Overlay::Usage => {
             let view = app.build_usage_view();
+            view.render(frame, body, theme);
+        }
+        Overlay::Status => {
+            let rows = app.status_rows();
+            let view = crate::status::StatusView::new(&rows);
             view.render(frame, body, theme);
         }
         Overlay::Help => crate::help::render(frame, body, theme),
