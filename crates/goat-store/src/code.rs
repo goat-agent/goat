@@ -63,6 +63,7 @@ pub struct NewMessage {
     pub thread_id: i64,
     pub turn_id: Option<i64>,
     pub role: String,
+    pub kind: Option<String>,
     pub body: String,
     pub created_at: i64,
 }
@@ -73,6 +74,7 @@ pub struct StoredMessage {
     pub parent_message_id: Option<i64>,
     pub turn_id: Option<i64>,
     pub role: String,
+    pub kind: Option<String>,
     pub body: String,
     pub created_at: i64,
 }
@@ -359,17 +361,17 @@ impl CodeStore {
 
     pub async fn get_messages(&self, thread_id: i64) -> CodeResult<Vec<StoredMessage>> {
         let messages = sqlx::query_as::<_, StoredMessage>(
-            "WITH RECURSIVE active(id, parent_message_id, turn_id, role, body, created_at) AS (
-                 SELECT m.id, m.parent_message_id, m.turn_id, m.role, m.body, m.created_at
+            "WITH RECURSIVE active(id, parent_message_id, turn_id, role, kind, body, created_at) AS (
+                 SELECT m.id, m.parent_message_id, m.turn_id, m.role, m.kind, m.body, m.created_at
                  FROM code_messages m
                  JOIN code_threads t ON t.head_message_id = m.id
                  WHERE t.id = ?
                  UNION ALL
-                 SELECT m.id, m.parent_message_id, m.turn_id, m.role, m.body, m.created_at
+                 SELECT m.id, m.parent_message_id, m.turn_id, m.role, m.kind, m.body, m.created_at
                  FROM code_messages m
                  JOIN active a ON a.parent_message_id = m.id
              )
-             SELECT id, parent_message_id, turn_id, role, body, created_at
+             SELECT id, parent_message_id, turn_id, role, kind, body, created_at
              FROM active ORDER BY id ASC",
         )
         .bind(thread_id)
@@ -508,13 +510,14 @@ impl CodeStore {
                 .await?;
         let id = sqlx::query(
             "INSERT INTO code_messages
-             (thread_id, parent_message_id, turn_id, role, body, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+             (thread_id, parent_message_id, turn_id, role, kind, body, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(message.thread_id)
         .bind(parent_message_id)
         .bind(message.turn_id)
         .bind(message.role)
+        .bind(message.kind)
         .bind(message.body)
         .bind(message.created_at)
         .execute(&mut *tx)
@@ -903,6 +906,7 @@ mod tests {
                 thread_id,
                 turn_id: None,
                 role: "user".into(),
+                kind: None,
                 body: "hello".into(),
                 created_at: 111,
             })
@@ -953,6 +957,7 @@ mod tests {
                 thread_id,
                 turn_id: None,
                 role: "user".into(),
+                kind: None,
                 body: "first".into(),
                 created_at: 101,
             })
@@ -963,6 +968,7 @@ mod tests {
                 thread_id,
                 turn_id: None,
                 role: "assistant".into(),
+                kind: None,
                 body: "old branch".into(),
                 created_at: 102,
             })
@@ -977,6 +983,7 @@ mod tests {
                 thread_id,
                 turn_id: None,
                 role: "assistant".into(),
+                kind: None,
                 body: "new branch".into(),
                 created_at: 104,
             })
@@ -999,6 +1006,7 @@ mod tests {
                 thread_id,
                 turn_id: None,
                 role: "user".into(),
+                kind: None,
                 body: "first".into(),
                 created_at: 101,
             })
@@ -1020,6 +1028,7 @@ mod tests {
                 thread_id,
                 turn_id: None,
                 role: "user".into(),
+                kind: None,
                 body: "second".into(),
                 created_at: 102,
             })
@@ -1044,5 +1053,83 @@ mod tests {
         let checkpoints = store.active_code_checkpoints(thread_id).await.unwrap();
         assert_eq!(checkpoints.len(), 1);
         assert_eq!(checkpoints[0].id, first_checkpoint);
+    }
+
+    #[tokio::test]
+    async fn migration_0022_backfills_kind_and_strips_language_reminder() {
+        let reminder = "[Reminder: write your prose to the user in the language they used in their request. Keep code, identifiers, file paths, shell commands, tool arguments, and quoted file or output excerpts exactly as they are. Text stored in the repository stays in the project's prevailing language.]";
+        crate::register_sqlite_vec();
+        let opts = "sqlite::memory:"
+            .parse::<SqliteConnectOptions>()
+            .unwrap()
+            .disable_statement_logging();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE code_threads (
+                id INTEGER PRIMARY KEY, cwd TEXT NOT NULL, title TEXT,
+                provider TEXT NOT NULL, model TEXT NOT NULL, account TEXT NOT NULL,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, effort TEXT
+            );
+            CREATE TABLE code_messages (
+                id INTEGER PRIMARY KEY, thread_id INTEGER NOT NULL, turn_id INTEGER,
+                role TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL
+            );
+            INSERT INTO code_threads (id, cwd, provider, model, account, created_at, updated_at)
+            VALUES (1, '/tmp', 'p', 'm', 'a', 1, 1);
+            INSERT INTO code_messages (id, thread_id, role, body, created_at) VALUES
+                (1, 1, 'user', '[{\"type\":\"text\",\"text\":\"hello\"}]', 1),
+                (2, 1, 'user', '[{\"type\":\"text\",\"text\":\"<environment-notice>\\nstuff\"}]', 2),
+                (3, 1, 'user', '[{\"type\":\"text\",\"text\":\"The plan at /p is approved. Implement it now.\"}]', 3),
+                (4, 1, 'user', '[{\"type\":\"text\",\"text\":\"The user did not approve the plan.\"}]', 4),
+                (5, 1, 'user', '[{\"type\":\"tool_result\",\"tool_use_id\":\"x\",\"content\":\"out\"},{\"type\":\"text\",\"text\":\"' || ? || '\"}]', 5);",
+        )
+        .bind(reminder)
+        .execute(&pool)
+        .await
+        .unwrap();
+        for statement in include_str!("../migrations/0022_message_kind.sql").split(';') {
+            let statement = statement.trim();
+            if statement.is_empty() {
+                continue;
+            }
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        let rows = sqlx::query("SELECT id, kind, body FROM code_messages ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let kind_of = |id: i64| {
+            rows.iter()
+                .find(|row| row.get::<i64, _>("id") == id)
+                .map(|row| row.get::<Option<String>, _>("kind"))
+        };
+        assert_eq!(kind_of(1).unwrap().as_deref(), Some("user"));
+        assert_eq!(kind_of(2).unwrap().as_deref(), Some("wake"));
+        assert_eq!(kind_of(3).unwrap().as_deref(), Some("plan_decision"));
+        assert_eq!(kind_of(4).unwrap().as_deref(), Some("plan_decision"));
+        assert_eq!(kind_of(5).unwrap().as_deref(), Some("user"));
+        let body5: String = rows
+            .iter()
+            .find(|row| row.get::<i64, _>("id") == 5)
+            .map(|row| row.get("body"))
+            .unwrap();
+        assert!(
+            !body5.contains("[Reminder"),
+            "reminder block stripped: {body5}"
+        );
+        assert!(body5.contains("tool_result"), "tool_result kept: {body5}");
+        let body2: String = rows
+            .iter()
+            .find(|row| row.get::<i64, _>("id") == 2)
+            .map(|row| row.get("body"))
+            .unwrap();
+        assert!(
+            body2.contains("<environment-notice>"),
+            "wake body kept: {body2}"
+        );
     }
 }
