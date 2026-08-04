@@ -98,6 +98,7 @@ async fn drain_steering(ctx: &Ctx, run: &Run<'_>, conversation: &mut Conversatio
                 id: input.id,
                 text: input.text,
                 display: input.display,
+                system: input.kind.is_system(),
                 attachments: input.attachments,
             })
             .await;

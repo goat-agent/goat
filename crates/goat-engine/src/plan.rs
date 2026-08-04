@@ -58,9 +58,11 @@ pub(crate) async fn run_propose_plan(
     )
 }
 
+pub(crate) const APPROVED_PREFIX: &str = "The plan at ";
+
 pub(crate) fn approved_input(path: &Path) -> String {
     format!(
-        "The plan at {} is approved. Implement it now. Re-read the file if you need the details.",
+        "{APPROVED_PREFIX}{} is approved. Implement it now. Re-read the file if you need the details.",
         path.display()
     )
 }
