@@ -1032,7 +1032,12 @@ fn error_rows(text: &str, hint: Option<&str>, theme: Theme, width: u16) -> Vec<L
     out
 }
 
-fn thinking_rows(text: &str, collapsed: bool, theme: Theme, width: u16) -> Vec<Line<'static>> {
+pub(super) fn thinking_rows(
+    text: &str,
+    collapsed: bool,
+    theme: Theme,
+    width: u16,
+) -> Vec<Line<'static>> {
     let marker = if collapsed {
         symbols::ui::CHEVRON_RIGHT
     } else {

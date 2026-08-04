@@ -149,6 +149,7 @@ impl Transcript {
     }
 
     pub fn push_thinking_delta(&mut self, chunk: &str) {
+        self.bump_version();
         self.thinking_buffer
             .get_or_insert_with(String::new)
             .push_str(chunk);
@@ -743,6 +744,14 @@ impl Transcript {
         base_nonempty: bool,
     ) -> Vec<Line<'static>> {
         let mut tail: Vec<Line<'static>> = Vec::new();
+        if let Some(buffer) = self.thinking_buffer.as_deref()
+            && !buffer.trim().is_empty()
+        {
+            if base_nonempty || !tail.is_empty() {
+                tail.push(Line::default());
+            }
+            tail.extend(render::thinking_rows(buffer, false, theme, width));
+        }
         let streamed = self.streaming_rows(theme, width, hl);
         if !streamed.is_empty() {
             if base_nonempty {
@@ -1207,6 +1216,42 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn streaming_thinking_renders_expanded_in_tail() {
+        let mut t = Transcript::default();
+        commit(&mut t, "earlier");
+        let before = height(&t, 60);
+        t.push_thinking_delta("weighing options");
+        let during = height(&t, 60);
+        assert!(
+            during > before,
+            "streaming thinking must add visible rows ({before} -> {during})"
+        );
+    }
+
+    #[test]
+    fn streaming_thinking_collapses_when_text_starts() {
+        let mut t = Transcript::default();
+        t.push_thinking_delta("weighing options\nand then some\nmore reasoning\nfinal note");
+        let during = height(&t, 60);
+        t.push_delta("answer");
+        let after = height(&t, 60);
+        assert!(
+            matches!(
+                t.items.first(),
+                Some(Item::Thinking {
+                    collapsed: true,
+                    ..
+                })
+            ),
+            "first text delta flushes thinking as a collapsed item"
+        );
+        assert!(
+            after < during,
+            "collapsed Thought header plus short text must be shorter than the expanded stream ({during} -> {after})"
+        );
     }
 
     #[test]
