@@ -72,10 +72,21 @@ impl App {
                 self.viewport.follow = true;
                 for entry in entries {
                     match entry {
-                        TranscriptEntry::User { text, attachments } => {
-                            self.viewport
-                                .transcript
-                                .push_user_with_attachments(text, attachments);
+                        TranscriptEntry::User {
+                            text,
+                            display,
+                            system,
+                            attachments,
+                        } => {
+                            if system {
+                                self.viewport
+                                    .transcript
+                                    .push_system(display.unwrap_or(text));
+                            } else {
+                                self.viewport
+                                    .transcript
+                                    .push_user_with_attachments(text, attachments);
+                            }
                         }
                         TranscriptEntry::Assistant { text } => {
                             self.viewport.transcript.commit_text(&text);
@@ -234,6 +245,7 @@ impl App {
                 id,
                 text,
                 display,
+                system,
                 attachments,
             } => {
                 let sent_by_us = self
@@ -246,15 +258,23 @@ impl App {
                     self.reset_subagents();
                     self.viewport.follow = true;
                 }
-                self.viewport
-                    .transcript
-                    .push_user_with_display(display.unwrap_or_else(|| text.clone()), attachments);
+                if system {
+                    self.viewport
+                        .transcript
+                        .push_system(display.unwrap_or_else(|| text.clone()));
+                } else {
+                    self.viewport.transcript.push_user_with_display(
+                        display.unwrap_or_else(|| text.clone()),
+                        attachments,
+                    );
+                }
                 self.dirty = true;
             }
             EngineEvent::MessageDequeued {
                 id,
                 text,
                 display: _,
+                system: _,
                 attachments,
             } => {
                 if let Some(pos) = self
