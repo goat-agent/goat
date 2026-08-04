@@ -84,9 +84,10 @@ fn trim_log_front(output: &mut String, cap: usize) {
         return;
     }
     let overflow = output.len() - cap;
-    let cut = output[overflow..]
+    let start = output.floor_char_boundary(overflow);
+    let cut = output[start..]
         .find('\n')
-        .map_or(output.len(), |i| overflow + i + 1);
+        .map_or(output.len(), |i| start + i + 1);
     output.drain(..cut);
 }
 
@@ -888,7 +889,7 @@ mod tests {
         SHELL_BLOCK_CAP, build_static_lines, format_elapsed, sanitize_shell_output, shell_rows,
         stable_prefix_len,
     };
-    use super::{Item, ShellStatus, ToolStatus, Transcript, UserMessage, Working};
+    use super::{Item, ShellStatus, ToolStatus, Transcript, UserMessage, Working, trim_log_front};
     use crate::{highlight::PlainHighlighter, markdown, symbols, theme::Theme};
     use ratatui::text::Line;
 
@@ -1567,6 +1568,13 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(line_text(&rows[0]), "! echo hi");
         assert_eq!(line_text(&rows[1]), "  hi");
+    }
+
+    #[test]
+    fn trim_log_front_cuts_on_char_boundary_when_overflow_lands_inside_a_char() {
+        let mut output = format!("{}⚠\nrest", "x".repeat(10));
+        trim_log_front(&mut output, 7);
+        assert_eq!(output, "rest");
     }
 
     #[test]
