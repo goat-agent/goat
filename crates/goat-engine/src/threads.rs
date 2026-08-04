@@ -266,77 +266,17 @@ async fn rewind_error(events: &mpsc::Sender<Event>, message: &str) {
         .await;
 }
 
-pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate::SessionState) {
-    let store = &ctx.store;
-    let skills: &[SkillInfo] = &ctx.skills;
-    let tools = &ctx.tools;
-    let instructions = ctx.instructions.as_deref();
-    let date = ctx.date.as_str();
-    let events = &ctx.events;
-    let thread = match store.get_thread(tid).await {
-        Ok(Some(thread)) => thread,
-        Ok(None) => {
-            tracing::warn!(thread_id = tid, "resume requested for unknown thread");
-            let _ = events
-                .send(Event::Notify {
-                    kind: NotifyKind::Error,
-                    message: format!("conversation {tid} was not found"),
-                })
-                .await;
-            return;
-        }
-        Err(err) => {
-            tracing::warn!(thread_id = tid, error = %err, "failed to read thread for resume");
-            let _ = events
-                .send(Event::Notify {
-                    kind: NotifyKind::Error,
-                    message: "could not load that conversation".to_owned(),
-                })
-                .await;
-            return;
-        }
-    };
-    let new_target = ModelTarget {
-        provider: thread.provider.clone(),
-        model: thread.model.clone(),
-        account: thread.account.clone(),
-        effort: thread.effort.as_deref().and_then(Effort::parse),
-    };
-    let messages = match store.get_messages(tid).await {
-        Ok(messages) => messages,
-        Err(err) => {
-            tracing::warn!(thread_id = tid, error = %err, "failed to read messages for resume");
-            let _ = events
-                .send(Event::Notify {
-                    kind: NotifyKind::Error,
-                    message: "could not load that conversation's messages".to_owned(),
-                })
-                .await;
-            return;
-        }
-    };
-    let compactions = match store.compactions_for_thread(tid).await {
-        Ok(compactions) => compactions,
-        Err(err) => {
-            tracing::warn!(thread_id = tid, error = %err, "failed to read compactions for resume");
-            let _ = events
-                .send(Event::Notify {
-                    kind: NotifyKind::Error,
-                    message: "could not load that conversation's history".to_owned(),
-                })
-                .await;
-            return;
-        }
-    };
-    let active_message_ids: std::collections::HashSet<i64> =
-        messages.iter().map(|message| message.id).collect();
-    let compactions: Vec<_> = compactions
-        .into_iter()
-        .filter(|compaction| {
-            compaction.after_message_id == 0
-                || active_message_ids.contains(&compaction.after_message_id)
-        })
-        .collect();
+type Rebuilt = (
+    Vec<TranscriptEntry>,
+    Vec<(i64, MessageRole, Vec<ContentBlock>)>,
+);
+
+fn rebuild_entries(
+    messages: Vec<goat_store::StoredMessage>,
+    compactions: &[goat_store::Compaction],
+    tools: &goat_tools::ToolRegistry,
+    tool_summaries: &std::collections::HashMap<(i64, String), String>,
+) -> Rebuilt {
     let mut parsed: Vec<(i64, MessageRole, Vec<ContentBlock>)> = Vec::new();
     let mut entries: Vec<TranscriptEntry> = Vec::new();
     let mut tool_uses: std::collections::HashMap<String, RestoredToolUse> =
@@ -446,14 +386,23 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
                     is_error,
                 } => {
                     if let Some(restored) = tool_uses.remove(tool_use_id) {
-                        let summary = if *is_error {
-                            summarize_line(&ContentBlock::tool_result_text(content))
+                        let stored_summary = stored.turn_id.and_then(|turn_id| {
+                            tool_summaries.get(&(turn_id, tool_use_id.clone()))
+                        });
+                        let (summary, body) = if *is_error {
+                            (
+                                summarize_line(&ContentBlock::tool_result_text(content)),
+                                None,
+                            )
+                        } else if restored.call.name == crate::ask::ASK_TOOL_NAME {
+                            (None, stored_summary.cloned())
                         } else {
-                            None
+                            (stored_summary.cloned(), None)
                         };
                         let outcome = ToolOutcome {
                             ok: !is_error,
                             summary,
+                            body,
                             image: None,
                             git: None,
                         };
@@ -490,6 +439,94 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
         });
         next_compaction += 1;
     }
+    (entries, parsed)
+}
+
+pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate::SessionState) {
+    let store = &ctx.store;
+    let skills: &[SkillInfo] = &ctx.skills;
+    let tools = &ctx.tools;
+    let instructions = ctx.instructions.as_deref();
+    let date = ctx.date.as_str();
+    let events = &ctx.events;
+    let thread = match store.get_thread(tid).await {
+        Ok(Some(thread)) => thread,
+        Ok(None) => {
+            tracing::warn!(thread_id = tid, "resume requested for unknown thread");
+            let _ = events
+                .send(Event::Notify {
+                    kind: NotifyKind::Error,
+                    message: format!("conversation {tid} was not found"),
+                })
+                .await;
+            return;
+        }
+        Err(err) => {
+            tracing::warn!(thread_id = tid, error = %err, "failed to read thread for resume");
+            let _ = events
+                .send(Event::Notify {
+                    kind: NotifyKind::Error,
+                    message: "could not load that conversation".to_owned(),
+                })
+                .await;
+            return;
+        }
+    };
+    let new_target = ModelTarget {
+        provider: thread.provider.clone(),
+        model: thread.model.clone(),
+        account: thread.account.clone(),
+        effort: thread.effort.as_deref().and_then(Effort::parse),
+    };
+    let messages = match store.get_messages(tid).await {
+        Ok(messages) => messages,
+        Err(err) => {
+            tracing::warn!(thread_id = tid, error = %err, "failed to read messages for resume");
+            let _ = events
+                .send(Event::Notify {
+                    kind: NotifyKind::Error,
+                    message: "could not load that conversation's messages".to_owned(),
+                })
+                .await;
+            return;
+        }
+    };
+    let compactions = match store.compactions_for_thread(tid).await {
+        Ok(compactions) => compactions,
+        Err(err) => {
+            tracing::warn!(thread_id = tid, error = %err, "failed to read compactions for resume");
+            let _ = events
+                .send(Event::Notify {
+                    kind: NotifyKind::Error,
+                    message: "could not load that conversation's history".to_owned(),
+                })
+                .await;
+            return;
+        }
+    };
+    let active_message_ids: std::collections::HashSet<i64> =
+        messages.iter().map(|message| message.id).collect();
+    let compactions: Vec<_> = compactions
+        .into_iter()
+        .filter(|compaction| {
+            compaction.after_message_id == 0
+                || active_message_ids.contains(&compaction.after_message_id)
+        })
+        .collect();
+    let tool_summaries: std::collections::HashMap<(i64, String), String> = match store
+        .tool_call_summaries_for_thread(tid)
+        .await
+    {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|row| ((row.turn_id, row.call_id), row.summary))
+            .collect(),
+        Err(err) => {
+            tracing::warn!(thread_id = tid, error = %err, "failed to read tool summaries for resume");
+            std::collections::HashMap::new()
+        }
+    };
+    let (entries, parsed) = rebuild_entries(messages, &compactions, tools, &tool_summaries);
     let mut new_history: Vec<(Message, Option<i64>)> = vec![(
         Message::text(
             MessageRole::System,
@@ -570,5 +607,180 @@ pub(crate) async fn handle_resume_latest(ctx: &crate::Ctx, state: &mut crate::Se
                 })
                 .await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use goat_protocol::{ToolOutcome, TranscriptEntry};
+    use goat_provider::ContentBlock;
+    use goat_store::StoredMessage;
+
+    use super::rebuild_entries;
+
+    fn stored(id: i64, turn_id: Option<i64>, role: &str, body: String) -> StoredMessage {
+        StoredMessage {
+            id,
+            parent_message_id: None,
+            turn_id,
+            role: role.to_owned(),
+            body,
+            created_at: id,
+        }
+    }
+
+    fn tool_use(id: &str, name: &str, input: serde_json::Value) -> String {
+        serde_json::to_string(&vec![ContentBlock::ToolUse {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            input,
+        }])
+        .unwrap()
+    }
+
+    fn tool_result(tool_use_id: &str, content: &str, is_error: bool) -> String {
+        serde_json::to_string(&vec![ContentBlock::ToolResult {
+            tool_use_id: tool_use_id.to_owned(),
+            content: vec![ContentBlock::Text {
+                text: content.to_owned(),
+            }],
+            is_error,
+        }])
+        .unwrap()
+    }
+
+    fn tool_outcome(entries: &[TranscriptEntry]) -> &ToolOutcome {
+        match entries
+            .iter()
+            .find(|entry| matches!(entry, TranscriptEntry::Tool { .. }))
+        {
+            Some(TranscriptEntry::Tool { outcome, .. }) => outcome,
+            other => panic!("expected tool entry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_restores_ask_summary_as_body() {
+        let tools = goat_tools::ToolRegistry::builtin();
+        let messages = vec![
+            stored(1, Some(1), "user", "deploy?".to_owned()),
+            stored(
+                2,
+                Some(1),
+                "assistant",
+                tool_use(
+                    "call-ask",
+                    "Ask",
+                    serde_json::json!({"questions": [{"question": "Deploy target?"}]}),
+                ),
+            ),
+            stored(
+                3,
+                Some(1),
+                "user",
+                tool_result("call-ask", "[\"production\"]", false),
+            ),
+        ];
+        let summaries: HashMap<(i64, String), String> = [(
+            (1, "call-ask".to_owned()),
+            "Deploy target? → production".to_owned(),
+        )]
+        .into_iter()
+        .collect();
+        let (entries, parsed) = rebuild_entries(messages, &[], &tools, &summaries);
+        let outcome = tool_outcome(&entries);
+        assert!(outcome.ok);
+        assert_eq!(outcome.summary, None);
+        assert_eq!(outcome.body.as_deref(), Some("Deploy target? → production"));
+        assert_eq!(parsed.len(), 3);
+    }
+
+    #[test]
+    fn resume_restores_other_tool_summary_as_summary() {
+        let tools = goat_tools::ToolRegistry::builtin();
+        let messages = vec![
+            stored(
+                1,
+                Some(1),
+                "assistant",
+                tool_use("call-read", "Read", serde_json::json!({"path": "file.rs"})),
+            ),
+            stored(
+                2,
+                Some(1),
+                "user",
+                tool_result("call-read", "contents", false),
+            ),
+        ];
+        let summaries: HashMap<(i64, String), String> =
+            [((1, "call-read".to_owned()), "read 10 lines".to_owned())]
+                .into_iter()
+                .collect();
+        let (entries, _) = rebuild_entries(messages, &[], &tools, &summaries);
+        let outcome = tool_outcome(&entries);
+        assert_eq!(outcome.summary.as_deref(), Some("read 10 lines"));
+        assert_eq!(outcome.body, None);
+    }
+
+    #[test]
+    fn resume_keeps_error_summary_from_result_text() {
+        let tools = goat_tools::ToolRegistry::builtin();
+        let messages = vec![
+            stored(
+                1,
+                Some(1),
+                "assistant",
+                tool_use(
+                    "call-ask",
+                    "Ask",
+                    serde_json::json!({"questions": [{"question": "Deploy target?"}]}),
+                ),
+            ),
+            stored(
+                2,
+                Some(1),
+                "user",
+                tool_result("call-ask", "interrupted", true),
+            ),
+        ];
+        let summaries: HashMap<(i64, String), String> =
+            [((1, "call-ask".to_owned()), "Answer: —".to_owned())]
+                .into_iter()
+                .collect();
+        let (entries, _) = rebuild_entries(messages, &[], &tools, &summaries);
+        let outcome = tool_outcome(&entries);
+        assert!(!outcome.ok);
+        assert_eq!(outcome.summary.as_deref(), Some("interrupted"));
+        assert_eq!(outcome.body, None);
+    }
+
+    #[test]
+    fn resume_without_stored_summary_leaves_outcome_empty() {
+        let tools = goat_tools::ToolRegistry::builtin();
+        let messages = vec![
+            stored(
+                1,
+                Some(1),
+                "assistant",
+                tool_use(
+                    "call-ask",
+                    "Ask",
+                    serde_json::json!({"questions": [{"question": "Deploy target?"}]}),
+                ),
+            ),
+            stored(
+                2,
+                Some(1),
+                "user",
+                tool_result("call-ask", "[\"production\"]", false),
+            ),
+        ];
+        let (entries, _) = rebuild_entries(messages, &[], &tools, &HashMap::new());
+        let outcome = tool_outcome(&entries);
+        assert!(outcome.ok);
+        assert_eq!(outcome.summary, None);
+        assert_eq!(outcome.body, None);
     }
 }
