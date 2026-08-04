@@ -3758,6 +3758,7 @@ dependencies = [
  "color-eyre",
  "crossterm 0.29.0",
  "futures",
+ "goat-client",
  "goat-commands",
  "goat-config",
  "goat-git",

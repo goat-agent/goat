@@ -17,6 +17,7 @@ pub enum CommandEffect {
     Notice(String),
     Error(String),
     OpenUsage,
+    OpenStatus,
     Noop,
     Quit,
 }

@@ -116,7 +116,16 @@ pub struct Attachment {
     pub presence: mpsc::Receiver<usize>,
     pub client_id: u64,
     pub cwd: String,
+    pub daemon: Identity,
+    session: u64,
     pub pump: JoinHandle<()>,
+}
+
+impl Attachment {
+    #[must_use]
+    pub fn session(&self) -> u64 {
+        self.session
+    }
 }
 
 const OPS_CAPACITY: usize = 32;
@@ -128,7 +137,7 @@ pub async fn connect(
     cwd: PathBuf,
     resume: ResumeMode,
 ) -> Result<(Attachment, Attached), ClientError> {
-    let (mut conn, _identity, client_id, attached) = ensure(&link).await?;
+    let (mut conn, identity, client_id, attached) = ensure(&link).await?;
 
     conn.send(ClientFrame::OpenSession {
         cwd: cwd.display().to_string(),
@@ -142,7 +151,7 @@ pub async fn connect(
     };
 
     Ok((
-        spawn_pumps(conn, session, client_id, opened_cwd, link),
+        spawn_pumps(conn, session, client_id, opened_cwd, link, identity),
         attached,
     ))
 }
@@ -291,6 +300,7 @@ fn spawn_pumps(
     client_id: u64,
     cwd: String,
     link: Arc<Link>,
+    daemon: Identity,
 ) -> Attachment {
     let (ops_tx, mut ops_rx) = mpsc::channel::<Op>(OPS_CAPACITY);
     let (events_tx, events_rx) = mpsc::channel::<Event>(EVENTS_CAPACITY);
@@ -343,6 +353,8 @@ fn spawn_pumps(
         presence: presence_rx,
         client_id,
         cwd: opened_cwd,
+        daemon,
+        session: session.0,
         pump,
     }
 }

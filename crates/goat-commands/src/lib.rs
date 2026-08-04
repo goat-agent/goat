@@ -260,6 +260,14 @@ mod tests {
             CommandEffect::ClearConversation
         ));
         assert!(matches!(
+            registry.resolve_line("/usage"),
+            CommandEffect::OpenUsage
+        ));
+        assert!(matches!(
+            registry.resolve_line("/status"),
+            CommandEffect::OpenStatus
+        ));
+        assert!(matches!(
             registry.resolve_line("/help"),
             CommandEffect::ShowHelp
         ));
