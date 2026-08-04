@@ -183,6 +183,10 @@ impl Transcript {
         self.version
     }
 
+    pub fn entry_count(&self) -> usize {
+        self.items.len()
+    }
+
     pub fn static_len(&self) -> usize {
         self.cache.borrow().as_ref().map_or(0, |c| c.lines.len())
     }
