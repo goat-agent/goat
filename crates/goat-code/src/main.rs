@@ -261,19 +261,19 @@ async fn run_tui(
         })
         .flatten()
         .filter(|workspace| matches!(workspace.kind, goat_worktree::WorkspaceKind::Managed { .. }));
+    let origin = if link.is_local() {
+        goat_tui::Origin::local(attachment.cwd.clone())
+    } else {
+        goat_tui::Origin::remote(attachment.cwd.clone(), link.name().to_owned())
+    }
+    .with_attachment(&attachment);
     let goat_client::Attachment {
         ops,
         events,
         presence,
-        cwd,
         mut pump,
         ..
     } = attachment;
-    let origin = if link.is_local() {
-        goat_tui::Origin::local(cwd)
-    } else {
-        goat_tui::Origin::remote(cwd, link.name().to_owned())
-    };
 
     let exit = goat_tui::run(ops, events, presence, theme, origin, Vec::new()).await?;
     if tokio::time::timeout(std::time::Duration::from_secs(1), &mut pump)
