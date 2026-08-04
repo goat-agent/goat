@@ -39,12 +39,14 @@ pub(crate) fn tool_outcome(result: &Result<ToolOutput, String>) -> ToolOutcome {
         Ok(output) => ToolOutcome {
             ok: true,
             summary: output.summary.clone(),
+            body: output.body.clone(),
             image: outcome_image(&output.content),
             git: output.git.clone(),
         },
         Err(message) => ToolOutcome {
             ok: false,
             summary: Some(message.clone()),
+            body: None,
             image: None,
             git: None,
         },
@@ -225,6 +227,7 @@ async fn execute_tool(
         let outcome = ToolOutcome {
             ok: false,
             summary: Some("interrupted".to_owned()),
+            body: None,
             image: None,
             git: None,
         };

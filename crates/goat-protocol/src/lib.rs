@@ -18,6 +18,7 @@ mod tests {
         let outcome = ToolOutcome {
             ok: true,
             summary: Some("captured".to_owned()),
+            body: None,
             image: Some(ToolImageData {
                 media_type: "image/png".to_owned(),
                 data: "AAAA".to_owned(),
@@ -34,12 +35,28 @@ mod tests {
         let outcome = ToolOutcome {
             ok: false,
             summary: None,
+            body: None,
             image: None,
             git: None,
         };
         let json = serde_json::to_string(&outcome).unwrap();
         assert!(!json.contains("image"));
         assert!(!json.contains("git"));
+        assert!(!json.contains("body"));
+        let back: ToolOutcome = serde_json::from_str(&json).unwrap();
+        assert_eq!(outcome, back);
+    }
+
+    #[test]
+    fn tool_outcome_body_round_trips() {
+        let outcome = ToolOutcome {
+            ok: true,
+            summary: Some("Answer: production".to_owned()),
+            body: Some("Deploy target? → production".to_owned()),
+            image: None,
+            git: None,
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
         let back: ToolOutcome = serde_json::from_str(&json).unwrap();
         assert_eq!(outcome, back);
     }
@@ -49,6 +66,7 @@ mod tests {
         let outcome = ToolOutcome {
             ok: true,
             summary: None,
+            body: None,
             image: None,
             git: Some(Box::new(GitFacts {
                 head: Some("a1b2c3d".to_owned()),

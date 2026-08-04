@@ -623,6 +623,7 @@ impl Transcript {
                     *status = ToolStatus::Done(ToolOutcome {
                         ok: false,
                         summary: None,
+                        body: None,
                         image: None,
                         git: None,
                     });
@@ -637,6 +638,7 @@ impl Transcript {
                             member.status = SubagentMemberStatus::Done(ToolOutcome {
                                 ok: false,
                                 summary: None,
+                                body: None,
                                 image: None,
                                 git: None,
                             });
@@ -891,6 +893,7 @@ mod tests {
         ToolOutcome {
             ok: true,
             summary: None,
+            body: None,
             image: None,
             git: None,
         }
@@ -900,6 +903,7 @@ mod tests {
         ToolOutcome {
             ok: false,
             summary: Some(summary.to_owned()),
+            body: None,
             image: None,
             git: None,
         }
@@ -921,6 +925,7 @@ mod tests {
         ToolOutcome {
             ok: true,
             summary: None,
+            body: None,
             image: None,
             git: Some(Box::new(facts)),
         }
