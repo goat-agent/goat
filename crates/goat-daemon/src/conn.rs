@@ -75,8 +75,16 @@ pub(crate) async fn serve_connection<Si, St>(
 
     let (out_tx, mut out_rx) = mpsc::channel::<ServerFrame>(CLIENT_QUEUE);
 
+    let writer_disconnect = disconnect.clone();
     let writer = tokio::spawn(async move {
-        while let Some(frame) = out_rx.recv().await {
+        loop {
+            let frame = tokio::select! {
+                () = writer_disconnect.cancelled() => break,
+                frame = out_rx.recv() => frame,
+            };
+            let Some(frame) = frame else {
+                break;
+            };
             if sink.send(frame).await.is_err() {
                 break;
             }
@@ -89,7 +97,15 @@ pub(crate) async fn serve_connection<Si, St>(
             () = disconnect.cancelled() => break,
             next = source.next() => {
                 let Some(Ok(frame)) = next else { break };
-                match dispatch(&manager, client_id, &out_tx, &shutdown, &origin, frame).await {
+                match dispatch(
+                    &manager,
+                    client_id,
+                    &out_tx,
+                    &shutdown,
+                    &origin,
+                    &disconnect,
+                    frame,
+                ).await {
                     Disposition::Continue => {}
                     Disposition::Closed => {
                         graceful = true;
@@ -125,6 +141,7 @@ async fn dispatch(
     out_tx: &mpsc::Sender<ServerFrame>,
     shutdown: &tokio_util::sync::CancellationToken,
     origin: &ClientOrigin,
+    disconnect: &tokio_util::sync::CancellationToken,
     frame: ClientFrame,
 ) -> Disposition {
     match frame {
@@ -135,7 +152,9 @@ async fn dispatch(
                     let _ = out_tx
                         .send(ServerFrame::SessionOpened { session, cwd })
                         .await;
-                    let _ = manager.subscribe(session, client_id, out_tx.clone()).await;
+                    let _ = manager
+                        .subscribe(session, client_id, out_tx.clone(), disconnect.clone())
+                        .await;
                 }
                 Err(message) => {
                     let _ = out_tx.send(ServerFrame::Error { message }).await;
@@ -144,7 +163,10 @@ async fn dispatch(
             Disposition::Continue
         }
         ClientFrame::Attach { session } => {
-            if let Err(message) = manager.subscribe(session, client_id, out_tx.clone()).await {
+            if let Err(message) = manager
+                .subscribe(session, client_id, out_tx.clone(), disconnect.clone())
+                .await
+            {
                 let _ = out_tx.send(ServerFrame::Error { message }).await;
             }
             Disposition::Continue
@@ -157,12 +179,24 @@ async fn dispatch(
             let result = match op {
                 goat_protocol::Op::Clear {} => {
                     manager
-                        .rebind(client_id, session, out_tx, goat_wire::ResumeMode::New {})
+                        .rebind(
+                            client_id,
+                            session,
+                            out_tx,
+                            goat_wire::ResumeMode::New {},
+                            disconnect.clone(),
+                        )
                         .await
                 }
                 goat_protocol::Op::ResumeLatest {} => {
                     manager
-                        .rebind(client_id, session, out_tx, goat_wire::ResumeMode::Latest {})
+                        .rebind(
+                            client_id,
+                            session,
+                            out_tx,
+                            goat_wire::ResumeMode::Latest {},
+                            disconnect.clone(),
+                        )
                         .await
                 }
                 goat_protocol::Op::Resume { thread_id } => {
@@ -172,6 +206,7 @@ async fn dispatch(
                             session,
                             out_tx,
                             goat_wire::ResumeMode::Thread { thread_id },
+                            disconnect.clone(),
                         )
                         .await
                 }

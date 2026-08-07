@@ -17,7 +17,7 @@ goat-wire = { workspace = true }
 goat-remote = { workspace = true }
 goat-engine = { workspace = true }
 goat-auth = { workspace = true }
-goat-store = { workspace = true }
+goat-code-store = { workspace = true }
 goat-providers = { workspace = true }
 goat-proxy = { workspace = true }
 serde_json = { workspace = true }
