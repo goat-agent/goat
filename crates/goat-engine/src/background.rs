@@ -63,7 +63,7 @@ enum Detail {
 struct Entry {
     title: String,
     state: ProcessState,
-    observed: bool,
+    update_sent: bool,
     kill_pending: bool,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     detail: Detail,
@@ -136,7 +136,7 @@ pub(crate) struct Runs {
     inner: Mutex<Inner>,
     events: mpsc::Sender<Event>,
     wake: Arc<Notify>,
-    store: Option<goat_store::CodeStore>,
+    store: Option<goat_code_store::CodeStore>,
 }
 
 #[derive(Debug)]
@@ -173,7 +173,7 @@ impl Runs {
     pub(crate) fn new(
         events: mpsc::Sender<Event>,
         wake: Arc<Notify>,
-        store: Option<goat_store::CodeStore>,
+        store: Option<goat_code_store::CodeStore>,
     ) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(Inner {
@@ -243,7 +243,7 @@ impl Runs {
                 Entry {
                     title: name.unwrap_or(command).to_owned(),
                     state: ProcessState::Running,
-                    observed: false,
+                    update_sent: false,
                     kill_pending: false,
                     tasks,
                     detail: Detail::Bash(Bash {
@@ -284,7 +284,7 @@ impl Runs {
             Entry {
                 title,
                 state: ProcessState::Running,
-                observed: false,
+                update_sent: false,
                 kill_pending: false,
                 tasks: Vec::new(),
                 detail: Detail::Subagent(Subagent {
@@ -310,9 +310,9 @@ impl Runs {
                 subagent.report = Some(result);
             }
             if entry.kill_pending {
-                entry.observed = true;
+                entry.update_sent = true;
             }
-            !entry.observed
+            !entry.update_sent
         };
         if wake {
             self.wake.notify_one();
@@ -427,7 +427,7 @@ impl Runs {
                 natural
             };
             if reason == ProcessExitReason::Killed {
-                entry.observed = true;
+                entry.update_sent = true;
             }
             let db_id = match &mut entry.detail {
                 Detail::Bash(bash) => {
@@ -436,7 +436,7 @@ impl Runs {
                 }
                 Detail::Subagent(_) => None,
             };
-            (!entry.observed, reason, db_id)
+            (!entry.update_sent, reason, db_id)
         };
         if let (Some(store), Some(db_id)) = (self.store.as_ref(), db_id) {
             let _ = store.finish_process(db_id, crate::persist::now_ms()).await;
@@ -460,7 +460,7 @@ impl Runs {
         let entry = inner.entries.get_mut(&id)?;
         let exited = entry.state == ProcessState::Exited;
         if exited {
-            entry.observed = true;
+            entry.update_sent = true;
         }
         let state = entry.state;
         let bash = entry.bash_mut()?;
@@ -473,7 +473,7 @@ impl Runs {
         })
     }
 
-    pub(crate) async fn take_pending_observations(&self) -> Vec<(RunId, Observation)> {
+    pub(crate) async fn take_pending_updates(&self) -> Vec<(RunId, RunUpdate)> {
         let mut inner = self.inner.lock().await;
         let ids: Vec<RunId> = inner.entries.keys().copied().collect();
         let mut out = Vec::new();
@@ -481,11 +481,11 @@ impl Runs {
             let Some(entry) = inner.entries.get_mut(&id) else {
                 continue;
             };
-            let finished_unseen = entry.state == ProcessState::Exited && !entry.observed;
+            let finished_unseen = entry.state == ProcessState::Exited && !entry.update_sent;
             let kind = entry.kind();
             let title = entry.title.clone();
             let state = entry.state;
-            let observation = match &mut entry.detail {
+            let update = match &mut entry.detail {
                 Detail::Bash(bash) => {
                     let has_new = bash.watched && bash.lines.len() > bash.seen_cursor;
                     if !has_new && !finished_unseen {
@@ -493,7 +493,7 @@ impl Runs {
                     }
                     let text = collect_tail_from(bash, bash.seen_cursor);
                     bash.seen_cursor = bash.lines.len();
-                    Observation {
+                    RunUpdate {
                         kind,
                         title,
                         output: text,
@@ -511,7 +511,7 @@ impl Runs {
                         Some(Err(message)) => (message, Some(false)),
                         None => ("(no report)".to_owned(), Some(false)),
                     };
-                    Observation {
+                    RunUpdate {
                         kind,
                         title,
                         output,
@@ -521,8 +521,8 @@ impl Runs {
                     }
                 }
             };
-            entry.observed = true;
-            out.push((id, observation));
+            entry.update_sent = true;
+            out.push((id, update));
         }
         out.sort_by_key(|(id, _)| id.0);
         out
@@ -687,7 +687,7 @@ pub(crate) struct ReadChunk {
     pub(crate) exit_code: Option<i32>,
 }
 
-pub(crate) struct Observation {
+pub(crate) struct RunUpdate {
     pub(crate) kind: Kind,
     pub(crate) title: String,
     pub(crate) output: String,
@@ -737,13 +737,21 @@ fn shell_command(command: &str) -> Command {
     #[cfg(windows)]
     {
         let mut builder = Command::new("cmd");
-        builder.arg("/C").arg(command);
+        builder
+            .arg("/C")
+            .arg(command)
+            .env_clear()
+            .envs(goat_process::child_environment());
         builder
     }
     #[cfg(not(windows))]
     {
         let mut builder = Command::new("sh");
-        builder.arg("-c").arg(command);
+        builder
+            .arg("-c")
+            .arg(command)
+            .env_clear()
+            .envs(goat_process::child_environment());
         builder
     }
 }
@@ -894,12 +902,13 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), wake.notified())
             .await
             .expect("should wake");
-        let obs = registry.take_pending_observations().await;
+        let updates = registry.take_pending_updates().await;
         assert!(
-            obs.iter()
+            updates
+                .iter()
                 .any(|(id, o)| *id == started.id && o.output.contains("ping")),
-            "got: {obs:?}",
-            obs = obs
+            "got: {updates:?}",
+            updates = updates
                 .iter()
                 .map(|(_, o)| o.output.clone())
                 .collect::<Vec<_>>()
@@ -934,11 +943,12 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), wake.notified())
             .await
             .expect("an exit must wake the agent even without watch");
-        let obs = registry.take_pending_observations().await;
+        let updates = registry.take_pending_updates().await;
         assert!(
-            obs.iter()
+            updates
+                .iter()
                 .any(|(id, o)| *id == started.id && o.state == ProcessState::Exited),
-            "the exit must be reported as an observation"
+            "the exit must be reported as a run update"
         );
     }
 
@@ -967,7 +977,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_flood_of_unread_output_is_observed_by_its_tail() {
+    async fn a_flood_of_unread_output_is_reported_by_its_tail() {
         let (registry, mut events, _wake) = harness();
         tokio::spawn(async move { while events.recv().await.is_some() {} });
         let cwd = std::env::temp_dir();
@@ -978,24 +988,24 @@ mod tests {
         wait_until_exited(&registry, started.id).await;
         wait_until_buffered(&registry, started.id, 600).await;
 
-        let obs = registry.take_pending_observations().await;
-        let (_, observation) = obs
+        let updates = registry.take_pending_updates().await;
+        let (_, update) = updates
             .iter()
             .find(|(id, _)| *id == started.id)
-            .expect("the exit must be observed");
+            .expect("the exit must be reported");
         assert!(
-            observation.output.contains("earlier lines dropped"),
+            update.output.contains("earlier lines dropped"),
             "a flood must be trimmed, got {} bytes",
-            observation.output.len()
+            update.output.len()
         );
         assert!(
-            observation.output.lines().count() <= super::WATCH_FLOOD_LINES + 2,
+            update.output.lines().count() <= super::WATCH_FLOOD_LINES + 2,
             "the wake notice must not dump the whole ring buffer"
         );
         assert!(
-            observation.output.contains("600"),
+            update.output.contains("600"),
             "the tail is what matters, got: {}",
-            &observation.output[observation.output.len().saturating_sub(40)..]
+            &update.output[update.output.len().saturating_sub(40)..]
         );
     }
 
@@ -1014,10 +1024,10 @@ mod tests {
             result.is_err(),
             "a run the agent killed itself must not wake it"
         );
-        let pending = registry.take_pending_observations().await;
+        let pending = registry.take_pending_updates().await;
         assert!(
             pending.is_empty(),
-            "a killed run must not be reported as an observation"
+            "a killed run must not be reported as an update"
         );
     }
 
@@ -1080,7 +1090,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reading_output_leaves_no_pending_observation() {
+    async fn reading_output_leaves_no_pending_update() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
@@ -1093,7 +1103,7 @@ mod tests {
         assert!(chunk.text.contains("ping"), "got: {}", chunk.text);
         assert_eq!(chunk.state, ProcessState::Exited);
 
-        let pending = registry.take_pending_observations().await;
+        let pending = registry.take_pending_updates().await;
         assert!(
             pending.is_empty(),
             "output already read via BashOutput must not wake the agent again, got: {:?}",
@@ -1105,7 +1115,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unread_output_still_observed_after_exit() {
+    async fn unread_output_still_reported_after_exit() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
@@ -1114,7 +1124,7 @@ mod tests {
             .unwrap();
         wait_until_exited(&registry, started.id).await;
 
-        let pending = registry.take_pending_observations().await;
+        let pending = registry.take_pending_updates().await;
         assert!(
             pending
                 .iter()
@@ -1201,15 +1211,18 @@ mod tests {
             .await
             .expect("a finished subagent must wake the agent");
 
-        let obs = registry.take_pending_observations().await;
-        let (_, observation) = obs.iter().find(|(o, _)| *o == id).expect("observed once");
-        assert_eq!(observation.kind, Kind::Subagent);
-        assert_eq!(observation.ok, Some(true));
-        assert!(observation.output.contains("goat-auth"));
-        assert_eq!(observation.title, "map the auth flow");
+        let updates = registry.take_pending_updates().await;
+        let (_, update) = updates
+            .iter()
+            .find(|(o, _)| *o == id)
+            .expect("reported once");
+        assert_eq!(update.kind, Kind::Subagent);
+        assert_eq!(update.ok, Some(true));
+        assert!(update.output.contains("goat-auth"));
+        assert_eq!(update.title, "map the auth flow");
 
         assert!(
-            registry.take_pending_observations().await.is_empty(),
+            registry.take_pending_updates().await.is_empty(),
             "a report already delivered must not wake the agent again"
         );
     }
@@ -1231,7 +1244,7 @@ mod tests {
             result.is_err(),
             "a subagent the agent killed itself must not wake it"
         );
-        assert!(registry.take_pending_observations().await.is_empty());
+        assert!(registry.take_pending_updates().await.is_empty());
     }
 
     #[tokio::test]

@@ -2,8 +2,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use chrono::Utc;
+use sqlx::ConnectOptions;
 use sqlx::Row;
-use sqlx::sqlite::SqlitePool;
+use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use tracing::{info, warn};
 
 use crate::MemoryResult;
@@ -24,13 +25,28 @@ pub struct MemoryEngine {
 
 impl MemoryEngine {
     pub async fn open(
-        pool: Arc<SqlitePool>,
+        path: &Path,
         goat_root: &Path,
         embedder: Option<Arc<dyn Embedder>>,
         note_half_life_days: f64,
     ) -> MemoryResult<Self> {
+        goat_sqlite_vec::register();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let options = format!("sqlite://{}", path.display())
+            .parse::<sqlx::sqlite::SqliteConnectOptions>()?
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .disable_statement_logging();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(8)
+            .connect_with(options)
+            .await?;
+        crate::run_migrations(&pool).await?;
         let engine = Self {
-            pool,
+            pool: Arc::new(pool),
             files: MemoryFiles::new(goat_root),
             embedder,
             note_half_life_days,
@@ -41,6 +57,11 @@ impl MemoryEngine {
 
     pub fn files(&self) -> &MemoryFiles {
         &self.files
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pool(&self) -> Arc<SqlitePool> {
+        self.pool.clone()
     }
 
     fn dim(&self) -> Option<usize> {
@@ -303,13 +324,11 @@ mod tests {
     use super::*;
     use crate::facts::FactOrigin;
     use async_trait::async_trait;
-    use goat_store::SqliteStore;
 
     async fn engine() -> (tempfile::TempDir, MemoryEngine) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("goat.db");
-        let pool = SqliteStore::open(&path).await.unwrap().pool();
-        let eng = MemoryEngine::open(pool, dir.path(), None, 180.0)
+        let eng = MemoryEngine::open(&path, dir.path(), None, 180.0)
             .await
             .unwrap();
         (dir, eng)
@@ -335,8 +354,7 @@ mod tests {
     async fn engine_with_embedder() -> (tempfile::TempDir, MemoryEngine) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("goat.db");
-        let pool = SqliteStore::open(&path).await.unwrap().pool();
-        let eng = MemoryEngine::open(pool, dir.path(), Some(Arc::new(KeywordEmbedder)), 180.0)
+        let eng = MemoryEngine::open(&path, dir.path(), Some(Arc::new(KeywordEmbedder)), 180.0)
             .await
             .unwrap();
         (dir, eng)

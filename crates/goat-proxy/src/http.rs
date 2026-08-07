@@ -11,7 +11,9 @@ use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::{delete, get, post};
 use goat_auth::{Credential, CredentialKey, CredentialService, CredentialStore};
 use goat_provider::RateLimitSnapshot;
-use goat_store::{ProxyStore, ProxyStoreError, RateLimitRow, RequestRow, Totals, UsageBucket};
+use goat_proxy_store::{
+    ProxyStore, ProxyStoreError, RateLimitRow, RequestRow, Totals, UsageBucket,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -769,7 +771,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use goat_auth::{Credential, CredentialKey, CredentialStore, SecretString, TokenSet};
-    use goat_store::NewRequest;
+    use goat_proxy_store::NewRequest;
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
     use tower::ServiceExt;
@@ -855,7 +857,8 @@ mod tests {
                     Some("oauth-refresh-secret".into()),
                     Some(3600),
                     None,
-                ))
+                )
+                .unwrap())
             })
         }
     }
@@ -865,7 +868,9 @@ mod tests {
     }
 
     async fn state() -> HttpState {
-        let store = goat_store::ProxyStore::open_in_memory().await.unwrap();
+        let store = goat_proxy_store::ProxyStore::open_in_memory()
+            .await
+            .unwrap();
         let creds = temp_creds();
         HttpState {
             store,
@@ -1021,12 +1026,15 @@ mod tests {
         creds
             .store(
                 &CredentialKey::model("openai", "default"),
-                Credential::OAuth(TokenSet::from_parts(
-                    "sk-live-secret".into(),
-                    Some("refresh-secret".into()),
-                    Some(3600),
-                    None,
-                )),
+                Credential::OAuth(
+                    TokenSet::from_parts(
+                        "sk-live-secret".into(),
+                        Some("refresh-secret".into()),
+                        Some(3600),
+                        None,
+                    )
+                    .unwrap(),
+                ),
             )
             .unwrap();
         let state = HttpState { creds, ..state };

@@ -145,7 +145,7 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
 
 ## Where things live
 
-`crates/` is flat, 101 crates, every one prefixed `goat-`. The prefix tells you the family:
+`crates/` is flat, 92 crates, every one prefixed `goat-`. The prefix tells you the family:
 `goat-agent*` is the autonomous actor, `goat-code`/`goat-core`/`goat-engine`/`goat-tui` and the
 `goat-tool-*`/`goat-command-*` families are coding, and `goat-provider*`/`goat-store`/`goat-config`/
 `goat-auth`/`goat-console`/`goat-protocol`/`goat-proxy` are shared. `ls crates/` beats any list
@@ -347,24 +347,24 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
 
 Do not build on these, and do not describe them as features:
 
-- `goat-plugin` — no `impl Plugin` anywhere, no `inventory::iter::<PluginFactory>()`, and
-  `goat-runtime` declares the dependency without importing it.
 - `AutonomyConfig.enabled` — parsed from `config.json` under `deny_unknown_fields`, then read by
   nothing. Setting it has no effect.
 - `MemoryConfig.episodic_k` — parsed and stored, never passed to `BrainDeps`; recall hardcodes 6.
 - Per-agent `EmbeddingSettings` — collected per agent, then `boot_inner` takes
   `embedders.values().next()` for the single global `MemoryEngine`, so with more than one configured
   agent the winner is arbitrary. Only `openai` is implemented; other values warn and are skipped.
-- Goal review — `next_review_at`, `goals_due_for_review`, and `idx_goals_review` are complete and
-  unit-tested, but nothing outside `goat-store` calls them. There is no trigger. `goals.parent` is
-  likewise always `None`; the tool schema has no parameter for it.
+- Goal review — the goal tool writes `next_review_at` on create and review and displays it on list,
+  but `goals_due_for_review` has no production caller, so nothing triggers a review when it becomes
+  due. `idx_goals_review` supports only that dormant read path. `goals.parent` is likewise always
+  `None`; the tool schema has no parameter for it.
 - `set_paused` has no callers, so the `is_paused` gate in the scheduler, runtime, and integrations
   can never be closed.
 - `core_memory` survives `0012_drop_v1_memory.sql` awaiting a `goat memory migrate` command that
   does not exist.
 - `Event::ProcessObserved` is consumed by the TUI but published by nobody; `Op::Login` has a full
-  engine handler but no client constructs it. `GoatPaths::{agent_dir, memory_dir}` and
-  `Model::with_account` have zero callers.
+  engine handler but no client constructs it. `GoatPaths::agent_dir` has zero callers and the
+  `GoatPaths::memory_dir` field is never read; the test-only `channel_secrets::tests::agent_dir` is a
+  separate function. `Model::with_account` has zero callers.
 
 There is no `self-tick` and no goal-review scheduling. Both were removed in `7c2a7ad`; the only
 schedule kinds are `once` and `cron`, and an agent gets them only by calling the `schedule` tool.

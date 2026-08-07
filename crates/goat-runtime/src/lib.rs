@@ -85,7 +85,6 @@ impl Goat {
         let sqlite_store = SqliteStore::open(&cfg.paths.state_db)
             .await
             .context("open store")?;
-        let pool_for_memory = sqlite_store.pool();
         let store: Arc<dyn Store> = Arc::new(sqlite_store);
 
         let credentials = goat_auth::CredentialStore::new(cfg.paths.credentials_json.clone());
@@ -103,7 +102,7 @@ impl Goat {
         let mem_embedder: Option<Arc<dyn Embedder>> = embedders.values().next().cloned();
         let memory_engine = Arc::new(
             goat_memory::MemoryEngine::open(
-                pool_for_memory.clone(),
+                &cfg.paths.state_db,
                 &cfg.paths.root,
                 mem_embedder,
                 180.0,
@@ -1082,6 +1081,7 @@ async fn spawn_agent(
         agent: raw.id,
         personality: Arc::new(raw.personality.clone()),
         default_model: raw.default_model.clone(),
+        timezone: raw.timezone.clone(),
         history_window: raw.history_window,
         tool_selectors: raw.tool_selectors.clone(),
         providers: shared.providers.clone(),
@@ -1156,6 +1156,7 @@ mod tests {
                 source_path: std::path::PathBuf::new(),
             },
             default_model: Model::new(ProviderId::from("openai"), model),
+            timezone: None,
             history_window: 10,
             tool_selectors: vec![],
             bindings: vec![],
