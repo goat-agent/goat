@@ -63,9 +63,17 @@ mod tests {
     }
 
     #[test]
-    fn config_no_longer_accepts_a_token() {
-        assert!(validate_config(&serde_json::json!({})).is_ok());
+    fn config_preserves_missing_and_empty_allowlists() {
+        let missing: config::DiscordConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+        let empty: config::DiscordConfig =
+            serde_json::from_value(serde_json::json!({ "allowed_user_ids": [] })).unwrap();
+        assert!(missing.allowed_user_ids.is_none());
+        assert!(empty.allowed_user_ids.is_some_and(|ids| ids.is_empty()));
         assert!(validate_config(&serde_json::json!({ "allowed_user_ids": [1] })).is_ok());
+    }
+
+    #[test]
+    fn config_no_longer_accepts_a_token() {
         assert!(validate_config(&serde_json::json!({ "token": "x" })).is_err());
     }
 

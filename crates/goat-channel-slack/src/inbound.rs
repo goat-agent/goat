@@ -25,7 +25,7 @@ pub(crate) struct SocketConfig {
     pub(crate) agent: AgentId,
     pub(crate) instance: InstanceId,
     pub(crate) commands: Vec<CommandSpec>,
-    pub(crate) allowed_user_ids: HashSet<String>,
+    pub(crate) allowed_user_ids: Option<HashSet<String>>,
     pub(crate) bot_user_id: String,
     pub(crate) bot_id: Option<String>,
     pub(crate) app_token: String,
@@ -131,7 +131,12 @@ pub(crate) async fn socket_loop(cfg: SocketConfig, tx: mpsc::Sender<IncomingMess
                         debug!(agent = %agent, "slack: ignoring an event with an unexpected shape");
                         continue;
                     };
-                    if !should_handle(&event, &bot_user_id, bot_id.as_deref(), &allowed_user_ids) {
+                    if !should_handle(
+                        &event,
+                        &bot_user_id,
+                        bot_id.as_deref(),
+                        allowed_user_ids.as_ref(),
+                    ) {
                         continue;
                     }
                     let display = resolve_display(&api, &mut names, event.user.as_deref()).await;
@@ -190,7 +195,7 @@ fn should_handle(
     event: &MessageEvent,
     bot_user_id: &str,
     bot_id: Option<&str>,
-    allowed_user_ids: &HashSet<String>,
+    allowed_user_ids: Option<&HashSet<String>>,
 ) -> bool {
     if event.kind != "message" {
         return false;
@@ -210,7 +215,12 @@ fn should_handle(
     if user == bot_user_id {
         return false;
     }
-    allowed_user_ids.is_empty() || allowed_user_ids.contains(user)
+    if allowed_user_ids.is_some_and(|allowed| allowed.contains(user)) {
+        true
+    } else {
+        debug!(user_id = user, "slack: user not in allowlist, ignoring");
+        false
+    }
 }
 
 fn to_incoming(
@@ -341,50 +351,35 @@ mod tests {
         .expect("a message")
     }
 
+    fn handles(event: &MessageEvent) -> bool {
+        let allowed = allowlist(&["U1"]);
+        should_handle(event, BOT_USER, Some(BOT_ID), Some(&allowed))
+    }
+
     #[test]
     fn a_plain_channel_message_is_handled() {
-        assert!(should_handle(
-            &message("hello"),
-            BOT_USER,
-            Some(BOT_ID),
-            &HashSet::new()
-        ));
+        assert!(handles(&message("hello")));
     }
 
     #[test]
     fn our_own_bot_messages_are_skipped() {
         let mut event = message("echo");
         event.bot_id = Some(BOT_ID.to_string());
-        assert!(!should_handle(
-            &event,
-            BOT_USER,
-            Some(BOT_ID),
-            &HashSet::new()
-        ));
+        assert!(!handles(&event));
     }
 
     #[test]
     fn another_bots_message_is_still_handled() {
         let mut event = message("from another app");
         event.bot_id = Some("BOTHER".to_string());
-        assert!(should_handle(
-            &event,
-            BOT_USER,
-            Some(BOT_ID),
-            &HashSet::new()
-        ));
+        assert!(handles(&event));
     }
 
     #[test]
     fn our_own_user_id_is_skipped_even_without_a_bot_id() {
         let mut event = message("echo");
         event.user = Some(BOT_USER.to_string());
-        assert!(!should_handle(
-            &event,
-            BOT_USER,
-            Some(BOT_ID),
-            &HashSet::new()
-        ));
+        assert!(!handles(&event));
     }
 
     #[test]
@@ -392,10 +387,7 @@ mod tests {
         for subtype in ["message_changed", "message_deleted", "channel_join"] {
             let mut event = message("x");
             event.subtype = Some(subtype.to_string());
-            assert!(
-                !should_handle(&event, BOT_USER, Some(BOT_ID), &HashSet::new()),
-                "{subtype} should be skipped"
-            );
+            assert!(!handles(&event), "{subtype} should be skipped");
         }
     }
 
@@ -403,67 +395,56 @@ mod tests {
     fn non_message_events_are_skipped() {
         let mut event = message("x");
         event.kind = "reaction_added".to_string();
-        assert!(!should_handle(
-            &event,
-            BOT_USER,
-            Some(BOT_ID),
-            &HashSet::new()
-        ));
+        assert!(!handles(&event));
     }
 
     #[test]
     fn events_without_a_user_or_coordinates_are_skipped() {
         let mut no_user = message("x");
         no_user.user = None;
-        assert!(!should_handle(
-            &no_user,
-            BOT_USER,
-            Some(BOT_ID),
-            &HashSet::new()
-        ));
+        assert!(!handles(&no_user));
 
         let mut no_channel = message("x");
         no_channel.channel = String::new();
-        assert!(!should_handle(
-            &no_channel,
-            BOT_USER,
-            Some(BOT_ID),
-            &HashSet::new()
-        ));
+        assert!(!handles(&no_channel));
 
         let mut no_ts = message("x");
         no_ts.ts = String::new();
-        assert!(!should_handle(
-            &no_ts,
-            BOT_USER,
-            Some(BOT_ID),
-            &HashSet::new()
-        ));
+        assert!(!handles(&no_ts));
     }
 
     #[test]
-    fn an_empty_allowlist_admits_everyone() {
-        assert!(should_handle(
-            &message("x"),
-            BOT_USER,
-            Some(BOT_ID),
-            &HashSet::new()
-        ));
+    fn an_absent_allowlist_denies() {
+        assert!(!should_handle(&message("x"), BOT_USER, Some(BOT_ID), None));
     }
 
     #[test]
-    fn a_populated_allowlist_gates_by_user() {
-        assert!(should_handle(
-            &message("x"),
-            BOT_USER,
-            Some(BOT_ID),
-            &allowlist(&["U1"])
-        ));
+    fn an_empty_allowlist_denies() {
         assert!(!should_handle(
             &message("x"),
             BOT_USER,
             Some(BOT_ID),
-            &allowlist(&["U2"])
+            Some(&allowlist(&[]))
+        ));
+    }
+
+    #[test]
+    fn a_listed_user_is_allowed() {
+        assert!(should_handle(
+            &message("x"),
+            BOT_USER,
+            Some(BOT_ID),
+            Some(&allowlist(&["U1"]))
+        ));
+    }
+
+    #[test]
+    fn an_unlisted_user_is_denied() {
+        assert!(!should_handle(
+            &message("x"),
+            BOT_USER,
+            Some(BOT_ID),
+            Some(&allowlist(&["U2"]))
         ));
     }
 
