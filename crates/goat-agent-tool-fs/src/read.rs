@@ -30,7 +30,7 @@ impl ToolHandler for ReadTool {
             Ok(args) => args,
             Err(e) => return common::error(format!("invalid read input: {e}")),
         };
-        let path = match common::existing_path(&ctx.goat_root, &args.file_path) {
+        let path = match common::existing_path(&ctx, &args.file_path) {
             Ok(path) => path,
             Err(e) => return common::error(e),
         };

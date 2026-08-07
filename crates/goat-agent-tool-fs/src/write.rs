@@ -30,7 +30,10 @@ impl ToolHandler for WriteTool {
             Ok(args) => args,
             Err(e) => return common::error(format!("invalid write input: {e}")),
         };
-        let path = common::writable_path(&ctx.goat_root, &args.file_path);
+        let path = match common::writable_path(&ctx, &args.file_path) {
+            Ok(path) => path,
+            Err(e) => return common::error(e),
+        };
         let existed = path.exists();
         if existed {
             if !args.overwrite {
@@ -39,7 +42,7 @@ impl ToolHandler for WriteTool {
                     path.display()
                 ));
             }
-            let canonical = match common::existing_path(&ctx.goat_root, &args.file_path) {
+            let canonical = match common::existing_path(&ctx, &args.file_path) {
                 Ok(path) => path,
                 Err(e) => return common::error(e),
             };
