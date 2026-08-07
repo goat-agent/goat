@@ -32,6 +32,12 @@ impl Tool for WriteTool {
         })
     }
 
+    fn mutation_path(&self, input: &str) -> Option<String> {
+        serde_json::from_str::<Input>(input)
+            .ok()
+            .map(|args| args.path)
+    }
+
     fn display_input(&self, input: &str) -> ToolDisplay {
         match serde_json::from_str::<Input>(input) {
             Ok(args) => ToolDisplay::primary(display::call_sig(

@@ -81,20 +81,15 @@ impl CheckpointTracker {
         Ok(checkpoint_id)
     }
 
-    pub(crate) async fn capture_tool_path(
+    pub(crate) async fn capture_path(
         &self,
-        input: &str,
+        raw: &str,
         tool_ctx: &ToolContext,
     ) -> Result<(), String> {
         let checkpoint_id = self.active.load(Ordering::Acquire);
         if checkpoint_id == 0 {
             return Ok(());
         }
-        let value: serde_json::Value =
-            serde_json::from_str(input).map_err(|err| err.to_string())?;
-        let Some(raw) = value.get("path").and_then(serde_json::Value::as_str) else {
-            return Ok(());
-        };
         let path = tool_ctx.resolve(raw).map_err(|err| err.to_string())?;
         tool_ctx
             .ensure_writable(&path, raw)
@@ -356,13 +351,10 @@ mod tests {
             .unwrap();
         let context = ToolContext::new(&root).unwrap();
         tracker
-            .capture_tool_path(r#"{"path":"existing.txt"}"#, &context)
+            .capture_path("existing.txt", &context)
             .await
             .unwrap();
-        tracker
-            .capture_tool_path(r#"{"path":"created.txt"}"#, &context)
-            .await
-            .unwrap();
+        tracker.capture_path("created.txt", &context).await.unwrap();
         tokio::fs::write(&existing, b"after").await.unwrap();
         tokio::fs::write(&created, b"new").await.unwrap();
 
@@ -395,10 +387,7 @@ mod tests {
             .await
             .unwrap();
         let context = ToolContext::new(&root).unwrap();
-        tracker
-            .capture_tool_path(r#"{"path":"script"}"#, &context)
-            .await
-            .unwrap();
+        tracker.capture_path("script", &context).await.unwrap();
         tokio::fs::write(&path, b"after").await.unwrap();
         tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
             .await
@@ -433,10 +422,7 @@ mod tests {
             .await
             .unwrap();
         let context = ToolContext::new(&root).unwrap();
-        tracker
-            .capture_tool_path(r#"{"path":"linked"}"#, &context)
-            .await
-            .unwrap();
+        tracker.capture_path("linked", &context).await.unwrap();
         tokio::fs::write(&path, b"after").await.unwrap();
 
         let report = tracker

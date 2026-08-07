@@ -132,6 +132,9 @@ pub trait Tool: Send + Sync {
     fn summary_kind(&self) -> ToolSummaryKind {
         ToolSummaryKind::Summary
     }
+    fn mutation_path(&self, _input: &str) -> Option<String> {
+        None
+    }
     fn display_input(&self, input: &str) -> ToolDisplay {
         display::generic(input)
     }

@@ -215,27 +215,16 @@ async fn execute_tool(
             }
         }
     } else {
-        let checkpointed = matches!(prep.name, "Write" | "Edit");
-        if checkpointed {
-            match ctx
-                .checkpoints
-                .capture_tool_path(prep.input_json, tool_ctx)
-                .await
-            {
-                Ok(()) => {
-                    run_regular_tool(
-                        ctx,
-                        run.id,
-                        ToolCallId(prep.tui_id),
-                        prep.name,
-                        prep.input_json,
-                        tool_ctx,
-                        token,
-                    )
-                    .await
-                }
-                Err(err) => Some(Err(format!("could not checkpoint file before edit: {err}"))),
-            }
+        let mutation_path = ctx
+            .tools
+            .get(prep.name)
+            .and_then(|tool| tool.mutation_path(prep.input_json));
+        if let Some(path) = mutation_path
+            && let Err(error) = ctx.checkpoints.capture_path(&path, tool_ctx).await
+        {
+            Some(Err(format!(
+                "could not checkpoint file before mutation: {error}"
+            )))
         } else {
             run_regular_tool(
                 ctx,
