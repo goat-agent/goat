@@ -8,7 +8,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::{App, Overlay, shorten_home},
+    app::{App, MainView, Overlay, shorten_home},
     layout::{LIST_MAX, PAD_X, SCROLL_GUTTER, format_tokens},
     overlay, symbols,
     theme::Theme,
@@ -128,7 +128,7 @@ fn panel_desired_height(app: &App, panel: &Panel) -> u16 {
             Overlay::Files(menu) => menu.desired_height(),
             _ => 0,
         },
-        Panel::Runs(_) => u16::try_from(app.run_targets().len())
+        Panel::Runs(_) => u16::try_from(app.run_targets().len() + 1)
             .unwrap_or(1)
             .clamp(1, u16::try_from(LIST_MAX).unwrap_or(10)),
     }
@@ -297,8 +297,33 @@ fn render_panel(frame: &mut Frame, area: Rect, app: &App, theme: Theme, panel: &
 fn render_run_panel(frame: &mut Frame, area: Rect, app: &App, theme: Theme, cursor: usize) {
     let spinner = app.spinner_frame();
     let inner_width = usize::from(area.width);
+    let viewing = app.main_view();
     let mut rows: Vec<Line> = Vec::new();
-    let mut index = 0usize;
+    let main_left = vec![
+        Span::styled(symbols::ui::DOT_FULL, theme.accent()),
+        Span::raw(" "),
+        Span::styled(
+            "main",
+            if cursor == 0 {
+                theme.key()
+            } else {
+                theme.muted()
+            },
+        ),
+    ];
+    let main_metrics = if matches!(viewing, MainView::Live) {
+        Some(Span::styled("viewing", theme.accent()))
+    } else {
+        None
+    };
+    rows.push(overlay::selection_row(
+        theme,
+        cursor == 0,
+        inner_width,
+        main_left,
+        main_metrics,
+    ));
+    let mut index = 1usize;
     for run in app.subagent_runs() {
         let selected = index == cursor;
         let (marker, marker_style) = match run.done {
@@ -332,6 +357,8 @@ fn render_run_panel(frame: &mut Frame, area: Rect, app: &App, theme: Theme, curs
                 parts.join(symbols::ui::SEPARATOR),
                 theme.muted(),
             ))
+        } else if viewing == MainView::Subagent(run.id) {
+            Some(Span::styled("viewing", theme.accent()))
         } else {
             None
         };
@@ -361,12 +388,17 @@ fn render_run_panel(frame: &mut Frame, area: Rect, app: &App, theme: Theme, curs
             Span::styled(symbols::ui::SEPARATOR, theme.muted()),
             Span::styled(flatten_command(&run.command), theme.muted()),
         ];
+        let metrics = if viewing == MainView::Process(run.id) {
+            Some(Span::styled("viewing", theme.accent()))
+        } else {
+            None
+        };
         rows.push(overlay::selection_row(
             theme,
             selected,
             inner_width,
             left,
-            None,
+            metrics,
         ));
         index += 1;
     }
@@ -388,7 +420,7 @@ fn render_run_footer(frame: &mut Frame, area: Rect, theme: Theme) {
         Paragraph::new(overlay::hint_line(
             &[
                 (symbols::key::ARROWS_UPDOWN, "move"),
-                (symbols::key::ENTER, "open"),
+                (symbols::key::ENTER, "select"),
                 (symbols::key::ESC, "back"),
             ],
             theme,

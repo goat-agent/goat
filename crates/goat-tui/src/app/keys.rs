@@ -792,13 +792,13 @@ impl App {
                 Some(0) | None => self.close_run_selector(),
                 Some(cursor) => self.move_run_cursor(cursor - 1),
             },
-            KeyCode::Down => {
-                if let Some(cursor) = self.run_selector()
-                    && cursor + 1 < self.run_targets().len()
-                {
+            KeyCode::Down => match self.run_selector() {
+                Some(cursor) if cursor + 1 < self.run_row_count() => {
                     self.move_run_cursor(cursor + 1);
                 }
-            }
+                Some(_) => self.close_run_selector(),
+                None => {}
+            },
             KeyCode::PageUp => {
                 self.scroll = self.scroll.saturating_sub(self.page_rows());
                 self.follow = false;
