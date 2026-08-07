@@ -13,7 +13,6 @@ goat-protocol = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-regex = { workspace = true }
 unicode-width = { workspace = true }
 
 [dev-dependencies]

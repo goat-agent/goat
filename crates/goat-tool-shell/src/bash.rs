@@ -7,13 +7,17 @@ use std::{
     time::Duration,
 };
 
-use goat_protocol::{GitFacts, ToolDisplay};
-use goat_tool::{SandboxPolicy, Tool, ToolContext, ToolError, ToolFuture, ToolOutput, display};
+use goat_protocol::{GitFacts, ToolDisplay, ToolOutcome};
+use goat_tool::{
+    SandboxPolicy, Tool, ToolContext, ToolError, ToolErrorClass, ToolFuture, ToolOutcomeExtension,
+    ToolOutput, display,
+};
 use serde::Deserialize;
 use tokio::{io::AsyncReadExt, process::Command, time};
 
 const MIN_TIMEOUT_MS: u64 = 100;
 const MAX_TIMEOUT_MS: u64 = 300_000;
+const DEFAULT_TIMEOUT: Duration = Duration::from_mins(2);
 
 fn sandbox_tmp() -> &'static PathBuf {
     static TMP: OnceLock<PathBuf> = OnceLock::new();
@@ -48,6 +52,35 @@ pub struct BashTool;
 struct Input {
     command: String,
     timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ShellError {
+    #[error("no sandbox backend is available, so shell commands are disabled while planning")]
+    SandboxUnavailable,
+    #[error("failed to spawn command: {0}")]
+    Spawn(std::io::Error),
+    #[error("command timed out after {0}ms")]
+    Timeout(u64),
+}
+
+impl From<ShellError> for ToolError {
+    fn from(error: ShellError) -> Self {
+        let class = match error {
+            ShellError::SandboxUnavailable => ToolErrorClass::Policy,
+            ShellError::Spawn(_) => ToolErrorClass::Io,
+            ShellError::Timeout(_) => ToolErrorClass::Timeout,
+        };
+        ToolError::new(class, error.to_string())
+    }
+}
+
+struct GitOutcome(GitFacts);
+
+impl ToolOutcomeExtension for GitOutcome {
+    fn apply(&self, outcome: &mut ToolOutcome) {
+        outcome.git = Some(Box::new(self.0.clone()));
+    }
 }
 
 impl Tool for BashTool {
@@ -85,7 +118,7 @@ impl Tool for BashTool {
             let args: Input = serde_json::from_str(input)?;
             let timeout_dur = match args.timeout_ms {
                 Some(ms) => Duration::from_millis(ms.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)),
-                None => ctx.bash_timeout,
+                None => DEFAULT_TIMEOUT,
             };
 
             let read_only = ctx.exec_policy.is_read_only();
@@ -100,9 +133,7 @@ impl Tool for BashTool {
                     match goat_sandbox::read_only_command(&args.command, &ctx.cwd, tmp, *network) {
                         Ok(sc) => (sc.program, sc.args, Some(tmp.clone())),
                         Err(_) => {
-                            return Err(ToolError::Execution {
-                                message: "no sandbox backend is available, so shell commands are disabled while planning".to_owned(),
-                            });
+                            return Err(ShellError::SandboxUnavailable.into());
                         }
                     }
                 }
@@ -122,9 +153,7 @@ impl Tool for BashTool {
             if let Some(tmp) = &tmpdir {
                 builder.env("TMPDIR", tmp);
             }
-            let child = builder
-                .spawn()
-                .map_err(|source| ToolError::Spawn { source })?;
+            let child = builder.spawn().map_err(ShellError::Spawn)?;
 
             let mut guard = ChildGuard {
                 child,
@@ -166,9 +195,10 @@ impl Tool for BashTool {
             .await;
 
             let Ok((stdout, stderr, status)) = result else {
-                return Err(ToolError::Timeout {
-                    ms: u64::try_from(timeout_dur.as_millis()).unwrap_or(MAX_TIMEOUT_MS),
-                });
+                return Err(ShellError::Timeout(
+                    u64::try_from(timeout_dur.as_millis()).unwrap_or(MAX_TIMEOUT_MS),
+                )
+                .into());
             };
 
             let code = status.ok().and_then(|s| s.code());
@@ -176,7 +206,7 @@ impl Tool for BashTool {
             let Some(facts) = git_facts(&args.command, &ctx.cwd, &stdout, code).await else {
                 return Ok(output);
             };
-            Ok(output.with_git(facts))
+            Ok(output.with_extension(GitOutcome(facts)))
         })
     }
 }
@@ -314,11 +344,24 @@ fn build_summary(body: &str, code: Option<i32>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{BashTool, pull_request_number, pull_request_url};
-    use goat_tool::{Tool, ToolContext, ToolError};
+    use goat_protocol::{GitFacts, ToolOutcome};
+    use goat_tool::{Tool, ToolContext, ToolErrorClass, ToolOutput};
     use std::{path::Path, process::Command};
 
     fn ctx() -> ToolContext {
         ToolContext::new(&std::env::temp_dir()).unwrap()
+    }
+
+    fn output_git(output: &ToolOutput) -> Option<Box<GitFacts>> {
+        let mut outcome = ToolOutcome {
+            ok: true,
+            summary: None,
+            body: None,
+            image: None,
+            git: None,
+        };
+        output.extend_outcome(&mut outcome);
+        outcome.git
     }
 
     fn git(repo: &Path, args: &[&str]) {
@@ -359,7 +402,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let facts = out.git.expect("git facts");
+        let facts = output_git(&out).expect("git facts");
         assert_eq!(facts.subject.as_deref(), Some("feat: first"));
         assert_eq!(facts.branch.as_deref(), Some("main"));
         assert!(facts.head.is_some_and(|head| !head.is_empty()));
@@ -375,7 +418,7 @@ mod tests {
             .run(r#"{"command":"git commit -m \"nothing staged\""}"#, &ctx)
             .await
             .unwrap();
-        assert!(out.git.is_none());
+        assert!(output_git(&out).is_none());
     }
 
     #[tokio::test]
@@ -387,7 +430,7 @@ mod tests {
             .run(r#"{"command":"echo hello"}"#, &ctx)
             .await
             .unwrap();
-        assert!(out.git.is_none());
+        assert!(output_git(&out).is_none());
         assert_eq!(out.summary.as_deref(), Some("hello"));
     }
 
@@ -403,7 +446,7 @@ mod tests {
             .run(r#"{"command":"git switch -c feat/git-ui"}"#, &ctx)
             .await
             .unwrap();
-        let facts = out.git.expect("git facts");
+        let facts = output_git(&out).expect("git facts");
         assert_eq!(facts.branch.as_deref(), Some("feat/git-ui"));
         assert_eq!(facts.head, None);
     }
@@ -431,7 +474,7 @@ mod tests {
             .run(r#"{"command":"git push -u origin main"}"#, &ctx)
             .await
             .unwrap();
-        let facts = out.git.expect("git facts");
+        let facts = output_git(&out).expect("git facts");
         assert_eq!(facts.upstream.as_deref(), Some("origin/main"));
         assert_eq!(facts.branch.as_deref(), Some("main"));
     }
@@ -513,7 +556,10 @@ mod tests {
         let result = BashTool
             .run(r#"{"command":"sleep 999","timeout_ms":100}"#, &ctx())
             .await;
-        assert!(matches!(result, Err(ToolError::Timeout { .. })));
+        assert!(matches!(
+            result,
+            Err(error) if error.class() == ToolErrorClass::Timeout
+        ));
     }
 
     #[tokio::test]

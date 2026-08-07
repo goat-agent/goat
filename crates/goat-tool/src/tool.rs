@@ -1,6 +1,6 @@
 use std::{future::Future, pin::Pin};
 
-use goat_protocol::{GitFacts, ToolDisplay};
+use goat_protocol::{ToolDisplay, ToolOutcome};
 
 use crate::{context::ToolContext, display, error::ToolError};
 
@@ -14,11 +14,15 @@ pub enum ToolContent {
     Image(ToolImage),
 }
 
+pub trait ToolOutcomeExtension: Send + Sync {
+    fn apply(&self, outcome: &mut ToolOutcome);
+}
+
 pub struct ToolOutput {
     pub content: ToolContent,
     pub summary: Option<String>,
     pub body: Option<String>,
-    pub git: Option<Box<GitFacts>>,
+    extensions: Vec<Box<dyn ToolOutcomeExtension>>,
 }
 
 impl ToolOutput {
@@ -27,7 +31,7 @@ impl ToolOutput {
             content: ToolContent::Text(s.into()),
             summary: None,
             body: None,
-            git: None,
+            extensions: Vec::new(),
         }
     }
 
@@ -39,7 +43,7 @@ impl ToolOutput {
             }),
             summary: None,
             body: None,
-            git: None,
+            extensions: Vec::new(),
         }
     }
 
@@ -48,7 +52,7 @@ impl ToolOutput {
             content: ToolContent::Image(image),
             summary: None,
             body: None,
-            git: None,
+            extensions: Vec::new(),
         }
     }
 
@@ -65,9 +69,15 @@ impl ToolOutput {
     }
 
     #[must_use]
-    pub fn with_git(mut self, git: GitFacts) -> Self {
-        self.git = Some(Box::new(git));
+    pub fn with_extension(mut self, extension: impl ToolOutcomeExtension + 'static) -> Self {
+        self.extensions.push(Box::new(extension));
         self
+    }
+
+    pub fn extend_outcome(&self, outcome: &mut ToolOutcome) {
+        for extension in &self.extensions {
+            extension.apply(outcome);
+        }
     }
 
     pub fn as_text(&self) -> Option<&str> {

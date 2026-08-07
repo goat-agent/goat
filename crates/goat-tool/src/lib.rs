@@ -9,11 +9,11 @@ pub mod spec;
 pub mod tool;
 
 pub use context::ToolContext;
-pub use error::ToolError;
+pub use error::{ToolError, ToolErrorClass};
 pub use policy::SandboxPolicy;
 pub use registry::ToolRegistry;
 pub use spec::ToolSpec;
-pub use tool::{Tool, ToolContent, ToolFuture, ToolImage, ToolOutput};
+pub use tool::{Tool, ToolContent, ToolFuture, ToolImage, ToolOutcomeExtension, ToolOutput};
 
 pub const TRUNCATION_NOTICE: &str = "\n[output truncated]";
 

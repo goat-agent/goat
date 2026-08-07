@@ -107,7 +107,8 @@ fn search(
     let regex = regex::RegexBuilder::new(pattern)
         .size_limit(REGEX_SIZE_LIMIT)
         .dfa_size_limit(REGEX_SIZE_LIMIT)
-        .build()?;
+        .build()
+        .map_err(|error| ToolError::invalid_input(format!("invalid regex: {error}")))?;
     let mut builder = WalkBuilder::new(root);
     builder.require_git(false);
     builder.hidden(false);
@@ -286,7 +287,7 @@ mod tests {
             .await;
         assert!(matches!(
             result,
-            Err(goat_tool::ToolError::PathBlocked { .. })
+            Err(error) if error.class() == goat_tool::ToolErrorClass::Policy
         ));
     }
 

@@ -35,13 +35,17 @@ struct Prepared<'a> {
 
 pub(crate) fn tool_outcome(result: &Result<ToolOutput, String>) -> ToolOutcome {
     match result {
-        Ok(output) => ToolOutcome {
-            ok: true,
-            summary: output.summary.clone(),
-            body: output.body.clone(),
-            image: outcome_image(&output.content),
-            git: output.git.clone(),
-        },
+        Ok(output) => {
+            let mut outcome = ToolOutcome {
+                ok: true,
+                summary: output.summary.clone(),
+                body: output.body.clone(),
+                image: outcome_image(&output.content),
+                git: None,
+            };
+            output.extend_outcome(&mut outcome);
+            outcome
+        }
         Err(message) => ToolOutcome {
             ok: false,
             summary: Some(message.clone()),

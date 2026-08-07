@@ -15,9 +15,7 @@ impl BrowserTool {
 }
 
 fn exec_err(err: impl std::fmt::Display) -> ToolError {
-    ToolError::Execution {
-        message: err.to_string(),
-    }
+    ToolError::execution(err.to_string())
 }
 
 fn ref_label(reference: &BrowserRef) -> String {
