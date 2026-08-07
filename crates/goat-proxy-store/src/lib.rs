@@ -101,9 +101,41 @@ fn connect_opts(path: &Path) -> ProxyResult<SqliteConnectOptions> {
     Ok(opts)
 }
 
+async fn run_migrations(pool: &SqlitePool) -> ProxyResult<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS _sqlx_migrations_proxy (
+             version BIGINT PRIMARY KEY,
+             description TEXT NOT NULL,
+             installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+             success BOOLEAN NOT NULL,
+             checksum BLOB NOT NULL,
+             execution_time BIGINT NOT NULL
+         )",
+    )
+    .execute(pool)
+    .await?;
+    let legacy: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations')",
+    )
+    .fetch_one(pool)
+    .await?;
+    if legacy {
+        sqlx::query(
+            "INSERT OR IGNORE INTO _sqlx_migrations_proxy
+             SELECT * FROM _sqlx_migrations WHERE version = 19",
+        )
+        .execute(pool)
+        .await?;
+    }
+    let mut migrator = sqlx::migrate!("./migrations");
+    migrator.dangerous_set_table_name("_sqlx_migrations_proxy");
+    migrator.run(pool).await?;
+    Ok(())
+}
+
 impl ProxyStore {
     pub async fn open(path: &Path) -> ProxyResult<Self> {
-        crate::register_sqlite_vec();
+        goat_sqlite_vec::register();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -111,7 +143,7 @@ impl ProxyStore {
             .max_connections(1)
             .connect_with(connect_opts(path)?)
             .await?;
-        sqlx::migrate!("./migrations").run(&writer).await?;
+        run_migrations(&writer).await?;
         let readers = SqlitePoolOptions::new()
             .max_connections(READER_POOL_MAX)
             .connect_with(connect_opts(path)?.read_only(true))
@@ -120,7 +152,7 @@ impl ProxyStore {
     }
 
     pub async fn open_in_memory() -> ProxyResult<Self> {
-        crate::register_sqlite_vec();
+        goat_sqlite_vec::register();
         let opts = "sqlite::memory:"
             .parse::<SqliteConnectOptions>()?
             .disable_statement_logging();
@@ -132,7 +164,7 @@ impl ProxyStore {
             .test_before_acquire(false)
             .connect_with(opts)
             .await?;
-        sqlx::migrate!("./migrations").run(&writer).await?;
+        run_migrations(&writer).await?;
         let readers = writer.clone();
         Ok(Self { writer, readers })
     }
@@ -446,6 +478,22 @@ mod tests {
         let openai = rows.iter().find(|r| r.provider == "openai").unwrap();
         assert_eq!(openai.snapshot, "{\"a\":2}");
         assert_eq!(openai.updated_at, 200);
+    }
+
+    #[tokio::test]
+    async fn opening_proxy_store_creates_only_proxy_schema() {
+        let store = ProxyStore::open_in_memory().await.unwrap();
+        let tables: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+                .fetch_all(&store.writer)
+                .await
+                .unwrap();
+        assert!(tables.iter().any(|table| table == "proxy_requests"));
+        assert!(tables.iter().any(|table| table == "proxy_rate_limits"));
+        assert!(!tables.iter().any(|table| table == "scheduled_tasks"));
+        assert!(!tables.iter().any(|table| table == "goals"));
+        assert!(!tables.iter().any(|table| table == "facts"));
+        assert!(!tables.iter().any(|table| table == "code_threads"));
     }
 
     #[tokio::test]

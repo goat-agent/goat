@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use goat_types::{AgentId, ChannelId, InstanceId, MessageId, OutgoingBody, ThreadId};
+use goat_types::{AgentId, ChannelId, InstanceId, MessageId, OutgoingBody, Surface, ThreadId};
 use tokio::sync::Mutex;
 
 use crate::{
-    ChannelCapabilities, ChannelHandle, ChannelIdentity, ChannelResult, SentRef, TypingGuard,
+    ChannelCapabilities, ChannelError, ChannelHandle, ChannelIdentity, ChannelResult, SentRef,
+    TypingGuard,
 };
 
 #[derive(Clone, Debug)]
@@ -103,6 +104,10 @@ impl ChannelHandle for MockChannelHandle {
     }
     fn capabilities(&self) -> ChannelCapabilities {
         self.capabilities
+    }
+
+    async fn surface(&self, _thread: &ThreadId) -> ChannelResult<Surface> {
+        Err(ChannelError::Unsupported("mock surface is unspecified"))
     }
 
     async fn send(

@@ -61,7 +61,7 @@ async fn load_code_assist(
         .map_err(|e| StreamError::transport(e.to_string()))?;
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
-    tracing::debug!(%status, body = %text, "loadCodeAssist response");
+    tracing::debug!(%status, response_bytes = text.len(), "loadCodeAssist response");
     if !status.is_success() {
         return Err(error::classify_http(status, &text));
     }
@@ -125,7 +125,7 @@ async fn onboard_user(
         .map_err(|e| StreamError::transport(e.to_string()))?;
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
-    tracing::debug!(%status, body = %text, "onboardUser response");
+    tracing::debug!(%status, response_bytes = text.len(), "onboardUser response");
     if !status.is_success() {
         return Err(error::classify_http(status, &text));
     }
@@ -156,10 +156,15 @@ async fn onboard_user(
             .send()
             .await
             .map_err(|e| StreamError::transport(e.to_string()))?;
+        let poll_status = poll.status();
         let poll_text = poll.text().await.unwrap_or_default();
-        tracing::debug!(body = %poll_text, "getOperation poll");
         current =
             serde_json::from_str(&poll_text).map_err(|e| StreamError::other(e.to_string()))?;
+        let done = current
+            .get("done")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        tracing::debug!(%poll_status, response_bytes = poll_text.len(), done, "getOperation poll");
     }
     let project = current
         .get("response")

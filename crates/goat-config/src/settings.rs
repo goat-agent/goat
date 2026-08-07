@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
 use std::fs;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::paths::config_path;
+use crate::{paths::config_path, write_atomic};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -26,8 +28,10 @@ pub struct Config {
     pub search: SearchConfig,
     pub web_fetch: WebFetchConfig,
     pub proxy: ProxyConfig,
-    pub integrations: std::collections::BTreeMap<String, serde_json::Value>,
-    pub providers: std::collections::BTreeMap<String, UserProviderConfig>,
+    pub integrations: BTreeMap<String, serde_json::Value>,
+    pub providers: BTreeMap<String, UserProviderConfig>,
+    #[serde(flatten)]
+    unrecognized: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,22 +153,24 @@ impl Default for Config {
             search: SearchConfig::default(),
             web_fetch: WebFetchConfig::default(),
             proxy: ProxyConfig::default(),
-            integrations: std::collections::BTreeMap::new(),
-            providers: std::collections::BTreeMap::new(),
+            integrations: BTreeMap::new(),
+            providers: BTreeMap::new(),
+            unrecognized: BTreeMap::new(),
         }
     }
 }
 
 impl Config {
     pub fn load() -> Self {
-        let Some(path) = config_path() else {
-            return Self::default();
-        };
-        let Ok(raw) = fs::read_to_string(&path) else {
+        config_path().map_or_else(Self::default, |path| Self::load_path(&path))
+    }
+
+    fn load_path(path: &Path) -> Self {
+        let Ok(raw) = fs::read_to_string(path) else {
             return Self::default();
         };
         let Ok(config) = serde_json::from_str::<Self>(&raw) else {
-            let _ = fs::rename(&path, path.with_extension("json.corrupt"));
+            let _ = fs::rename(path, path.with_extension("json.corrupt"));
             return Self::default();
         };
         config
@@ -177,10 +183,11 @@ impl Config {
 
     pub fn save(&self) -> Result<(), SettingsError> {
         let path = config_path().ok_or(SettingsError::NoHome)?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, serde_json::to_string_pretty(self)?)?;
+        self.save_path(&path)
+    }
+
+    fn save_path(&self, path: &Path) -> Result<(), SettingsError> {
+        write_atomic(path, serde_json::to_string_pretty(self)?.as_bytes())?;
         Ok(())
     }
 }
@@ -197,6 +204,8 @@ pub enum SettingsError {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeMap, fs};
+
     use super::{
         Config, DeviceConfig, ProxyConfig, RemoteEntry, SearchConfig, ThemeChoice, UserProviders,
         WebFetchConfig,
@@ -277,6 +286,38 @@ mod tests {
     }
 
     #[test]
+    fn unknown_top_level_key_survives_mutation_and_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let expected = serde_json::json!({
+            "enabled": true,
+            "limits": [1, 2, 3]
+        });
+        fs::write(
+            &path,
+            serde_json::json!({
+                "theme": "dark",
+                "future_extension": expected
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut config = Config::load_path(&path);
+        assert_eq!(config.unrecognized.len(), 1);
+        assert!(config.unrecognized.contains_key("future_extension"));
+        config.theme = ThemeChoice::Light;
+        config.save_path(&path).unwrap();
+        let reloaded = Config::load_path(&path);
+
+        assert_eq!(reloaded.theme, ThemeChoice::Light);
+        assert_eq!(reloaded.unrecognized["future_extension"], expected);
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(saved["future_extension"], expected);
+    }
+
+    #[test]
     fn round_trips_through_json() {
         let cfg = Config {
             theme: ThemeChoice::Light,
@@ -296,8 +337,9 @@ mod tests {
             search: SearchConfig::default(),
             web_fetch: WebFetchConfig::default(),
             proxy: ProxyConfig::default(),
-            integrations: std::collections::BTreeMap::new(),
-            providers: std::collections::BTreeMap::new(),
+            integrations: BTreeMap::new(),
+            providers: BTreeMap::new(),
+            unrecognized: BTreeMap::new(),
         };
         let raw = serde_json::to_string(&cfg).unwrap();
         assert_eq!(Config::from_json(&raw).unwrap(), cfg);

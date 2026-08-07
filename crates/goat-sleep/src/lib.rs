@@ -247,7 +247,6 @@ mod pipeline_tests {
     use super::*;
     use async_trait::async_trait;
     use goat_provider::{AuthMethod, Capabilities, ProviderId, ProviderMetadata};
-    use goat_store::SqliteStore;
     use std::sync::Arc;
 
     struct MockProvider;
@@ -290,8 +289,7 @@ mod pipeline_tests {
     async fn engine() -> (tempfile::TempDir, MemoryEngine) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("goat.db");
-        let pool = SqliteStore::open(&path).await.unwrap().pool();
-        let eng = MemoryEngine::open(pool, dir.path(), None, 180.0)
+        let eng = MemoryEngine::open(&path, dir.path(), None, 180.0)
             .await
             .unwrap();
         (dir, eng)

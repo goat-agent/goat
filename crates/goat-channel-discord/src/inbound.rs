@@ -30,7 +30,7 @@ pub(crate) struct GatewayConfig {
     pub(crate) instance: InstanceId,
     pub(crate) commands: Vec<CommandSpec>,
     pub(crate) interactions: Arc<InteractionState>,
-    pub(crate) allowed_user_ids: HashSet<u64>,
+    pub(crate) allowed_user_ids: Option<HashSet<u64>>,
     pub(crate) bot_id: u64,
     pub(crate) token: String,
     pub(crate) intents: Intents,
@@ -64,7 +64,7 @@ pub(crate) async fn gateway_loop(
                     if mc.author.bot {
                         continue;
                     }
-                    if !is_allowed_user_id(mc.author.id.get(), &allowed_user_ids) {
+                    if !is_allowed_user_id(mc.author.id.get(), allowed_user_ids.as_ref()) {
                         debug!(
                             user_id = mc.author.id.get(),
                             "discord: user not in allowlist, ignoring"
@@ -130,20 +130,20 @@ pub(crate) async fn gateway_loop(
                 Some(Ok(Event::InteractionCreate(ic))) => {
                     backoff_secs = 1;
                     match ic.author() {
-                        Some(author) if !is_allowed_user_id(author.id.get(), &allowed_user_ids) => {
+                        Some(author)
+                            if !is_allowed_user_id(author.id.get(), allowed_user_ids.as_ref()) =>
+                        {
                             debug!(
                                 user_id = author.id.get(),
                                 "discord: interaction user not in allowlist, ignoring"
                             );
                             continue;
                         }
-                        None if !allowed_user_ids.is_empty() => {
-                            debug!(
-                                "discord: interaction with no author and allowlist active, ignoring"
-                            );
+                        None => {
+                            debug!("discord: interaction with no author, ignoring");
                             continue;
                         }
-                        _ => {}
+                        Some(_) => {}
                     }
                     let Some((msg, pending)) = interaction_to_incoming(
                         &http,
@@ -299,8 +299,8 @@ async fn interaction_to_incoming(
     ))
 }
 
-fn is_allowed_user_id(user_id: u64, allowed_user_ids: &HashSet<u64>) -> bool {
-    allowed_user_ids.is_empty() || allowed_user_ids.contains(&user_id)
+fn is_allowed_user_id(user_id: u64, allowed_user_ids: Option<&HashSet<u64>>) -> bool {
+    allowed_user_ids.is_some_and(|allowed| allowed.contains(&user_id))
 }
 
 async fn channel_meta(
@@ -431,18 +431,23 @@ mod tests {
     }
 
     #[test]
-    fn allowlist_empty_allows_any_user() {
-        assert!(is_allowed_user_id(42, &allowlist(&[])));
+    fn absent_allowlist_denies() {
+        assert!(!is_allowed_user_id(42, None));
     }
 
     #[test]
-    fn allowlist_accepts_configured_user() {
-        assert!(is_allowed_user_id(42, &allowlist(&[42])));
+    fn empty_allowlist_denies() {
+        assert!(!is_allowed_user_id(42, Some(&allowlist(&[]))));
     }
 
     #[test]
-    fn allowlist_rejects_unconfigured_user() {
-        assert!(!is_allowed_user_id(7, &allowlist(&[42])));
+    fn listed_user_is_allowed() {
+        assert!(is_allowed_user_id(42, Some(&allowlist(&[42]))));
+    }
+
+    #[test]
+    fn unlisted_user_is_denied() {
+        assert!(!is_allowed_user_id(7, Some(&allowlist(&[42]))));
     }
 
     #[test]

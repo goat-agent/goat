@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use goat_agent_command::CommandSpec;
 use goat_types::{
-    AgentId, ChannelId, IncomingMessage, InstanceId, MessageId, OutgoingBody, ThreadId,
+    AgentId, ChannelId, IncomingMessage, InstanceId, MessageId, OutgoingBody, Surface, ThreadId,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -129,6 +129,8 @@ pub trait ChannelHandle: Send + Sync + 'static {
     fn id(&self) -> ChannelId;
     fn identity(&self) -> ChannelIdentity;
     fn capabilities(&self) -> ChannelCapabilities;
+
+    async fn surface(&self, thread: &ThreadId) -> ChannelResult<Surface>;
 
     async fn send(
         &self,

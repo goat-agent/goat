@@ -37,7 +37,7 @@ impl ToolHandler for EditTool {
         if args.old_string == args.new_string {
             return common::error("old_string and new_string must differ");
         }
-        let path = match common::existing_path(&ctx.goat_root, &args.file_path) {
+        let path = match common::existing_path(&ctx, &args.file_path) {
             Ok(path) => path,
             Err(e) => return common::error(e),
         };

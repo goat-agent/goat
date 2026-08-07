@@ -137,6 +137,8 @@ goat-types              = { path = "crates/goat-types" }
 goat-sqlite-vec         = { path = "crates/goat-sqlite-vec" }
 goat-bus                = { path = "crates/goat-bus" }
 goat-store              = { path = "crates/goat-store" }
+goat-code-store         = { path = "crates/goat-code-store" }
+goat-proxy-store        = { path = "crates/goat-proxy-store" }
 goat-config             = { path = "crates/goat-config" }
 goat-console            = { path = "crates/goat-console" }
 goat-agent-command            = { path = "crates/goat-agent-command" }
@@ -146,7 +148,6 @@ goat-channel            = { path = "crates/goat-channel" }
 goat-channel-discord    = { path = "crates/goat-channel-discord" }
 goat-channel-slack      = { path = "crates/goat-channel-slack" }
 goat-render             = { path = "crates/goat-render" }
-goat-plugin             = { path = "crates/goat-plugin" }
 goat-integration        = { path = "crates/goat-integration" }
 goat-integration-mcp    = { path = "crates/goat-integration-mcp" }
 goat-integration-github = { path = "crates/goat-integration-github" }
@@ -188,6 +189,7 @@ zerocopy                = "0.7"
 tiny_http               = "0.12"
 urlencoding             = "2"
 chrono                  = { version = "0.4", features = ["serde"] }
+chrono-tz               = "0.10"
 cron                    = "0.15"
 uuid                    = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 url                     = { version = "2", features = ["serde"] }

@@ -376,12 +376,15 @@ mod tests {
         store
             .store(
                 &CredentialKey::model(PROVIDER_ID, "oauth"),
-                Credential::OAuth(TokenSet::from_parts(
-                    "access".to_owned(),
-                    Some("refresh".to_owned()),
-                    Some(3600),
-                    None,
-                )),
+                Credential::OAuth(
+                    TokenSet::from_parts(
+                        "access".to_owned(),
+                        Some("refresh".to_owned()),
+                        Some(3600),
+                        None,
+                    )
+                    .unwrap(),
+                ),
             )
             .unwrap();
         let oauth = build(&store, "oauth");
@@ -417,12 +420,10 @@ mod tests {
         store
             .store(
                 &CredentialKey::model(PROVIDER_ID, "default"),
-                Credential::OAuth(TokenSet::from_parts(
-                    "oauth-access".to_owned(),
-                    None,
-                    Some(3600),
-                    None,
-                )),
+                Credential::OAuth(
+                    TokenSet::from_parts("oauth-access".to_owned(), None, Some(3600), None)
+                        .unwrap(),
+                ),
             )
             .unwrap();
         let provider = XaiProvider::new(store, CredentialKey::model(PROVIDER_ID, "default"));

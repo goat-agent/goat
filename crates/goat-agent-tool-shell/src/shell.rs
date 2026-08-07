@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use goat_agent_tool::command_safety::deny_reason;
 use goat_agent_tool::{
     ToolCall, ToolContent, ToolContext, ToolFactory, ToolHandler, ToolName, ToolOutput, ToolSpec,
+    deny_reason,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -52,8 +52,10 @@ impl ToolHandler for ShellTool {
             .clamp(1_000, MAX_TIMEOUT_MS);
 
         let mut cmd = Command::new("/bin/sh");
-        cmd.arg("-lc")
+        cmd.arg("-c")
             .arg(&args.command)
+            .env_clear()
+            .envs(goat_process::child_environment())
             .current_dir(&cwd)
             .kill_on_drop(true);
 
@@ -232,6 +234,26 @@ mod tests {
         let text = out.text_for_model();
         assert!(text.contains("exit_code: 0"));
         assert!(text.contains("stdout:\n```text\nhello\n```"));
+    }
+
+    #[tokio::test]
+    async fn non_login_shell_resolves_binaries_with_the_filtered_environment() {
+        let temp = tempfile::tempdir().unwrap();
+        let out = ShellTool
+            .call(
+                ctx(temp.path().to_path_buf()),
+                ToolCall {
+                    call_id: "c2".into(),
+                    name: NAME,
+                    arguments: json!({"command":"command -v sh >/dev/null && sh -c 'printf resolved'"}),
+                },
+            )
+            .await;
+        assert!(!out.is_error);
+        assert_eq!(
+            out.structured_content.as_ref().unwrap()["stdout"],
+            "resolved"
+        );
     }
 
     #[test]

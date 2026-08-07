@@ -12,5 +12,5 @@ pub enum ProxyError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("store: {0}")]
-    Store(#[from] goat_store::ProxyStoreError),
+    Store(#[from] goat_proxy_store::ProxyStoreError),
 }

@@ -2,6 +2,7 @@ use std::path::Path;
 
 use goat_auth::{Credential, CredentialStore, SecretString};
 use goat_channel::{ChannelSecrets, SecretSpec};
+use goat_config::write_atomic;
 use goat_types::ChannelId;
 use serde_json::Value;
 use tracing::{info, warn};
@@ -116,7 +117,7 @@ fn strip_stored_slots(path: &Path, binding_name: &str, slots: &[&str]) -> anyhow
     }
     let mut serialized = serde_json::to_string_pretty(&doc)?;
     serialized.push('\n');
-    std::fs::write(path, serialized)?;
+    write_atomic(path, serialized.as_bytes())?;
     Ok(())
 }
 

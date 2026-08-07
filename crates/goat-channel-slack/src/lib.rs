@@ -146,9 +146,12 @@ mod tests {
     }
 
     #[test]
-    fn config_accepts_an_empty_binding_and_an_allowlist() {
-        assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "allowed_user_ids": [] })).is_ok());
+    fn config_preserves_missing_and_empty_allowlists() {
+        let missing: config::SlackConfig = serde_json::from_value(json!({})).unwrap();
+        let empty: config::SlackConfig =
+            serde_json::from_value(json!({ "allowed_user_ids": [] })).unwrap();
+        assert!(missing.allowed_user_ids.is_none());
+        assert!(empty.allowed_user_ids.is_some_and(|ids| ids.is_empty()));
         assert!(validate_config(&json!({ "allowed_user_ids": ["U1", "U2"] })).is_ok());
     }
 

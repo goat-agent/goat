@@ -3,7 +3,7 @@ use std::io::IsTerminal;
 use anyhow::{Result, anyhow};
 use clap::Subcommand;
 use goat_auth::CredentialStore;
-use goat_config::GoatPaths;
+use goat_config::{GoatPaths, write_atomic};
 use goat_model::{Model, ProviderId};
 use goat_providers::Registry;
 use serde_json::{Map, Value, json};
@@ -73,7 +73,7 @@ fn write_agent(paths: &GoatPaths, slug: &str) -> Result<String> {
         "tools": ["*"],
         "channels": {}
     }))?;
-    std::fs::write(&config_json, format!("{body}\n"))?;
+    write_atomic(&config_json, format!("{body}\n").as_bytes())?;
     ui::pair("file", &agent_md.display().to_string());
     ui::pair("config", &config_json.display().to_string());
     Ok(slug)
@@ -308,7 +308,7 @@ pub(crate) fn read_agent_config(dir: &std::path::Path) -> Result<Value> {
 
 fn write_agent_config(dir: &std::path::Path, value: &Value) -> Result<()> {
     let body = serde_json::to_string_pretty(value)?;
-    std::fs::write(dir.join("config.json"), format!("{body}\n"))?;
+    write_atomic(&dir.join("config.json"), format!("{body}\n").as_bytes())?;
     Ok(())
 }
 

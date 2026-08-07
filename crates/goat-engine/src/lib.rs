@@ -6,11 +6,11 @@ use std::{
 use std::path::PathBuf;
 
 use goat_auth::CredentialStore;
+use goat_code_store::CodeStore as Store;
 use goat_core::Engine;
 use goat_protocol::{Event, ModelTarget, Op, SkillInfo, TaskId, ToolCallId};
 use goat_provider::{Provider, ToolDefinition};
 use goat_providers::{DEFAULT_ACCOUNT, Registry};
-use goat_store::CodeStore as Store;
 use goat_tool::SandboxPolicy;
 use goat_tools::ToolRegistry;
 use tokio::{
@@ -21,6 +21,8 @@ use tokio::{
 mod accounts;
 mod ask;
 mod background;
+#[cfg(all(test, not(windows)))]
+mod background_environment_tests;
 mod bash_tools;
 mod checkpoint;
 mod compaction;
@@ -522,6 +524,7 @@ mod tests {
     use std::sync::Arc;
 
     use goat_auth::CredentialStore;
+    use goat_code_store::CodeStore as Store;
     use goat_core::Session;
     use goat_protocol::{Event, ModelTarget, Op, TaskId};
     use goat_provider::{
@@ -529,7 +532,6 @@ mod tests {
         StreamError,
     };
     use goat_providers::Registry;
-    use goat_store::CodeStore as Store;
     use tokio::{sync::mpsc, task::JoinHandle};
 
     use super::GoatAgent;

@@ -3,27 +3,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use goat_types::{AgentId, ChannelId, IncomingMessage, InstanceId, MessageId, ThreadId};
+use goat_types::{
+    AgentId, Attachment, ChannelId, IncomingMessage, InstanceId, MessageId, ThreadId, UserHandle,
+};
 use sqlx::ConnectOptions;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use thiserror::Error;
 use tracing::info;
 use uuid::Uuid;
-
-pub use goat_sqlite_vec::register as register_sqlite_vec;
-
-mod code;
-pub use code::{
-    CheckpointFileVersion, CodeCheckpoint, CodeResult, CodeStore, CodeStoreError, Compaction,
-    CreatedMessage, NewCheckpointFile, NewCodeCheckpoint, NewCompaction, NewMessage, NewProcess,
-    NewThread, NewToolCall, NewTurn, OpenPrompt, OrphanProcess, StoredMessage, Thread,
-};
-
-mod proxy;
-pub use proxy::{
-    NewRequest, ProxyResult, ProxyStore, ProxyStoreError, RateLimitRow, RequestRow, Totals,
-    UsageBucket,
-};
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -48,8 +35,17 @@ pub type StoreResult<T> = Result<T, StoreError>;
 #[derive(Clone, Debug)]
 pub struct HistoryRow {
     pub direction: Direction,
+    pub sender: Option<MessageSender>,
     pub text: String,
+    pub attachments: Vec<Attachment>,
+    pub reply_to: Option<MessageId>,
     pub ts: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MessageSender {
+    User(UserHandle),
+    Agent(AgentId),
 }
 
 #[derive(Clone, Debug)]
@@ -108,13 +104,13 @@ pub enum ScheduleKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ScheduledTaskStatus {
+pub enum ScheduleStatus {
     Active,
     Cancelled,
     Done,
 }
 
-impl ScheduledTaskStatus {
+impl ScheduleStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
@@ -137,7 +133,7 @@ impl ScheduledTaskStatus {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TaskRunStatus {
+pub enum ScheduleRunStatus {
     Pending,
     Running,
     Done,
@@ -145,7 +141,7 @@ pub enum TaskRunStatus {
     Skipped,
 }
 
-impl TaskRunStatus {
+impl ScheduleRunStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
@@ -172,37 +168,39 @@ impl TaskRunStatus {
 }
 
 #[derive(Clone, Debug)]
-pub struct NewScheduledTask {
+pub struct NewSchedule {
     pub agent: AgentId,
-    pub task: String,
+    pub instruction: String,
     pub tools: Vec<String>,
     pub origin_conv: ThreadId,
     pub schedule: ScheduleKind,
+    pub timezone: Option<String>,
     pub created_by_msg_id: Option<MessageId>,
 }
 
 #[derive(Clone, Debug)]
-pub struct ScheduledTaskRecord {
+pub struct Schedule {
     pub id: i64,
     pub agent: AgentId,
-    pub task: String,
+    pub instruction: String,
     pub tools: Vec<String>,
     pub origin_conv: ThreadId,
     pub schedule: ScheduleKind,
-    pub status: ScheduledTaskStatus,
+    pub timezone: Option<String>,
+    pub status: ScheduleStatus,
     pub created_at: DateTime<Utc>,
     pub created_by_msg_id: Option<MessageId>,
 }
 
 #[derive(Clone, Debug)]
-pub struct TaskRunRecord {
+pub struct ScheduleRun {
     pub id: i64,
-    pub task_id: i64,
-    pub task_snapshot: String,
+    pub schedule_id: i64,
+    pub instruction_snapshot: String,
     pub run_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
-    pub status: TaskRunStatus,
+    pub status: ScheduleRunStatus,
     pub running_since: Option<DateTime<Utc>>,
     pub attempts: i64,
     pub result_summary: Option<String>,
@@ -371,51 +369,51 @@ pub trait Store: Send + Sync + 'static {
         summarized_count: usize,
     ) -> StoreResult<()>;
 
-    async fn insert_scheduled_task(&self, new: NewScheduledTask) -> StoreResult<i64>;
+    async fn insert_schedule(&self, new: NewSchedule) -> StoreResult<i64>;
 
-    async fn insert_task_run(
+    async fn insert_schedule_run(
         &self,
-        task_id: i64,
+        schedule_id: i64,
         run_at: DateTime<Utc>,
-        task_snapshot: String,
+        instruction_snapshot: String,
     ) -> StoreResult<i64>;
 
     async fn claim_due_run(
         &self,
         now: DateTime<Utc>,
-    ) -> StoreResult<Option<(TaskRunRecord, ScheduledTaskRecord)>>;
+    ) -> StoreResult<Option<(ScheduleRun, Schedule)>>;
 
     async fn finish_run(
         &self,
         run_id: i64,
-        status: TaskRunStatus,
+        status: ScheduleRunStatus,
         result_summary: Option<String>,
     ) -> StoreResult<()>;
 
-    async fn cancel_task_by_id(&self, task_id: i64) -> StoreResult<bool>;
+    async fn cancel_schedule(&self, schedule_id: i64) -> StoreResult<bool>;
 
-    async fn cancel_tasks_by_match(
+    async fn cancel_schedules_by_match(
         &self,
         agent: AgentId,
         match_text: &str,
     ) -> StoreResult<Vec<i64>>;
 
-    async fn list_active_tasks(
+    async fn list_active_schedules(
         &self,
         agent: AgentId,
-    ) -> StoreResult<Vec<(ScheduledTaskRecord, Option<DateTime<Utc>>)>>;
+    ) -> StoreResult<Vec<(Schedule, Option<DateTime<Utc>>)>>;
 
-    async fn get_scheduled_task(&self, id: i64) -> StoreResult<Option<ScheduledTaskRecord>>;
+    async fn get_schedule(&self, id: i64) -> StoreResult<Option<Schedule>>;
 
-    async fn similar_active_tasks(
+    async fn similar_active_schedules(
         &self,
         agent: AgentId,
         needle: &str,
-    ) -> StoreResult<Vec<ScheduledTaskRecord>>;
+    ) -> StoreResult<Vec<Schedule>>;
 
     async fn reclaim_stale_runs(&self, stale_before: DateTime<Utc>) -> StoreResult<usize>;
 
-    async fn cron_tasks_missing_next_run(&self) -> StoreResult<Vec<ScheduledTaskRecord>>;
+    async fn cron_schedules_missing_next_run(&self) -> StoreResult<Vec<Schedule>>;
 
     async fn all_pending_runs(&self) -> StoreResult<Vec<(i64, i64, DateTime<Utc>)>>;
 
@@ -496,7 +494,7 @@ pub struct SqliteStore {
 
 impl SqliteStore {
     pub async fn open(path: &Path) -> StoreResult<Self> {
-        register_sqlite_vec();
+        goat_sqlite_vec::register();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -511,17 +509,46 @@ impl SqliteStore {
             .max_connections(8)
             .connect_with(opts)
             .await?;
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        inherit_legacy_migrations(&pool).await?;
+        let mut migrator = sqlx::migrate!("./migrations");
+        migrator.dangerous_set_table_name("_sqlx_migrations_agent");
+        migrator.run(&pool).await?;
         restrict_db_permissions(path);
         info!(path = %path.display(), "opened sqlite store");
         Ok(Self {
             pool: Arc::new(pool),
         })
     }
+}
 
-    pub fn pool(&self) -> Arc<SqlitePool> {
-        self.pool.clone()
+async fn inherit_legacy_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS _sqlx_migrations_agent (
+             version BIGINT PRIMARY KEY,
+             description TEXT NOT NULL,
+             installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+             success BOOLEAN NOT NULL,
+             checksum BLOB NOT NULL,
+             execution_time BIGINT NOT NULL
+         )",
+    )
+    .execute(pool)
+    .await?;
+    let legacy: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations')",
+    )
+    .fetch_one(pool)
+    .await?;
+    if legacy {
+        sqlx::query(
+            "INSERT OR IGNORE INTO _sqlx_migrations_agent
+             SELECT * FROM _sqlx_migrations
+             WHERE version IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 22, 23)",
+        )
+        .execute(pool)
+        .await?;
     }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -615,14 +642,19 @@ impl Store for SqliteStore {
         self.ensure_thread(&msg.thread, msg.agent).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, agent_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
-               VALUES (?, ?, ?, 'in', 'text', ?, NULL, NULL, ?, ?)
+               (id, thread_id, agent_id, direction, sender_kind, sender_key, sender_display,
+                body_kind, text, attachment_ref, attachments, reply_to, ts, raw)
+               VALUES (?, ?, ?, 'in', 'user', ?, ?, 'text', ?, NULL, ?, ?, ?, ?)
                ON CONFLICT(id) DO NOTHING",
         )
-        .bind(Uuid::new_v4().to_string())
+        .bind(&msg.id.0)
         .bind(msg.thread.to_key())
         .bind(msg.agent.to_string())
+        .bind(&msg.from.external)
+        .bind(&msg.from.display)
         .bind(&msg.text)
+        .bind(serde_json::to_string(&msg.attachments)?)
+        .bind(&msg.parent)
         .bind(msg.ts.to_rfc3339())
         .bind(msg.raw.to_string())
         .execute(&*self.pool)
@@ -639,11 +671,13 @@ impl Store for SqliteStore {
         self.ensure_thread(thread, agent).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, agent_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
-               VALUES (?, ?, ?, 'in', 'text', ?, NULL, NULL, ?, NULL)",
+               (id, thread_id, agent_id, direction, sender_kind, sender_key,
+                body_kind, text, attachment_ref, reply_to, ts, raw)
+               VALUES (?, ?, ?, 'in', 'agent', ?, 'text', ?, NULL, NULL, ?, NULL)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(thread.to_key())
+        .bind(agent.to_string())
         .bind(agent.to_string())
         .bind(text)
         .bind(Utc::now().to_rfc3339())
@@ -677,11 +711,13 @@ impl Store for SqliteStore {
         self.ensure_thread(conv, agent).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, agent_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
-               VALUES (?, ?, ?, 'out', 'text', ?, NULL, ?, ?, NULL)",
+               (id, thread_id, agent_id, direction, sender_kind, sender_key,
+                body_kind, text, attachment_ref, reply_to, ts, raw)
+               VALUES (?, ?, ?, 'out', 'agent', ?, 'text', ?, NULL, ?, ?, NULL)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(conv.to_key())
+        .bind(agent.to_string())
         .bind(agent.to_string())
         .bind(text)
         .bind(reply_to.map(|m| m.0.clone()))
@@ -702,12 +738,14 @@ impl Store for SqliteStore {
         self.ensure_thread(conv, agent).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, agent_id, direction, body_kind, text, attachment_ref, reply_to, ts, raw)
-               VALUES (?, ?, ?, 'out', 'text', ?, NULL, ?, ?, NULL)
+               (id, thread_id, agent_id, direction, sender_kind, sender_key,
+                body_kind, text, attachment_ref, reply_to, ts, raw)
+               VALUES (?, ?, ?, 'out', 'agent', ?, 'text', ?, NULL, ?, ?, NULL)
                ON CONFLICT(id) DO UPDATE SET text = excluded.text, ts = excluded.ts",
         )
         .bind(id)
         .bind(conv.to_key())
+        .bind(agent.to_string())
         .bind(agent.to_string())
         .bind(text)
         .bind(reply_to.map(|m| m.0.clone()))
@@ -792,8 +830,9 @@ impl Store for SqliteStore {
         limit: usize,
     ) -> StoreResult<Vec<HistoryRow>> {
         let limit = i64::try_from(limit.max(1)).unwrap_or(i64::MAX);
-        let rows = sqlx::query_as::<_, (String, String, String)>(
-            r"SELECT direction, text, ts
+        let rows = sqlx::query_as::<_, HistorySqlRow>(
+            r"SELECT direction, text, attachments, reply_to, ts,
+                      sender_kind, sender_key, sender_display
                FROM messages
                WHERE agent_id = ? AND thread_id = ? AND text IS NOT NULL
                ORDER BY ts DESC
@@ -807,16 +846,8 @@ impl Store for SqliteStore {
 
         let mut history: Vec<HistoryRow> = rows
             .into_iter()
-            .map(|(dir, text, ts)| HistoryRow {
-                direction: match dir.as_str() {
-                    "out" => Direction::Out,
-                    _ => Direction::In,
-                },
-                text,
-                ts: chrono::DateTime::parse_from_rfc3339(&ts)
-                    .map_or_else(|_| Utc::now(), |d| d.with_timezone(&Utc)),
-            })
-            .collect();
+            .map(history_row)
+            .collect::<StoreResult<_>>()?;
         history.reverse();
         Ok(history)
     }
@@ -843,8 +874,9 @@ impl Store for SqliteStore {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let rows = sqlx::query_as::<_, (String, String, String)>(
-            r"SELECT direction, text, ts
+        let rows = sqlx::query_as::<_, HistorySqlRow>(
+            r"SELECT direction, text, attachments, reply_to, ts,
+                      sender_kind, sender_key, sender_display
                FROM messages
                WHERE agent_id = ? AND thread_id = ? AND text IS NOT NULL
                ORDER BY ts ASC, id ASC
@@ -856,18 +888,7 @@ impl Store for SqliteStore {
         .bind(i64::try_from(offset).unwrap_or(i64::MAX))
         .fetch_all(&*self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(|(dir, text, ts)| HistoryRow {
-                direction: match dir.as_str() {
-                    "out" => Direction::Out,
-                    _ => Direction::In,
-                },
-                text,
-                ts: chrono::DateTime::parse_from_rfc3339(&ts)
-                    .map_or_else(|_| Utc::now(), |d| d.with_timezone(&Utc)),
-            })
-            .collect())
+        rows.into_iter().map(history_row).collect()
     }
 
     async fn get_thread_summary(
@@ -916,7 +937,7 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    async fn insert_scheduled_task(&self, new: NewScheduledTask) -> StoreResult<i64> {
+    async fn insert_schedule(&self, new: NewSchedule) -> StoreResult<i64> {
         self.ensure_thread(&new.origin_conv, new.agent).await?;
         let (kind_str, once_at, cron) = match &new.schedule {
             ScheduleKind::Once(at) => ("once", Some(at.to_rfc3339()), None),
@@ -926,17 +947,18 @@ impl Store for SqliteStore {
         let row: (i64,) = sqlx::query_as(
             r"INSERT INTO scheduled_tasks
                (agent_id, task, tools, origin_conv, schedule_kind, once_at,
-                cron, status, created_at, created_by_msg_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                cron, timezone, status, created_at, created_by_msg_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
                RETURNING id",
         )
         .bind(new.agent.to_string())
-        .bind(&new.task)
+        .bind(&new.instruction)
         .bind(tools_json)
         .bind(new.origin_conv.to_key())
         .bind(kind_str)
         .bind(once_at)
         .bind(cron)
+        .bind(new.timezone)
         .bind(Utc::now().to_rfc3339())
         .bind(new.created_by_msg_id.as_ref().map(|m| m.0.clone()))
         .fetch_one(&*self.pool)
@@ -944,11 +966,11 @@ impl Store for SqliteStore {
         Ok(row.0)
     }
 
-    async fn insert_task_run(
+    async fn insert_schedule_run(
         &self,
-        task_id: i64,
+        schedule_id: i64,
         run_at: DateTime<Utc>,
-        task_snapshot: String,
+        instruction_snapshot: String,
     ) -> StoreResult<i64> {
         let row: (i64,) = sqlx::query_as(
             r"INSERT INTO task_runs
@@ -956,8 +978,8 @@ impl Store for SqliteStore {
                VALUES (?, ?, ?, 'pending', 0)
                RETURNING id",
         )
-        .bind(task_id)
-        .bind(&task_snapshot)
+        .bind(schedule_id)
+        .bind(&instruction_snapshot)
         .bind(run_at.to_rfc3339())
         .fetch_one(&*self.pool)
         .await?;
@@ -967,7 +989,7 @@ impl Store for SqliteStore {
     async fn claim_due_run(
         &self,
         now: DateTime<Utc>,
-    ) -> StoreResult<Option<(TaskRunRecord, ScheduledTaskRecord)>> {
+    ) -> StoreResult<Option<(ScheduleRun, Schedule)>> {
         let now_str = now.to_rfc3339();
         #[allow(clippy::type_complexity)]
         let claimed: Option<(
@@ -1006,27 +1028,27 @@ impl Store for SqliteStore {
             return Ok(None);
         };
 
-        let run = TaskRunRecord {
+        let run = ScheduleRun {
             id: row.0,
-            task_id: row.1,
-            task_snapshot: row.2,
+            schedule_id: row.1,
+            instruction_snapshot: row.2,
             run_at: parse_ts(&row.3)?,
             started_at: row.4.as_deref().map(parse_ts).transpose()?,
             finished_at: row.5.as_deref().map(parse_ts).transpose()?,
-            status: TaskRunStatus::parse(&row.6)?,
+            status: ScheduleRunStatus::parse(&row.6)?,
             running_since: row.7.as_deref().map(parse_ts).transpose()?,
             attempts: row.8,
             result_summary: row.9,
         };
 
-        let task = load_scheduled_task(&self.pool, run.task_id).await?;
+        let task = load_schedule(&self.pool, run.schedule_id).await?;
         Ok(Some((run, task)))
     }
 
     async fn finish_run(
         &self,
         run_id: i64,
-        status: TaskRunStatus,
+        status: ScheduleRunStatus,
         result_summary: Option<String>,
     ) -> StoreResult<()> {
         let now = Utc::now().to_rfc3339();
@@ -1044,14 +1066,14 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    async fn cancel_task_by_id(&self, task_id: i64) -> StoreResult<bool> {
+    async fn cancel_schedule(&self, schedule_id: i64) -> StoreResult<bool> {
         let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
             r"UPDATE scheduled_tasks
                SET status = 'cancelled'
                WHERE id = ? AND status = 'active'",
         )
-        .bind(task_id)
+        .bind(schedule_id)
         .execute(&mut *tx)
         .await?;
         let changed = result.rows_affected() > 0;
@@ -1062,7 +1084,7 @@ impl Store for SqliteStore {
                    WHERE task_id = ? AND status = 'pending'",
             )
             .bind(Utc::now().to_rfc3339())
-            .bind(task_id)
+            .bind(schedule_id)
             .execute(&mut *tx)
             .await?;
         }
@@ -1070,7 +1092,7 @@ impl Store for SqliteStore {
         Ok(changed)
     }
 
-    async fn cancel_tasks_by_match(
+    async fn cancel_schedules_by_match(
         &self,
         agent: AgentId,
         match_text: &str,
@@ -1086,29 +1108,29 @@ impl Store for SqliteStore {
         .await?;
         let mut cancelled = Vec::new();
         for (id,) in ids {
-            if self.cancel_task_by_id(id).await? {
+            if self.cancel_schedule(id).await? {
                 cancelled.push(id);
             }
         }
         Ok(cancelled)
     }
 
-    async fn get_scheduled_task(&self, id: i64) -> StoreResult<Option<ScheduledTaskRecord>> {
+    async fn get_schedule(&self, id: i64) -> StoreResult<Option<Schedule>> {
         let exists: Option<(i64,)> = sqlx::query_as(r"SELECT id FROM scheduled_tasks WHERE id = ?")
             .bind(id)
             .fetch_optional(&*self.pool)
             .await?;
         match exists {
-            Some(_) => Ok(Some(load_scheduled_task(&self.pool, id).await?)),
+            Some(_) => Ok(Some(load_schedule(&self.pool, id).await?)),
             None => Ok(None),
         }
     }
 
-    async fn similar_active_tasks(
+    async fn similar_active_schedules(
         &self,
         agent: AgentId,
         needle: &str,
-    ) -> StoreResult<Vec<ScheduledTaskRecord>> {
+    ) -> StoreResult<Vec<Schedule>> {
         let trimmed = needle.trim();
         if trimmed.is_empty() {
             return Ok(Vec::new());
@@ -1126,7 +1148,7 @@ impl Store for SqliteStore {
         .await?;
         let mut out = Vec::with_capacity(ids.len());
         for (id,) in ids {
-            out.push(load_scheduled_task(&self.pool, id).await?);
+            out.push(load_schedule(&self.pool, id).await?);
         }
         Ok(out)
     }
@@ -1156,13 +1178,13 @@ impl Store for SqliteStore {
         .fetch_all(&*self.pool)
         .await?;
         let mut out = Vec::with_capacity(rows.len());
-        for (id, task_id, ts) in rows {
-            out.push((id, task_id, parse_ts(&ts)?));
+        for (id, schedule_id, ts) in rows {
+            out.push((id, schedule_id, parse_ts(&ts)?));
         }
         Ok(out)
     }
 
-    async fn cron_tasks_missing_next_run(&self) -> StoreResult<Vec<ScheduledTaskRecord>> {
+    async fn cron_schedules_missing_next_run(&self) -> StoreResult<Vec<Schedule>> {
         let ids: Vec<(i64,)> = sqlx::query_as(
             r"SELECT s.id FROM scheduled_tasks s
                WHERE s.status = 'active' AND s.schedule_kind = 'cron'
@@ -1176,15 +1198,15 @@ impl Store for SqliteStore {
         .await?;
         let mut out = Vec::with_capacity(ids.len());
         for (id,) in ids {
-            out.push(load_scheduled_task(&self.pool, id).await?);
+            out.push(load_schedule(&self.pool, id).await?);
         }
         Ok(out)
     }
 
-    async fn list_active_tasks(
+    async fn list_active_schedules(
         &self,
         agent: AgentId,
-    ) -> StoreResult<Vec<(ScheduledTaskRecord, Option<DateTime<Utc>>)>> {
+    ) -> StoreResult<Vec<(Schedule, Option<DateTime<Utc>>)>> {
         let rows: Vec<(i64,)> = sqlx::query_as(
             r"SELECT id FROM scheduled_tasks
                WHERE agent_id = ? AND status = 'active'
@@ -1196,7 +1218,7 @@ impl Store for SqliteStore {
 
         let mut out = Vec::with_capacity(rows.len());
         for (id,) in rows {
-            let task = load_scheduled_task(&self.pool, id).await?;
+            let task = load_schedule(&self.pool, id).await?;
             let next: Option<(String,)> = sqlx::query_as(
                 r"SELECT run_at FROM task_runs
                    WHERE task_id = ? AND status = 'pending'
@@ -1446,7 +1468,7 @@ impl Store for SqliteStore {
     }
 }
 
-async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<ScheduledTaskRecord> {
+async fn load_schedule(pool: &SqlitePool, id: i64) -> StoreResult<Schedule> {
     #[allow(clippy::type_complexity)]
     let row: (
         i64,
@@ -1457,6 +1479,7 @@ async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<Schedule
         String,
         Option<String>,
         Option<String>,
+        Option<String>,
         String,
         String,
         Option<String>,
@@ -1465,7 +1488,7 @@ async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<Schedule
         String,
     ) = sqlx::query_as(
         r"SELECT s.id, s.agent_id, s.task, s.tools, s.origin_conv,
-                  s.schedule_kind, s.once_at, s.cron, s.status, s.created_at,
+                  s.schedule_kind, s.once_at, s.cron, s.timezone, s.status, s.created_at,
                   s.created_by_msg_id, c.channel, c.instance, c.external
            FROM scheduled_tasks s
            JOIN threads c ON c.id = s.origin_conv
@@ -1477,8 +1500,8 @@ async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<Schedule
 
     let tools: Vec<String> = serde_json::from_str(&row.3)?;
     let agent = AgentId(Uuid::parse_str(&row.1)?);
-    let instance = InstanceId(Uuid::parse_str(&row.12)?);
-    let origin_conv = ThreadId::new(ChannelId::new(row.11.clone()), instance, row.13.clone());
+    let instance = InstanceId(Uuid::parse_str(&row.13)?);
+    let origin_conv = ThreadId::new(ChannelId::new(row.12.clone()), instance, row.14.clone());
     let schedule = match row.5.as_str() {
         "once" => {
             let at = row.6.as_deref().ok_or(StoreError::InvalidEnum {
@@ -1502,16 +1525,57 @@ async fn load_scheduled_task(pool: &SqlitePool, id: i64) -> StoreResult<Schedule
         }
     };
 
-    Ok(ScheduledTaskRecord {
+    Ok(Schedule {
         id: row.0,
         agent,
-        task: row.2,
+        instruction: row.2,
         tools,
         origin_conv,
         schedule,
-        status: ScheduledTaskStatus::parse(&row.8)?,
-        created_at: parse_ts(&row.9)?,
-        created_by_msg_id: row.10.map(MessageId),
+        timezone: row.8,
+        status: ScheduleStatus::parse(&row.9)?,
+        created_at: parse_ts(&row.10)?,
+        created_by_msg_id: row.11.map(MessageId),
+    })
+}
+
+type HistorySqlRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+fn history_row(row: HistorySqlRow) -> StoreResult<HistoryRow> {
+    let direction = match row.0.as_str() {
+        "out" => Direction::Out,
+        _ => Direction::In,
+    };
+    let sender = match (row.5.as_deref(), row.6) {
+        (Some("user"), Some(external)) => Some(MessageSender::User(UserHandle {
+            external,
+            display: row.7,
+        })),
+        (Some("agent"), Some(key)) => Some(MessageSender::Agent(AgentId(Uuid::parse_str(&key)?))),
+        (None, None) => None,
+        (kind, key) => {
+            return Err(StoreError::InvalidEnum {
+                field: "messages.sender",
+                value: format!("{kind:?}/{key:?}"),
+            });
+        }
+    };
+    Ok(HistoryRow {
+        direction,
+        sender,
+        text: row.1,
+        attachments: serde_json::from_str(&row.2)?,
+        reply_to: row.3.map(MessageId),
+        ts: parse_ts(&row.4)?,
     })
 }
 
@@ -1585,7 +1649,7 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
 mod tests {
     use super::*;
     use chrono::Duration;
-    use goat_types::{ChannelId, InstanceId, Surface, UserHandle};
+    use goat_types::{AttachmentSource, ChannelId, InstanceId, Surface, UserHandle};
 
     async fn fresh() -> SqliteStore {
         let dir = tempfile::tempdir().unwrap();
@@ -1633,7 +1697,80 @@ mod tests {
         let hist = s.recent(p, &conv, 10).await.unwrap();
         assert_eq!(hist.len(), 2);
         assert_eq!(hist[0].text, "hello");
+        assert_eq!(
+            hist[0].sender,
+            Some(MessageSender::User(UserHandle {
+                external: "u".into(),
+                display: None,
+            }))
+        );
         assert_eq!(hist[1].text, "world");
+        assert_eq!(hist[1].sender, Some(MessageSender::Agent(p)));
+    }
+
+    #[tokio::test]
+    async fn incoming_redelivery_preserves_one_complete_message() {
+        let s = fresh().await;
+        let p = fixture_agent(&s).await;
+        let conv = fixture_conv();
+        let attachments = vec![
+            Attachment {
+                mime: "image/png".into(),
+                name: Some("diagram.png".into()),
+                size: 42,
+                source: AttachmentSource::Url("https://example.test/diagram.png".into()),
+            },
+            Attachment {
+                mime: "application/octet-stream".into(),
+                name: None,
+                size: 7,
+                source: AttachmentSource::ChannelRef {
+                    channel: ChannelId::new("discord"),
+                    kind: "attachment".into(),
+                    value: "file-7".into(),
+                    raw: serde_json::json!({"token": "opaque"}),
+                },
+            },
+        ];
+        let msg = IncomingMessage {
+            id: MessageId("stable-external-id".into()),
+            agent: p,
+            thread: conv.clone(),
+            from: UserHandle {
+                external: "user-42".into(),
+                display: Some("Mutable Name".into()),
+            },
+            text: "with files".into(),
+            attachments: attachments.clone(),
+            command: None,
+            surface: Surface::Thread,
+            addressed: true,
+            parent: Some("parent-message".into()),
+            ts: Utc::now(),
+            raw: serde_json::json!({"delivery": 1}),
+        };
+
+        s.append_incoming(&msg).await.unwrap();
+        s.append_incoming(&msg).await.unwrap();
+
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE id = ?")
+            .bind(&msg.id.0)
+            .fetch_one(&*s.pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 1);
+
+        let history = s.recent(p, &conv, 10).await.unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0].sender,
+            Some(MessageSender::User(msg.from.clone()))
+        );
+        assert_eq!(history[0].attachments, attachments);
+        assert_eq!(
+            history[0].reply_to,
+            Some(MessageId("parent-message".into()))
+        );
     }
 
     #[tokio::test]
@@ -1713,27 +1850,28 @@ mod tests {
         let conv = fixture_conv();
         s.ensure_thread(&conv, p).await.unwrap();
         let due = Utc::now() + Duration::minutes(5);
-        let task_id = s
-            .insert_scheduled_task(NewScheduledTask {
+        let schedule_id = s
+            .insert_schedule(NewSchedule {
                 agent: p,
-                task: "ping example.com".into(),
+                instruction: "ping example.com".into(),
                 tools: vec!["shell".into()],
                 origin_conv: conv.clone(),
                 schedule: ScheduleKind::Once(due),
+                timezone: Some("UTC".into()),
                 created_by_msg_id: None,
             })
             .await
             .unwrap();
-        s.insert_task_run(task_id, due, "ping example.com".into())
+        s.insert_schedule_run(schedule_id, due, "ping example.com".into())
             .await
             .unwrap();
 
-        let listed = s.list_active_tasks(p).await.unwrap();
+        let listed = s.list_active_schedules(p).await.unwrap();
         assert_eq!(listed.len(), 1);
-        let (task, next_at) = &listed[0];
-        assert_eq!(task.id, task_id);
-        assert_eq!(task.task, "ping example.com");
-        assert!(matches!(task.schedule, ScheduleKind::Once(_)));
+        let (schedule, next_at) = &listed[0];
+        assert_eq!(schedule.id, schedule_id);
+        assert_eq!(schedule.instruction, "ping example.com");
+        assert!(matches!(schedule.schedule, ScheduleKind::Once(_)));
         assert!(next_at.is_some());
     }
 
@@ -1744,18 +1882,19 @@ mod tests {
         let conv = fixture_conv();
         s.ensure_thread(&conv, p).await.unwrap();
         let past = Utc::now() - Duration::minutes(1);
-        let task_id = s
-            .insert_scheduled_task(NewScheduledTask {
+        let schedule_id = s
+            .insert_schedule(NewSchedule {
                 agent: p,
-                task: "old task".into(),
+                instruction: "old task".into(),
                 tools: vec![],
                 origin_conv: conv,
                 schedule: ScheduleKind::Once(past),
+                timezone: Some("UTC".into()),
                 created_by_msg_id: None,
             })
             .await
             .unwrap();
-        s.insert_task_run(task_id, past, "old task".into())
+        s.insert_schedule_run(schedule_id, past, "old task".into())
             .await
             .unwrap();
 
@@ -1767,12 +1906,12 @@ mod tests {
             "second claim should find no pending run after first claimed"
         );
 
-        let (run, task) = first.unwrap();
-        assert_eq!(run.task_id, task_id);
-        assert_eq!(run.status, TaskRunStatus::Running);
-        assert_eq!(task.task, "old task");
+        let (run, schedule) = first.unwrap();
+        assert_eq!(run.schedule_id, schedule_id);
+        assert_eq!(run.status, ScheduleRunStatus::Running);
+        assert_eq!(schedule.instruction, "old task");
 
-        s.finish_run(run.id, TaskRunStatus::Done, Some("ok".into()))
+        s.finish_run(run.id, ScheduleRunStatus::Done, Some("ok".into()))
             .await
             .unwrap();
     }
@@ -1784,23 +1923,24 @@ mod tests {
         let conv = fixture_conv();
         s.ensure_thread(&conv, p).await.unwrap();
         let due = Utc::now() + Duration::minutes(1);
-        let task_id = s
-            .insert_scheduled_task(NewScheduledTask {
+        let schedule_id = s
+            .insert_schedule(NewSchedule {
                 agent: p,
-                task: "run loadtest in staging".into(),
+                instruction: "run loadtest in staging".into(),
                 tools: vec![],
                 origin_conv: conv,
                 schedule: ScheduleKind::Once(due),
+                timezone: Some("UTC".into()),
                 created_by_msg_id: None,
             })
             .await
             .unwrap();
-        s.insert_task_run(task_id, due, "run loadtest in staging".into())
+        s.insert_schedule_run(schedule_id, due, "run loadtest in staging".into())
             .await
             .unwrap();
 
-        let cancelled = s.cancel_tasks_by_match(p, "loadtest").await.unwrap();
-        assert_eq!(cancelled, vec![task_id]);
+        let cancelled = s.cancel_schedules_by_match(p, "loadtest").await.unwrap();
+        assert_eq!(cancelled, vec![schedule_id]);
 
         let claim = s
             .claim_due_run(Utc::now() + Duration::minutes(2))
@@ -1808,7 +1948,7 @@ mod tests {
             .unwrap();
         assert!(claim.is_none(), "cancelled task's run must not be claimed");
 
-        let active = s.list_active_tasks(p).await.unwrap();
+        let active = s.list_active_schedules(p).await.unwrap();
         assert!(active.is_empty(), "cancelled task must drop out of list");
     }
 
@@ -1819,18 +1959,21 @@ mod tests {
         let conv = fixture_conv();
         s.ensure_thread(&conv, p).await.unwrap();
         let past = Utc::now() - Duration::minutes(30);
-        let task_id = s
-            .insert_scheduled_task(NewScheduledTask {
+        let schedule_id = s
+            .insert_schedule(NewSchedule {
                 agent: p,
-                task: "x".into(),
+                instruction: "x".into(),
                 tools: vec![],
                 origin_conv: conv,
                 schedule: ScheduleKind::Once(past),
+                timezone: Some("UTC".into()),
                 created_by_msg_id: None,
             })
             .await
             .unwrap();
-        s.insert_task_run(task_id, past, "x".into()).await.unwrap();
+        s.insert_schedule_run(schedule_id, past, "x".into())
+            .await
+            .unwrap();
         let _ = s.claim_due_run(Utc::now()).await.unwrap();
 
         let n = s
@@ -1853,26 +1996,31 @@ mod tests {
         let conv = fixture_conv();
         s.ensure_thread(&conv, p).await.unwrap();
 
-        let task_id = s
-            .insert_scheduled_task(NewScheduledTask {
+        let schedule_id = s
+            .insert_schedule(NewSchedule {
                 agent: p,
-                task: "weekly".into(),
+                instruction: "weekly".into(),
                 tools: vec![],
                 origin_conv: conv,
                 schedule: ScheduleKind::Cron("0 7 * * 1".into()),
+                timezone: Some("UTC".into()),
                 created_by_msg_id: None,
             })
             .await
             .unwrap();
 
-        let missing = s.cron_tasks_missing_next_run().await.unwrap();
+        let missing = s.cron_schedules_missing_next_run().await.unwrap();
         assert_eq!(missing.len(), 1);
-        assert_eq!(missing[0].id, task_id);
+        assert_eq!(missing[0].id, schedule_id);
 
-        s.insert_task_run(task_id, Utc::now() + Duration::minutes(1), "weekly".into())
-            .await
-            .unwrap();
-        let missing = s.cron_tasks_missing_next_run().await.unwrap();
+        s.insert_schedule_run(
+            schedule_id,
+            Utc::now() + Duration::minutes(1),
+            "weekly".into(),
+        )
+        .await
+        .unwrap();
+        let missing = s.cron_schedules_missing_next_run().await.unwrap();
         assert!(missing.is_empty());
     }
 
@@ -1882,25 +2030,35 @@ mod tests {
         let p = fixture_agent(&s).await;
         let conv = fixture_conv();
         s.ensure_thread(&conv, p).await.unwrap();
-        let task_id = s
-            .insert_scheduled_task(NewScheduledTask {
+        let schedule_id = s
+            .insert_schedule(NewSchedule {
                 agent: p,
-                task: "weekly summary".into(),
+                instruction: "weekly summary".into(),
                 tools: vec!["read".into(), "grep".into()],
                 origin_conv: conv,
                 schedule: ScheduleKind::Cron("0 7 * * 1".into()),
+                timezone: Some("UTC".into()),
                 created_by_msg_id: None,
             })
             .await
             .unwrap();
-        let active = s.list_active_tasks(p).await.unwrap();
+        let active = s.list_active_schedules(p).await.unwrap();
         let (task, _) = &active[0];
-        assert_eq!(task.id, task_id);
+        assert_eq!(task.id, schedule_id);
         match &task.schedule {
             ScheduleKind::Cron(expr) => assert_eq!(expr, "0 7 * * 1"),
             ScheduleKind::Once(_) => panic!("expected cron schedule"),
         }
         assert_eq!(task.tools, vec!["read".to_string(), "grep".to_string()]);
+        assert_eq!(task.timezone.as_deref(), Some("UTC"));
+
+        sqlx::query("UPDATE scheduled_tasks SET timezone = NULL WHERE id = ?")
+            .bind(schedule_id)
+            .execute(&*s.pool)
+            .await
+            .unwrap();
+        let legacy = s.get_schedule(schedule_id).await.unwrap().unwrap();
+        assert_eq!(legacy.timezone, None);
     }
 
     #[tokio::test]
@@ -1963,9 +2121,8 @@ mod tests {
     #[tokio::test]
     async fn sqlite_vec_extension_is_available() {
         let store = fresh().await;
-        let pool = store.pool();
         let v: (String,) = sqlx::query_as("SELECT vec_version()")
-            .fetch_one(&*pool)
+            .fetch_one(&*store.pool)
             .await
             .expect("vec_version");
         assert!(v.0.starts_with('v'), "unexpected vec_version: {}", v.0);
@@ -2214,5 +2371,84 @@ mod tests {
                 .as_deref(),
             Some(r#"{"watermark":"c"}"#)
         );
+    }
+
+    #[tokio::test]
+    async fn split_migrators_adopt_a_unified_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("goat.db");
+        goat_sqlite_vec::register();
+        let options = format!("sqlite://{}", path.display())
+            .parse::<sqlx::sqlite::SqliteConnectOptions>()
+            .unwrap()
+            .create_if_missing(true)
+            .disable_statement_logging();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE _sqlx_migrations (
+                 version BIGINT PRIMARY KEY,
+                 description TEXT NOT NULL,
+                 installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                 success BOOLEAN NOT NULL,
+                 checksum BLOB NOT NULL,
+                 execution_time BIGINT NOT NULL
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let agent = sqlx::migrate!("./migrations");
+        let code = sqlx::migrate!("../goat-code-store/migrations");
+        let memory = sqlx::migrate!("../goat-memory/migrations");
+        let proxy = sqlx::migrate!("../goat-proxy-store/migrations");
+        let mut migrations = agent
+            .iter()
+            .chain(code.iter())
+            .chain(memory.iter())
+            .chain(proxy.iter())
+            .collect::<Vec<_>>();
+        migrations.sort_by_key(|migration| migration.version);
+        assert_eq!(migrations.len(), 23);
+        for migration in migrations {
+            sqlx::raw_sql(migration.sql.clone())
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO _sqlx_migrations
+                 (version, description, success, checksum, execution_time)
+                 VALUES (?, ?, TRUE, ?, 0)",
+            )
+            .bind(migration.version)
+            .bind(migration.description.as_ref())
+            .bind(migration.checksum.as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        SqliteStore::open(&path).await.unwrap();
+        goat_memory::MemoryEngine::open(&path, dir.path(), None, 180.0)
+            .await
+            .unwrap();
+        goat_code_store::CodeStore::open(&path).await.unwrap();
+        goat_proxy_store::ProxyStore::open(&path).await.unwrap();
+
+        for (table, expected) in [
+            ("_sqlx_migrations", 23_i64),
+            ("_sqlx_migrations_agent", 19),
+            ("_sqlx_migrations_memory", 1),
+            ("_sqlx_migrations_code", 2),
+            ("_sqlx_migrations_proxy", 1),
+        ] {
+            let sql = sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}"));
+            let count: i64 = sqlx::query_scalar(sql).fetch_one(&pool).await.unwrap();
+            assert_eq!(count, expected, "{table}");
+        }
     }
 }

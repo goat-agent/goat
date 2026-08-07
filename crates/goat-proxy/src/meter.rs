@@ -10,7 +10,7 @@ use goat_provider::{
     ProviderMetadata, RateLimitSnapshot, Request, StreamChunk, StreamError, TokenSet, Usage,
     ValidateError, Validated, WebSearchOutput,
 };
-use goat_store::{NewRequest, ProxyStore};
+use goat_proxy_store::{NewRequest, ProxyStore};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -327,6 +327,7 @@ mod tests {
     };
 
     use super::{Meter, Recorder, STATUS_CANCELLED};
+    use goat_proxy_store as goat_store;
 
     struct MockProvider;
 

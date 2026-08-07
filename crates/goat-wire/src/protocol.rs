@@ -1,7 +1,8 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use goat_protocol::{
-    AccountEntry, Event, ModelEntry, ModelTarget, Op, RateLimitSnapshot, SkillInfo, TranscriptEntry,
+    AccountEntry, Event, Mode, ModelEntry, ModelTarget, Op, ProcessInfo, RateLimitSnapshot,
+    SkillInfo, TaskId, TranscriptEntry, Usage,
 };
 
 pub fn wire_fingerprint() -> &'static str {
@@ -181,15 +182,21 @@ pub enum ServerFrame {
     Snapshot {
         session: SessionId,
         watermark: u64,
-        target: Option<ModelTarget>,
+        target: Box<Option<ModelTarget>>,
         transcript: Vec<TranscriptEntry>,
+        pending: Vec<Event>,
         context_tokens: Option<u32>,
         compaction_threshold: Option<u32>,
         skills: Vec<SkillInfo>,
         accounts: Vec<AccountEntry>,
         model_list: Vec<ModelEntry>,
-        selected: Option<ModelTarget>,
+        selected: Box<Option<ModelTarget>>,
         rate_limits: Vec<RateLimitEntry>,
+        mode: ModeEntry,
+        processes: Vec<ProcessInfo>,
+        usage: Vec<UsageEntry>,
+        active: Option<TaskId>,
+        retry: Box<Option<RetryEntry>>,
     },
     Event {
         session: SessionId,
@@ -256,6 +263,31 @@ pub struct RateLimitEntry {
     pub account: String,
     pub snapshot: RateLimitSnapshot,
     pub cached_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ModeEntry {
+    pub mode: Mode,
+    pub plan_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageEntry {
+    pub provider: String,
+    pub account: String,
+    pub usage: Usage,
+    pub context_window: Option<u32>,
+    pub compaction_threshold: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RetryEntry {
+    pub id: TaskId,
+    pub attempt: u32,
+    pub max_attempts: u32,
+    pub delay_ms: u64,
+    pub reason: String,
+    pub resets_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

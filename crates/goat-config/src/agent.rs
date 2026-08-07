@@ -63,6 +63,10 @@ fn load_agent(dir: &Path, slug: &str) -> Result<AgentConfig> {
         slug: slug.to_string(),
         source,
     })?;
+    let timezone = runtime
+        .timezone
+        .map(|value| validate_timezone(slug, value))
+        .transpose()?;
 
     let personality = AgentCard {
         system_prompt: raw.trim().to_string(),
@@ -87,6 +91,7 @@ fn load_agent(dir: &Path, slug: &str) -> Result<AgentConfig> {
         display: runtime.display.unwrap_or_else(|| slug.to_string()),
         personality,
         default_model: model,
+        timezone,
         history_window: runtime.history_window.unwrap_or(DEFAULT_HISTORY_WINDOW),
         tool_selectors: runtime.tools.unwrap_or_else(|| vec!["*".to_string()]),
         bindings,
@@ -105,6 +110,19 @@ fn load_agent(dir: &Path, slug: &str) -> Result<AgentConfig> {
                 .unwrap_or(DEFAULT_INTAKE_CEILING_MS),
         ),
     })
+}
+
+fn validate_timezone(slug: &str, value: String) -> Result<String> {
+    value
+        .parse::<chrono_tz::Tz>()
+        .map(|timezone| timezone.to_string())
+        .map_err(|_| {
+            ConfigError::Timezone {
+                slug: slug.to_string(),
+                value,
+            }
+            .into()
+        })
 }
 
 fn load_runtime_config(dir: &Path) -> Result<AgentRuntimeConfig> {
@@ -169,6 +187,8 @@ struct AgentRuntimeConfig {
     display: Option<String>,
     #[serde(default)]
     model: Option<String>,
+    #[serde(default)]
+    timezone: Option<String>,
     #[serde(default)]
     tools: Option<Vec<String>>,
     #[serde(default)]
@@ -268,7 +288,43 @@ mod tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].slug, "main");
         assert_eq!(agents[0].personality.system_prompt, "You are main.");
+        assert_eq!(agents[0].timezone, None);
         assert!(agents[0].integrations.is_empty());
+    }
+
+    #[test]
+    fn loads_canonical_owner_timezone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("agents").join("main");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("agent.md"), "You are main.").unwrap();
+        fs::write(
+            dir.join("config.json"),
+            r#"{ "model": "anthropic/claude-x", "timezone": "Asia/Seoul" }"#,
+        )
+        .unwrap();
+
+        let agent = load_agent(&dir, "main").unwrap();
+        assert_eq!(agent.timezone.as_deref(), Some("Asia/Seoul"));
+    }
+
+    #[test]
+    fn invalid_owner_timezone_names_agent_and_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("agents").join("main");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("agent.md"), "You are main.").unwrap();
+        fs::write(
+            dir.join("config.json"),
+            r#"{ "model": "anthropic/claude-x", "timezone": "Korea/Typo" }"#,
+        )
+        .unwrap();
+
+        let error = load_agent(&dir, "main").unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "invalid timezone in agent 'main': 'Korea/Typo' is not a canonical IANA timezone"
+        );
     }
 
     #[test]

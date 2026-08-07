@@ -318,11 +318,7 @@ async fn process_source(
             stream = %source.stream,
             "page was truncated; carrying prior state forward",
         );
-        for (key, stamp) in &prev.seen {
-            next.seen
-                .entry(key.clone())
-                .or_insert_with(|| stamp.clone());
-        }
+        carry_forward_truncated_state(&mut next, prev);
     }
 
     let mut items = Vec::new();
@@ -355,6 +351,14 @@ async fn process_source(
         .await?;
 
     Ok(items)
+}
+
+fn carry_forward_truncated_state(next: &mut WatchState, prev: &WatchState) {
+    for (key, stamp) in &prev.seen {
+        next.seen
+            .entry(key.clone())
+            .or_insert_with(|| stamp.clone());
+    }
 }
 
 async fn observe(
@@ -421,6 +425,17 @@ mod tests {
         assert_eq!(backoff_skips(2), 3);
         assert_eq!(backoff_skips(3), 7);
         assert_eq!(backoff_skips(9), 7);
+    }
+
+    #[test]
+    fn truncated_page_carry_forward_suppresses_false_reemission() {
+        let original = Observed::new("a", "1", "s", Value::Null);
+        let (first, _) = (crate::diff::REBUILD.diff)(None, std::slice::from_ref(&original));
+        let (mut truncated, _) = (crate::diff::REBUILD.diff)(Some(&first), &[]);
+        carry_forward_truncated_state(&mut truncated, &first);
+        let (_, fresh) =
+            (crate::diff::REBUILD.diff)(Some(&truncated), std::slice::from_ref(&original));
+        assert!(fresh.is_empty());
     }
 
     #[test]

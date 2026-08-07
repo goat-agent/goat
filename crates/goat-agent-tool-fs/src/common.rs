@@ -12,21 +12,13 @@ pub const DEFAULT_LIST_LIMIT: usize = 100;
 pub const MAX_LIST_LIMIT: usize = 1_000;
 pub const MAX_MATCHES: usize = 1_000;
 
-pub fn resolve_path(root: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    }
-}
-
-pub fn existing_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
-    let resolved = resolve_path(root, path);
+pub fn existing_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf, String> {
+    let resolved = ctx.resolve_path(path).map_err(|e| e.to_string())?;
     fs::canonicalize(&resolved).map_err(|e| format!("invalid path {}: {e}", resolved.display()))
 }
 
-pub fn writable_path(root: &Path, path: &Path) -> PathBuf {
-    resolve_path(root, path)
+pub fn writable_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf, String> {
+    ctx.resolve_path(path).map_err(|e| e.to_string())
 }
 
 pub fn read_text(path: &Path) -> Result<String, String> {

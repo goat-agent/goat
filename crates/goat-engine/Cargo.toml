@@ -16,7 +16,7 @@ goat-provider = { workspace = true }
 goat-providers = { workspace = true }
 goat-proxy = { workspace = true }
 goat-auth = { workspace = true }
-goat-store = { workspace = true }
+goat-code-store = { workspace = true }
 goat-config = { workspace = true }
 goat-mcp = { workspace = true }
 goat-tool = { workspace = true }
@@ -36,6 +36,7 @@ tracing = { workspace = true }
 unicode-width = { workspace = true }
 
 [dev-dependencies]
+goat-tool-shell = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 async-trait = { workspace = true }

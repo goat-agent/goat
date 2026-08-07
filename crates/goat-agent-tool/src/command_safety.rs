@@ -1,10 +1,10 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ShellToken {
+enum ShellToken {
     Word(String),
     Op,
 }
 
-pub fn shell_tokens(command: &str) -> Vec<ShellToken> {
+fn shell_tokens(command: &str) -> Vec<ShellToken> {
     let mut chars = command.chars().peekable();
     let mut tokens = Vec::new();
     let mut word = String::new();
@@ -56,7 +56,7 @@ pub fn shell_tokens(command: &str) -> Vec<ShellToken> {
     tokens
 }
 
-pub fn push_word(tokens: &mut Vec<ShellToken>, word: &mut String) {
+fn push_word(tokens: &mut Vec<ShellToken>, word: &mut String) {
     if !word.is_empty() {
         tokens.push(ShellToken::Word(std::mem::take(word)));
     }
@@ -109,7 +109,7 @@ pub fn deny_reason(command: &str) -> Option<&'static str> {
     None
 }
 
-pub fn contains_broad_recursive_rm(tokens: &[ShellToken]) -> bool {
+fn contains_broad_recursive_rm(tokens: &[ShellToken]) -> bool {
     for (idx, token) in tokens.iter().enumerate() {
         let ShellToken::Word(word) = token else {
             continue;
@@ -125,7 +125,7 @@ pub fn contains_broad_recursive_rm(tokens: &[ShellToken]) -> bool {
     false
 }
 
-pub fn rm_args_are_broad_recursive_delete(args: &[&str]) -> bool {
+fn rm_args_are_broad_recursive_delete(args: &[&str]) -> bool {
     let mut recursive = false;
     let mut after_options = false;
     let mut targets = Vec::new();
@@ -150,14 +150,14 @@ pub fn rm_args_are_broad_recursive_delete(args: &[&str]) -> bool {
             .any(|target| dangerous_recursive_target(target))
 }
 
-pub fn rm_option_is_recursive(arg: &str) -> bool {
+fn rm_option_is_recursive(arg: &str) -> bool {
     matches!(arg, "-r" | "-R" | "--recursive" | "-d")
         || (arg.starts_with('-')
             && !arg.starts_with("--")
             && arg.chars().any(|ch| matches!(ch, 'r' | 'R')))
 }
 
-pub fn contains_destructive_dd(tokens: &[ShellToken]) -> bool {
+fn contains_destructive_dd(tokens: &[ShellToken]) -> bool {
     for (idx, token) in tokens.iter().enumerate() {
         let ShellToken::Word(word) = token else {
             continue;
@@ -177,7 +177,7 @@ pub fn contains_destructive_dd(tokens: &[ShellToken]) -> bool {
     false
 }
 
-pub fn contains_broad_recursive_permission_change(tokens: &[ShellToken]) -> bool {
+fn contains_broad_recursive_permission_change(tokens: &[ShellToken]) -> bool {
     for (idx, token) in tokens.iter().enumerate() {
         let ShellToken::Word(word) = token else {
             continue;
@@ -200,7 +200,7 @@ pub fn contains_broad_recursive_permission_change(tokens: &[ShellToken]) -> bool
     false
 }
 
-pub fn words_until_op(tokens: &[ShellToken]) -> Vec<&str> {
+fn words_until_op(tokens: &[ShellToken]) -> Vec<&str> {
     tokens
         .iter()
         .take_while(|token| !matches!(token, ShellToken::Op))
@@ -211,11 +211,11 @@ pub fn words_until_op(tokens: &[ShellToken]) -> Vec<&str> {
         .collect()
 }
 
-pub fn command_basename(word: &str) -> &str {
+fn command_basename(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
 }
 
-pub fn dangerous_recursive_target(target: &str) -> bool {
+fn dangerous_recursive_target(target: &str) -> bool {
     let target = target.trim();
     if target.is_empty() {
         return false;
@@ -257,7 +257,7 @@ pub fn dangerous_recursive_target(target: &str) -> bool {
     false
 }
 
-pub fn trim_redundant_trailing_slashes(s: &str) -> String {
+fn trim_redundant_trailing_slashes(s: &str) -> String {
     if s == "/" {
         return s.to_string();
     }
@@ -269,7 +269,7 @@ pub fn trim_redundant_trailing_slashes(s: &str) -> String {
     }
 }
 
-pub fn is_home_or_home_contents(target: &str) -> bool {
+fn is_home_or_home_contents(target: &str) -> bool {
     let Ok(home) = std::env::var("HOME") else {
         return false;
     };
@@ -277,7 +277,7 @@ pub fn is_home_or_home_contents(target: &str) -> bool {
     target == home || target == format!("{home}/*")
 }
 
-pub fn is_sensitive_home_path(target: &str) -> bool {
+fn is_sensitive_home_path(target: &str) -> bool {
     const SENSITIVE: &[&str] = &[".goat", ".ssh", ".gnupg", ".aws", ".config"];
     SENSITIVE.iter().any(|name| {
         let tilde = format!("~/{name}");

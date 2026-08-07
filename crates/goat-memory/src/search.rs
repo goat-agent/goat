@@ -209,15 +209,17 @@ fn age_in_days(ts: &str, now: DateTime<Utc>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goat_store::SqliteStore;
 
     async fn pool() -> std::sync::Arc<SqlitePool> {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("goat.db");
+        let engine = crate::MemoryEngine::open(&path, dir.path(), None, 180.0)
+            .await
+            .unwrap();
         std::mem::forget(dir);
-        let p = SqliteStore::open(&path).await.unwrap().pool();
-        vector::ensure_vec_table(&p, 3).await.unwrap();
-        p
+        let pool = engine.pool();
+        vector::ensure_vec_table(&pool, 3).await.unwrap();
+        pool
     }
 
     fn chunk(scope: Scope, kind: &str, key: &str, text: &str) -> IndexChunk {

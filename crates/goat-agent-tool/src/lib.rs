@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -8,7 +8,11 @@ use goat_types::{AgentId, ThreadId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub mod command_safety;
+mod command_safety;
+
+mod path;
+
+pub use command_safety::deny_reason;
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize)]
 pub struct ToolName(Cow<'static, str>);
@@ -47,6 +51,14 @@ pub enum ToolError {
     InvalidInput(String),
     #[error("tool execution failed: {0}")]
     Execution(String),
+    #[error("path escapes agent tool root: {path}")]
+    PathEscape { path: String },
+    #[error("cannot resolve path `{path}`: {source}")]
+    PathResolution {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 pub type ToolResultValue<T> = Result<T, ToolError>;
@@ -177,6 +189,12 @@ pub struct ToolContext {
     pub read_state: ToolReadState,
 }
 
+impl ToolContext {
+    pub fn resolve_path(&self, raw: &Path) -> ToolResultValue<PathBuf> {
+        path::resolve_in_root(&self.goat_root, raw)
+    }
+}
+
 pub type ToolReadState = Arc<Mutex<HashMap<PathBuf, ToolReadSnapshot>>>;
 
 #[derive(Clone, Debug)]
@@ -292,20 +310,8 @@ impl ToolRegistry {
 }
 
 pub fn selector_allows(tool_name: &str, selectors: &[String]) -> bool {
-    selector_allows_with_empty_default(tool_name, selectors, false)
-}
-
-pub fn selector_allows_empty_denies(tool_name: &str, selectors: &[String]) -> bool {
-    selector_allows_with_empty_default(tool_name, selectors, false)
-}
-
-fn selector_allows_with_empty_default(
-    tool_name: &str,
-    selectors: &[String],
-    empty_default: bool,
-) -> bool {
     if selectors.is_empty() {
-        return empty_default;
+        return false;
     }
     let mut allowed = false;
     let mut denied = false;

@@ -7,7 +7,7 @@ use goat_channel::{
     SentRef, TypingGuard, spawn_typing,
 };
 use goat_types::{
-    AgentId, ChannelId, IncomingMessage, InstanceId, MessageId, OutgoingBody, ThreadId,
+    AgentId, ChannelId, IncomingMessage, InstanceId, MessageId, OutgoingBody, Surface, ThreadId,
 };
 use twilight_http::Client as HttpClient;
 use twilight_model::id::Id;
@@ -117,6 +117,26 @@ impl ChannelHandle for DiscordHandle {
 
     fn capabilities(&self) -> ChannelCapabilities {
         CAPABILITIES
+    }
+
+    async fn surface(&self, stored_thread: &ThreadId) -> ChannelResult<Surface> {
+        let channel_id = parse_channel_id(&stored_thread.external)?;
+        if stored_thread.external.starts_with("dm:") {
+            return Ok(Surface::Dm);
+        }
+        let channel = self
+            .http
+            .channel(channel_id)
+            .await
+            .map_err(|e| ChannelError::Provider(e.to_string()))?
+            .model()
+            .await
+            .map_err(|e| ChannelError::Provider(e.to_string()))?;
+        if channel.kind.is_thread() {
+            Ok(Surface::Thread)
+        } else {
+            Ok(Surface::Channel)
+        }
     }
 
     async fn send(
@@ -390,6 +410,56 @@ mod tests {
         let pending = handle.take_pending_interaction(Some(&reply_to)).await;
         assert!(pending.is_some());
         assert!(!interactions.has_pending(&reply_to).await);
+    }
+
+    async fn guild_surface(kind: u8) -> Surface {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0];
+            stream.read_exact(&mut request).await.unwrap();
+            let body = format!(r#"{{"id":"456","type":{kind}}}"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let http = HttpClient::builder()
+            .token("token".to_string())
+            .proxy(address.to_string(), true)
+            .ratelimiter(None)
+            .build();
+        let handle = DiscordHandle::new(
+            InstanceId::new(),
+            AgentId::from_slug("dev"),
+            ChannelIdentity::new("bot", "bot"),
+            Arc::new(http),
+            Arc::new(InteractionState::default()),
+        );
+        let stored_thread = ThreadId::new(ID.clone(), handle.instance, "g:123:c:456");
+        let surface = handle.surface(&stored_thread).await.unwrap();
+        server.await.unwrap();
+        surface
+    }
+
+    #[tokio::test]
+    async fn surface_of_external_classifies_dm_and_channel() {
+        let handle = handle(Arc::new(InteractionState::default()));
+        let dm = ThreadId::new(ID.clone(), handle.instance, "dm:456");
+        assert_eq!(handle.surface(&dm).await.unwrap(), Surface::Dm);
+        assert_eq!(guild_surface(0).await, Surface::Channel);
+        assert_eq!(guild_surface(11).await, Surface::Thread);
+    }
+
+    #[tokio::test]
+    async fn malformed_stored_thread_surface_is_an_error() {
+        let handle = handle(Arc::new(InteractionState::default()));
+        let stored_thread = ThreadId::new(ID.clone(), handle.instance, "unknown");
+        assert!(handle.surface(&stored_thread).await.is_err());
     }
 
     #[test]

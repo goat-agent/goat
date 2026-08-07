@@ -9,7 +9,7 @@ use goat_agent_command::{CommandOutput, CommandRegistry};
 use goat_agent_config::AgentCard;
 use goat_agent_tool::{
     ToolCall, ToolContext, ToolOutput, ToolReadState, ToolRegistry, selector_allows,
-    selector_allows_empty_denies, validate_tool_selectors,
+    validate_tool_selectors,
 };
 use goat_bus::{EventBus, EventFilter};
 use goat_channel::ChannelHandle;
@@ -21,12 +21,12 @@ use goat_provider::{
 use goat_render::{OutgoingSink, RenderSummary, StreamRenderer};
 use goat_skills::SkillIndex;
 use goat_store::{
-    Direction, HistoryRow, ScheduledTaskStatus, Store, TaskRunStatus, ToolInvocationRecord,
-    ToolInvocationStatus,
+    Direction, HistoryRow, MessageSender, ScheduleRunStatus, ScheduleStatus, Store,
+    ToolInvocationRecord, ToolInvocationStatus,
 };
 use goat_types::{
-    AgentId, Event, IncomingMessage, IntegrationId, IntegrationUpdateKind, MessageId, Surface,
-    ThreadId, WorkflowItem,
+    AgentId, Event, IncomingMessage, IntegrationId, IntegrationUpdateKind, MessageId,
+    SCHEDULE_FALLBACK_TIMEZONE, Surface, ThreadId, WorkflowItem,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -225,6 +225,7 @@ pub struct BrainDeps {
     pub agent: AgentId,
     pub personality: Arc<AgentCard>,
     pub default_model: Model,
+    pub timezone: Option<String>,
     pub history_window: usize,
     pub tool_selectors: Vec<String>,
     pub providers: Arc<ProviderRegistry>,
@@ -293,6 +294,7 @@ pub struct Brain {
     agent: AgentId,
     personality: Arc<AgentCard>,
     default_model: Model,
+    schedule_timezone: String,
     history_window: usize,
     tool_selectors: Vec<String>,
     providers: Arc<ProviderRegistry>,
@@ -318,6 +320,9 @@ impl Brain {
             agent: deps.agent,
             personality: deps.personality,
             default_model: deps.default_model,
+            schedule_timezone: deps
+                .timezone
+                .unwrap_or_else(|| SCHEDULE_FALLBACK_TIMEZONE.to_string()),
             history_window: deps.history_window,
             tool_selectors: deps.tool_selectors,
             providers: deps.providers,
@@ -402,13 +407,13 @@ impl Brain {
                             }
                         }
                         Event::Schedule {
-                            run_id, task_id, ..
+                            run_id, schedule_id, ..
                         } => {
-                            if let Err(e) = self.handle_schedule(&channels, run_id, task_id).await {
+                            if let Err(e) = self.handle_schedule(&channels, run_id, schedule_id).await {
                                 warn!(
                                     agent = %self.agent,
                                     run_id,
-                                    task_id,
+                                    schedule_id,
                                     error = ?e,
                                     "schedule failed",
                                 );
@@ -724,13 +729,7 @@ impl Brain {
         let provider = self.providers.route(&self.default_model).ok()?;
         let transcript = batch
             .iter()
-            .map(|h| {
-                let who = match h.direction {
-                    Direction::In => "user",
-                    Direction::Out => "assistant",
-                };
-                format!("{who}: {}", h.text)
-            })
+            .map(|h| format!("{}: {}", history_speaker(h), h.text))
             .collect::<Vec<_>>()
             .join("\n");
         let user = match previous {
@@ -806,41 +805,22 @@ impl Brain {
                 (None, g) => g,
             }
         };
-        let now_iso = chrono::Utc::now().to_rfc3339();
         let base_system = format!(
-            "{}\n\n<current_time iso8601=\"{now_iso}\">\nThe current time is {now_iso}. \
-             Resolve any user time reference against this clock.\n\
-             </current_time>",
+            "{}\n\n{}",
             compose_system_prompt(
                 &self.agent_definition(),
                 skill_prompt.as_deref(),
                 summary.as_deref(),
                 memory_section.as_deref(),
             ),
+            current_time_block(chrono::Utc::now(), &self.schedule_timezone),
         );
-        let system_prompt = match mode {
-            TurnMode::Normal => {
-                format!(
-                    "{base_system}{}",
-                    thread_context_block(route.surface, route.thread_open.is_some())
-                )
-            }
-            TurnMode::Schedule { .. } => format!(
-                "{base_system}\n\n<schedule_context>\nYou are running at the \
-                 fire moment of a scheduled task. Read the task and act. \
-                 If the task is no longer worth doing, reply with exactly: skip\n\
-                 </schedule_context>"
-            ),
-            TurnMode::Integration { .. } => format!(
-                "{base_system}\n\n<integration_update_context>\nAn external \
-                 service update woke you. Gather context with your tools, store \
-                 durable findings in memory, keep the work anchor goal current, \
-                 then brief the owner concisely. Do not start the work itself \
-                 and take no external write actions beyond the briefing. If \
-                 nothing is worth surfacing, reply with exactly: skip\n\
-                 </integration_update_context>"
-            ),
-        };
+        let system_prompt = turn_system_prompt(
+            &base_system,
+            &mode,
+            route.surface,
+            route.thread_open.is_some(),
+        );
 
         for _round in 0..MAX_TOOL_ROUNDS {
             let mut round_specs = tool_specs.clone();
@@ -963,7 +943,12 @@ impl Brain {
         Ok((summary, route.thread))
     }
 
-    async fn finish_run_logged(&self, run_id: i64, status: TaskRunStatus, note: Option<String>) {
+    async fn finish_run_logged(
+        &self,
+        run_id: i64,
+        status: ScheduleRunStatus,
+        note: Option<String>,
+    ) {
         let label = format!("{status:?}");
         if let Err(e) = self.store.finish_run(run_id, status, note).await {
             tracing::error!(
@@ -980,14 +965,14 @@ impl Brain {
         &self,
         channels: &[Arc<dyn ChannelHandle>],
         run_id: i64,
-        task_id: i64,
+        schedule_id: i64,
     ) -> Result<()> {
-        let task = match self.store.get_scheduled_task(task_id).await? {
-            Some(t) if matches!(t.status, ScheduledTaskStatus::Active) => t,
+        let schedule = match self.store.get_schedule(schedule_id).await? {
+            Some(t) if matches!(t.status, ScheduleStatus::Active) => t,
             Some(_) => {
                 self.finish_run_logged(
                     run_id,
-                    TaskRunStatus::Skipped,
+                    ScheduleRunStatus::Skipped,
                     Some("task no longer active".into()),
                 )
                 .await;
@@ -996,7 +981,7 @@ impl Brain {
             None => {
                 self.finish_run_logged(
                     run_id,
-                    TaskRunStatus::Failed,
+                    ScheduleRunStatus::Failed,
                     Some("task row missing".into()),
                 )
                 .await;
@@ -1004,7 +989,7 @@ impl Brain {
             }
         };
 
-        let conv = task.origin_conv.clone();
+        let conv = schedule.origin_conv.clone();
         let Some(handle) = channels
             .iter()
             .find(|h| h.id() == conv.channel && h.instance() == conv.instance)
@@ -1023,7 +1008,7 @@ impl Brain {
             );
             self.finish_run_logged(
                 run_id,
-                TaskRunStatus::Failed,
+                ScheduleRunStatus::Failed,
                 Some("no channel handle for origin_conv".into()),
             )
             .await;
@@ -1032,8 +1017,17 @@ impl Brain {
 
         let mut messages = vec![LlmMessage {
             role: Role::User,
-            content: vec![ContentPart::Text(task.task.clone())],
+            content: vec![ContentPart::Text(schedule.instruction.clone())],
         }];
+        let surface = match handle.surface(&conv).await {
+            Ok(surface) => surface,
+            Err(error) => {
+                let note = format!("could not classify origin surface: {error}");
+                self.finish_run_logged(run_id, ScheduleRunStatus::Failed, Some(note))
+                    .await;
+                return Err(error).context("classify schedule origin surface");
+            }
+        };
 
         let (summary, thread) = match self
             .complete_with_tools(
@@ -1041,12 +1035,12 @@ impl Brain {
                 TurnRoute {
                     thread: conv.clone(),
                     reply_to: None,
-                    surface: surface_of_external(&conv.external),
+                    surface,
                     thread_open: None,
                 },
                 &mut messages,
                 TurnMode::Schedule {
-                    tools: task.tools.clone(),
+                    tools: schedule.tools.clone(),
                 },
                 None,
                 None,
@@ -1057,7 +1051,7 @@ impl Brain {
             Err(e) => {
                 self.finish_run_logged(
                     run_id,
-                    TaskRunStatus::Failed,
+                    ScheduleRunStatus::Failed,
                     Some(format!("schedule run errored: {e}")),
                 )
                 .await;
@@ -1069,7 +1063,7 @@ impl Brain {
         if trimmed.eq_ignore_ascii_case("skip") {
             self.finish_run_logged(
                 run_id,
-                TaskRunStatus::Skipped,
+                ScheduleRunStatus::Skipped,
                 Some("model declined".into()),
             )
             .await;
@@ -1078,13 +1072,13 @@ impl Brain {
         if trimmed.is_empty() {
             warn!(
                 run_id,
-                task_id,
+                schedule_id,
                 agent = %self.agent,
                 "schedule produced empty response; marking failed",
             );
             self.finish_run_logged(
                 run_id,
-                TaskRunStatus::Failed,
+                ScheduleRunStatus::Failed,
                 Some("empty response from model".into()),
             )
             .await;
@@ -1097,7 +1091,7 @@ impl Brain {
             .context("append outgoing text for schedule")?;
 
         let truncated = truncate_for_summary(&summary.final_text);
-        self.finish_run_logged(run_id, TaskRunStatus::Done, Some(truncated))
+        self.finish_run_logged(run_id, ScheduleRunStatus::Done, Some(truncated))
             .await;
         Ok(())
     }
@@ -1136,6 +1130,10 @@ impl Brain {
                 .iter()
                 .map(std::string::ToString::to_string),
         );
+        let surface = handle
+            .surface(&thread)
+            .await
+            .context("classify integration destination surface")?;
 
         let (summary, thread) = self
             .complete_with_tools(
@@ -1143,7 +1141,7 @@ impl Brain {
                 TurnRoute {
                     thread: thread.clone(),
                     reply_to: None,
-                    surface: surface_of_external(&thread.external),
+                    surface,
                     thread_open: None,
                 },
                 &mut messages,
@@ -1197,6 +1195,10 @@ impl Brain {
                 .iter()
                 .map(std::string::ToString::to_string),
         );
+        let surface = handle
+            .surface(&thread)
+            .await
+            .context("classify workflow destination surface")?;
 
         let (summary, thread) = self
             .complete_with_tools(
@@ -1204,7 +1206,7 @@ impl Brain {
                 TurnRoute {
                     thread: thread.clone(),
                     reply_to: None,
-                    surface: surface_of_external(&thread.external),
+                    surface,
                     thread_open: None,
                 },
                 &mut messages,
@@ -1234,13 +1236,23 @@ impl Brain {
                 TurnMode::Normal => true,
                 TurnMode::Schedule { tools } | TurnMode::Integration { tools } => {
                     !is_schedule_tool(spec.name.as_str())
-                        && selector_allows_empty_denies(spec.name.as_str(), tools)
+                        && selector_allows(spec.name.as_str(), tools)
                 }
             })
-            .map(|spec| ToolSpec {
-                name: spec.name.as_str().to_string(),
-                description: spec.description.unwrap_or_default(),
-                input_schema: spec.input_schema,
+            .map(|spec| {
+                let name = spec.name.as_str().to_string();
+                let mut input_schema = spec.input_schema;
+                if is_schedule_create_tool(&name) {
+                    set_schedule_timezone_schema_default(
+                        &mut input_schema,
+                        &self.schedule_timezone,
+                    );
+                }
+                ToolSpec {
+                    name,
+                    description: spec.description.unwrap_or_default(),
+                    input_schema,
+                }
             })
             .collect()
     }
@@ -1282,10 +1294,14 @@ impl Brain {
             goat_root: self.goat_root.clone(),
             read_state,
         };
+        let mut arguments = call.arguments.clone();
+        if is_schedule_create_tool(name.as_str()) {
+            inject_schedule_timezone(&mut arguments, &self.schedule_timezone);
+        }
         let tool_call = ToolCall {
             call_id: call.id.clone(),
             name: name.clone(),
-            arguments: call.arguments.clone(),
+            arguments,
         };
         let resolved_name = name.to_string();
         let output = self.tools.call(ctx, tool_call).await;
@@ -1516,11 +1532,30 @@ fn tool_result_message(id: String, content: impl Into<String>) -> LlmMessage {
     }
 }
 
-fn surface_of_external(external: &str) -> Surface {
-    if external.starts_with("dm:") {
-        Surface::Dm
-    } else {
-        Surface::Channel
+fn turn_system_prompt(
+    base_system: &str,
+    mode: &TurnMode,
+    surface: Surface,
+    offers_thread: bool,
+) -> String {
+    let thread_context = thread_context_block(surface, offers_thread);
+    match mode {
+        TurnMode::Normal => format!("{base_system}{thread_context}"),
+        TurnMode::Schedule { .. } => format!(
+            "{base_system}{thread_context}\n\n<schedule_context>\nYou are running at the \
+             fire moment of a scheduled task. Read the task and act. \
+             If the task is no longer worth doing, reply with exactly: skip\n\
+             </schedule_context>"
+        ),
+        TurnMode::Integration { .. } => format!(
+            "{base_system}{thread_context}\n\n<integration_update_context>\nAn external \
+             service update woke you. Gather context with your tools, store \
+             durable findings in memory, keep the work anchor goal current, \
+             then brief the owner concisely. Do not start the work itself \
+             and take no external write actions beyond the briefing. If \
+             nothing is worth surfacing, reply with exactly: skip\n\
+             </integration_update_context>"
+        ),
     }
 }
 
@@ -1660,6 +1695,38 @@ fn preview(text: &str, max_chars: usize) -> String {
     out
 }
 
+fn set_schedule_timezone_schema_default(
+    input_schema: &mut serde_json::Value,
+    schedule_timezone: &str,
+) {
+    input_schema["properties"]["timezone"]["default"] =
+        serde_json::Value::String(schedule_timezone.to_string());
+}
+
+fn inject_schedule_timezone(arguments: &mut serde_json::Value, schedule_timezone: &str) {
+    if let Some(arguments) = arguments.as_object_mut()
+        && arguments
+            .get("timezone")
+            .is_none_or(serde_json::Value::is_null)
+    {
+        arguments.insert(
+            "timezone".to_string(),
+            serde_json::Value::String(schedule_timezone.to_string()),
+        );
+    }
+}
+
+fn current_time_block(now: chrono::DateTime<chrono::Utc>, schedule_timezone: &str) -> String {
+    let now_iso = now.to_rfc3339();
+    format!(
+        "<current_time iso8601=\"{now_iso}\" timezone=\"{schedule_timezone}\">\n\
+         The current instant is {now_iso}. The agent's effective schedule timezone is \
+         {schedule_timezone}. Resolve unspecified owner time references in {schedule_timezone}. \
+         Schedule tools use this timezone unless an explicit IANA timezone overrides it.\n\
+         </current_time>"
+    )
+}
+
 fn compose_system_prompt(
     agent_prompt: &str,
     skill_prompt: Option<&str>,
@@ -1686,6 +1753,27 @@ fn compose_system_prompt(
     parts.join("\n\n")
 }
 
+fn history_speaker(row: &HistoryRow) -> String {
+    match (&row.sender, row.direction) {
+        (Some(MessageSender::User(user)), _) => match user.display.as_deref() {
+            Some(display) if !display.trim().is_empty() => {
+                format!("user {display} [{}]", user.external)
+            }
+            _ => format!("user [{}]", user.external),
+        },
+        (Some(MessageSender::Agent(agent)), _) => format!("agent [{agent}]"),
+        (None, Direction::In) => "user".to_string(),
+        (None, Direction::Out) => "assistant".to_string(),
+    }
+}
+
+fn history_content(row: &HistoryRow) -> String {
+    match row.direction {
+        Direction::In => format!("{}: {}", history_speaker(row), row.text),
+        Direction::Out => row.text.clone(),
+    }
+}
+
 fn rows_to_messages(rows: Vec<HistoryRow>) -> Vec<LlmMessage> {
     rows.into_iter()
         .filter(|h| !matches!(h.direction, Direction::Out) || !looks_like_agent_meta_leak(&h.text))
@@ -1694,7 +1782,7 @@ fn rows_to_messages(rows: Vec<HistoryRow>) -> Vec<LlmMessage> {
                 Direction::In => Role::User,
                 Direction::Out => Role::Assistant,
             },
-            content: vec![ContentPart::Text(h.text)],
+            content: vec![ContentPart::Text(history_content(&h))],
         })
         .collect()
 }
@@ -2024,8 +2112,8 @@ mod tests {
 
     #[test]
     fn self_tick_empty_tool_selector_denies_tools() {
-        assert!(!selector_allows_empty_denies("read", &selectors(&[])));
-        assert!(selector_allows_empty_denies("read", &selectors(&["*"])));
+        assert!(!selector_allows("read", &selectors(&[])));
+        assert!(selector_allows("read", &selectors(&["*"])));
     }
 
     #[test]
@@ -2074,6 +2162,44 @@ mod tests {
                 .iter()
                 .any(|part| matches!(part, ContentPart::Text(_)))
         );
+    }
+
+    #[test]
+    fn current_time_names_the_agent_schedule_timezone() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-07T12:34:56Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let block = current_time_block(now, "Asia/Seoul");
+        assert!(block.contains("iso8601=\"2026-08-07T12:34:56+00:00\""));
+        assert!(block.contains("timezone=\"Asia/Seoul\""));
+        assert!(block.contains("Resolve unspecified owner time references in Asia/Seoul"));
+    }
+
+    #[test]
+    fn schedule_timezone_default_is_injected_but_explicit_value_wins() {
+        let mut omitted = serde_json::json!({"cron": "0 9 * * *"});
+        inject_schedule_timezone(&mut omitted, "Asia/Seoul");
+        assert_eq!(omitted["timezone"], "Asia/Seoul");
+
+        let mut null = serde_json::json!({"timezone": null});
+        inject_schedule_timezone(&mut null, "Asia/Seoul");
+        assert_eq!(null["timezone"], "Asia/Seoul");
+
+        let mut explicit = serde_json::json!({
+            "cron": "0 9 * * *",
+            "timezone": "America/New_York"
+        });
+        inject_schedule_timezone(&mut explicit, "Asia/Seoul");
+        assert_eq!(explicit["timezone"], "America/New_York");
+    }
+
+    #[test]
+    fn schedule_schema_advertises_agent_timezone_default() {
+        let mut schema = serde_json::json!({
+            "properties": {"timezone": {"default": "UTC"}}
+        });
+        set_schedule_timezone_schema_default(&mut schema, "Asia/Seoul");
+        assert_eq!(schema["properties"]["timezone"]["default"], "Asia/Seoul");
     }
 
     #[test]
@@ -2146,6 +2272,25 @@ mod tests {
     }
 
     #[test]
+    fn history_content_attributes_people_by_stable_key() {
+        let row = HistoryRow {
+            direction: Direction::In,
+            sender: Some(MessageSender::User(goat_types::UserHandle {
+                external: "user-42".into(),
+                display: Some("Mutable Name".into()),
+            })),
+            text: "private detail".into(),
+            attachments: Vec::new(),
+            reply_to: None,
+            ts: chrono::Utc::now(),
+        };
+        assert_eq!(
+            history_content(&row),
+            "user Mutable Name [user-42]: private detail"
+        );
+    }
+
+    #[test]
     fn detects_common_agent_meta_leak() {
         assert!(looks_like_agent_meta_leak(
             "Now we are to continue the conversation. The user asked X. Let's craft."
@@ -2215,9 +2360,16 @@ mod tests {
     }
 
     #[test]
-    fn surface_of_external_classifies_dm_and_channel() {
-        assert_eq!(surface_of_external("dm:123"), Surface::Dm);
-        assert_eq!(surface_of_external("g:1:c:2"), Surface::Channel);
+    fn schedule_prompt_names_a_direct_message() {
+        let prompt = turn_system_prompt(
+            "base",
+            &TurnMode::Schedule { tools: vec![] },
+            Surface::Dm,
+            false,
+        );
+        assert!(prompt.contains("You are replying in a direct message."));
+        assert!(prompt.contains("<schedule_context>"));
+        assert!(!prompt.contains("shared channel"));
     }
 
     use std::time::Duration;
