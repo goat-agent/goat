@@ -218,12 +218,13 @@ fn parse_token_response(
             "token response is missing refresh_token".to_owned(),
         ));
     }
-    Ok(TokenSet::from_parts(
+    TokenSet::from_parts(
         tokens.access_token,
         tokens.refresh_token,
         tokens.expires_in,
         None,
-    ))
+    )
+    .map_err(|error| XaiOAuthError::OAuth(error.to_string()))
 }
 
 async fn exchange_authorization_code(
@@ -284,7 +285,7 @@ pub async fn current_oauth_token(store: &CredentialStore, key: &CredentialKey) -
         return None;
     };
     let tokens = ensure_valid(tokens, store, key, refresh_token).await?;
-    Some(tokens.access_token.expose().to_owned())
+    Some(tokens.access_token().expose().to_owned())
 }
 
 fn browser_available() -> bool {

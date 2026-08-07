@@ -94,9 +94,14 @@ async fn exchange_code(
         ])
         .send()
         .await?;
-    parse_token_response(response)
-        .await
-        .map(|t| TokenSet::from_parts(t.access_token, t.refresh_token, t.expires_in, None))
+    let tokens = parse_token_response(response).await?;
+    TokenSet::from_parts(
+        tokens.access_token,
+        tokens.refresh_token,
+        tokens.expires_in,
+        None,
+    )
+    .map_err(|error| GeminiAuthError::Token(error.to_string()))
 }
 
 pub async fn do_refresh(refresh_token: String) -> Result<TokenSet, String> {
@@ -116,18 +121,17 @@ pub async fn do_refresh(refresh_token: String) -> Result<TokenSet, String> {
         let body = response.text().await.unwrap_or_default();
         return Err(format!("{status}: {body}"));
     }
-    response
+    let tokens = response
         .json::<TokenResponse>()
         .await
-        .map_err(|e| e.to_string())
-        .map(|t| {
-            TokenSet::from_parts(
-                t.access_token,
-                t.refresh_token,
-                t.expires_in,
-                Some(&refresh_token),
-            )
-        })
+        .map_err(|error| error.to_string())?;
+    TokenSet::from_parts(
+        tokens.access_token,
+        tokens.refresh_token,
+        tokens.expires_in,
+        Some(&refresh_token),
+    )
+    .map_err(|error| error.to_string())
 }
 
 pub async fn do_login(status: &mpsc::Sender<String>) -> Result<TokenSet, GeminiAuthError> {
@@ -153,7 +157,7 @@ pub async fn current_auth(store: &CredentialStore, key: &CredentialKey) -> Optio
         }
         Credential::OAuth(tokens) => {
             let tokens = ensure_valid(tokens, store, key, do_refresh).await?;
-            Some(Auth::OAuth(tokens.access_token.expose().to_owned()))
+            Some(Auth::OAuth(tokens.access_token().expose().to_owned()))
         }
     }
 }

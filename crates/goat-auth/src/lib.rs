@@ -147,9 +147,10 @@ pub enum CredentialKind {
     OAuth,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenSet {
-    pub access_token: SecretString,
+    #[serde(deserialize_with = "deserialize_access_token")]
+    access_token: SecretString,
     pub refresh_token: Option<SecretString>,
     pub expires_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -160,22 +161,48 @@ pub struct TokenSet {
     pub issuer: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TokenSetError {
+    #[error("access token must not be empty")]
+    EmptyAccessToken,
+}
+
+fn deserialize_access_token<'de, D>(deserializer: D) -> Result<SecretString, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let access = SecretString::deserialize(deserializer)?;
+    if access.expose().is_empty() {
+        return Err(serde::de::Error::custom(TokenSetError::EmptyAccessToken));
+    }
+    Ok(access)
+}
+
 impl TokenSet {
     pub fn from_parts(
         access: String,
         refresh: Option<String>,
         expires_in: Option<i64>,
         fallback_refresh: Option<&str>,
-    ) -> Self {
+    ) -> Result<Self, TokenSetError> {
+        if access.is_empty() {
+            return Err(TokenSetError::EmptyAccessToken);
+        }
         let expires_at = expires_in.map(|secs| now_secs() + secs);
-        Self {
+        Ok(Self {
             access_token: SecretString::from(access),
             refresh_token: refresh
                 .map(SecretString::from)
                 .or_else(|| fallback_refresh.map(SecretString::from)),
             expires_at,
-            ..Self::default()
-        }
+            client_id: None,
+            scopes: Vec::new(),
+            issuer: None,
+        })
+    }
+
+    pub fn access_token(&self) -> &SecretString {
+        &self.access_token
     }
 
     #[must_use]
@@ -236,7 +263,7 @@ where
     let lock = refresh_lock_for(key);
     let _guard = lock.lock().await;
     if let Some(Credential::OAuth(current)) = store.file_get(key) {
-        let changed = current.access_token.expose() != tokens.access_token.expose();
+        let changed = current.access_token().expose() != tokens.access_token().expose();
         if changed && !current.is_expired() {
             return Some(current);
         }
@@ -283,7 +310,7 @@ impl Credential {
             Credential::ApiKey(secret) | Credential::ApiKeyWithEndpoint { secret, .. } => {
                 secret.expose()
             }
-            Credential::OAuth(tokens) => tokens.access_token.expose(),
+            Credential::OAuth(tokens) => tokens.access_token().expose(),
         }
     }
 
@@ -702,6 +729,14 @@ mod tests {
         SecretString, StoredValue, TokenSet, ensure_valid, now_secs,
     };
 
+    fn token_set(access: &str, refresh: Option<&str>, expires_at: Option<i64>) -> TokenSet {
+        let mut tokens =
+            TokenSet::from_parts(access.to_owned(), refresh.map(str::to_owned), None, None)
+                .unwrap();
+        tokens.expires_at = expires_at;
+        tokens
+    }
+
     #[tokio::test]
     async fn ensure_valid_single_flights_concurrent_refresh() {
         use std::sync::Arc;
@@ -710,12 +745,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let store = CredentialStore::new(path.clone());
         let key = CredentialKey::model("goat-singleflight", "a");
-        let expired = TokenSet {
-            access_token: SecretString::from("old"),
-            refresh_token: Some(SecretString::from("refresh")),
-            expires_at: Some(now_secs() - 100),
-            ..TokenSet::default()
-        };
+        let expired = token_set("old", Some("refresh"), Some(now_secs() - 100));
         let calls = Arc::new(AtomicUsize::new(0));
         let mut handles = Vec::new();
         for _ in 0..8 {
@@ -728,13 +758,7 @@ mod tests {
                     let calls = calls.clone();
                     async move {
                         calls.fetch_add(1, Ordering::SeqCst);
-                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                        Ok(TokenSet {
-                            access_token: SecretString::from("new"),
-                            refresh_token: Some(SecretString::from("refresh2")),
-                            expires_at: Some(now_secs() + 3600),
-                            ..TokenSet::default()
-                        })
+                        Ok(token_set("new", Some("refresh2"), Some(now_secs() + 3600)))
                     }
                 })
                 .await
@@ -742,7 +766,7 @@ mod tests {
         }
         for handle in handles {
             let result = handle.await.unwrap();
-            assert!(matches!(result, Some(t) if t.access_token.expose() == "new"));
+            assert!(matches!(result, Some(t) if t.access_token().expose() == "new"));
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         let _ = std::fs::remove_file(&path);
@@ -847,10 +871,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn an_oauth_credential_is_stored_under_the_plain_spelling() {
-        let stored = StoredValue::from(Credential::OAuth(TokenSet {
-            access_token: SecretString::from("at"),
-            ..TokenSet::default()
-        }));
+        let stored = StoredValue::from(Credential::OAuth(token_set("at", None, None)));
         assert_eq!(serde_json::to_value(&stored).unwrap()["kind"], "oauth");
     }
 
@@ -862,7 +883,7 @@ mod tests {
         });
         let stored: StoredValue = serde_json::from_value(legacy).unwrap();
         let credential = Credential::from(stored);
-        assert!(matches!(credential, Credential::OAuth(t) if t.access_token.expose() == "at"));
+        assert!(matches!(credential, Credential::OAuth(t) if t.access_token().expose() == "at"));
     }
 
     #[test]
@@ -879,10 +900,7 @@ mod tests {
 
     #[test]
     fn the_oauth_identity_is_omitted_when_empty_and_kept_when_set() {
-        let bare = TokenSet {
-            access_token: SecretString::from("at"),
-            ..TokenSet::default()
-        };
+        let bare = token_set("at", None, None);
         let raw = serde_json::to_value(&bare).unwrap();
         assert!(raw.get("client_id").is_none());
         assert!(raw.get("scopes").is_none());
@@ -905,7 +923,7 @@ mod tests {
     fn tokens_written_before_the_identity_fields_still_load() {
         let legacy = serde_json::json!({ "access_token": "at" });
         let tokens: TokenSet = serde_json::from_value(legacy).unwrap();
-        assert_eq!(tokens.access_token.expose(), "at");
+        assert_eq!(tokens.access_token().expose(), "at");
         assert!(tokens.client_id.is_none());
         assert!(tokens.scopes.is_empty());
         assert!(tokens.issuer.is_none());
@@ -1003,27 +1021,9 @@ mod tests {
 
     #[test]
     fn token_set_is_expired() {
-        let expired = TokenSet {
-            access_token: SecretString::from("a"),
-            refresh_token: None,
-            expires_at: Some(0),
-            ..TokenSet::default()
-        };
-        assert!(expired.is_expired());
-        let fresh = TokenSet {
-            access_token: SecretString::from("a"),
-            refresh_token: None,
-            expires_at: Some(i64::MAX),
-            ..TokenSet::default()
-        };
-        assert!(!fresh.is_expired());
-        let no_expiry = TokenSet {
-            access_token: SecretString::from("a"),
-            refresh_token: None,
-            expires_at: None,
-            ..TokenSet::default()
-        };
-        assert!(!no_expiry.is_expired());
+        assert!(token_set("a", None, Some(0)).is_expired());
+        assert!(!token_set("a", None, Some(i64::MAX)).is_expired());
+        assert!(!token_set("a", None, None).is_expired());
     }
 
     #[test]
@@ -1033,16 +1033,30 @@ mod tests {
             Some("refresh".to_owned()),
             Some(3600),
             None,
-        );
-        assert_eq!(ts.access_token.expose(), "access");
+        )
+        .unwrap();
+        assert_eq!(ts.access_token().expose(), "access");
         assert_eq!(ts.refresh_token.as_ref().unwrap().expose(), "refresh");
         assert!(ts.expires_at.is_some());
     }
 
     #[test]
     fn token_set_from_parts_fallback_refresh() {
-        let ts = TokenSet::from_parts("access".to_owned(), None, None, Some("fallback"));
+        let ts = TokenSet::from_parts("access".to_owned(), None, None, Some("fallback")).unwrap();
         assert_eq!(ts.refresh_token.as_ref().unwrap().expose(), "fallback");
+    }
+
+    #[test]
+    fn empty_access_tokens_are_rejected_by_construction_and_deserialization() {
+        assert!(TokenSet::from_parts(String::new(), None, None, None).is_err());
+        assert!(
+            serde_json::from_value::<TokenSet>(serde_json::json!({
+                "access_token": "",
+                "refresh_token": null,
+                "expires_at": null
+            }))
+            .is_err()
+        );
     }
 
     #[test]

@@ -128,12 +128,13 @@ async fn exchange_code(code: &str, verifier: &str) -> Result<TokenSet, CodexErro
         return Err(CodexError::Token(err.to_string()));
     }
     let tokens: TokenResponse = response.json().await?;
-    Ok(TokenSet::from_parts(
+    TokenSet::from_parts(
         tokens.access_token,
         tokens.refresh_token,
         tokens.expires_in,
         None,
-    ))
+    )
+    .map_err(|error| CodexError::Token(error.to_string()))
 }
 
 fn browser_available() -> bool {
@@ -256,12 +257,13 @@ async fn do_refresh(refresh_token: String) -> Result<TokenSet, String> {
         return Err(err.to_string());
     }
     let tokens: TokenResponse = response.json().await.map_err(|e| e.to_string())?;
-    Ok(TokenSet::from_parts(
+    TokenSet::from_parts(
         tokens.access_token,
         tokens.refresh_token,
         tokens.expires_in,
         Some(refresh_token.as_str()),
-    ))
+    )
+    .map_err(|error| error.to_string())
 }
 
 async fn current_access(
@@ -277,7 +279,7 @@ async fn current_access(
         }
     };
     let tokens = ensure_valid(tokens, store, key, do_refresh).await?;
-    let access = tokens.access_token.expose().to_owned();
+    let access = tokens.access_token().expose().to_owned();
     let account = account_id(&access);
     Some((access, account))
 }

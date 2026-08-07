@@ -78,7 +78,7 @@ pub async fn current_token(store: &CredentialStore, key: &CredentialKey) -> Opti
         return None;
     };
     let tokens = ensure_valid(tokens, store, key, refresh).await?;
-    Some(tokens.access_token.expose().to_owned())
+    Some(tokens.access_token().expose().to_owned())
 }
 
 async fn request_device_authorization(
@@ -195,12 +195,13 @@ pub(crate) fn parse_token_response(tokens: TokenResponse) -> Result<TokenSet, Ki
             "token response is missing required fields".to_owned(),
         ));
     }
-    Ok(TokenSet::from_parts(
+    TokenSet::from_parts(
         tokens.access_token,
         Some(tokens.refresh_token),
         Some(tokens.expires_in),
         None,
-    ))
+    )
+    .map_err(|error| KimiCodeOAuthError::OAuth(error.to_string()))
 }
 
 pub fn identity_headers() -> Vec<(String, String)> {
@@ -353,7 +354,7 @@ mod tests {
             token_type: Some("Bearer".to_owned()),
         })
         .unwrap();
-        assert_eq!(token.access_token.expose(), "access-secret");
+        assert_eq!(token.access_token().expose(), "access-secret");
         assert_eq!(token.refresh_token.unwrap().expose(), "refresh-secret");
         let error = parse_token_response(TokenResponse {
             access_token: String::new(),
