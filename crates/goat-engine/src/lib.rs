@@ -282,6 +282,7 @@ pub(crate) struct LoopEnv {
     pub(crate) tool_defs: Vec<ToolDefinition>,
     pub(crate) cwd: PathBuf,
     pub(crate) allow_delegate: bool,
+    pub(crate) interactive: bool,
     pub(crate) plan: bool,
     pub(crate) plan_path: Option<PathBuf>,
     pub(crate) exec_policy: SandboxPolicy,
@@ -341,8 +342,13 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     let processes = background::Runs::new(events.clone(), wake.clone(), Some(store.clone()));
     let asks = Arc::new(Mutex::new(HashMap::new()));
     let question_broker = Arc::new(ask::EngineQuestionBroker::new(asks.clone(), events.clone()));
+    let process_service = Arc::new(bash_tools::EngineBackgroundProcessService::new(
+        processes.clone(),
+        store.clone(),
+    ));
     let tools = goat_tools::builtin_with(goat_tools::BuiltinCapabilities {
         questions: question_broker,
+        processes: process_service,
     })
     .with_many(tools);
     let checkpoints = checkpoint::CheckpointTracker::new(store.clone());

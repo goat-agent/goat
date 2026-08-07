@@ -77,12 +77,6 @@ pub(crate) fn call_display(tools: &ToolRegistry, name: &str, input: &str) -> Too
         crate::delegate::SUBAGENT_KILL_TOOL_NAME => crate::delegate::subagent_kill_display(input),
         crate::plan::PROPOSE_PLAN_TOOL_NAME => crate::plan::propose_plan_call_display(input),
         WEB_SEARCH_TOOL_NAME => web_search_display(input),
-        _ if crate::bash_tools::is_bash_run_tool(name) => {
-            crate::bash_tools::call_display(name, input)
-        }
-        crate::bash_tools::BASH_TOOL_NAME if crate::bash_tools::wants_background(input) => {
-            crate::bash_tools::background_start_display(input)
-        }
         _ => tools.get(name).map_or_else(
             || goat_tool::display::generic_named(name, input),
             |tool| tool.display_input(input),
@@ -102,6 +96,7 @@ async fn run_regular_tool(
     ctx: &Ctx,
     task: goat_protocol::TaskId,
     call: ToolCallId,
+    definition_context: ToolDefinitionContext,
     name: &str,
     input_json: &str,
     tool_ctx: &ToolContext,
@@ -114,6 +109,7 @@ async fn run_regular_tool(
         task,
         call,
         cancellation: token,
+        definition_context,
     };
     let future = tool.invoke(input_json, tool_ctx, invocation);
     if tool.handles_cancellation() {
@@ -155,13 +151,6 @@ async fn execute_tool(
                 .await
                 .map(ToolOutput::text),
         )
-    } else if crate::bash_tools::is_bash_run_tool(prep.name) && env.allow_delegate {
-        crate::bash_tools::run_bash_run_tool(ctx, prep.name, prep.input_json, token).await
-    } else if prep.name == crate::bash_tools::BASH_TOOL_NAME
-        && env.allow_delegate
-        && crate::bash_tools::wants_background(prep.input_json)
-    {
-        crate::bash_tools::start_background(ctx, env, prep.input_json, token).await
     } else if prep.name == crate::plan::PROPOSE_PLAN_TOOL_NAME && env.plan {
         Some(
             crate::plan::run_propose_plan(
@@ -230,6 +219,11 @@ async fn execute_tool(
                 ctx,
                 run.id,
                 ToolCallId(prep.tui_id),
+                ToolDefinitionContext {
+                    interactive: env.interactive,
+                    top_level: env.allow_delegate,
+                    planning: env.plan,
+                },
                 prep.name,
                 prep.input_json,
                 tool_ctx,
@@ -403,13 +397,6 @@ pub(crate) fn build_tool_defs(
             input_schema: spec.parameters,
         })
         .collect();
-    if allow_delegate
-        && let Some(bash) = defs
-            .iter_mut()
-            .find(|def| def.name == crate::bash_tools::BASH_TOOL_NAME)
-    {
-        crate::bash_tools::augment_bash(bash);
-    }
     if provider.supports_web_search() && ctx.tools.get(WEB_SEARCH_TOOL_NAME).is_none() {
         defs.push(web_search_tool_def());
     }
@@ -418,7 +405,6 @@ pub(crate) fn build_tool_defs(
             defs.push(subagent_tool_def(ctx));
             defs.push(crate::delegate::subagent_kill_tool_def());
         }
-        defs.extend(crate::bash_tools::tool_defs());
     }
     if plan {
         defs.push(crate::plan::propose_plan_tool_def());

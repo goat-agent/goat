@@ -21,6 +21,7 @@ goat-config = { workspace = true }
 goat-mcp = { workspace = true }
 goat-tool = { workspace = true }
 goat-tool-ask = { workspace = true }
+goat-tool-shell = { workspace = true }
 goat-sandbox = { workspace = true }
 goat-tools = { workspace = true }
 goat-worktree = { workspace = true }
@@ -37,7 +38,6 @@ tracing = { workspace = true }
 unicode-width = { workspace = true }
 
 [dev-dependencies]
-goat-tool-shell = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 async-trait = { workspace = true }

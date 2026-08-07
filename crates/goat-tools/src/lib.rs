@@ -2,12 +2,15 @@ use std::sync::Arc;
 
 use goat_tool::ToolRegistry;
 use goat_tool_ask::{AskTool, QuestionBroker, QuestionFuture};
+use goat_tool_shell::{BackgroundFuture, BackgroundProcessService, ProcessChunk, ProcessStart};
 
 pub struct BuiltinCapabilities {
     pub questions: Arc<dyn QuestionBroker>,
+    pub processes: Arc<dyn BackgroundProcessService>,
 }
 
 struct UnavailableQuestions;
+struct UnavailableProcesses;
 
 impl QuestionBroker for UnavailableQuestions {
     fn ask<'a>(
@@ -21,10 +24,33 @@ impl QuestionBroker for UnavailableQuestions {
     }
 }
 
+impl BackgroundProcessService for UnavailableProcesses {
+    fn start<'a>(
+        &'a self,
+        _request: ProcessStart,
+        _cancellation: &'a tokio_util::sync::CancellationToken,
+    ) -> BackgroundFuture<'a, goat_protocol::RunId> {
+        Box::pin(async { Err("background process service unavailable".to_owned()) })
+    }
+
+    fn output<'a>(&'a self, _run: goat_protocol::RunId) -> BackgroundFuture<'a, ProcessChunk> {
+        Box::pin(async { Err("background process service unavailable".to_owned()) })
+    }
+
+    fn input<'a>(&'a self, _run: goat_protocol::RunId, _text: String) -> BackgroundFuture<'a, ()> {
+        Box::pin(async { Err("background process service unavailable".to_owned()) })
+    }
+
+    fn kill<'a>(&'a self, _run: goat_protocol::RunId) -> BackgroundFuture<'a, ()> {
+        Box::pin(async { Err("background process service unavailable".to_owned()) })
+    }
+}
+
 impl Default for BuiltinCapabilities {
     fn default() -> Self {
         Self {
             questions: Arc::new(UnavailableQuestions),
+            processes: Arc::new(UnavailableProcesses),
         }
     }
 }
@@ -35,7 +61,7 @@ pub fn builtin() -> ToolRegistry {
 
 pub fn builtin_with(capabilities: BuiltinCapabilities) -> ToolRegistry {
     let mut tools = goat_tool_fs::all();
-    tools.extend(goat_tool_shell::all());
+    tools.extend(goat_tool_shell::all_with_background(capabilities.processes));
     tools.extend(goat_tool_search::all());
     tools.extend(goat_tool_skill::all());
     tools.extend(goat_tool_web::all());

@@ -108,6 +108,7 @@ pub struct ToolInvocation<'a> {
     pub task: TaskId,
     pub call: ToolCallId,
     pub cancellation: &'a CancellationToken,
+    pub definition_context: ToolDefinitionContext,
 }
 
 pub trait Tool: Send + Sync {
@@ -125,6 +126,13 @@ pub trait Tool: Send + Sync {
     }
     fn enabled(&self, _context: ToolDefinitionContext) -> bool {
         true
+    }
+    fn definition(&self, context: ToolDefinitionContext) -> Option<crate::ToolSpec> {
+        self.enabled(context).then(|| crate::ToolSpec {
+            name: self.name(),
+            description: self.description(),
+            parameters: self.parameters(),
+        })
     }
     fn handles_cancellation(&self) -> bool {
         false

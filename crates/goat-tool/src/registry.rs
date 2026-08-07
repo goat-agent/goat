@@ -43,12 +43,7 @@ impl ToolRegistry {
         let mut specs: Vec<ToolSpec> = self
             .tools
             .values()
-            .filter(|tool| tool.enabled(context))
-            .map(|tool| ToolSpec {
-                name: tool.name(),
-                description: tool.description(),
-                parameters: tool.parameters(),
-            })
+            .filter_map(|tool| tool.definition(context))
             .collect();
         specs.sort_by_key(|spec| spec.name);
         specs

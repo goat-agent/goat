@@ -343,8 +343,7 @@ fn wake_notice(updates: &[(goat_protocol::RunId, crate::background::RunUpdate)])
         let _ = write!(
             body,
             "\n[{} #{id} · {} · {status}]\n",
-            update.kind.label(),
-            update.title
+            update.label, update.title
         );
         if update.output.trim().is_empty() {
             body.push_str("(no output)\n");
@@ -635,6 +634,7 @@ pub(crate) async fn handle_compact(
         tool_defs,
         cwd,
         allow_delegate: true,
+        interactive: true,
         plan: false,
         plan_path: None,
         exec_policy: SandboxPolicy::Full,
@@ -815,6 +815,7 @@ async fn run_one_turn(
         tool_defs,
         cwd,
         allow_delegate: true,
+        interactive: allow_ask,
         plan: state.mode.is_plan(),
         plan_path: state.plan_path.clone(),
         exec_policy: SandboxPolicy::Full,
@@ -893,14 +894,14 @@ async fn run_one_turn(
 #[cfg(test)]
 mod tests {
     use super::wake_notice;
-    use crate::background::{Kind, RunUpdate};
+    use crate::background::RunUpdate;
     use goat_protocol::{ProcessState, RunId};
 
     fn bash(title: &str, output: &str, code: i32) -> (RunId, RunUpdate) {
         (
             RunId(3),
             RunUpdate {
-                kind: Kind::Bash,
+                label: "bash".to_owned(),
                 title: title.to_owned(),
                 output: output.to_owned(),
                 state: ProcessState::Exited,
@@ -914,7 +915,7 @@ mod tests {
         (
             RunId(7),
             RunUpdate {
-                kind: Kind::Subagent,
+                label: "subagent".to_owned(),
                 title: title.to_owned(),
                 output: report.to_owned(),
                 state: ProcessState::Exited,

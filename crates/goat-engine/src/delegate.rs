@@ -89,7 +89,7 @@ pub(crate) async fn run_subagent_kill(ctx: &Ctx, input_json: &str) -> Result<Str
     let args: KillInput =
         serde_json::from_str(input_json).map_err(|err| format!("invalid input: {err}"))?;
     ctx.background
-        .kill(args.run, Some(crate::background::Kind::Subagent))
+        .kill(args.run, Some(crate::background::Kind::Child))
         .await?;
     Ok(format!("Killed subagent run #{}.", args.run))
 }
@@ -219,7 +219,7 @@ async fn detach(
     let subagent_type = args.subagent_type.clone();
     let run_id = ctx
         .background
-        .register_subagent(&args.name, cancel.clone())
+        .register_child(&args.name, cancel.clone())
         .await;
     let ctx = ctx.clone();
     tokio::spawn(async move {
@@ -230,7 +230,7 @@ async fn detach(
             run_child(&ctx, &origin, &args, parent, call, &cancel).await
         };
         drop(permit);
-        ctx.background.finish_subagent(run_id, result).await;
+        ctx.background.finish_child(run_id, result).await;
     });
     Ok(format!(
         "Started subagent run #{run_id} ({subagent_type}). A fresh turn will wake you with its report when it finishes, so if you have other work to get on with, do that and end your turn instead of waiting. Stop it with SubagentKill(run={run_id})."
@@ -307,6 +307,7 @@ async fn run_child_inner(
         tool_defs,
         cwd: origin.cwd.clone(),
         allow_delegate: false,
+        interactive: false,
         plan: false,
         plan_path: None,
         exec_policy: crate::subagent::tighter(&origin.exec_policy, &spec.exec_policy),
