@@ -1182,6 +1182,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Integration for FakeIntegration {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
         fn id(&self) -> goat_types::IntegrationId {
             goat_types::IntegrationId::from_static("fake")
         }

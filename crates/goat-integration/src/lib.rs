@@ -144,6 +144,8 @@ pub struct IntegrationMetadata {
 
 #[async_trait]
 pub trait Integration: Send + Sync + 'static {
+    fn as_any(&self) -> &dyn std::any::Any;
+
     fn id(&self) -> IntegrationId;
 
     fn metadata(&self) -> IntegrationMetadata;
