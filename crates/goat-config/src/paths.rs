@@ -78,14 +78,6 @@ pub fn config_path() -> Option<PathBuf> {
     resolved().map(|p| p.config_json)
 }
 
-pub fn mcp_config_path() -> Option<PathBuf> {
-    resolved().map(|p| p.mcp_json)
-}
-
-pub fn mcp_approvals_path() -> Option<PathBuf> {
-    resolved().map(|p| p.mcp_approvals_json)
-}
-
 pub fn auth_path() -> Option<PathBuf> {
     resolved().map(|p| p.credentials_json)
 }
@@ -98,20 +90,12 @@ pub fn skills_dir() -> Option<PathBuf> {
     resolved().map(|p| p.skills_dir)
 }
 
-pub fn browser_dir() -> Option<PathBuf> {
-    resolved().map(|p| p.browser_dir)
-}
-
 pub fn browser_profile_dir() -> Option<PathBuf> {
     resolved().map(|p| p.browser_profile_dir())
 }
 
 pub fn socket_path() -> Option<PathBuf> {
     resolved().map(|p| p.socket_path)
-}
-
-pub fn daemon_lock_path() -> Option<PathBuf> {
-    resolved().map(|p| p.daemon_lock)
 }
 
 pub fn remote_dir() -> Option<PathBuf> {

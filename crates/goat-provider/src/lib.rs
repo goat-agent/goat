@@ -201,7 +201,7 @@ impl WebSearchOutput {
 }
 
 #[must_use]
-pub fn format_search_results(results: &[SearchResult]) -> String {
+fn format_search_results(results: &[SearchResult]) -> String {
     if results.is_empty() {
         return "No results found.".to_owned();
     }

@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-pub const GOAT_NAMESPACE: Uuid = Uuid::from_u128(0x6f61_745f_7065_7273_6f6e_615f_6e73_3031);
+pub(crate) const GOAT_NAMESPACE: Uuid = Uuid::from_u128(0x6f61_745f_7065_7273_6f6e_615f_6e73_3031);
+pub const SCHEDULE_FALLBACK_TIMEZONE: &str = "UTC";
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
 pub struct AgentId(pub Uuid);
@@ -141,13 +142,13 @@ impl fmt::Display for ThreadId {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UserHandle {
     pub external: String,
     pub display: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Attachment {
     pub mime: String,
     pub name: Option<String>,
@@ -155,7 +156,7 @@ pub struct Attachment {
     pub source: AttachmentSource,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum AttachmentSource {
     Url(String),
@@ -267,7 +268,7 @@ pub enum Event {
     Schedule {
         agent: AgentId,
         run_id: i64,
-        task_id: i64,
+        schedule_id: i64,
     },
     IntegrationUpdate {
         agent: AgentId,
