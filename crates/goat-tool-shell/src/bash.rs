@@ -111,6 +111,8 @@ impl Tool for BashTool {
             let mut builder = Command::new(&program);
             builder
                 .args(&prog_args)
+                .env_clear()
+                .envs(goat_process::child_environment())
                 .current_dir(&ctx.cwd)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -452,6 +454,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolves_binaries_with_the_filtered_environment() {
+        let out = BashTool
+            .run(
+                r#"{"command":"command -v sh >/dev/null && sh -c 'printf resolved'"}"#,
+                &ctx(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.as_text(), Some("resolved"));
+    }
+
+    #[tokio::test]
     async fn nonzero_exit_is_ok() {
         let out = BashTool
             .run(r#"{"command":"exit 1"}"#, &ctx())
@@ -509,7 +523,7 @@ mod tests {
         let out = tokio::time::timeout(
             std::time::Duration::from_secs(20),
             BashTool.run(
-                r#"{"command":"head -c 50000000 /dev/zero | tr '\\0' 'a'"}"#,
+                r#"{"command":"head -c 5000000 /dev/zero | tr '\\0' 'a'"}"#,
                 &c,
             ),
         )

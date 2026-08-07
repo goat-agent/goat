@@ -3,8 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use goat_agent_tool::{
-    ToolCall, ToolContent, ToolContext, ToolHandler, ToolName, ToolOutput, ToolSpec,
-    command_safety::deny_reason,
+    ToolCall, ToolContent, ToolContext, ToolHandler, ToolName, ToolOutput, ToolSpec, deny_reason,
 };
 use serde::Deserialize;
 use serde_json::json;

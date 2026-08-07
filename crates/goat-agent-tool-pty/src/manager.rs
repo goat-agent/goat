@@ -164,6 +164,8 @@ impl PtyManager {
         let child = pty_process::Command::new("/bin/sh")
             .arg("-c")
             .arg(&cmd)
+            .env_clear()
+            .envs(goat_process::child_environment())
             .spawn(pts)
             .map_err(|e| format!("spawn: {e}"))?;
         let child_pid = child.id();
