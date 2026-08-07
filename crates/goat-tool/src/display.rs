@@ -46,7 +46,13 @@ pub fn generic_named(tool_name: &str, input: &str) -> ToolDisplay {
     let Ok(Value::Object(map)) = serde_json::from_str::<Value>(input) else {
         return raw(input);
     };
-    let parts: Vec<String> = map.values().filter_map(scalar_text).take(3).collect();
+    let parts: Vec<String> = map
+        .values()
+        .filter(|value| value.is_string())
+        .chain(map.values().filter(|value| !value.is_string()))
+        .filter_map(scalar_text)
+        .take(3)
+        .collect();
     if parts.is_empty() {
         return raw(input);
     }
@@ -102,10 +108,10 @@ mod tests {
     }
 
     #[test]
-    fn generic_displays_scalar_values() {
+    fn generic_prefers_descriptive_text_over_scalar_options() {
         let got = generic(r#"{"limit":5,"query":"rust tui"}"#);
-        assert_eq!(got.primary, "5");
-        assert_eq!(got.detail.as_deref(), Some("rust tui"));
+        assert_eq!(got.primary, "rust tui");
+        assert_eq!(got.detail.as_deref(), Some("5"));
     }
 
     #[test]

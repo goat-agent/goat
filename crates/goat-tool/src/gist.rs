@@ -5,7 +5,7 @@ const ELLIPSIS: &str = "…";
 pub fn transcript_sig(
     tool_name: &str,
     display_primary: &str,
-    _cwd: &str,
+    cwd: &str,
     width: u16,
     failed: bool,
 ) -> String {
@@ -14,9 +14,16 @@ pub fn transcript_sig(
     let budget = arg_budget(width, failed, 64);
     let mut shortened = Vec::new();
     if let Some(first) = args.first() {
-        shortened.push(clip_to_width(first, budget));
+        let flattened = first.split_whitespace().collect::<Vec<_>>().join(" ");
+        let relative = path_under_cwd(&flattened, cwd);
+        let first = if relative != flattened || looks_like_path(&relative) {
+            ellipsize_path_middle(&relative, budget)
+        } else {
+            clip_to_width(&flattened, budget)
+        };
+        shortened.push(first);
     }
-    if args.len() > 1 {
+    if args.get(1).is_some_and(|argument| argument != ".") {
         shortened.push(ELLIPSIS.to_owned());
     }
     format(&name, &shortened)
@@ -156,6 +163,49 @@ fn quote_arg_if_needed(s: &str) -> String {
     }
 }
 
+fn looks_like_path(value: &str) -> bool {
+    !value.chars().any(char::is_whitespace)
+        && (value.starts_with('/') || value.starts_with("./") || value.matches('/').count() > 1)
+}
+
+fn path_under_cwd(raw: &str, cwd: &str) -> String {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return raw.to_owned();
+    }
+    let cwd = cwd.trim_end_matches('/');
+    let prefix = format!("{cwd}/");
+    if let Some(rest) = raw.strip_prefix(&prefix) {
+        return rest.to_owned();
+    }
+    if raw == cwd {
+        return ".".to_owned();
+    }
+    raw.to_owned()
+}
+
+fn ellipsize_path_middle(path: &str, max: usize) -> String {
+    if path.width() <= max {
+        return path.to_owned();
+    }
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    if parts.is_empty() {
+        return clip_to_width(path, max);
+    }
+    let file = parts.last().copied().unwrap_or("");
+    if let Some(parent) = parts.get(parts.len().saturating_sub(2)) {
+        let candidate = format!("…/{parent}/{file}");
+        if candidate.width() <= max {
+            return candidate;
+        }
+    }
+    let tail = format!("…/{file}");
+    if tail.width() <= max {
+        return tail;
+    }
+    clip_to_width(file, max)
+}
+
 fn arg_budget(width: u16, failed: bool, base: usize) -> usize {
     let width = usize::from(width.saturating_sub(2)).max(24);
     let cap = width.saturating_sub(8);
@@ -194,7 +244,7 @@ pub fn clip_to_width(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format, parse, transcript_sig};
+    use super::{ellipsize_path_middle, format, parse, path_under_cwd, transcript_sig};
 
     #[test]
     fn normalize_wraps_bare_input() {
@@ -219,6 +269,41 @@ mod tests {
             false,
         );
         assert_eq!(sig, "Tool(\"first argument\", …)");
+    }
+
+    #[test]
+    fn grep_omits_dot_scope() {
+        let sig = transcript_sig("Grep", "Grep(foo, .)", "/tmp", 80, false);
+        assert_eq!(sig, "Grep(foo)");
+    }
+
+    #[test]
+    fn glob_keeps_pattern() {
+        let sig = transcript_sig("Glob", "Glob(**/symbols*)", "/tmp", 80, false);
+        assert_eq!(sig, "Glob(**/symbols*)");
+    }
+
+    #[test]
+    fn path_under_cwd_strips_prefix() {
+        assert_eq!(
+            path_under_cwd("/Users/jmo/proj/crates/a.rs", "/Users/jmo/proj"),
+            "crates/a.rs"
+        );
+    }
+
+    #[test]
+    fn call_args_reads_a_bare_display_string() {
+        assert_eq!(
+            super::call_args("Glob", "Glob(**/symbols*)"),
+            vec!["**/symbols*".to_owned()]
+        );
+    }
+
+    #[test]
+    fn path_middle_ellipsis() {
+        let path = ellipsize_path_middle("crates/goat-tui/src/transcript/tool_gist.rs", 28);
+        assert!(path.contains("tool_gist.rs"));
+        assert!(path.contains('…'));
     }
 
     #[test]
