@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 const PARK: Duration = Duration::from_hours(1);
+const CONSOLIDATION_TIMEZONE: &str = "UTC";
 
 #[derive(Clone, Debug)]
 pub struct SleepConfig {
@@ -32,16 +33,18 @@ where
 {
     tokio::spawn(async move {
         let schedule = match cron_expr::parse(&config.cron) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!(error = %e, cron = %config.cron, "sleep: invalid cron; loop disabled");
+            Ok(schedule) => schedule,
+            Err(error) => {
+                warn!(error = %error, cron = %config.cron, "sleep: invalid cron; loop disabled");
                 return;
             }
         };
-        info!(cron = %config.cron, "sleep-job loop started");
+        let consolidation_timezone = cron_expr::parse_timezone(Some(CONSOLIDATION_TIMEZONE))
+            .expect("consolidation timezone must be valid");
+        info!(cron = %config.cron, timezone = CONSOLIDATION_TIMEZONE, "sleep-job loop started");
         loop {
             let now = Utc::now();
-            let wait = match cron_expr::next_after(&schedule, now) {
+            let wait = match cron_expr::next_after(&schedule, now, consolidation_timezone) {
                 Some(next) => (next - now).to_std().unwrap_or(PARK),
                 None => PARK,
             };
@@ -55,4 +58,14 @@ where
         }
         info!("sleep-job loop stopped");
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn consolidation_timezone_is_utc() {
+        assert_eq!(CONSOLIDATION_TIMEZONE, "UTC");
+    }
 }
