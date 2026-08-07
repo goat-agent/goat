@@ -359,6 +359,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
         processes: process_service,
         agents: agent_specs,
         delegation: delegation_service.clone(),
+        native_search: Arc::new(websearch::EngineNativeSearchService),
     })
     .with_many(tools);
     let checkpoints = checkpoint::CheckpointTracker::new(store.clone());

@@ -5,6 +5,7 @@ use goat_tool_ask::{AskTool, QuestionBroker, QuestionFuture};
 use goat_tool_delegate::{
     AgentSpec, DelegateFuture, DelegateInvocation, DelegateResult, DelegationService,
 };
+use goat_tool_search::{NativeSearchFuture, NativeSearchRequest, NativeSearchService};
 use goat_tool_shell::{BackgroundFuture, BackgroundProcessService, ProcessChunk, ProcessStart};
 
 pub struct BuiltinCapabilities {
@@ -12,11 +13,13 @@ pub struct BuiltinCapabilities {
     pub processes: Arc<dyn BackgroundProcessService>,
     pub agents: Vec<AgentSpec>,
     pub delegation: Arc<dyn DelegationService>,
+    pub native_search: Arc<dyn NativeSearchService>,
 }
 
 struct UnavailableQuestions;
 struct UnavailableProcesses;
 struct UnavailableDelegation;
+struct UnavailableNativeSearch;
 
 impl QuestionBroker for UnavailableQuestions {
     fn ask<'a>(
@@ -66,6 +69,16 @@ impl DelegationService for UnavailableDelegation {
     }
 }
 
+impl NativeSearchService for UnavailableNativeSearch {
+    fn search<'a>(
+        &'a self,
+        _request: NativeSearchRequest,
+        _invocation: goat_tool::ToolInvocation<'a>,
+    ) -> NativeSearchFuture<'a> {
+        Box::pin(async { Err("native search service unavailable".to_owned()) })
+    }
+}
+
 impl Default for BuiltinCapabilities {
     fn default() -> Self {
         Self {
@@ -73,6 +86,7 @@ impl Default for BuiltinCapabilities {
             processes: Arc::new(UnavailableProcesses),
             agents: Vec::new(),
             delegation: Arc::new(UnavailableDelegation),
+            native_search: Arc::new(UnavailableNativeSearch),
         }
     }
 }
@@ -88,7 +102,9 @@ pub fn builtin_with(capabilities: BuiltinCapabilities) -> ToolRegistry {
         capabilities.agents,
         capabilities.delegation,
     ));
-    tools.extend(goat_tool_search::all());
+    tools.extend(goat_tool_search::all_with_native(
+        capabilities.native_search,
+    ));
     tools.extend(goat_tool_skill::all());
     tools.extend(goat_tool_web::all());
     tools.push(Box::new(AskTool::new(capabilities.questions)));

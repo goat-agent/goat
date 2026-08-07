@@ -2935,6 +2935,7 @@ dependencies = [
  "goat-tool-browser",
  "goat-tool-computer",
  "goat-tool-delegate",
+ "goat-tool-search",
  "goat-tool-shell",
  "goat-tools",
  "goat-worktree",
