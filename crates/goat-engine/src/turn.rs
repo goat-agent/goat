@@ -175,7 +175,7 @@ async fn bind_plan_path(ctx: &Ctx, state: &mut SessionState, thread_id: Option<i
     }
     let seed = seed.to_owned();
     let Ok(path) =
-        tokio::task::spawn_blocking(move || crate::plan::resolve_path(&dir, tid, &seed)).await
+        tokio::task::spawn_blocking(move || goat_tool_plan::resolve_path(&dir, tid, &seed)).await
     else {
         return;
     };
@@ -235,12 +235,12 @@ fn plan_decision_input(
         goat_protocol::PlanDecision::Approve {} => {
             let path = state.plan_path.as_ref()?;
             (
-                crate::plan::approved_input(path),
+                goat_tool_plan::approved_input(path),
                 "(plan approved)".to_owned(),
             )
         }
         goat_protocol::PlanDecision::Reject { feedback } => (
-            crate::plan::rejected_input(feedback),
+            goat_tool_plan::rejected_input(feedback),
             "(plan rejected)".to_owned(),
         ),
     };

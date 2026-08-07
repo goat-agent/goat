@@ -67,13 +67,10 @@ fn outcome_image(content: &ToolContent) -> Option<ToolImageData> {
 }
 
 pub(crate) fn call_display(tools: &ToolRegistry, name: &str, input: &str) -> ToolDisplay {
-    match name {
-        crate::plan::PROPOSE_PLAN_TOOL_NAME => crate::plan::propose_plan_call_display(input),
-        _ => tools.get(name).map_or_else(
-            || goat_tool::display::generic_named(name, input),
-            |tool| tool.display_input(input),
-        ),
-    }
+    tools.get(name).map_or_else(
+        || goat_tool::display::generic_named(name, input),
+        |tool| tool.display_input(input),
+    )
 }
 
 pub(crate) fn summarize_line(text: &str) -> Option<String> {
@@ -140,47 +137,34 @@ async fn execute_tool(
     tool_ctx: &ToolContext,
     token: &CancellationToken,
 ) -> ToolExecResult {
-    let step: Option<Result<ToolOutput, String>> =
-        if prep.name == crate::plan::PROPOSE_PLAN_TOOL_NAME && env.plan {
-            Some(
-                crate::plan::run_propose_plan(
-                    ctx,
-                    run,
-                    env.plan_path.as_deref(),
-                    ToolCallId(prep.tui_id),
-                )
-                .await,
-            )
-        } else {
-            let mutation_path = ctx
-                .tools
-                .get(prep.name)
-                .and_then(|tool| tool.mutation_path(prep.input_json));
-            if let Some(path) = mutation_path
-                && let Err(error) = ctx.checkpoints.capture_path(&path, tool_ctx).await
-            {
-                Some(Err(format!(
-                    "could not checkpoint file before mutation: {error}"
-                )))
-            } else {
-                run_regular_tool(
-                    ctx,
-                    run.id,
-                    ToolCallId(prep.tui_id),
-                    ToolDefinitionContext {
-                        interactive: env.interactive,
-                        top_level: env.allow_delegate,
-                        planning: env.plan,
-                    },
-                    env,
-                    prep.name,
-                    prep.input_json,
-                    tool_ctx,
-                    token,
-                )
-                .await
-            }
-        };
+    let mutation_path = ctx
+        .tools
+        .get(prep.name)
+        .and_then(|tool| tool.mutation_path(prep.input_json));
+    let step: Option<Result<ToolOutput, String>> = if let Some(path) = mutation_path
+        && let Err(error) = ctx.checkpoints.capture_path(&path, tool_ctx).await
+    {
+        Some(Err(format!(
+            "could not checkpoint file before mutation: {error}"
+        )))
+    } else {
+        run_regular_tool(
+            ctx,
+            run.id,
+            ToolCallId(prep.tui_id),
+            ToolDefinitionContext {
+                interactive: env.interactive,
+                top_level: env.allow_delegate,
+                planning: env.plan,
+            },
+            env,
+            prep.name,
+            prep.input_json,
+            tool_ctx,
+            token,
+        )
+        .await
+    };
     let Some(result) = step else {
         let outcome = ToolOutcome {
             ok: false,
@@ -334,7 +318,7 @@ pub(crate) fn build_tool_defs(
     if !provider.capabilities().tools {
         return Vec::new();
     }
-    let mut defs: Vec<ToolDefinition> = ctx
+    let defs: Vec<ToolDefinition> = ctx
         .tools
         .specs_for(ToolDefinitionContext {
             interactive: allow_ask,
@@ -349,9 +333,6 @@ pub(crate) fn build_tool_defs(
             input_schema: spec.parameters,
         })
         .collect();
-    if plan {
-        defs.push(crate::plan::propose_plan_tool_def());
-    }
     defs
 }
 

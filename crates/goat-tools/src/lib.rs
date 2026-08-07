@@ -5,6 +5,7 @@ use goat_tool_ask::{AskTool, QuestionBroker, QuestionFuture};
 use goat_tool_delegate::{
     AgentSpec, DelegateFuture, DelegateInvocation, DelegateResult, DelegationService,
 };
+use goat_tool_plan::{PlanFuture, PlanService, PlanSubmission, ProposePlanTool};
 use goat_tool_search::{NativeSearchFuture, NativeSearchRequest, NativeSearchService};
 use goat_tool_shell::{BackgroundFuture, BackgroundProcessService, ProcessChunk, ProcessStart};
 
@@ -14,12 +15,14 @@ pub struct BuiltinCapabilities {
     pub agents: Vec<AgentSpec>,
     pub delegation: Arc<dyn DelegationService>,
     pub native_search: Arc<dyn NativeSearchService>,
+    pub plans: Arc<dyn PlanService>,
 }
 
 struct UnavailableQuestions;
 struct UnavailableProcesses;
 struct UnavailableDelegation;
 struct UnavailableNativeSearch;
+struct UnavailablePlans;
 
 impl QuestionBroker for UnavailableQuestions {
     fn ask<'a>(
@@ -79,6 +82,19 @@ impl NativeSearchService for UnavailableNativeSearch {
     }
 }
 
+impl PlanService for UnavailablePlans {
+    fn path(
+        &self,
+        _host: Option<&(dyn std::any::Any + Send + Sync)>,
+    ) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    fn submit<'a>(&'a self, _submission: PlanSubmission) -> PlanFuture<'a> {
+        Box::pin(async { Err("plan service unavailable".to_owned()) })
+    }
+}
+
 impl Default for BuiltinCapabilities {
     fn default() -> Self {
         Self {
@@ -87,6 +103,7 @@ impl Default for BuiltinCapabilities {
             agents: Vec::new(),
             delegation: Arc::new(UnavailableDelegation),
             native_search: Arc::new(UnavailableNativeSearch),
+            plans: Arc::new(UnavailablePlans),
         }
     }
 }
@@ -108,6 +125,7 @@ pub fn builtin_with(capabilities: BuiltinCapabilities) -> ToolRegistry {
     tools.extend(goat_tool_skill::all());
     tools.extend(goat_tool_web::all());
     tools.push(Box::new(AskTool::new(capabilities.questions)));
+    tools.push(Box::new(ProposePlanTool::new(capabilities.plans)));
     ToolRegistry::new(tools)
 }
 
