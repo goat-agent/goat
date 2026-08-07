@@ -20,6 +20,7 @@ goat-code-store = { workspace = true }
 goat-config = { workspace = true }
 goat-mcp = { workspace = true }
 goat-tool = { workspace = true }
+goat-tool-ask = { workspace = true }
 goat-sandbox = { workspace = true }
 goat-tools = { workspace = true }
 goat-worktree = { workspace = true }

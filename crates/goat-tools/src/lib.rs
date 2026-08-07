@@ -1,11 +1,45 @@
+use std::sync::Arc;
+
 use goat_tool::ToolRegistry;
+use goat_tool_ask::{AskTool, QuestionBroker, QuestionFuture};
+
+pub struct BuiltinCapabilities {
+    pub questions: Arc<dyn QuestionBroker>,
+}
+
+struct UnavailableQuestions;
+
+impl QuestionBroker for UnavailableQuestions {
+    fn ask<'a>(
+        &'a self,
+        _task: goat_protocol::TaskId,
+        _call: goat_protocol::ToolCallId,
+        _questions: Vec<goat_protocol::AskQuestion>,
+        _cancellation: &'a tokio_util::sync::CancellationToken,
+    ) -> QuestionFuture<'a> {
+        Box::pin(async { Err("question broker unavailable".to_owned()) })
+    }
+}
+
+impl Default for BuiltinCapabilities {
+    fn default() -> Self {
+        Self {
+            questions: Arc::new(UnavailableQuestions),
+        }
+    }
+}
 
 pub fn builtin() -> ToolRegistry {
+    builtin_with(BuiltinCapabilities::default())
+}
+
+pub fn builtin_with(capabilities: BuiltinCapabilities) -> ToolRegistry {
     let mut tools = goat_tool_fs::all();
     tools.extend(goat_tool_shell::all());
     tools.extend(goat_tool_search::all());
     tools.extend(goat_tool_skill::all());
     tools.extend(goat_tool_web::all());
+    tools.push(Box::new(AskTool::new(capabilities.questions)));
     ToolRegistry::new(tools)
 }
 

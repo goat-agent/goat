@@ -13,7 +13,10 @@ pub use error::{ToolError, ToolErrorClass};
 pub use policy::SandboxPolicy;
 pub use registry::ToolRegistry;
 pub use spec::ToolSpec;
-pub use tool::{Tool, ToolContent, ToolFuture, ToolImage, ToolOutcomeExtension, ToolOutput};
+pub use tool::{
+    Tool, ToolContent, ToolDefinitionContext, ToolFuture, ToolImage, ToolInvocation,
+    ToolOutcomeExtension, ToolOutput, ToolSummaryKind,
+};
 
 pub const TRUNCATION_NOTICE: &str = "\n[output truncated]";
 

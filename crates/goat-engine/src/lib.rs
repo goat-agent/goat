@@ -11,7 +11,7 @@ use goat_core::Engine;
 use goat_protocol::{Event, ModelTarget, Op, SkillInfo, TaskId, ToolCallId};
 use goat_provider::{Provider, ToolDefinition};
 use goat_providers::{DEFAULT_ACCOUNT, Registry};
-use goat_tool::{SandboxPolicy, ToolRegistry};
+use goat_tool::{SandboxPolicy, Tool, ToolRegistry};
 use tokio::{
     sync::{Mutex, Semaphore, mpsc, oneshot},
     task::JoinHandle,
@@ -59,7 +59,7 @@ const WAKE_ID_BASE: u64 = 1 << 48;
 
 pub struct GoatAgent {
     registry: Registry,
-    tools: ToolRegistry,
+    tools: Vec<Box<dyn Tool>>,
     store: Store,
     credentials: CredentialStore,
     user_providers: goat_config::UserProviders,
@@ -95,18 +95,18 @@ impl GoatAgent {
         .await;
         let mcp_tools = mcp_tools::adapt(&mcp);
         let tool_count = mcp_tools.len();
-        let mut tools = goat_tools::builtin().with_many(mcp_tools);
+        let mut tools = mcp_tools;
         if tool_count > 0 {
             tracing::info!(tool_count, "registered mcp tools");
         }
         if config.computer_use_enabled {
             match goat_tool_computer::desktop_tool() {
-                Ok(ct) => tools = tools.with(Box::new(ct)),
+                Ok(ct) => tools.push(Box::new(ct)),
                 Err(err) => tracing::warn!("computer use unavailable: {err}"),
             }
         }
         if config.browser_enabled {
-            tools = tools.with(Box::new(goat_tool_browser::browser_tool()));
+            tools.push(Box::new(goat_tool_browser::browser_tool()));
         }
         Self {
             registry,
@@ -144,7 +144,7 @@ pub(crate) struct Shared {
     pub(crate) plan_ids: AtomicU64,
     pub(crate) wake_ids: AtomicU64,
     pub(crate) background: Arc<background::Runs>,
-    pub(crate) asks: Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>>,
+    pub(crate) asks: Arc<Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>>>,
     pub(crate) rl_cache: std::sync::Mutex<rate_limit_cache::RateLimitCache>,
     pub(crate) rl_path: Option<PathBuf>,
     pub(crate) meter: Option<goat_proxy::Meter>,
@@ -282,7 +282,6 @@ pub(crate) struct LoopEnv {
     pub(crate) tool_defs: Vec<ToolDefinition>,
     pub(crate) cwd: PathBuf,
     pub(crate) allow_delegate: bool,
-    pub(crate) allow_ask: bool,
     pub(crate) plan: bool,
     pub(crate) plan_path: Option<PathBuf>,
     pub(crate) exec_policy: SandboxPolicy,
@@ -340,7 +339,12 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     let wake_ids = AtomicU64::new(WAKE_ID_BASE);
     let wake = Arc::new(tokio::sync::Notify::new());
     let processes = background::Runs::new(events.clone(), wake.clone(), Some(store.clone()));
-    let asks: Mutex<HashMap<ToolCallId, oneshot::Sender<Vec<String>>>> = Mutex::new(HashMap::new());
+    let asks = Arc::new(Mutex::new(HashMap::new()));
+    let question_broker = Arc::new(ask::EngineQuestionBroker::new(asks.clone(), events.clone()));
+    let tools = goat_tools::builtin_with(goat_tools::BuiltinCapabilities {
+        questions: question_broker,
+    })
+    .with_many(tools);
     let checkpoints = checkpoint::CheckpointTracker::new(store.clone());
     let _ = events
         .send(Event::SkillsChanged {

@@ -1,5 +1,5 @@
 [package]
-name = "goat-tool"
+name = "goat-tool-ask"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,14 +10,11 @@ publish.workspace = true
 
 [dependencies]
 goat-protocol = { workspace = true }
+goat-tool = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
 tokio-util = { workspace = true }
 unicode-width = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }
 
 [lints]
 workspace = true

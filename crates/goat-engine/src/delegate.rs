@@ -307,7 +307,6 @@ async fn run_child_inner(
         tool_defs,
         cwd: origin.cwd.clone(),
         allow_delegate: false,
-        allow_ask: false,
         plan: false,
         plan_path: None,
         exec_policy: crate::subagent::tighter(&origin.exec_policy, &spec.exec_policy),

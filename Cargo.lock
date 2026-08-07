@@ -2931,6 +2931,7 @@ dependencies = [
  "goat-sandbox",
  "goat-skill",
  "goat-tool",
+ "goat-tool-ask",
  "goat-tool-browser",
  "goat-tool-computer",
  "goat-tool-shell",
@@ -3642,6 +3643,19 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
+ "tokio-util",
+ "unicode-width 0.2.2",
+]
+
+[[package]]
+name = "goat-tool-ask"
+version = "0.1.0"
+dependencies = [
+ "goat-protocol",
+ "goat-tool",
+ "serde",
+ "serde_json",
+ "tokio-util",
  "unicode-width 0.2.2",
 ]
 
@@ -3766,12 +3780,15 @@ dependencies = [
 name = "goat-tools"
 version = "0.1.0"
 dependencies = [
+ "goat-protocol",
  "goat-tool",
+ "goat-tool-ask",
  "goat-tool-fs",
  "goat-tool-search",
  "goat-tool-shell",
  "goat-tool-skill",
  "goat-tool-web",
+ "tokio-util",
 ]
 
 [[package]]

@@ -1,6 +1,7 @@
 use std::{future::Future, pin::Pin};
 
-use goat_protocol::{ToolDisplay, ToolOutcome};
+use goat_protocol::{TaskId, ToolCallId, ToolDisplay, ToolOutcome};
+use tokio_util::sync::CancellationToken;
 
 use crate::{context::ToolContext, display, error::ToolError};
 
@@ -90,11 +91,47 @@ impl ToolOutput {
 
 pub type ToolFuture<'a> = Pin<Box<dyn Future<Output = Result<ToolOutput, ToolError>> + Send + 'a>>;
 
+#[derive(Clone, Copy, Default)]
+pub struct ToolDefinitionContext {
+    pub interactive: bool,
+    pub top_level: bool,
+    pub planning: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum ToolSummaryKind {
+    Summary,
+    Body,
+}
+
+pub struct ToolInvocation<'a> {
+    pub task: TaskId,
+    pub call: ToolCallId,
+    pub cancellation: &'a CancellationToken,
+}
+
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn parameters(&self) -> serde_json::Value;
     fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolContext) -> ToolFuture<'a>;
+    fn invoke<'a>(
+        &'a self,
+        input: &'a str,
+        ctx: &'a ToolContext,
+        _invocation: ToolInvocation<'a>,
+    ) -> ToolFuture<'a> {
+        self.run(input, ctx)
+    }
+    fn enabled(&self, _context: ToolDefinitionContext) -> bool {
+        true
+    }
+    fn handles_cancellation(&self) -> bool {
+        false
+    }
+    fn summary_kind(&self) -> ToolSummaryKind {
+        ToolSummaryKind::Summary
+    }
     fn display_input(&self, input: &str) -> ToolDisplay {
         display::generic(input)
     }

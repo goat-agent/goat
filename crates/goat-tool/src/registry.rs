@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{Tool, ToolSpec};
+use crate::{Tool, ToolDefinitionContext, ToolSpec};
 
 pub struct ToolRegistry {
     tools: HashMap<&'static str, Box<dyn Tool>>,
@@ -36,9 +36,14 @@ impl ToolRegistry {
     }
 
     pub fn specs(&self) -> Vec<ToolSpec> {
+        self.specs_for(ToolDefinitionContext::default())
+    }
+
+    pub fn specs_for(&self, context: ToolDefinitionContext) -> Vec<ToolSpec> {
         let mut specs: Vec<ToolSpec> = self
             .tools
             .values()
+            .filter(|tool| tool.enabled(context))
             .map(|tool| ToolSpec {
                 name: tool.name(),
                 description: tool.description(),

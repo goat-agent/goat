@@ -394,7 +394,9 @@ fn rebuild_entries(
                                 summarize_line(&ContentBlock::tool_result_text(content)),
                                 None,
                             )
-                        } else if restored.call.name == crate::ask::ASK_TOOL_NAME {
+                        } else if tools.get(&restored.call.name).is_some_and(|tool| {
+                            tool.summary_kind() == goat_tool::ToolSummaryKind::Body
+                        }) {
                             (None, stored_summary.cloned())
                         } else {
                             (stored_summary.cloned(), None)
