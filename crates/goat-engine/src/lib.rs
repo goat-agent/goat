@@ -11,8 +11,7 @@ use goat_core::Engine;
 use goat_protocol::{Event, ModelTarget, Op, SkillInfo, TaskId, ToolCallId};
 use goat_provider::{Provider, ToolDefinition};
 use goat_providers::{DEFAULT_ACCOUNT, Registry};
-use goat_tool::SandboxPolicy;
-use goat_tools::ToolRegistry;
+use goat_tool::{SandboxPolicy, ToolRegistry};
 use tokio::{
     sync::{Mutex, Semaphore, mpsc, oneshot},
     task::JoinHandle,
@@ -96,7 +95,7 @@ impl GoatAgent {
         .await;
         let mcp_tools = mcp_tools::adapt(&mcp);
         let tool_count = mcp_tools.len();
-        let mut tools = ToolRegistry::builtin().with_many(mcp_tools);
+        let mut tools = goat_tools::builtin().with_many(mcp_tools);
         if tool_count > 0 {
             tracing::info!(tool_count, "registered mcp tools");
         }

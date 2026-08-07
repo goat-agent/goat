@@ -1,7 +1,6 @@
 use goat_protocol::{Event, ToolCall, ToolCallId, ToolDisplay, ToolImageData, ToolOutcome};
 use goat_provider::{ContentBlock, Provider, ToolDefinition};
-use goat_tool::{ToolContent, ToolContext, ToolOutput};
-use goat_tools::ToolRegistry;
+use goat_tool::{ToolContent, ToolContext, ToolOutput, ToolRegistry};
 use tokio_util::sync::CancellationToken;
 
 use crate::{

@@ -4,12 +4,14 @@ pub mod error;
 pub mod gist;
 pub mod path;
 pub mod policy;
+pub mod registry;
 pub mod spec;
 pub mod tool;
 
 pub use context::ToolContext;
 pub use error::ToolError;
 pub use policy::SandboxPolicy;
+pub use registry::ToolRegistry;
 pub use spec::ToolSpec;
 pub use tool::{Tool, ToolContent, ToolFuture, ToolImage, ToolOutput};
 

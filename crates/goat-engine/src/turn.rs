@@ -2,8 +2,7 @@ use std::fmt::Write as _;
 
 use goat_protocol::{Event, InputAttachment, Op, TaskId};
 use goat_provider::{ContentBlock, Message, MessageRole, Provider, ToolDefinition};
-use goat_tool::{SandboxPolicy, ToolContext, ToolError};
-use goat_tools::ToolRegistry;
+use goat_tool::{SandboxPolicy, ToolContext, ToolError, ToolRegistry};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 

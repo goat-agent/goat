@@ -274,7 +274,7 @@ type Rebuilt = (
 fn rebuild_entries(
     messages: Vec<goat_code_store::StoredMessage>,
     compactions: &[goat_code_store::Compaction],
-    tools: &goat_tools::ToolRegistry,
+    tools: &goat_tool::ToolRegistry,
     tool_summaries: &std::collections::HashMap<(i64, String), String>,
 ) -> Rebuilt {
     let mut parsed: Vec<(i64, MessageRole, Vec<ContentBlock>)> = Vec::new();
@@ -663,7 +663,7 @@ mod tests {
 
     #[test]
     fn resume_restores_ask_summary_as_body() {
-        let tools = goat_tools::ToolRegistry::builtin();
+        let tools = goat_tools::builtin();
         let messages = vec![
             stored(1, Some(1), "user", "deploy?".to_owned()),
             stored(
@@ -699,7 +699,7 @@ mod tests {
 
     #[test]
     fn resume_restores_other_tool_summary_as_summary() {
-        let tools = goat_tools::ToolRegistry::builtin();
+        let tools = goat_tools::builtin();
         let messages = vec![
             stored(
                 1,
@@ -726,7 +726,7 @@ mod tests {
 
     #[test]
     fn resume_keeps_error_summary_from_result_text() {
-        let tools = goat_tools::ToolRegistry::builtin();
+        let tools = goat_tools::builtin();
         let messages = vec![
             stored(
                 1,
@@ -758,7 +758,7 @@ mod tests {
 
     #[test]
     fn resume_without_stored_summary_leaves_outcome_empty() {
-        let tools = goat_tools::ToolRegistry::builtin();
+        let tools = goat_tools::builtin();
         let messages = vec![
             stored(
                 1,
