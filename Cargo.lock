@@ -2934,6 +2934,7 @@ dependencies = [
  "goat-tool-ask",
  "goat-tool-browser",
  "goat-tool-computer",
+ "goat-tool-delegate",
  "goat-tool-shell",
  "goat-tools",
  "goat-worktree",
@@ -3693,6 +3694,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-tool-delegate"
+version = "0.1.0"
+dependencies = [
+ "goat-protocol",
+ "goat-tool",
+ "serde",
+ "serde_json",
+ "tokio-util",
+]
+
+[[package]]
 name = "goat-tool-fs"
 version = "0.1.0"
 dependencies = [
@@ -3784,6 +3796,7 @@ dependencies = [
  "goat-protocol",
  "goat-tool",
  "goat-tool-ask",
+ "goat-tool-delegate",
  "goat-tool-fs",
  "goat-tool-search",
  "goat-tool-shell",

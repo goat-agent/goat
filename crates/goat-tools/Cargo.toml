@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 goat-tool = { workspace = true }
 goat-tool-ask = { workspace = true }
+goat-tool-delegate = { workspace = true }
 goat-tool-fs = { workspace = true }
 goat-tool-shell = { workspace = true }
 goat-tool-search = { workspace = true }

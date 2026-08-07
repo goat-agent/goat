@@ -9,7 +9,6 @@ use tokio::sync::mpsc;
 
 use crate::{
     Ctx,
-    delegate::{SUBAGENT_TOOL_NAME, subagent_group_member},
     prompt::build_system_prompt,
     tools_exec::{call_display, summarize_line},
 };
@@ -325,7 +324,7 @@ fn rebuild_entries(
         let agent_group_size = if role == MessageRole::Assistant
             && tool_count > 1
             && content.iter().all(|block| {
-                !matches!(block, ContentBlock::ToolUse { name, .. } if name != SUBAGENT_TOOL_NAME)
+                !matches!(block, ContentBlock::ToolUse { name, .. } if name != goat_tool_delegate::DELEGATE_TOOL_NAME)
             }) {
             tool_count
         } else {
@@ -365,7 +364,7 @@ fn rebuild_entries(
                     } else {
                         None
                     };
-                    let member = group.map(|_| subagent_group_member(call_id, &input));
+                    let member = group.map(|_| goat_tool_delegate::group_member(call_id, &input));
                     tool_uses.insert(
                         id.clone(),
                         RestoredToolUse {

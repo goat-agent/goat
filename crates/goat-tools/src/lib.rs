@@ -2,15 +2,21 @@ use std::sync::Arc;
 
 use goat_tool::ToolRegistry;
 use goat_tool_ask::{AskTool, QuestionBroker, QuestionFuture};
+use goat_tool_delegate::{
+    AgentSpec, DelegateFuture, DelegateInvocation, DelegateResult, DelegationService,
+};
 use goat_tool_shell::{BackgroundFuture, BackgroundProcessService, ProcessChunk, ProcessStart};
 
 pub struct BuiltinCapabilities {
     pub questions: Arc<dyn QuestionBroker>,
     pub processes: Arc<dyn BackgroundProcessService>,
+    pub agents: Vec<AgentSpec>,
+    pub delegation: Arc<dyn DelegationService>,
 }
 
 struct UnavailableQuestions;
 struct UnavailableProcesses;
+struct UnavailableDelegation;
 
 impl QuestionBroker for UnavailableQuestions {
     fn ask<'a>(
@@ -46,11 +52,27 @@ impl BackgroundProcessService for UnavailableProcesses {
     }
 }
 
+impl DelegationService for UnavailableDelegation {
+    fn run<'a>(
+        &'a self,
+        _request: goat_tool_delegate::DelegateRequest,
+        _invocation: DelegateInvocation<'a>,
+    ) -> DelegateFuture<'a, DelegateResult> {
+        Box::pin(async { Err("delegation service unavailable".to_owned()) })
+    }
+
+    fn kill<'a>(&'a self, _run: goat_protocol::RunId) -> DelegateFuture<'a, ()> {
+        Box::pin(async { Err("delegation service unavailable".to_owned()) })
+    }
+}
+
 impl Default for BuiltinCapabilities {
     fn default() -> Self {
         Self {
             questions: Arc::new(UnavailableQuestions),
             processes: Arc::new(UnavailableProcesses),
+            agents: Vec::new(),
+            delegation: Arc::new(UnavailableDelegation),
         }
     }
 }
@@ -62,6 +84,10 @@ pub fn builtin() -> ToolRegistry {
 pub fn builtin_with(capabilities: BuiltinCapabilities) -> ToolRegistry {
     let mut tools = goat_tool_fs::all();
     tools.extend(goat_tool_shell::all_with_background(capabilities.processes));
+    tools.extend(goat_tool_delegate::tools(
+        capabilities.agents,
+        capabilities.delegation,
+    ));
     tools.extend(goat_tool_search::all());
     tools.extend(goat_tool_skill::all());
     tools.extend(goat_tool_web::all());

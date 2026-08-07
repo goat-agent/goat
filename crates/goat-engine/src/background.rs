@@ -282,7 +282,17 @@ impl Runs {
         Ok(Started { id, pgid })
     }
 
+    #[cfg(test)]
     pub(crate) async fn register_child(&self, name: &str, cancel: CancellationToken) -> RunId {
+        self.register_child_labeled(name, cancel, "subagent").await
+    }
+
+    pub(crate) async fn register_child_labeled(
+        &self,
+        name: &str,
+        cancel: CancellationToken,
+        label: &str,
+    ) -> RunId {
         let mut inner = self.inner.lock().await;
         let id = RunId(inner.next_id);
         inner.next_id += 1;
@@ -290,7 +300,7 @@ impl Runs {
         inner.entries.insert(
             id,
             Entry {
-                label: "subagent".to_owned(),
+                label: label.to_owned(),
                 title,
                 state: ProcessState::Running,
                 update_sent: false,

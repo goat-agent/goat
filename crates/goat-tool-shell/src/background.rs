@@ -107,7 +107,8 @@ impl Tool for BackgroundBashTool {
                 self.description()
             } else {
                 BashTool.description()
-            },
+            }
+            .to_owned(),
             parameters,
         })
     }

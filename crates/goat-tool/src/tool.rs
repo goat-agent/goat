@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin};
+use std::{any::Any, future::Future, pin::Pin};
 
 use goat_protocol::{TaskId, ToolCallId, ToolDisplay, ToolOutcome};
 use tokio_util::sync::CancellationToken;
@@ -109,6 +109,7 @@ pub struct ToolInvocation<'a> {
     pub call: ToolCallId,
     pub cancellation: &'a CancellationToken,
     pub definition_context: ToolDefinitionContext,
+    pub host: Option<&'a (dyn Any + Send + Sync)>,
 }
 
 pub trait Tool: Send + Sync {
@@ -130,7 +131,7 @@ pub trait Tool: Send + Sync {
     fn definition(&self, context: ToolDefinitionContext) -> Option<crate::ToolSpec> {
         self.enabled(context).then(|| crate::ToolSpec {
             name: self.name(),
-            description: self.description(),
+            description: self.description().to_owned(),
             parameters: self.parameters(),
         })
     }

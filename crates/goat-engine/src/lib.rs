@@ -346,9 +346,19 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
         processes.clone(),
         store.clone(),
     ));
+    let delegation_service = Arc::new(delegate::EngineDelegationService::new());
+    let agent_specs = subagents
+        .iter()
+        .map(|spec| goat_tool_delegate::AgentSpec {
+            name: spec.name.clone(),
+            description: spec.description.clone(),
+        })
+        .collect();
     let tools = goat_tools::builtin_with(goat_tools::BuiltinCapabilities {
         questions: question_broker,
         processes: process_service,
+        agents: agent_specs,
+        delegation: delegation_service.clone(),
     })
     .with_many(tools);
     let checkpoints = checkpoint::CheckpointTracker::new(store.clone());
@@ -404,6 +414,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
         cwd,
         date: session_date,
     }));
+    delegation_service.attach(&ctx);
 
     loop {
         let op = tokio::select! {

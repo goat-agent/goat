@@ -36,6 +36,7 @@ goat-search-providers = { path = "crates/goat-search-providers" }
 goat-engine = { path = "crates/goat-engine" }
 goat-tool = { path = "crates/goat-tool" }
 goat-tool-ask = { path = "crates/goat-tool-ask" }
+goat-tool-delegate = { path = "crates/goat-tool-delegate" }
 goat-sandbox = { path = "crates/goat-sandbox" }
 goat-process = { path = "crates/goat-process" }
 goat-tool-fs = { path = "crates/goat-tool-fs" }

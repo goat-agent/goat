@@ -7,10 +7,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     Ctx, LoopEnv, Run,
-    delegate::{
-        SUBAGENT_TOOL_NAME, run_delegation, subagent_call_display, subagent_group_member,
-        subagent_tool_def,
-    },
     persist::{create_tool_call_record, finish_tool_db},
     subagent::ToolSelection,
     websearch::{WEB_SEARCH_TOOL_NAME, run_web_search, web_search_display, web_search_tool_def},
@@ -73,8 +69,6 @@ fn outcome_image(content: &ToolContent) -> Option<ToolImageData> {
 
 pub(crate) fn call_display(tools: &ToolRegistry, name: &str, input: &str) -> ToolDisplay {
     match name {
-        SUBAGENT_TOOL_NAME => subagent_call_display(input),
-        crate::delegate::SUBAGENT_KILL_TOOL_NAME => crate::delegate::subagent_kill_display(input),
         crate::plan::PROPOSE_PLAN_TOOL_NAME => crate::plan::propose_plan_call_display(input),
         WEB_SEARCH_TOOL_NAME => web_search_display(input),
         _ => tools.get(name).map_or_else(
@@ -97,12 +91,17 @@ async fn run_regular_tool(
     task: goat_protocol::TaskId,
     call: ToolCallId,
     definition_context: ToolDefinitionContext,
+    host: &(dyn std::any::Any + Send + Sync),
     name: &str,
     input_json: &str,
     tool_ctx: &ToolContext,
     token: &CancellationToken,
 ) -> Option<Result<ToolOutput, String>> {
-    let Some(tool) = ctx.tools.get(name) else {
+    let Some(tool) = ctx
+        .tools
+        .get(name)
+        .filter(|tool| tool.enabled(definition_context))
+    else {
         return Some(Err(format!("unknown tool: {name}")));
     };
     let invocation = ToolInvocation {
@@ -110,6 +109,7 @@ async fn run_regular_tool(
         call,
         cancellation: token,
         definition_context,
+        host: Some(host),
     };
     let future = tool.invoke(input_json, tool_ctx, invocation);
     if tool.handles_cancellation() {
@@ -161,48 +161,6 @@ async fn execute_tool(
             )
             .await,
         )
-    } else if prep.name == crate::delegate::SUBAGENT_KILL_TOOL_NAME && env.allow_delegate {
-        Some(
-            crate::delegate::run_subagent_kill(ctx, prep.input_json)
-                .await
-                .map(ToolOutput::text),
-        )
-    } else if prep.name == SUBAGENT_TOOL_NAME && env.allow_delegate {
-        if crate::delegate::wants_background(prep.input_json) {
-            Some(
-                run_delegation(
-                    ctx,
-                    env,
-                    prep.input_json,
-                    run.id,
-                    ToolCallId(prep.tui_id),
-                    token,
-                )
-                .await
-                .map(ToolOutput::text),
-            )
-        } else {
-            let permit = tokio::select! {
-                biased;
-                () = token.cancelled() => None,
-                acquired = ctx.semaphore.acquire() => acquired.ok(),
-            };
-            match permit {
-                Some(_permit) if !token.is_cancelled() => Some(
-                    run_delegation(
-                        ctx,
-                        env,
-                        prep.input_json,
-                        run.id,
-                        ToolCallId(prep.tui_id),
-                        token,
-                    )
-                    .await
-                    .map(ToolOutput::text),
-                ),
-                _ => None,
-            }
-        }
     } else {
         let mutation_path = ctx
             .tools
@@ -224,6 +182,7 @@ async fn execute_tool(
                     top_level: env.allow_delegate,
                     planning: env.plan,
                 },
+                env,
                 prep.name,
                 prep.input_json,
                 tool_ctx,
@@ -292,7 +251,10 @@ async fn execute_tool(
 }
 
 fn groups_into_one_row(prepared: &[Prepared<'_>]) -> bool {
-    prepared.len() > 1 && prepared.iter().all(|prep| prep.name == SUBAGENT_TOOL_NAME)
+    prepared.len() > 1
+        && prepared
+            .iter()
+            .all(|prep| prep.name == goat_tool_delegate::DELEGATE_TOOL_NAME)
 }
 
 pub(crate) async fn run_tool_batch(
@@ -321,7 +283,7 @@ pub(crate) async fn run_tool_batch(
     {
         let members = prepared
             .iter()
-            .map(|prep| subagent_group_member(ToolCallId(prep.tui_id), prep.input_json))
+            .map(|prep| goat_tool_delegate::group_member(ToolCallId(prep.tui_id), prep.input_json))
             .collect();
         let _ = ctx
             .events
@@ -399,12 +361,6 @@ pub(crate) fn build_tool_defs(
         .collect();
     if provider.supports_web_search() && ctx.tools.get(WEB_SEARCH_TOOL_NAME).is_none() {
         defs.push(web_search_tool_def());
-    }
-    if allow_delegate {
-        if !ctx.subagents.is_empty() {
-            defs.push(subagent_tool_def(ctx));
-            defs.push(crate::delegate::subagent_kill_tool_def());
-        }
     }
     if plan {
         defs.push(crate::plan::propose_plan_tool_def());
