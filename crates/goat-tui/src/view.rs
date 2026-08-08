@@ -250,7 +250,7 @@ fn render_hint(frame: &mut Frame, area: Rect, app: &App, theme: Theme, panel: &P
 fn is_full_body_overlay(app: &App) -> bool {
     match app.overlay() {
         Overlay::Screen(screen) => matches!(screen.placement(), Placement::Overlay),
-        Overlay::Config(_) | Overlay::Usage | Overlay::Status | Overlay::Plan(_) => true,
+        Overlay::Config(_) | Overlay::Usage | Overlay::Status => true,
         _ => false,
     }
 }
@@ -274,9 +274,6 @@ fn render_full_body_overlay(frame: &mut Frame, body: Rect, app: &mut App, theme:
             view.render(frame, body, theme);
         }
         _ => {}
-    }
-    if let Overlay::Plan(sheet) = app.overlay_mut() {
-        sheet.render(frame, body, theme);
     }
     if let Overlay::Screen(screen) = app.overlay_mut()
         && matches!(screen.placement(), Placement::Overlay)

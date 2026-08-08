@@ -19,7 +19,6 @@ impl App {
             Overlay::Config(_) => return self.on_config_key(key),
             Overlay::Runs(_) => return self.on_run_selector_key(key),
             Overlay::Ask(_, _) => return self.on_ask_picker_key(key),
-            Overlay::Plan(_) => return self.on_plan_sheet_key(key),
             Overlay::Commands(_) => {
                 if let Some(result) = self.on_command_menu_key(key) {
                     return result;
@@ -159,76 +158,6 @@ impl App {
                 Some(Vec::new())
             }
             _ => None,
-        }
-    }
-
-    pub(crate) fn on_plan_sheet_key(&mut self, key: KeyEvent) -> Vec<Op> {
-        let Overlay::Plan(sheet) = &mut self.overlay else {
-            return Vec::new();
-        };
-        self.dirty = true;
-        if sheet.rejecting() {
-            return match key.code {
-                KeyCode::Esc => {
-                    sheet.cancel_reject();
-                    Vec::new()
-                }
-                KeyCode::Backspace => {
-                    sheet.pop_feedback();
-                    Vec::new()
-                }
-                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    sheet.push_feedback(ch);
-                    Vec::new()
-                }
-                KeyCode::Enter => {
-                    let call = sheet.call;
-                    let feedback = sheet.submit_reject();
-                    self.overlay = Overlay::None;
-                    vec![Op::ResolvePlan {
-                        call,
-                        decision: goat_protocol::PlanDecision::Reject { feedback },
-                    }]
-                }
-                _ => Vec::new(),
-            };
-        }
-        match key.code {
-            KeyCode::Char('a') => {
-                let call = sheet.call;
-                self.overlay = Overlay::None;
-                vec![Op::ResolvePlan {
-                    call,
-                    decision: goat_protocol::PlanDecision::Approve {},
-                }]
-            }
-            KeyCode::Char('r') => {
-                sheet.begin_reject();
-                Vec::new()
-            }
-            KeyCode::PageUp => {
-                let page = sheet.page();
-                sheet.scroll_up(page);
-                Vec::new()
-            }
-            KeyCode::PageDown => {
-                let page = sheet.page();
-                sheet.scroll_down(page);
-                Vec::new()
-            }
-            KeyCode::Up => {
-                sheet.scroll_up(1);
-                Vec::new()
-            }
-            KeyCode::Down => {
-                sheet.scroll_down(1);
-                Vec::new()
-            }
-            KeyCode::Esc => {
-                self.overlay = Overlay::None;
-                Vec::new()
-            }
-            _ => Vec::new(),
         }
     }
 

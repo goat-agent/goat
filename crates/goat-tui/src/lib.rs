@@ -12,7 +12,6 @@ pub mod markdown;
 mod notification;
 mod overlay;
 mod picker;
-mod plan;
 mod screenshot;
 mod select;
 pub(crate) mod status;

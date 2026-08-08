@@ -24,11 +24,6 @@ impl App {
             EngineEvent::ModeChanged { mode, plan_path } => {
                 self.mode = mode;
                 self.plan_path = plan_path;
-                if !mode.is_plan()
-                    && let Overlay::Plan(_) = &self.overlay
-                {
-                    self.overlay = Overlay::None;
-                }
                 self.dirty = true;
             }
             EngineEvent::PlanProposed {
@@ -38,7 +33,7 @@ impl App {
                     self.queue_notification(crate::notification::Notification::Attention);
                 }
                 self.overlay =
-                    Overlay::Plan(Box::new(crate::plan::PlanSheet::new(call, plan, path)));
+                    Overlay::Screen(Box::new(goat_commands::PlanScreen::new(call, plan, path)));
                 self.dirty = true;
             }
             EngineEvent::ThreadsListed { threads } => {

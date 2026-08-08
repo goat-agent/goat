@@ -84,7 +84,6 @@ pub(crate) enum Overlay {
     Files(FileMenu),
     Runs(usize),
     Ask(AskPicker, ToolCallId),
-    Plan(Box<crate::plan::PlanSheet>),
     Usage,
     Status,
     ImageZoom(Box<goat_protocol::ToolImageData>),
@@ -421,11 +420,6 @@ impl App {
                     Overlay::Ask(picker, _) => {
                         picker.insert_str(&text);
                     }
-                    Overlay::Plan(sheet) if sheet.rejecting() => {
-                        for ch in text.chars() {
-                            sheet.push_feedback(ch);
-                        }
-                    }
                     _ => {
                         match crate::attachment::attachments_from_paste(&text) {
                             Ok(attachments) => self.composer.push_attachments(attachments),
@@ -521,17 +515,18 @@ impl App {
                 let outcome = screen.tick();
                 self.apply_screen_outcome(screen, outcome)
             }
-            CommandEffect::Dispatch(ops) => ops,
+            CommandEffect::Dispatch(ops) => {
+                for op in &ops {
+                    if let Op::SetMode { mode } = op {
+                        self.mode = *mode;
+                    }
+                }
+                ops
+            }
             CommandEffect::Submit { display, prompt } => self.submit_command(display, prompt),
             CommandEffect::Notify(kind, message) => {
                 self.push_toast(kind, message);
                 Vec::new()
-            }
-            CommandEffect::TogglePlanMode => {
-                let mode = self.mode.toggled();
-                self.mode = mode;
-                self.dirty = true;
-                vec![Op::SetMode { mode }]
             }
             CommandEffect::OpenConfig => {
                 self.overlay = Overlay::Config(Config::new(
@@ -1046,7 +1041,6 @@ impl App {
         match &self.overlay {
             Overlay::Screen(screen) => screen.captures_text(),
             Overlay::Config(_) | Overlay::Ask(_, _) => true,
-            Overlay::Plan(sheet) => sheet.rejecting(),
             _ => false,
         }
     }
@@ -2335,7 +2329,7 @@ mod tests {
     fn plan_proposed_opens_the_sheet_and_approve_resolves_it() {
         let mut app = App::new(Theme::dark(), &test_origin());
         proposed(&mut app);
-        assert!(matches!(app.overlay, Overlay::Plan(_)));
+        assert!(matches!(app.overlay, Overlay::Screen(_)));
         let ops = app.on_key(press(KeyCode::Char('a'), KeyModifiers::NONE));
         assert!(matches!(
             ops.as_slice(),
@@ -2413,10 +2407,10 @@ mod tests {
     fn leaving_plan_mode_closes_a_stale_sheet() {
         let mut app = App::new(Theme::dark(), &test_origin());
         proposed(&mut app);
-        app.on_engine(EngineEvent::ModeChanged {
+        app.update(AppEvent::Engine(EngineEvent::ModeChanged {
             mode: goat_protocol::Mode::Normal,
             plan_path: None,
-        });
+        }));
         assert!(matches!(app.overlay, Overlay::None));
         assert!(!app.plan_mode());
     }

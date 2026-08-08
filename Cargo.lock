@@ -2803,7 +2803,10 @@ dependencies = [
 name = "goat-command-app"
 version = "0.1.0"
 dependencies = [
+ "crossterm 0.29.0",
  "goat-command",
+ "goat-protocol",
+ "ratatui",
 ]
 
 [[package]]
