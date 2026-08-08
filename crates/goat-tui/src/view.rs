@@ -1,3 +1,4 @@
+use goat_command::Placement;
 use goat_worktree::WorkspaceKind;
 use ratatui::{
     Frame,
@@ -225,18 +226,18 @@ fn render_hint(frame: &mut Frame, area: Rect, app: &App, theme: Theme, panel: &P
 }
 
 fn is_full_body_overlay(app: &App) -> bool {
-    matches!(
-        app.overlay(),
+    match app.overlay() {
+        Overlay::Screen(screen) => matches!(screen.placement(), Placement::Overlay),
         Overlay::Config(_)
-            | Overlay::Model(_)
-            | Overlay::Effort(_)
-            | Overlay::Thread(_)
-            | Overlay::Rewind(_)
-            | Overlay::Usage
-            | Overlay::Status
-            | Overlay::Help
-            | Overlay::Plan(_)
-    )
+        | Overlay::Model(_)
+        | Overlay::Effort(_)
+        | Overlay::Thread(_)
+        | Overlay::Rewind(_)
+        | Overlay::Usage
+        | Overlay::Status
+        | Overlay::Plan(_) => true,
+        _ => false,
+    }
 }
 
 fn fit_stack(panel_want: u16, preview_want: u16, budget: u16) -> (u16, u16) {
@@ -261,11 +262,15 @@ fn render_full_body_overlay(frame: &mut Frame, body: Rect, app: &mut App, theme:
             let view = crate::status::StatusView::new(&rows);
             view.render(frame, body, theme);
         }
-        Overlay::Help => crate::help::render(frame, body, theme),
         _ => {}
     }
     if let Overlay::Plan(sheet) = app.overlay_mut() {
         sheet.render(frame, body, theme);
+    }
+    if let Overlay::Screen(screen) = app.overlay_mut()
+        && matches!(screen.placement(), Placement::Overlay)
+    {
+        screen.render(frame, body, &theme);
     }
 }
 

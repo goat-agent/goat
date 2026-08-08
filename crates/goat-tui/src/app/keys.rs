@@ -16,7 +16,11 @@ impl App {
             self.copy_selection();
             return Vec::new();
         }
+        if let Some(ops) = self.handle_screen_input(&crossterm::event::Event::Key(key)) {
+            return ops;
+        }
         match &self.overlay {
+            Overlay::Screen(_) => {}
             Overlay::Model(_) => return self.on_picker_key(key),
             Overlay::Account(_) => return self.on_account_menu_key(key),
             Overlay::Effort(_) => return self.on_effort_picker_key(key),
@@ -36,7 +40,7 @@ impl App {
                     return result;
                 }
             }
-            Overlay::Usage | Overlay::Status | Overlay::Help => return self.on_usage_key(key),
+            Overlay::Usage | Overlay::Status => return self.on_usage_key(key),
             Overlay::ImageZoom(_) => {
                 self.overlay = Overlay::None;
                 self.dirty = true;

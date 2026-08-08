@@ -6,7 +6,6 @@ mod command;
 mod composer;
 mod config;
 mod files;
-mod help;
 pub mod highlight;
 mod keymap;
 pub(crate) mod layout;

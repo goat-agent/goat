@@ -282,7 +282,7 @@ mod tests {
         ));
         assert!(matches!(
             resolve(&registry, "/help"),
-            CommandEffect::ShowHelp
+            CommandEffect::Show(_)
         ));
         assert!(matches!(resolve(&registry, "/exit"), CommandEffect::Quit));
     }

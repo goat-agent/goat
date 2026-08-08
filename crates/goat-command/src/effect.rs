@@ -1,4 +1,12 @@
+use goat_protocol::{NotifyKind, Op};
+
+use crate::Screen;
+
 pub enum CommandEffect {
+    Show(Box<dyn Screen>),
+    Dispatch(Vec<Op>),
+    Submit { display: String, prompt: String },
+    Notify(NotifyKind, String),
     OpenModelPicker,
     SelectModelNamed(String),
     OpenEffortPicker,
@@ -12,7 +20,7 @@ pub enum CommandEffect {
     CompactConversation(Option<String>),
     TogglePlanMode,
     RenameConversation(String),
-    Submit(String),
+    SubmitText(String),
     SubmitCommand { display: String, prompt: String },
     Notice(String),
     Error(String),

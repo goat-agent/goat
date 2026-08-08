@@ -6,7 +6,9 @@ use std::{collections::HashMap, path::Path, time::Duration};
 use crossterm::event::{Event as CtEvent, EventStream, KeyEventKind, MouseEventKind};
 use futures::StreamExt;
 use goat_client::Identity;
-use goat_command::{Session, SessionSnapshot, Settings, UsageState, Viewport};
+use goat_command::{
+    InputOutcome, Screen, ScreenOutcome, Session, SessionSnapshot, Settings, UsageState, Viewport,
+};
 use goat_commands::{CommandEffect, CommandRegistry};
 use goat_protocol::{
     AccountEntry, Effort, Event as EngineEvent, ModelEntry, ModelTarget, NotifyKind, Op, TaskId,
@@ -83,6 +85,7 @@ impl RunTarget {
 
 pub(crate) enum Overlay {
     None,
+    Screen(Box<dyn Screen>),
     Model(Picker),
     Account(AccountMenu),
     Effort(EffortPicker),
@@ -96,7 +99,6 @@ pub(crate) enum Overlay {
     Plan(Box<crate::plan::PlanSheet>),
     Usage,
     Status,
-    Help,
     ImageZoom(Box<goat_protocol::ToolImageData>),
 }
 
@@ -366,6 +368,7 @@ impl App {
     fn reduce(&mut self, event: AppEvent) -> Vec<Op> {
         match event {
             AppEvent::Tick => {
+                let screen_ops = self.tick_screen();
                 if self.turn.active.is_some() {
                     self.spinner = self.spinner.wrapping_add(1);
                     self.dirty = true;
@@ -400,7 +403,7 @@ impl App {
                     self.refresh_git_branch();
                 }
                 self.pr_poll = self.pr_poll.saturating_sub(1);
-                Vec::new()
+                screen_ops
             }
             AppEvent::PrStatus { branch, pr } => {
                 self.pr_inflight = false;
@@ -419,6 +422,9 @@ impl App {
                 ops
             }
             AppEvent::Input(CtEvent::Paste(text)) => {
+                if let Some(ops) = self.handle_screen_input(&CtEvent::Paste(text.clone())) {
+                    return ops;
+                }
                 match &mut self.overlay {
                     Overlay::Model(picker) => {
                         for ch in text.chars() {
@@ -460,6 +466,9 @@ impl App {
                 Vec::new()
             }
             AppEvent::Input(CtEvent::Mouse(mouse)) => {
+                if let Some(ops) = self.handle_screen_input(&CtEvent::Mouse(mouse)) {
+                    return ops;
+                }
                 self.on_mouse(mouse);
                 Vec::new()
             }
@@ -473,7 +482,8 @@ impl App {
             }
             AppEvent::Input(_) => Vec::new(),
             AppEvent::Engine(event) => {
-                let ops = self.on_engine(event);
+                let mut ops = self.notify_screen(&event);
+                ops.extend(self.on_engine(event));
                 self.promote_pending_ask();
                 self.dirty = true;
                 ops
@@ -525,6 +535,16 @@ impl App {
     pub(crate) fn apply_command_effect(&mut self, effect: CommandEffect) -> Vec<Op> {
         self.dirty = true;
         match effect {
+            CommandEffect::Show(mut screen) => {
+                let outcome = screen.tick();
+                self.apply_screen_outcome(screen, outcome)
+            }
+            CommandEffect::Dispatch(ops) => ops,
+            CommandEffect::Submit { display, prompt } => self.submit_command(display, prompt),
+            CommandEffect::Notify(kind, message) => {
+                self.push_toast(kind, message);
+                Vec::new()
+            }
             CommandEffect::OpenModelPicker => {
                 self.overlay = Overlay::Model(Picker::new(
                     self.models.clone(),
@@ -583,10 +603,7 @@ impl App {
                 ));
                 Vec::new()
             }
-            CommandEffect::ShowHelp => {
-                self.overlay = Overlay::Help;
-                Vec::new()
-            }
+            CommandEffect::ShowHelp => Vec::new(),
             CommandEffect::RenameConversation(title) => vec![Op::RenameThread { title }],
             CommandEffect::ClearConversation => {
                 self.transcript.clear();
@@ -608,7 +625,7 @@ impl App {
                 }
                 vec![Op::Compact { id, instructions }]
             }
-            CommandEffect::Submit(text) => self.submit_text(text),
+            CommandEffect::SubmitText(text) => self.submit_text(text),
             CommandEffect::SubmitCommand { display, prompt } => {
                 self.submit_command(display, prompt)
             }
@@ -638,6 +655,64 @@ impl App {
                 Vec::new()
             }
         }
+    }
+
+    fn apply_screen_outcome(
+        &mut self,
+        mut screen: Box<dyn Screen>,
+        mut outcome: ScreenOutcome,
+    ) -> Vec<Op> {
+        let mut ops = Vec::new();
+        loop {
+            match outcome {
+                ScreenOutcome::Continue => {
+                    if matches!(self.overlay, Overlay::None) {
+                        self.overlay = Overlay::Screen(screen);
+                    }
+                    return ops;
+                }
+                ScreenOutcome::Close => return ops,
+                ScreenOutcome::Effect(effect) => {
+                    ops.extend(self.apply_command_effect(effect));
+                    if !matches!(self.overlay, Overlay::None) {
+                        return ops;
+                    }
+                    outcome = screen.tick();
+                }
+            }
+        }
+    }
+
+    fn handle_screen_input(&mut self, event: &CtEvent) -> Option<Vec<Op>> {
+        let Overlay::Screen(mut screen) = std::mem::replace(&mut self.overlay, Overlay::None)
+        else {
+            return None;
+        };
+        match screen.handle_input(event, self) {
+            InputOutcome::Ignored => {
+                self.overlay = Overlay::Screen(screen);
+                None
+            }
+            InputOutcome::Handled(outcome) => Some(self.apply_screen_outcome(screen, outcome)),
+        }
+    }
+
+    fn tick_screen(&mut self) -> Vec<Op> {
+        let Overlay::Screen(mut screen) = std::mem::replace(&mut self.overlay, Overlay::None)
+        else {
+            return Vec::new();
+        };
+        let outcome = screen.tick();
+        self.apply_screen_outcome(screen, outcome)
+    }
+
+    fn notify_screen(&mut self, event: &EngineEvent) -> Vec<Op> {
+        let Overlay::Screen(mut screen) = std::mem::replace(&mut self.overlay, Overlay::None)
+        else {
+            return Vec::new();
+        };
+        let outcome = screen.on_event(event);
+        self.apply_screen_outcome(screen, outcome)
     }
 
     pub(crate) fn request_rewind(&mut self) -> Vec<Op> {
@@ -1064,6 +1139,7 @@ impl App {
 
     pub(crate) fn overlay_captures_text(&self) -> bool {
         match &self.overlay {
+            Overlay::Screen(screen) => screen.captures_text(),
             Overlay::Model(_) | Overlay::Account(_) | Overlay::Config(_) | Overlay::Ask(_, _) => {
                 true
             }
@@ -3084,7 +3160,10 @@ mod tests {
         let ops = app.submit();
         assert!(ops.is_empty());
         assert!(app.turn.active.is_none());
-        assert!(matches!(app.overlay, Overlay::Help));
+        assert!(matches!(
+            &app.overlay,
+            Overlay::Screen(screen) if matches!(screen.placement(), goat_command::Placement::Overlay)
+        ));
         assert!(app.transcript.items.is_empty());
     }
 
@@ -3609,7 +3688,7 @@ mod tests {
     fn ask_defers_while_modal_open_then_promotes_on_close() {
         use goat_protocol::{AskQuestion, ToolCallId};
         let mut app = App::new(Theme::dark(), &test_origin());
-        app.overlay = Overlay::Help;
+        app.dispatch_slash_command("/help");
         app.on_engine(EngineEvent::AskStarted {
             id: TaskId(1),
             call: ToolCallId(9),
@@ -3619,7 +3698,7 @@ mod tests {
                 multiple: false,
             }],
         });
-        assert!(matches!(app.overlay, Overlay::Help));
+        assert!(matches!(app.overlay, Overlay::Screen(_)));
         assert!(app.pending.ask.is_some());
 
         app.overlay = Overlay::None;
