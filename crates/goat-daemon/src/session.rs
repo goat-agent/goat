@@ -427,7 +427,7 @@ impl SessionInner {
                     .saturating_add(u64::from(usage.output_tokens));
             }
             Event::ConversationBound { conversation_id } => {
-                self.conversation_id = Some(*conversation_id)
+                self.conversation_id = Some(*conversation_id);
             }
             _ => {}
         }
