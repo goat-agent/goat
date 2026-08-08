@@ -1,5 +1,5 @@
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolContext, ToolError, ToolFuture, ToolOutput, display};
+use goat_tool::{Tool, ToolError, ToolFuture, ToolOutput, ToolSandbox, display};
 
 use crate::action::{self, Action, BrowserRef};
 use crate::session::{self, SessionHandle};
@@ -128,7 +128,7 @@ impl Tool for BrowserTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async move {
             let action = action::parse(input).map_err(exec_err)?;
             let mut guard = self.session.lock().await;

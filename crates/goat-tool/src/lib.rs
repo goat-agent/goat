@@ -8,7 +8,7 @@ pub mod registry;
 pub mod spec;
 pub mod tool;
 
-pub use context::ToolContext;
+pub use context::ToolSandbox;
 pub use error::{ToolError, ToolErrorClass};
 pub use policy::SandboxPolicy;
 pub use registry::ToolRegistry;

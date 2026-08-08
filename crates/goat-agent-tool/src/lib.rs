@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use goat_types::{AgentId, ThreadId};
+use goat_types::{AgentId, ConversationId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -177,15 +177,22 @@ impl ToolOutput {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ToolAudience {
+    Principal(String),
+    Shared(String),
+}
+
 #[derive(Clone, Debug)]
-pub struct ToolContext {
+pub struct ToolCaller {
     pub agent: AgentId,
-    pub thread: ThreadId,
+    pub conversation: ConversationId,
+    pub audience: Option<ToolAudience>,
     pub goat_root: PathBuf,
     pub read_state: ToolReadState,
 }
 
-impl ToolContext {
+impl ToolCaller {
     pub fn resolve_path(&self, raw: &Path) -> ToolResultValue<PathBuf> {
         path::resolve_in_root(&self.goat_root, raw)
     }
@@ -203,7 +210,7 @@ pub struct ToolReadSnapshot {
 
 #[async_trait]
 pub trait ToolHandler: Send + Sync + 'static {
-    async fn call(&self, ctx: ToolContext, call: ToolCall) -> ToolOutput;
+    async fn call(&self, ctx: ToolCaller, call: ToolCall) -> ToolOutput;
 }
 
 pub struct ToolFactory {
@@ -293,7 +300,7 @@ impl ToolRegistry {
         validate_tool_selectors(selectors, self.default_tool_names())
     }
 
-    pub async fn call(&self, ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    pub async fn call(&self, ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let Some(tool) = self.by_name.get(&call.name) else {
             return ToolOutput::error(format!("unknown tool: {}", call.name));
         };

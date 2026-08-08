@@ -131,6 +131,12 @@ pub(crate) struct Runs {
     store: Option<goat_code_store::CodeStore>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum WatchMode {
+    CompletionOnly,
+    OutputAndCompletion,
+}
+
 #[derive(Debug)]
 pub(crate) enum SpawnError {
     TooMany,
@@ -184,9 +190,9 @@ impl Runs {
         command: &str,
         name: Option<&str>,
         cwd: &Path,
-        watched: bool,
+        watch_mode: WatchMode,
     ) -> Result<Started, SpawnError> {
-        self.spawn_labeled(command, name, cwd, watched, "process")
+        self.spawn_labeled(command, name, cwd, watch_mode, "process")
             .await
     }
 
@@ -195,9 +201,10 @@ impl Runs {
         command: &str,
         name: Option<&str>,
         cwd: &Path,
-        watched: bool,
+        watch_mode: WatchMode,
         label: &str,
     ) -> Result<Started, SpawnError> {
+        let watched = matches!(watch_mode, WatchMode::OutputAndCompletion);
         let id = {
             let inner = self.inner.lock().await;
             let live = inner
@@ -801,7 +808,7 @@ fn kill_group(pgid: Option<i32>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, Runs};
+    use super::{Kind, Runs, WatchMode};
     use goat_protocol::{Event, ProcessState};
     use std::sync::Arc;
     use std::time::Duration;
@@ -871,7 +878,7 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::TWO_ECHOES, None, &cwd, false)
+            .spawn(plat::TWO_ECHOES, None, &cwd, WatchMode::CompletionOnly)
             .await
             .unwrap_or_else(|e| panic!("spawn failed: {e}"));
         wait_until_exited(&registry, started.id).await;
@@ -887,7 +894,7 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::ECHO_ONE, None, &cwd, false)
+            .spawn(plat::ECHO_ONE, None, &cwd, WatchMode::CompletionOnly)
             .await
             .unwrap();
         wait_until_exited(&registry, started.id).await;
@@ -905,7 +912,7 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::ECHO_STDERR, None, &cwd, false)
+            .spawn(plat::ECHO_STDERR, None, &cwd, WatchMode::CompletionOnly)
             .await
             .unwrap();
         wait_until_exited(&registry, started.id).await;
@@ -918,7 +925,7 @@ mod tests {
         let (registry, _events, wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::ECHO_PING, None, &cwd, true)
+            .spawn(plat::ECHO_PING, None, &cwd, WatchMode::OutputAndCompletion)
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), wake.notified())
@@ -942,7 +949,7 @@ mod tests {
         let (registry, _events, wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .spawn(plat::SLEEP_LONG, None, &cwd, WatchMode::CompletionOnly)
             .await
             .unwrap();
         let result = tokio::time::timeout(Duration::from_millis(200), wake.notified()).await;
@@ -959,7 +966,7 @@ mod tests {
         let (registry, _events, wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::ECHO_QUIET, None, &cwd, false)
+            .spawn(plat::ECHO_QUIET, None, &cwd, WatchMode::CompletionOnly)
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), wake.notified())
@@ -979,7 +986,7 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .spawn(plat::SLEEP_LONG, None, &cwd, WatchMode::CompletionOnly)
             .await
             .unwrap();
         let running = registry.list().await;
@@ -1004,7 +1011,7 @@ mod tests {
         tokio::spawn(async move { while events.recv().await.is_some() {} });
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::COUNT_TO_600, None, &cwd, false)
+            .spawn(plat::COUNT_TO_600, None, &cwd, WatchMode::CompletionOnly)
             .await
             .unwrap();
         wait_until_exited(&registry, started.id).await;
@@ -1036,7 +1043,7 @@ mod tests {
         let (registry, _events, wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::SLEEP_LONG, None, &cwd, true)
+            .spawn(plat::SLEEP_LONG, None, &cwd, WatchMode::OutputAndCompletion)
             .await
             .unwrap();
         registry.kill(started.id, None).await.unwrap();
@@ -1058,7 +1065,10 @@ mod tests {
     async fn stdin_write_reaches_run() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::CAT, None, &cwd, false).await.unwrap();
+        let started = registry
+            .spawn(plat::CAT, None, &cwd, WatchMode::CompletionOnly)
+            .await
+            .unwrap();
         registry.write_stdin(started.id, "typed\n").await.unwrap();
         let mut echoed = String::new();
         let mut got = false;
@@ -1081,7 +1091,10 @@ mod tests {
     async fn stdin_write_succeeds() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::CAT, None, &cwd, false).await.unwrap();
+        let started = registry
+            .spawn(plat::CAT, None, &cwd, WatchMode::CompletionOnly)
+            .await
+            .unwrap();
         registry.write_stdin(started.id, "typed\n").await.unwrap();
         registry.kill(started.id, None).await.unwrap();
         wait_until_exited(&registry, started.id).await;
@@ -1091,7 +1104,10 @@ mod tests {
     async fn write_to_exited_run_errors() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::TRUE, None, &cwd, false).await.unwrap();
+        let started = registry
+            .spawn(plat::TRUE, None, &cwd, WatchMode::CompletionOnly)
+            .await
+            .unwrap();
         wait_until_exited(&registry, started.id).await;
         let result = registry.write_stdin(started.id, "x\n").await;
         assert!(result.is_err());
@@ -1102,7 +1118,7 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .spawn(plat::SLEEP_LONG, None, &cwd, WatchMode::CompletionOnly)
             .await
             .unwrap();
         registry.set_watch(started.id, true).await.unwrap();
@@ -1116,7 +1132,7 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::ECHO_PING, None, &cwd, true)
+            .spawn(plat::ECHO_PING, None, &cwd, WatchMode::OutputAndCompletion)
             .await
             .unwrap();
         wait_until_exited(&registry, started.id).await;
@@ -1141,7 +1157,7 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::ECHO_PING, None, &cwd, true)
+            .spawn(plat::ECHO_PING, None, &cwd, WatchMode::OutputAndCompletion)
             .await
             .unwrap();
         wait_until_exited(&registry, started.id).await;
@@ -1160,11 +1176,11 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let a = registry
-            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .spawn(plat::SLEEP_LONG, None, &cwd, WatchMode::CompletionOnly)
             .await
             .unwrap();
         let b = registry
-            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .spawn(plat::SLEEP_LONG, None, &cwd, WatchMode::CompletionOnly)
             .await
             .unwrap();
         assert_eq!(registry.list().await.len(), 2);
@@ -1182,7 +1198,7 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .spawn(plat::SLEEP_LONG, None, &cwd, WatchMode::CompletionOnly)
             .await
             .unwrap();
         let pgid = started.pgid.expect("spawned run has a group");
@@ -1199,7 +1215,7 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .spawn(plat::SLEEP_LONG, None, &cwd, WatchMode::CompletionOnly)
             .await
             .unwrap();
         let pgid = started.pgid.expect("spawned run has a group");
@@ -1214,7 +1230,10 @@ mod tests {
     async fn kill_after_natural_exit_signals_nothing() {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
-        let started = registry.spawn(plat::TRUE, None, &cwd, false).await.unwrap();
+        let started = registry
+            .spawn(plat::TRUE, None, &cwd, WatchMode::CompletionOnly)
+            .await
+            .unwrap();
         wait_until_exited(&registry, started.id).await;
 
         registry.kill(started.id, None).await.unwrap();
@@ -1274,7 +1293,7 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .spawn(plat::SLEEP_LONG, None, &cwd, WatchMode::CompletionOnly)
             .await
             .unwrap();
 
@@ -1296,7 +1315,7 @@ mod tests {
         let (registry, _events, _wake) = harness();
         let cwd = std::env::temp_dir();
         let process = registry
-            .spawn(plat::SLEEP_LONG, None, &cwd, false)
+            .spawn(plat::SLEEP_LONG, None, &cwd, WatchMode::CompletionOnly)
             .await
             .unwrap();
         let agent = registry
@@ -1327,7 +1346,12 @@ mod tests {
         tokio::spawn(async move { while events.recv().await.is_some() {} });
         let cwd = std::env::temp_dir();
         let started = registry
-            .spawn(plat::COUNT_TO_600, None, &cwd, true)
+            .spawn(
+                plat::COUNT_TO_600,
+                None,
+                &cwd,
+                WatchMode::OutputAndCompletion,
+            )
             .await
             .unwrap();
         wait_until_exited(&registry, started.id).await;

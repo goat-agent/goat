@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-pub(crate) const GOAT_NAMESPACE: Uuid = Uuid::from_u128(0x6f61_745f_7065_7273_6f6e_615f_6e73_3031);
+const GOAT_NAMESPACE: Uuid = Uuid::from_u128(0x6f61_745f_7065_7273_6f6e_615f_6e73_3031);
 pub const SCHEDULE_FALLBACK_TIMEZONE: &str = "UTC";
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
@@ -99,13 +99,13 @@ slug_id!(ChannelId);
 slug_id!(IntegrationId);
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
-pub struct ThreadId {
+pub struct ConversationId {
     pub channel: ChannelId,
     pub instance: InstanceId,
     pub external: String,
 }
 
-impl ThreadId {
+impl ConversationId {
     pub fn new(channel: ChannelId, instance: InstanceId, external: impl Into<String>) -> Self {
         Self {
             channel,
@@ -136,7 +136,7 @@ impl ThreadId {
     }
 }
 
-impl fmt::Display for ThreadId {
+impl fmt::Display for ConversationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_key())
     }
@@ -240,7 +240,7 @@ pub enum Surface {
 pub struct IncomingMessage {
     pub id: MessageId,
     pub agent: AgentId,
-    pub thread: ThreadId,
+    pub conversation: ConversationId,
     pub from: UserHandle,
     pub text: String,
     pub attachments: Vec<Attachment>,
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn conversation_key_round_trip() {
         let instance = InstanceId::new();
-        let id = ThreadId::new(ChannelId::new("test"), instance, "chat:123:thread:5");
+        let id = ConversationId::new(ChannelId::new("test"), instance, "chat:123:thread:5");
         let key = id.to_key();
         assert!(key.starts_with("test:"));
         assert!(key.ends_with(":chat:123:thread:5"));
@@ -341,19 +341,19 @@ mod tests {
     }
 
     #[test]
-    fn thread_key_parse_round_trip() {
-        let id = ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:123");
-        let parsed = ThreadId::parse_key(&id.to_key()).unwrap();
+    fn conversation_key_parse_round_trip() {
+        let id = ConversationId::new(ChannelId::new("discord"), InstanceId::new(), "chat:123");
+        let parsed = ConversationId::parse_key(&id.to_key()).unwrap();
         assert_eq!(parsed, id);
     }
 
     #[test]
-    fn thread_key_parse_rejects_garbage() {
-        assert!(ThreadId::parse_key("").is_none());
-        assert!(ThreadId::parse_key("discord").is_none());
-        assert!(ThreadId::parse_key("discord:not-a-uuid:chat:1").is_none());
-        assert!(ThreadId::parse_key(&format!(":{}:x", Uuid::nil())).is_none());
-        assert!(ThreadId::parse_key(&format!("discord:{}:", Uuid::nil())).is_none());
+    fn conversation_key_parse_rejects_garbage() {
+        assert!(ConversationId::parse_key("").is_none());
+        assert!(ConversationId::parse_key("discord").is_none());
+        assert!(ConversationId::parse_key("discord:not-a-uuid:chat:1").is_none());
+        assert!(ConversationId::parse_key(&format!(":{}:x", Uuid::nil())).is_none());
+        assert!(ConversationId::parse_key(&format!("discord:{}:", Uuid::nil())).is_none());
     }
 
     #[test]
@@ -377,7 +377,7 @@ mod tests {
         let msg = IncomingMessage {
             id: MessageId("m1".into()),
             agent: p,
-            thread: ThreadId::new(ChannelId::new("test"), InstanceId::new(), "x"),
+            conversation: ConversationId::new(ChannelId::new("test"), InstanceId::new(), "x"),
             from: UserHandle {
                 external: "u".into(),
                 display: None,

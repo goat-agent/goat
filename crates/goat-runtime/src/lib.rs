@@ -26,7 +26,7 @@ use tracing::{info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-pub struct Goat {
+pub struct AgentRuntime {
     join_handles: Vec<tokio::task::JoinHandle<()>>,
     cancel: CancellationToken,
     _pty_manager: Arc<goat_agent_tool_pty::PtyManager>,
@@ -53,17 +53,17 @@ fn init_logging(logs_dir: &Path) -> WorkerGuard {
     guard
 }
 
-impl Goat {
+impl AgentRuntime {
     pub async fn boot() -> Result<Self> {
         Self::boot_with_code(None).await
     }
 
-    pub async fn boot_with_code(code: Option<goat_daemon::Manager>) -> Result<Self> {
+    pub async fn boot_with_code(code: Option<goat_daemon::CodeSessionHub>) -> Result<Self> {
         Self::boot_with_code_metered(code, None).await
     }
 
     pub async fn boot_with_code_metered(
-        code: Option<goat_daemon::Manager>,
+        code: Option<goat_daemon::CodeSessionHub>,
         meter: Option<goat_proxy::Meter>,
     ) -> Result<Self> {
         let paths = GoatPaths::default_layout().context("resolving ~/.goat layout")?;
@@ -75,7 +75,7 @@ impl Goat {
 
     async fn boot_inner(
         cfg: LoadedConfig,
-        code: Option<goat_daemon::Manager>,
+        code: Option<goat_daemon::CodeSessionHub>,
         meter: Option<goat_proxy::Meter>,
         log_guard: Option<WorkerGuard>,
     ) -> Result<Self> {
@@ -234,11 +234,11 @@ async fn run_consolidation(
                 continue;
             }
         };
-        let conv = match store.latest_thread(*agent).await {
+        let conv = match store.latest_conversation(*agent).await {
             Ok(Some(c)) => c,
             Ok(None) => continue,
             Err(e) => {
-                warn!(agent = %agent, error = ?e, "sleep: latest_thread failed");
+                warn!(agent = %agent, error = ?e, "sleep: latest_conversation failed");
                 continue;
             }
         };
@@ -249,6 +249,22 @@ async fn run_consolidation(
                 continue;
             }
         };
+        let audience = rows
+            .iter()
+            .rev()
+            .find_map(|row| match row.sender.as_ref() {
+                Some(goat_store::MessageSender::User(user)) => goat_memory::Audience::principal(
+                    serde_json::json!([
+                        conv.channel.as_str(),
+                        conv.instance.to_string(),
+                        user.external
+                    ])
+                    .to_string(),
+                )
+                .ok(),
+                _ => None,
+            })
+            .unwrap_or_else(goat_memory::Audience::global);
         let transcript: Vec<goat_sleep::TranscriptLine> = rows
             .into_iter()
             .map(|r| goat_sleep::TranscriptLine {
@@ -259,8 +275,15 @@ async fn run_consolidation(
                 text: r.text,
             })
             .collect();
-        if let Err(e) =
-            goat_sleep::run_once(engine, &provider, model, &Scope::Owner, &transcript).await
+        if let Err(e) = goat_sleep::run_once(
+            engine,
+            &provider,
+            model,
+            &Scope::Owner,
+            &audience,
+            &transcript,
+        )
+        .await
         {
             warn!(agent = %agent, error = ?e, "sleep: consolidation failed");
         }
@@ -494,9 +517,14 @@ fn declared_watch(
                             .stream
                             .clone()
                             .unwrap_or_else(|| workflow.name.clone());
+                        let state_key = entry.id.as_ref().map_or_else(
+                            || format!("query:{}", entry.query),
+                            |id| format!("id:{id}"),
+                        );
                         (
                             entry.source.clone(),
                             WatchSpec {
+                                state_key,
                                 stream,
                                 query: entry.query.clone(),
                             },
@@ -551,9 +579,17 @@ fn resolve_watch_sources(
                 reject("the integration is not bound to this agent");
                 continue;
             };
-            let key = (name.clone(), binding.account.clone(), spec.stream.clone());
+            if spec.state_key == "id:" {
+                reject("source `id` cannot be empty");
+                continue;
+            }
+            let key = (
+                name.clone(),
+                binding.account.clone(),
+                spec.state_key.clone(),
+            );
             if !seen.insert(key) {
-                reject("duplicate stream; name it explicitly with `stream`");
+                reject("duplicate source identity; set a unique `id`");
                 continue;
             }
             resolved.push(ResolvedSource {
@@ -635,6 +671,7 @@ fn build_watch_plan(raw: &AgentConfig, shared: &RuntimeShared) -> (Vec<Workflow>
         let entry = WorkflowSource {
             integration: source.integration.id(),
             account: source.binding.account,
+            state_key: source.spec.state_key,
             stream: source.spec.stream,
             compiled,
         };
@@ -677,7 +714,7 @@ struct RuntimeBase {
     memory_engine: Arc<goat_memory::MemoryEngine>,
     pty_manager: Arc<goat_agent_tool_pty::PtyManager>,
     scheduler_handle: goat_loop::scheduler::SchedulerHandle,
-    code: Option<goat_daemon::Manager>,
+    code: Option<goat_daemon::CodeSessionHub>,
     bus: EventBus,
     renderer: Arc<dyn StreamRenderer>,
     agent_turns: Arc<std::sync::atomic::AtomicUsize>,
@@ -705,11 +742,11 @@ async fn build_shared(base: &RuntimeBase, agents: &[AgentConfig]) -> RuntimeShar
     let integrations = goat_integration::registry_from_inventory();
     let connections = load_integration_connections(&base.paths.config_json);
     let integration_bindings = build_integration_bindings(agents, &integrations, &connections);
-    let integration_runtime = IntegrationRuntime {
-        credentials: base.credentials.clone(),
-        store: base.store.clone(),
-        bus: base.bus.clone(),
-    };
+    let integration_runtime = IntegrationRuntime::new(
+        base.credentials.clone(),
+        base.store.clone(),
+        base.bus.clone(),
+    );
     let mut integration_tool_names: HashMap<String, Vec<String>> = HashMap::new();
     for (id, integration) in &integrations {
         if let Some(bindings) = integration_bindings.get(id).filter(|b| !b.is_empty()) {
@@ -1182,6 +1219,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Integration for FakeIntegration {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
         fn id(&self) -> goat_types::IntegrationId {
             goat_types::IntegrationId::from_static("fake")
         }
@@ -1279,6 +1320,7 @@ mod tests {
             sources: vec![goat_agent_config::WatchSourceEntry {
                 source: "fake".into(),
                 query: query.into(),
+                id: None,
                 stream: None,
             }],
         }]);
@@ -1350,7 +1392,9 @@ mod tests {
             paths: paths_in(dir.path()),
             agents: vec![],
         };
-        let goat = Goat::boot_inner(cfg, None, None, None).await.expect("boot");
+        let goat = AgentRuntime::boot_inner(cfg, None, None, None)
+            .await
+            .expect("boot");
         assert_eq!(
             goat.join_handles.len(),
             3,
@@ -1365,7 +1409,9 @@ mod tests {
             paths: paths_in(dir.path()),
             agents: vec![agent("alice", "openai/gpt-5.1")],
         };
-        let goat = Goat::boot_inner(cfg, None, None, None).await.expect("boot");
+        let goat = AgentRuntime::boot_inner(cfg, None, None, None)
+            .await
+            .expect("boot");
         assert_eq!(goat.join_handles.len(), 3);
     }
 
@@ -1386,7 +1432,9 @@ mod tests {
             paths: paths_in(dir.path()),
             agents: vec![p],
         };
-        let goat = Goat::boot_inner(cfg, None, None, None).await.expect("boot");
+        let goat = AgentRuntime::boot_inner(cfg, None, None, None)
+            .await
+            .expect("boot");
         assert_eq!(goat.join_handles.len(), 3);
     }
 }

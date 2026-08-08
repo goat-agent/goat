@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use goat_channel::{ChannelError, ChannelHandle, ChannelResult, SentRef};
 use goat_provider::{ChunkStream, StreamChunk};
-use goat_types::{MessageId, OutgoingBody, ThreadId};
+use goat_types::{ConversationId, MessageId, OutgoingBody};
 use tracing::warn;
 
 #[derive(Clone, Debug, Default)]
@@ -20,7 +20,7 @@ pub trait StreamRenderer: Send + Sync {
     async fn render(
         &self,
         handle: Arc<dyn ChannelHandle>,
-        conv: ThreadId,
+        conv: ConversationId,
         reply_to: Option<MessageId>,
         stream: ChunkStream,
         sink: Option<Arc<dyn OutgoingSink>>,
@@ -42,7 +42,7 @@ impl StreamRenderer for DefaultStreamRenderer {
     async fn render(
         &self,
         handle: Arc<dyn ChannelHandle>,
-        conv: ThreadId,
+        conv: ConversationId,
         reply_to: Option<MessageId>,
         mut stream: ChunkStream,
         sink: Option<Arc<dyn OutgoingSink>>,
@@ -131,7 +131,7 @@ impl StreamRenderer for DefaultStreamRenderer {
 
 async fn flush(
     handle: &dyn ChannelHandle,
-    conv: &ThreadId,
+    conv: &ConversationId,
     current: &mut Option<SentRef>,
     text: &str,
     reply_to: Option<MessageId>,
@@ -217,7 +217,7 @@ mod tests {
     use goat_channel::test_support::{MockChannelHandle, MockEvent};
     use goat_channel::{ChannelCapabilities, ChannelIdentity};
     use goat_provider::{StreamChunk, StreamError};
-    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
+    use goat_types::{AgentId, ChannelId, ConversationId, InstanceId};
 
     fn mock_handle(caps: ChannelCapabilities) -> Arc<MockChannelHandle> {
         MockChannelHandle::new(
@@ -229,8 +229,8 @@ mod tests {
         )
     }
 
-    fn conv(instance: InstanceId) -> ThreadId {
-        ThreadId::new(ChannelId::new("discord"), instance, "chat:1")
+    fn conv(instance: InstanceId) -> ConversationId {
+        ConversationId::new(ChannelId::new("discord"), instance, "chat:1")
     }
 
     fn text_delta(s: &str) -> StreamChunk {

@@ -8,10 +8,10 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::{
+use goat_command::{
+    Theme,
     layout::{OVERLAY_CHROME_PLAIN, OVERLAY_W},
     overlay::{centered_rect, clamp_u16, overlay_frame, overlay_layout_plain},
-    theme::Theme,
 };
 
 pub struct StatusRow {
@@ -19,12 +19,12 @@ pub struct StatusRow {
     pub value: String,
 }
 
-pub struct StatusView<'a> {
-    rows: &'a [StatusRow],
+pub struct StatusScreen {
+    rows: Vec<StatusRow>,
 }
 
-impl<'a> StatusView<'a> {
-    pub fn new(rows: &'a [StatusRow]) -> Self {
+impl StatusScreen {
+    pub fn new(rows: Vec<StatusRow>) -> Self {
         Self { rows }
     }
 
@@ -41,7 +41,7 @@ impl<'a> StatusView<'a> {
         };
         let (body_area, hint_area) = overlay_layout_plain(inner);
         let mut lines = vec![Line::from(vec![Span::styled(" status", theme.accent())])];
-        for row in self.rows {
+        for row in &self.rows {
             lines.push(Line::from(vec![
                 Span::raw("   "),
                 Span::styled(format!("{:<10}", row.label), theme.muted()),
@@ -101,4 +101,33 @@ pub fn daemon_label(daemon: &Identity) -> String {
         daemon_uptime(daemon.started_at),
         busy_label(daemon.busy.sessions, daemon.busy.turns)
     )
+}
+
+impl goat_command::Screen for StatusScreen {
+    fn placement(&self) -> goat_command::Placement {
+        goat_command::Placement::Overlay
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        StatusScreen::render(self, frame, area, *theme);
+    }
+
+    fn handle_input(
+        &mut self,
+        event: &crossterm::event::Event,
+        _session: &mut dyn goat_command::Session,
+    ) -> goat_command::InputOutcome {
+        use crossterm::event::{Event as InputEvent, KeyCode};
+        use goat_command::{InputOutcome, ScreenOutcome};
+        let InputEvent::Key(key) = event else {
+            return InputOutcome::Ignored;
+        };
+        let outcome =
+            if key.code == KeyCode::Esc || goat_command::keymap::ctrl_key(key) == Some('c') {
+                ScreenOutcome::Close
+            } else {
+                ScreenOutcome::Continue
+            };
+        InputOutcome::Handled(outcome)
+    }
 }

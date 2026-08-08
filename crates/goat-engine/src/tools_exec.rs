@@ -1,13 +1,13 @@
 use goat_protocol::{Event, ToolCall, ToolCallId, ToolDisplay, ToolImageData, ToolOutcome};
 use goat_provider::{ContentBlock, Provider, ToolDefinition};
 use goat_tool::{
-    ToolBatchCall, ToolBatchInvocation, ToolContent, ToolContext, ToolDefinitionContext,
-    ToolInvocation, ToolOutput, ToolRegistry,
+    ToolBatchCall, ToolBatchInvocation, ToolContent, ToolDefinitionContext, ToolInvocation,
+    ToolOutput, ToolRegistry, ToolSandbox,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Ctx, LoopEnv, Run,
+    LoopEnv, Run, SessionContext,
     persist::{create_tool_call_record, finish_tool_db},
     subagent::ToolSelection,
 };
@@ -89,12 +89,12 @@ struct RegularToolCall<'a> {
     host: &'a (dyn std::any::Any + Send + Sync),
     name: &'a str,
     input_json: &'a str,
-    tool_ctx: &'a ToolContext,
+    tool_ctx: &'a ToolSandbox,
     token: &'a CancellationToken,
 }
 
 async fn run_regular_tool(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     request: RegularToolCall<'_>,
 ) -> Option<Result<ToolOutput, String>> {
     let RegularToolCall {
@@ -145,11 +145,11 @@ pub(crate) fn cap_tool_result(mut content: String) -> String {
 }
 
 async fn execute_tool(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     run: &Run<'_>,
     env: &LoopEnv,
     prep: &Prepared<'_>,
-    tool_ctx: &ToolContext,
+    tool_ctx: &ToolSandbox,
     token: &CancellationToken,
 ) -> ToolExecResult {
     let mutation_path = ctx
@@ -200,7 +200,7 @@ async fn execute_tool(
             })
             .await;
         return ToolExecResult {
-            result_content: ContentBlock::text_result(prep.vendor_id, "interrupted", true),
+            result_content: ContentBlock::error_result(prep.vendor_id, "interrupted"),
             cancelled: true,
         };
     };
@@ -241,7 +241,12 @@ async fn execute_tool(
     }
 }
 
-async fn announce_batch(ctx: &Ctx, run: &Run<'_>, env: &LoopEnv, prepared: &[Prepared<'_>]) {
+async fn announce_batch(
+    ctx: &SessionContext,
+    run: &Run<'_>,
+    env: &LoopEnv,
+    prepared: &[Prepared<'_>],
+) {
     let Some(first) = prepared.first().filter(|_| prepared.len() > 1) else {
         return;
     };
@@ -272,12 +277,12 @@ async fn announce_batch(ctx: &Ctx, run: &Run<'_>, env: &LoopEnv, prepared: &[Pre
 }
 
 pub(crate) async fn run_tool_batch(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     run: &Run<'_>,
     env: &LoopEnv,
     pending_calls: &[(String, String, String)],
     call_seq: &mut u64,
-    tool_ctx: &ToolContext,
+    tool_ctx: &ToolSandbox,
     token: &CancellationToken,
 ) -> ToolBatchResult {
     let mut prepared: Vec<Prepared> = Vec::with_capacity(pending_calls.len());
@@ -331,13 +336,18 @@ pub(crate) async fn run_tool_batch(
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ToolAvailability {
+    pub(crate) delegation: bool,
+    pub(crate) asking: bool,
+    pub(crate) planning: bool,
+}
+
 pub(crate) fn build_tool_defs(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     provider: &dyn Provider,
     selection: Option<&ToolSelection>,
-    allow_delegate: bool,
-    allow_ask: bool,
-    plan: bool,
+    availability: ToolAvailability,
 ) -> Vec<ToolDefinition> {
     if !provider.capabilities().tools {
         return Vec::new();
@@ -345,9 +355,9 @@ pub(crate) fn build_tool_defs(
     let defs: Vec<ToolDefinition> = ctx
         .tools
         .specs_for(ToolDefinitionContext {
-            interactive: allow_ask,
-            top_level: allow_delegate,
-            planning: plan,
+            interactive: availability.asking,
+            top_level: availability.delegation,
+            planning: availability.planning,
         })
         .into_iter()
         .filter(|spec| selection.is_none_or(|sel| sel.allows(spec.name)))

@@ -7,17 +7,17 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::{
+use goat_command::{
+    Theme,
     layout::{LIST_MAX, OVERLAY_CHROME, OVERLAY_W},
     overlay::{
         centered_rect, clamp_u16, hint_line, overflow_hint, overlay_frame, overlay_layout,
         selection_row,
     },
     symbols,
-    theme::Theme,
 };
 
-pub enum PickerOutcome {
+enum PickerOutcome {
     NoOp,
     Selected(ModelTarget),
 }
@@ -27,7 +27,7 @@ struct AccountPicker {
     cursor: usize,
 }
 
-pub struct Picker {
+pub struct ModelScreen {
     entries: Vec<ModelEntry>,
     query: String,
     matches: Vec<ModelEntry>,
@@ -35,9 +35,10 @@ pub struct Picker {
     current: Option<ModelTarget>,
     account: Option<AccountPicker>,
     loading: bool,
+    done: bool,
 }
 
-impl Picker {
+impl ModelScreen {
     pub fn new(entries: Vec<ModelEntry>, current: Option<ModelTarget>, loading: bool) -> Self {
         let mut picker = Self {
             entries,
@@ -47,6 +48,7 @@ impl Picker {
             current,
             account: None,
             loading,
+            done: false,
         };
         picker.refilter();
         picker.cursor = picker.current_index().unwrap_or(0);
@@ -117,7 +119,7 @@ impl Picker {
         }
     }
 
-    pub fn choose(&mut self) -> PickerOutcome {
+    fn choose(&mut self) -> PickerOutcome {
         if let Some(account) = &self.account {
             return account
                 .choices
@@ -301,11 +303,103 @@ fn render_account(frame: &mut Frame, inner: Rect, theme: Theme, account: &Accoun
     );
 }
 
+impl goat_command::Screen for ModelScreen {
+    fn placement(&self) -> goat_command::Placement {
+        goat_command::Placement::Overlay
+    }
+
+    fn captures_text(&self) -> bool {
+        true
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        ModelScreen::render(self, frame, area, *theme);
+    }
+
+    fn handle_input(
+        &mut self,
+        event: &crossterm::event::Event,
+        _session: &mut dyn goat_command::Session,
+    ) -> goat_command::InputOutcome {
+        use crossterm::event::{Event as InputEvent, KeyCode};
+        use goat_command::{CommandEffect, InputOutcome, ScreenOutcome};
+        match event {
+            InputEvent::Paste(text) => {
+                for ch in text.chars() {
+                    self.on_char(ch);
+                }
+                InputOutcome::Handled(ScreenOutcome::Continue)
+            }
+            InputEvent::Key(key) => {
+                if goat_command::keymap::ctrl_key(key).is_some() {
+                    return InputOutcome::Handled(
+                        if goat_command::keymap::ctrl_key(key) == Some('c') {
+                            ScreenOutcome::Close
+                        } else {
+                            ScreenOutcome::Continue
+                        },
+                    );
+                }
+                let outcome = match key.code {
+                    KeyCode::Esc => ScreenOutcome::Close,
+                    KeyCode::Up => {
+                        self.move_up();
+                        ScreenOutcome::Continue
+                    }
+                    KeyCode::Down => {
+                        self.move_down();
+                        ScreenOutcome::Continue
+                    }
+                    KeyCode::Backspace => {
+                        self.backspace();
+                        ScreenOutcome::Continue
+                    }
+                    KeyCode::Enter => match self.choose() {
+                        PickerOutcome::NoOp => ScreenOutcome::Continue,
+                        PickerOutcome::Selected(target) => {
+                            self.done = true;
+                            ScreenOutcome::Effect(CommandEffect::Dispatch(vec![
+                                goat_protocol::Op::SelectModel { target },
+                            ]))
+                        }
+                    },
+                    KeyCode::Char(ch) => {
+                        self.on_char(ch);
+                        ScreenOutcome::Continue
+                    }
+                    _ => ScreenOutcome::Continue,
+                };
+                InputOutcome::Handled(outcome)
+            }
+            _ => InputOutcome::Ignored,
+        }
+    }
+
+    fn on_event(
+        &mut self,
+        event: &goat_protocol::Event,
+        _session: &mut dyn goat_command::Session,
+    ) -> goat_command::ScreenOutcome {
+        if let goat_protocol::Event::ModelListChanged { entries } = event {
+            self.set_entries(entries.clone());
+        }
+        goat_command::ScreenOutcome::Continue
+    }
+
+    fn tick(&mut self) -> goat_command::ScreenOutcome {
+        if self.done {
+            goat_command::ScreenOutcome::Close
+        } else {
+            goat_command::ScreenOutcome::Continue
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use goat_protocol::{AccountChoice, ModelEntry, ModelTarget};
 
-    use super::{Picker, PickerOutcome};
+    use super::{ModelScreen, PickerOutcome};
 
     fn entry(provider: &str, model: &str, accounts: usize) -> ModelEntry {
         let choices = (0..accounts)
@@ -335,7 +429,7 @@ mod tests {
 
     #[test]
     fn single_account_selects_directly() {
-        let mut picker = Picker::new(vec![entry("openai", "gpt", 1)], None, false);
+        let mut picker = ModelScreen::new(vec![entry("openai", "gpt", 1)], None, false);
         match picker.choose() {
             PickerOutcome::Selected(target) => {
                 assert_eq!(target.provider, "openai");
@@ -347,7 +441,7 @@ mod tests {
 
     #[test]
     fn multiple_accounts_open_interstitial() {
-        let mut picker = Picker::new(vec![entry("openai", "gpt", 2)], None, false);
+        let mut picker = ModelScreen::new(vec![entry("openai", "gpt", 2)], None, false);
         assert!(matches!(picker.choose(), PickerOutcome::NoOp));
         picker.move_down();
         match picker.choose() {
@@ -358,7 +452,7 @@ mod tests {
 
     #[test]
     fn filter_narrows_matches() {
-        let mut picker = Picker::new(
+        let mut picker = ModelScreen::new(
             vec![entry("openai", "gpt", 1), entry("anthropic", "claude", 1)],
             None,
             false,
@@ -374,7 +468,7 @@ mod tests {
 
     #[test]
     fn empty_choose_is_noop() {
-        let mut picker = Picker::new(vec![], None, false);
+        let mut picker = ModelScreen::new(vec![], None, false);
         assert!(matches!(picker.choose(), PickerOutcome::NoOp));
     }
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use goat_agent_tool::{
-    ToolCall, ToolContext, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
+    ToolCall, ToolCaller, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
 };
 use goat_loop::cron_expr;
 use goat_loop::scheduler::SchedulerHandle;
@@ -62,7 +62,7 @@ pub struct ScheduleOnceTool {
 
 #[async_trait]
 impl ToolHandler for ScheduleOnceTool {
-    async fn call(&self, ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let args: ScheduleOnceArgs = match serde_json::from_value(call.arguments) {
             Ok(a) => a,
             Err(e) => return ToolOutput::error(format!("invalid schedule_once input: {e}")),
@@ -91,7 +91,7 @@ impl ToolHandler for ScheduleOnceTool {
             agent: ctx.agent,
             instruction: args.task.clone(),
             tools: args.tools,
-            origin_conv: ctx.thread,
+            origin_conv: ctx.conversation,
             schedule: ScheduleKind::Once(due_at),
             timezone: Some(timezone_name.clone()),
             created_by_msg_id: None,
@@ -136,7 +136,7 @@ pub struct ScheduleCronTool {
 
 #[async_trait]
 impl ToolHandler for ScheduleCronTool {
-    async fn call(&self, ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let args: ScheduleCronArgs = match serde_json::from_value(call.arguments) {
             Ok(a) => a,
             Err(e) => return ToolOutput::error(format!("invalid schedule_cron input: {e}")),
@@ -194,7 +194,7 @@ impl ToolHandler for ScheduleCronTool {
             agent: ctx.agent,
             instruction: args.task.clone(),
             tools: args.tools,
-            origin_conv: ctx.thread,
+            origin_conv: ctx.conversation,
             schedule: ScheduleKind::Cron(args.cron.clone()),
             timezone: Some(timezone_name.clone()),
             created_by_msg_id: None,
@@ -235,7 +235,7 @@ pub struct CancelTaskTool {
 
 #[async_trait]
 impl ToolHandler for CancelTaskTool {
-    async fn call(&self, _ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, _ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let args: CancelTaskArgs = match serde_json::from_value(call.arguments) {
             Ok(a) => a,
             Err(e) => return ToolOutput::error(format!("invalid cancel_task input: {e}")),
@@ -254,7 +254,7 @@ pub struct ListTasksTool {
 
 #[async_trait]
 impl ToolHandler for ListTasksTool {
-    async fn call(&self, ctx: ToolContext, _call: ToolCall) -> ToolOutput {
+    async fn call(&self, ctx: ToolCaller, _call: ToolCall) -> ToolOutput {
         match self.store.list_active_schedules(ctx.agent).await {
             Ok(rows) => {
                 let entries: Vec<_> = rows
@@ -424,24 +424,25 @@ async fn similar_summaries(
 mod tests {
     use super::*;
     use chrono::Duration;
-    use goat_agent_tool::{ToolCall, ToolContext, ToolReadState};
+    use goat_agent_tool::{ToolCall, ToolCaller, ToolReadState};
     use goat_loop::scheduler::SchedulerHandle;
     use goat_store::SqliteStore;
-    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
+    use goat_types::{AgentId, ChannelId, ConversationId, InstanceId};
     use std::path::PathBuf;
 
-    async fn setup() -> (Arc<dyn Store>, ToolContext, AgentId) {
+    async fn setup() -> (Arc<dyn Store>, ToolCaller, AgentId) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
         std::mem::forget(dir);
         let store = Arc::new(SqliteStore::open(&path).await.unwrap()) as Arc<dyn Store>;
         let agent = AgentId::new();
         store.ensure_agent(agent, "dev", "dev").await.unwrap();
-        let conv = ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1");
-        store.ensure_thread(&conv, agent).await.unwrap();
-        let ctx = ToolContext {
+        let conv = ConversationId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1");
+        store.ensure_conversation(&conv, agent).await.unwrap();
+        let ctx = ToolCaller {
             agent,
-            thread: conv,
+            conversation: conv,
+            audience: None,
             goat_root: PathBuf::from("/tmp"),
             read_state: ToolReadState::default(),
         };

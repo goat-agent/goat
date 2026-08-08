@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolContext, ToolError, ToolFuture, ToolImage, ToolOutput, display};
+use goat_tool::{Tool, ToolError, ToolFuture, ToolImage, ToolOutput, ToolSandbox, display};
 
 use crate::{
     action::{self, Action},
@@ -107,7 +107,7 @@ impl Tool for ComputerTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async move {
             let action = action::parse(input).map_err(exec_err)?;
             let backend = self.backend.clone();

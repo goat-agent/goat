@@ -8,7 +8,7 @@ use goat_code_store::{
     CheckpointFileVersion, CodeCheckpoint, CodeStore as Store, CreatedMessage, NewCheckpointFile,
     NewCodeCheckpoint,
 };
-use goat_tool::ToolContext;
+use goat_tool::ToolSandbox;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FileImage {
@@ -20,6 +20,11 @@ struct FileImage {
 pub(crate) struct RestoreReport {
     pub(crate) restored: usize,
     pub(crate) skipped: usize,
+}
+
+enum CheckpointFileState {
+    Baseline,
+    Touched,
 }
 
 pub(crate) struct CheckpointTracker {
@@ -41,7 +46,7 @@ impl CheckpointTracker {
 
     pub(crate) async fn begin(
         &self,
-        thread_id: i64,
+        conversation_id: i64,
         message: &CreatedMessage,
         draft: String,
         attachments: &[goat_protocol::InputAttachment],
@@ -52,7 +57,7 @@ impl CheckpointTracker {
         let checkpoint_id = self
             .store
             .create_code_checkpoint(NewCodeCheckpoint {
-                thread_id,
+                conversation_id,
                 prompt_message_id: message.id,
                 parent_message_id: message.parent_message_id,
                 draft,
@@ -64,7 +69,7 @@ impl CheckpointTracker {
         let root = root.canonicalize().map_err(|err| err.to_string())?;
         let paths = self
             .store
-            .tracked_checkpoint_paths(thread_id)
+            .tracked_checkpoint_paths(conversation_id)
             .await
             .map_err(|err| err.to_string())?;
         for raw in paths {
@@ -75,7 +80,8 @@ impl CheckpointTracker {
             let image = snapshot(&path)
                 .await
                 .unwrap_or_else(|_| unsupported_image());
-            self.record(checkpoint_id, path, image, false).await?;
+            self.record(checkpoint_id, path, image, CheckpointFileState::Baseline)
+                .await?;
         }
         self.active.store(checkpoint_id, Ordering::Release);
         Ok(checkpoint_id)
@@ -84,7 +90,7 @@ impl CheckpointTracker {
     pub(crate) async fn capture_path(
         &self,
         raw: &str,
-        tool_ctx: &ToolContext,
+        tool_ctx: &ToolSandbox,
     ) -> Result<(), String> {
         let checkpoint_id = self.active.load(Ordering::Acquire);
         if checkpoint_id == 0 {
@@ -98,7 +104,8 @@ impl CheckpointTracker {
             return Ok(());
         }
         let image = snapshot(&path).await?;
-        self.record(checkpoint_id, path, image, true).await
+        self.record(checkpoint_id, path, image, CheckpointFileState::Touched)
+            .await
     }
 
     async fn record(
@@ -106,7 +113,7 @@ impl CheckpointTracker {
         checkpoint_id: i64,
         path: PathBuf,
         image: FileImage,
-        touched: bool,
+        state: CheckpointFileState,
     ) -> Result<(), String> {
         self.store
             .record_checkpoint_file(NewCheckpointFile {
@@ -115,26 +122,26 @@ impl CheckpointTracker {
                 content: image.content,
                 mode: image.mode,
                 supported: image.supported,
-                touched,
+                touched: matches!(state, CheckpointFileState::Touched),
             })
             .await
             .map_err(|err| err.to_string())
     }
 
-    pub(crate) async fn points(&self, thread_id: i64) -> Result<Vec<CodeCheckpoint>, String> {
+    pub(crate) async fn points(&self, conversation_id: i64) -> Result<Vec<CodeCheckpoint>, String> {
         self.store
-            .active_code_checkpoints(thread_id)
+            .active_code_checkpoints(conversation_id)
             .await
             .map_err(|err| err.to_string())
     }
 
     pub(crate) async fn restore(
         &self,
-        thread_id: i64,
+        conversation_id: i64,
         checkpoint_id: i64,
         root: &Path,
     ) -> Result<RestoreReport, String> {
-        let checkpoints = self.points(thread_id).await?;
+        let checkpoints = self.points(conversation_id).await?;
         let checkpoint = checkpoints
             .iter()
             .find(|checkpoint| checkpoint.id == checkpoint_id)
@@ -144,7 +151,7 @@ impl CheckpointTracker {
         }
         let versions = self
             .store
-            .active_checkpoint_file_versions(thread_id)
+            .active_checkpoint_file_versions(conversation_id)
             .await
             .map_err(|err| err.to_string())?;
         let targets = target_images(checkpoint_id, versions);
@@ -302,8 +309,8 @@ async fn set_file_mode(_path: &Path, _mode: Option<u32>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use goat_code_store::{CodeStore, NewMessage, NewThread};
-    use goat_tool::ToolContext;
+    use goat_code_store::{CodeStore, NewConversation, NewMessage};
+    use goat_tool::ToolSandbox;
 
     use super::CheckpointTracker;
 
@@ -311,8 +318,8 @@ mod tests {
         root: &std::path::Path,
     ) -> (CheckpointTracker, i64, goat_code_store::CreatedMessage) {
         let store = CodeStore::open_in_memory().await.unwrap();
-        let thread_id = store
-            .create_thread(NewThread {
+        let conversation_id = store
+            .create_conversation(NewConversation {
                 cwd: root.display().to_string(),
                 title: None,
                 provider: "openai".into(),
@@ -326,7 +333,7 @@ mod tests {
             .unwrap();
         let message = store
             .create_message(NewMessage {
-                thread_id,
+                conversation_id,
                 turn_id: None,
                 role: "user".into(),
                 body: "change files".into(),
@@ -334,7 +341,7 @@ mod tests {
             })
             .await
             .unwrap();
-        (CheckpointTracker::new(store), thread_id, message)
+        (CheckpointTracker::new(store), conversation_id, message)
     }
 
     #[tokio::test]
@@ -344,12 +351,12 @@ mod tests {
         let existing = root.join("existing.txt");
         let created = root.join("created.txt");
         tokio::fs::write(&existing, b"before").await.unwrap();
-        let (tracker, thread_id, message) = setup(&root).await;
+        let (tracker, conversation_id, message) = setup(&root).await;
         let checkpoint_id = tracker
-            .begin(thread_id, &message, "change files".into(), &[], &root)
+            .begin(conversation_id, &message, "change files".into(), &[], &root)
             .await
             .unwrap();
-        let context = ToolContext::new(&root).unwrap();
+        let context = ToolSandbox::new(&root).unwrap();
         tracker
             .capture_path("existing.txt", &context)
             .await
@@ -359,7 +366,7 @@ mod tests {
         tokio::fs::write(&created, b"new").await.unwrap();
 
         let report = tracker
-            .restore(thread_id, checkpoint_id, &root)
+            .restore(conversation_id, checkpoint_id, &root)
             .await
             .unwrap();
 
@@ -381,12 +388,12 @@ mod tests {
         tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o744))
             .await
             .unwrap();
-        let (tracker, thread_id, message) = setup(&root).await;
+        let (tracker, conversation_id, message) = setup(&root).await;
         let checkpoint_id = tracker
-            .begin(thread_id, &message, "change mode".into(), &[], &root)
+            .begin(conversation_id, &message, "change mode".into(), &[], &root)
             .await
             .unwrap();
-        let context = ToolContext::new(&root).unwrap();
+        let context = ToolSandbox::new(&root).unwrap();
         tracker.capture_path("script", &context).await.unwrap();
         tokio::fs::write(&path, b"after").await.unwrap();
         tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
@@ -394,7 +401,7 @@ mod tests {
             .unwrap();
 
         tracker
-            .restore(thread_id, checkpoint_id, &root)
+            .restore(conversation_id, checkpoint_id, &root)
             .await
             .unwrap();
 
@@ -416,17 +423,17 @@ mod tests {
         let other = root.join("other");
         tokio::fs::write(&path, b"before").await.unwrap();
         std::fs::hard_link(&path, &other).unwrap();
-        let (tracker, thread_id, message) = setup(&root).await;
+        let (tracker, conversation_id, message) = setup(&root).await;
         let checkpoint_id = tracker
-            .begin(thread_id, &message, "change link".into(), &[], &root)
+            .begin(conversation_id, &message, "change link".into(), &[], &root)
             .await
             .unwrap();
-        let context = ToolContext::new(&root).unwrap();
+        let context = ToolSandbox::new(&root).unwrap();
         tracker.capture_path("linked", &context).await.unwrap();
         tokio::fs::write(&path, b"after").await.unwrap();
 
         let report = tracker
-            .restore(thread_id, checkpoint_id, &root)
+            .restore(conversation_id, checkpoint_id, &root)
             .await
             .unwrap();
 

@@ -493,7 +493,7 @@ mod tests {
         assert!(!tables.iter().any(|table| table == "scheduled_tasks"));
         assert!(!tables.iter().any(|table| table == "goals"));
         assert!(!tables.iter().any(|table| table == "facts"));
-        assert!(!tables.iter().any(|table| table == "code_threads"));
+        assert!(!tables.iter().any(|table| table == "code_conversations"));
     }
 
     #[tokio::test]

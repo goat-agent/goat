@@ -48,7 +48,7 @@ async fn obtain(url: &str, mode: RenderMode) -> Result<fetch::RawFetch, WebFetch
 }
 
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolContext, ToolFuture, display};
+use goat_tool::{Tool, ToolFuture, ToolSandbox, display};
 use serde::Deserialize;
 
 pub fn all() -> Vec<Box<dyn Tool>> {
@@ -127,7 +127,7 @@ impl Tool for WebFetchTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async move {
             let args: Input = serde_json::from_str(input)?;
             let url = normalize::normalize_url(&args.url);
@@ -189,7 +189,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn live_fetch_example() {
-        let ctx = goat_tool::ToolContext::new(&std::env::temp_dir()).unwrap();
+        let ctx = goat_tool::ToolSandbox::new(&std::env::temp_dir()).unwrap();
         let out = super::WebFetchTool::new()
             .run(r#"{"url":"https://example.com"}"#, &ctx)
             .await

@@ -1,15 +1,14 @@
 use goat_protocol::{
-    Event as EngineEvent, NotifyKind, Op, ProcessExitReason, ProcessInfo, ProcessState, RunId,
-    TaskId, TranscriptEntry,
+    Event as EngineEvent, Op, ProcessExitReason, ProcessInfo, ProcessState, RunId, TaskId,
+    TranscriptEntry,
 };
 
-use super::{App, MainView, Overlay, ProcessRunView, ResumeIntent};
-use crate::{ask::AskPicker, picker::ThreadPicker};
+use super::{App, MainView, PendingScreen, ProcessRunView};
+use crate::{ask::AskPicker, native_screen::AskScreen};
 
 impl App {
     #[allow(clippy::too_many_lines)]
     pub(crate) fn on_engine(&mut self, event: EngineEvent) -> Vec<Op> {
-        let mut ops = Vec::new();
         match event {
             EngineEvent::TaskStarted { id } => {
                 self.turn.active = Some(id);
@@ -18,21 +17,13 @@ impl App {
                 self.usage.turn_tokens = 0;
             }
             EngineEvent::ModelListChanged { entries } => {
-                if let Overlay::Model(picker) = &mut self.overlay {
-                    picker.set_entries(entries.clone());
-                }
-                self.models = entries;
-                self.models_loaded = true;
+                self.catalog.models = entries;
+                self.catalog.loaded = true;
             }
-            EngineEvent::ModelSelected { target } => self.model = Some(target),
+            EngineEvent::ModelSelected { target } => self.catalog.selected = Some(target),
             EngineEvent::ModeChanged { mode, plan_path } => {
                 self.mode = mode;
                 self.plan_path = plan_path;
-                if !mode.is_plan()
-                    && let Overlay::Plan(_) = &self.overlay
-                {
-                    self.overlay = Overlay::None;
-                }
                 self.dirty = true;
             }
             EngineEvent::PlanProposed {
@@ -41,45 +32,31 @@ impl App {
                 if !self.focused {
                     self.queue_notification(crate::notification::Notification::Attention);
                 }
-                self.overlay =
-                    Overlay::Plan(Box::new(crate::plan::PlanSheet::new(call, plan, path)));
+                self.screens.active = PendingScreen::Screen(Box::new(
+                    goat_commands::PlanScreen::new(call, plan, path),
+                ));
                 self.dirty = true;
             }
-            EngineEvent::ThreadsListed { threads } => match self.pending.resume.take() {
-                Some(ResumeIntent::Picker) => {
-                    self.overlay = Overlay::Thread(ThreadPicker::new(threads));
-                }
-                Some(ResumeIntent::Index(index)) => match threads.get(index) {
-                    Some(thread) => ops.push(Op::Resume {
-                        thread_id: thread.id,
-                    }),
-                    None => {
-                        self.push_toast(
-                            NotifyKind::Error,
-                            format!("no conversation #{}", index + 1),
-                        );
-                    }
-                },
-                None => {}
-            },
-            EngineEvent::RewindPointsListed { points } => {
-                self.overlay = Overlay::Rewind(crate::picker::RewindPicker::new(points));
-                self.rewind_arm = None;
+            EngineEvent::ConversationsListed { conversations } => {
+                self.conversations = conversations;
+            }
+            EngineEvent::RewindPointsListed { .. } => {
+                self.arming.rewind = None;
                 self.dirty = true;
             }
             EngineEvent::ConversationRewound { draft } => {
                 self.composer.clear();
                 self.composer.insert_str(&draft.text);
                 self.composer.push_attachments(draft.attachments);
-                self.follow = true;
+                self.viewport.follow = true;
                 self.dirty = true;
             }
             EngineEvent::FilesListed { entries } => {
                 self.files = entries;
                 self.files_loaded = true;
-                if let Overlay::Files(menu) = &mut self.overlay {
+                if let Some(menu) = self.screens.handles.file_menu.upgrade() {
                     let query = self.composer.at_query().unwrap_or_default();
-                    menu.fill(self.files.clone(), &query);
+                    menu.lock().unwrap().fill(self.files.clone(), &query);
                 }
             }
             EngineEvent::ConversationRestored {
@@ -88,43 +65,51 @@ impl App {
                 context_tokens,
                 compaction_threshold,
             } => {
-                self.transcript.clear();
+                self.viewport.transcript.clear();
                 self.reset_subagents();
                 self.turn = crate::app::TurnStatus::default();
-                self.scroll = 0;
-                self.follow = true;
+                self.viewport.scroll = 0;
+                self.viewport.follow = true;
                 for entry in entries {
                     match entry {
                         TranscriptEntry::User { text, attachments } => {
-                            self.transcript
+                            self.viewport
+                                .transcript
                                 .push_user_with_attachments(text, attachments);
                         }
                         TranscriptEntry::Assistant { text } => {
-                            self.transcript.commit_text(&text);
+                            self.viewport.transcript.commit_text(&text);
                         }
                         TranscriptEntry::Thinking { text } => {
-                            self.transcript.push_thinking(text);
+                            self.viewport.transcript.push_thinking(text);
                         }
                         TranscriptEntry::Tool { call, outcome } => {
                             let id = call.id;
-                            self.transcript.push_tool(call);
-                            self.transcript
-                                .finish_tool(id, outcome, self.picker.as_ref());
+                            self.viewport.transcript.push_tool(call);
+                            self.viewport.transcript.finish_tool(
+                                id,
+                                outcome,
+                                self.picker.as_deref(),
+                            );
                         }
                         TranscriptEntry::SubagentGroup { group, members } => {
-                            self.transcript.push_restored_agent_group(group, members);
+                            self.viewport
+                                .transcript
+                                .push_restored_agent_group(group, members);
                         }
                         TranscriptEntry::Compaction {
                             tokens_before,
                             tokens_after,
                         } => {
-                            self.transcript.push_compaction(tokens_before, tokens_after);
+                            self.viewport
+                                .transcript
+                                .push_compaction(tokens_before, tokens_after);
                         }
                         TranscriptEntry::Shell { command, output }
                         | TranscriptEntry::Process { command, output } => {
                             let id = TaskId(0);
-                            self.transcript.push_shell(id, command);
-                            self.transcript.finish_shell(id, output);
+                            self.viewport.transcript.push_shell(id, command);
+                            self.viewport.transcript.finish_shell(id, output);
                         }
                     }
                 }
@@ -140,19 +125,21 @@ impl App {
                         },
                     );
                 }
-                self.model = Some(target);
+                self.catalog.selected = Some(target);
             }
             EngineEvent::ThinkingDelta { id, chunk } => {
                 self.turn.thinking = true;
                 if let Some(i) = self.subagent_index(id) {
                     self.subagent_runs[i].transcript.push_thinking_delta(&chunk);
                 } else {
-                    self.transcript.push_thinking_delta(&chunk);
+                    self.viewport.transcript.push_thinking_delta(&chunk);
                 }
             }
-            EngineEvent::LoginProviders { .. } => {}
-            EngineEvent::ThreadBound { thread_id } => {
-                self.thread_id = Some(thread_id);
+            EngineEvent::LoginProviders { .. }
+            | EngineEvent::LoginStatus { .. }
+            | EngineEvent::AskDismissed { .. } => {}
+            EngineEvent::ConversationBound { conversation_id } => {
+                self.session.conversation_id = Some(conversation_id);
             }
             EngineEvent::ProcessListChanged { processes } => {
                 self.reconcile_processes(&processes);
@@ -214,15 +201,19 @@ impl App {
                             run.transcript.push_compaction(tokens_before, tokens_after);
                             (run.parent, run.call)
                         };
-                        self.transcript.add_subagent_tokens(parent, call, tokens);
+                        self.viewport
+                            .transcript
+                            .add_subagent_tokens(parent, call, tokens);
                     }
                 } else {
                     self.turn.compacting = false;
                     if ok {
                         self.usage.turn_tokens +=
                             u64::from(usage.input_tokens) + u64::from(usage.output_tokens);
-                        self.transcript.push_compaction(tokens_before, tokens_after);
-                        if let Some(model) = &self.model {
+                        self.viewport
+                            .transcript
+                            .push_compaction(tokens_before, tokens_after);
+                        if let Some(model) = &self.catalog.selected {
                             let key = (model.provider.clone(), model.account.clone());
                             let total = self.usage.total.entry(key.clone()).or_default();
                             total.0 += u64::from(usage.input_tokens);
@@ -253,9 +244,10 @@ impl App {
                     .is_some();
                 if !sent_by_us && self.turn.active.is_none() {
                     self.reset_subagents();
-                    self.follow = true;
+                    self.viewport.follow = true;
                 }
-                self.transcript
+                self.viewport
+                    .transcript
                     .push_user_with_display(display.unwrap_or_else(|| text.clone()), attachments);
                 self.dirty = true;
             }
@@ -294,7 +286,7 @@ impl App {
                 if let Some(i) = self.subagent_index(id) {
                     self.subagent_runs[i].transcript.discard_stream();
                 } else {
-                    self.transcript.discard_stream();
+                    self.viewport.transcript.discard_stream();
                     self.turn.retry = Some(super::RetryState {
                         attempt,
                         max_attempts,
@@ -306,24 +298,10 @@ impl App {
                 self.dirty = true;
             }
             EngineEvent::AccountsChanged { providers } => {
-                if let Overlay::Config(config) = &mut self.overlay {
-                    config.set_providers(providers.clone());
-                }
-                self.account_entries = providers;
+                self.catalog.accounts = providers;
             }
             EngineEvent::SkillsChanged { skills } => {
                 self.commands.set_skills(&skills);
-            }
-            EngineEvent::LoginStatus {
-                message, done, ok, ..
-            } => {
-                if let Overlay::Config(config) = &mut self.overlay {
-                    match (done, ok) {
-                        (false, _) => config.set_account_status(message),
-                        (true, true) => config.cancel_stage(),
-                        (true, false) => config.set_error(message),
-                    }
-                }
             }
             EngineEvent::TextDelta { id, chunk } => {
                 self.turn.thinking = false;
@@ -333,18 +311,20 @@ impl App {
                 if let Some(i) = self.subagent_index(id) {
                     self.subagent_runs[i].transcript.push_delta(&chunk);
                 } else {
-                    self.transcript.push_delta(&chunk);
+                    self.viewport.transcript.push_delta(&chunk);
                 }
             }
             EngineEvent::TextDone { id, text } => {
                 if let Some(i) = self.subagent_index(id) {
                     self.subagent_runs[i].transcript.commit_text(&text);
                 } else {
-                    self.transcript.commit_text(&text);
+                    self.viewport.transcript.commit_text(&text);
                 }
             }
             EngineEvent::SubagentGroupStarted { id, group, members } => {
-                self.transcript.push_subagent_group(id, group, members);
+                self.viewport
+                    .transcript
+                    .push_subagent_group(id, group, members);
             }
             EngineEvent::ToolStarted { id, call } => {
                 self.turn.thinking = false;
@@ -358,9 +338,11 @@ impl App {
                         run.transcript.push_tool(call);
                         (run.parent, run.call)
                     };
-                    self.transcript.add_subagent_tool(parent, parent_call);
-                } else if !self.transcript.is_subagent_group_call(id, call.id) {
-                    self.transcript.push_tool(call);
+                    self.viewport
+                        .transcript
+                        .add_subagent_tool(parent, parent_call);
+                } else if !self.viewport.transcript.is_subagent_group_call(id, call.id) {
+                    self.viewport.transcript.push_tool(call);
                 }
             }
             EngineEvent::ToolDone { id, call, outcome } => {
@@ -368,23 +350,24 @@ impl App {
                     self.subagent_runs[i].transcript.finish_tool(
                         call,
                         outcome,
-                        self.picker.as_ref(),
+                        self.picker.as_deref(),
                     );
-                } else if self.transcript.is_subagent_group_call(id, call) {
-                    if !self.transcript.detached_group_member(id, call) {
-                        self.transcript.finish_subagent(id, call, outcome);
+                } else if self.viewport.transcript.is_subagent_group_call(id, call) {
+                    if !self.viewport.transcript.detached_group_member(id, call) {
+                        self.viewport.transcript.finish_subagent(id, call, outcome);
                     }
                 } else {
-                    let touched = outcome.ok && self.transcript.touches_pull_request(call);
-                    self.transcript
-                        .finish_tool(call, outcome, self.picker.as_ref());
+                    let touched = outcome.ok && self.viewport.transcript.touches_pull_request(call);
+                    self.viewport
+                        .transcript
+                        .finish_tool(call, outcome, self.picker.as_deref());
                     if touched {
                         self.forget_pull_request();
                     }
                 }
             }
             EngineEvent::ShellDone { id, output } => {
-                self.transcript.finish_shell(id, output);
+                self.viewport.transcript.finish_shell(id, output);
             }
             EngineEvent::SubagentStarted {
                 id,
@@ -393,7 +376,7 @@ impl App {
                 subagent_type,
                 label,
             } => {
-                self.transcript.start_subagent(parent, call);
+                self.viewport.transcript.start_subagent(parent, call);
                 self.subagent_runs.push(super::SubagentRunView {
                     id,
                     parent,
@@ -414,8 +397,8 @@ impl App {
                     self.subagent_runs[i].finished_at = Some(std::time::Instant::now());
                     self.subagent_runs[i].transcript.complete(!ok);
                     let (parent, call) = (self.subagent_runs[i].parent, self.subagent_runs[i].call);
-                    if self.transcript.detached_group_member(parent, call) {
-                        self.transcript.finish_subagent(
+                    if self.viewport.transcript.detached_group_member(parent, call) {
+                        self.viewport.transcript.finish_subagent(
                             parent,
                             call,
                             goat_protocol::ToolOutcome {
@@ -433,15 +416,15 @@ impl App {
                 if !self.focused {
                     self.queue_notification(crate::notification::Notification::Completion);
                 }
-                self.transcript.flush_thinking();
-                self.transcript.complete(interrupted);
+                self.viewport.transcript.flush_thinking();
+                self.viewport.transcript.complete(interrupted);
                 self.reset_active_state();
                 if interrupted {
                     self.restore_queued_to_composer();
                 }
             }
             EngineEvent::Error { message, hint, .. } => {
-                self.transcript.push_error(message, hint);
+                self.viewport.transcript.push_error(message, hint);
                 self.reset_active_state();
                 self.restore_queued_to_composer();
             }
@@ -450,28 +433,22 @@ impl App {
                 self.dirty = true;
             }
             EngineEvent::AskStarted {
-                call, questions, ..
+                id,
+                call,
+                questions,
             } => {
                 if !self.focused {
                     self.queue_notification(crate::notification::Notification::Attention);
                 }
-                let picker = AskPicker::new(questions);
-                if matches!(self.overlay, Overlay::None | Overlay::Commands(_)) {
-                    self.overlay = Overlay::Ask(picker, call);
+                let screen = AskScreen::new(AskPicker::new(questions), id, call);
+                if matches!(self.screens.active, PendingScreen::None)
+                    || self.screens.handles.command_menu.upgrade().is_some()
+                {
+                    self.screens.active = PendingScreen::Screen(Box::new(screen));
                 } else {
-                    self.pending.ask = Some((picker, call));
+                    self.screens.waiting = Some(Box::new(screen));
                 }
                 self.dirty = true;
-            }
-            EngineEvent::AskDismissed { call, .. } => {
-                if matches!(&self.overlay, Overlay::Ask(_, c) if *c == call) {
-                    self.overlay = Overlay::None;
-                    self.dirty = true;
-                }
-                if matches!(&self.pending.ask, Some((_, c)) if *c == call) {
-                    self.pending.ask = None;
-                    self.dirty = true;
-                }
             }
             EngineEvent::Usage {
                 id,
@@ -488,7 +465,9 @@ impl App {
                         run.tokens = run.tokens.saturating_add(tokens);
                         (run.parent, run.call)
                     };
-                    self.transcript.add_subagent_tokens(parent, call, tokens);
+                    self.viewport
+                        .transcript
+                        .add_subagent_tokens(parent, call, tokens);
                 } else {
                     self.usage.turn_tokens = self.usage.turn_tokens.saturating_add(tokens);
                     let key = (provider, account);
@@ -517,7 +496,7 @@ impl App {
                 self.dirty = true;
             }
         }
-        ops
+        Vec::new()
     }
 
     pub(crate) fn subagent_index(&self, id: TaskId) -> Option<usize> {
@@ -556,7 +535,7 @@ impl App {
         };
         self.process_runs
             .retain(|run| Some(run.id) == viewed || processes.iter().any(|p| p.id == run.id));
-        if matches!(self.overlay, Overlay::Runs(_)) {
+        if self.run_selector().is_some() {
             self.sync_run_selector();
         }
     }

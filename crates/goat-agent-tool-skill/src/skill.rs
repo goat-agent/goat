@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use goat_agent_tool::{
-    ToolCall, ToolContext, ToolFactory, ToolHandler, ToolName, ToolOutput, ToolSpec,
+    ToolCall, ToolCaller, ToolFactory, ToolHandler, ToolName, ToolOutput, ToolSpec,
 };
 use goat_skills::{SkillCallArgs, SkillIndex, format_activated_skill, resolve_call_args};
 use serde::Deserialize;
@@ -24,7 +24,7 @@ struct SkillArgs {
 
 #[async_trait]
 impl ToolHandler for SkillTool {
-    async fn call(&self, ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let args = match serde_json::from_value::<SkillArgs>(call.arguments) {
             Ok(args) => args,
             Err(e) => return ToolOutput::error(format!("invalid skill input: {e}")),
@@ -96,8 +96,8 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goat_agent_tool::{ToolCall, ToolContext};
-    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
+    use goat_agent_tool::{ToolCall, ToolCaller};
+    use goat_types::{AgentId, ChannelId, ConversationId, InstanceId};
 
     fn temp_root(name: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -112,14 +112,15 @@ mod tests {
         root
     }
 
-    fn ctx(root: std::path::PathBuf) -> ToolContext {
-        ToolContext {
+    fn ctx(root: std::path::PathBuf) -> ToolCaller {
+        ToolCaller {
             agent: AgentId::from_slug("dev"),
-            thread: ThreadId {
+            conversation: ConversationId {
                 channel: ChannelId::from_static("test"),
                 instance: InstanceId::new(),
                 external: "c1".into(),
             },
+            audience: None,
             goat_root: root,
             read_state: std::sync::Arc::default(),
         }

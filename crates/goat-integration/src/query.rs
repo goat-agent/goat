@@ -24,6 +24,7 @@ pub enum TokenValue {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Residue {
     Keep,
+    KeepTerms,
     Reject,
 }
 
@@ -337,7 +338,7 @@ pub fn resolve(vocab: &WatchVocabulary, tokens: Vec<Token>) -> Result<ResolvedQu
                 let Some(spec) = vocab.keys.iter().find(|s| s.key == key) else {
                     match vocab.residue {
                         Residue::Keep => resolved.residue.push(token),
-                        Residue::Reject => {
+                        Residue::KeepTerms | Residue::Reject => {
                             return Err(QueryError::UnknownKey {
                                 integration: vocab.integration,
                                 key: key.clone(),
@@ -377,7 +378,7 @@ pub fn resolve(vocab: &WatchVocabulary, tokens: Vec<Token>) -> Result<ResolvedQu
                 });
             }
             TokenKind::Term(value) => match vocab.residue {
-                Residue::Keep => resolved.residue.push(token),
+                Residue::Keep | Residue::KeepTerms => resolved.residue.push(token),
                 Residue::Reject => match vocab.terms {
                     TermPolicy::Collect => resolved.terms.push(match value {
                         TokenValue::Text(text) => text.clone(),
@@ -543,6 +544,14 @@ mod tests {
             max: 100,
         }),
         keys: &[],
+    };
+
+    const TERM_PASSTHROUGH: WatchVocabulary = WatchVocabulary {
+        integration: "issues",
+        residue: Residue::KeepTerms,
+        terms: TermPolicy::Reject,
+        limit: None,
+        keys: &[KeySpec::new("is")],
     };
 
     fn pair(token: &Token) -> (&str, &TokenValue) {
@@ -730,6 +739,21 @@ mod tests {
     }
 
     #[test]
+    fn term_passthrough_keeps_text_but_rejects_unknown_pairs() {
+        let resolved =
+            resolve(&TERM_PASSTHROUGH, parse("is:open payment failed").unwrap()).unwrap();
+        assert_eq!(resolved.matched.len(), 1);
+        assert_eq!(
+            render(&resolved.residue, SelfRefStyle::Native),
+            "payment failed"
+        );
+        assert!(matches!(
+            resolve(&TERM_PASSTHROUGH, parse("repo:foreign").unwrap()),
+            Err(QueryError::UnknownKey { .. })
+        ));
+    }
+
+    #[test]
     fn free_text_collects_or_rejects_per_policy() {
         let resolved = resolve(&VOCAB, parse("team:ENG 결제 오류").unwrap()).unwrap();
         assert_eq!(resolved.terms, vec!["결제", "오류"]);
@@ -807,6 +831,7 @@ mod tests {
     fn the_vocabulary_invariants_hold() {
         assert_vocabulary(&VOCAB);
         assert_vocabulary(&PASSTHROUGH);
+        assert_vocabulary(&TERM_PASSTHROUGH);
     }
 
     #[test]

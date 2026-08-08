@@ -2,13 +2,15 @@ use chrono::{DateTime, Utc};
 use sqlx::Row;
 use sqlx::sqlite::SqlitePool;
 
-use crate::MemoryResult;
+use crate::audience::Audience;
 use crate::scope::Scope;
 use crate::vector;
+use crate::{MemoryError, MemoryResult};
 
 #[derive(Clone, Debug)]
 pub struct IndexChunk {
     pub scope: Scope,
+    pub audience: Audience,
     pub kind: String,
     pub source_ref: String,
     pub chunk_key: String,
@@ -20,6 +22,7 @@ pub struct IndexChunk {
 pub struct Recall {
     pub index_id: i64,
     pub scope: Scope,
+    pub audience: Audience,
     pub kind: String,
     pub source_ref: String,
     pub chunk_key: String,
@@ -56,10 +59,13 @@ pub async fn insert_chunk(
 ) -> MemoryResult<i64> {
     let now = Utc::now().to_rfc3339();
     let id = sqlx::query(
-        "INSERT INTO mem_index (scope, kind, source_ref, chunk_key, chunk_no, text, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO mem_index \
+         (scope, audience_kind, audience_ref, kind, source_ref, chunk_key, chunk_no, text, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(chunk.scope.as_key())
+    .bind(chunk.audience.kind())
+    .bind(chunk.audience.reference())
     .bind(&chunk.kind)
     .bind(&chunk.source_ref)
     .bind(&chunk.chunk_key)
@@ -86,17 +92,24 @@ pub async fn insert_chunk(
 
 async fn fts_search(
     pool: &SqlitePool,
+    audience: &Audience,
     scope: &Scope,
     query: &str,
     limit: usize,
 ) -> MemoryResult<Vec<(i64, usize)>> {
     let escaped = format!("\"{}\"", query.replace('"', "\"\""));
     let rows = sqlx::query(
-        "SELECT index_id FROM mem_fts \
-         WHERE scope = ? AND mem_fts MATCH ? ORDER BY bm25(mem_fts) LIMIT ?",
+        "SELECT mem_fts.index_id FROM mem_fts \
+         JOIN mem_index ON mem_index.id = mem_fts.index_id \
+         WHERE mem_fts.scope = ? AND mem_fts MATCH ? \
+         AND (mem_index.scope != 'owner' OR mem_index.audience_kind = 'global' \
+              OR (mem_index.audience_kind = ? AND mem_index.audience_ref = ?)) \
+         ORDER BY bm25(mem_fts) LIMIT ?",
     )
     .bind(scope.as_key())
     .bind(escaped)
+    .bind(audience.kind())
+    .bind(audience.reference())
     .bind(i64::try_from(limit).unwrap_or(i64::MAX))
     .fetch_all(pool)
     .await?;
@@ -109,6 +122,7 @@ async fn fts_search(
 
 pub async fn recall(
     pool: &SqlitePool,
+    audience: &Audience,
     scopes: &[Scope],
     query_text: &str,
     query_embedding: Option<&[f32]>,
@@ -122,7 +136,7 @@ pub async fn recall(
     let mut id_scores: HashMap<i64, f64> = HashMap::new();
 
     for scope in scopes {
-        for (id, rank) in fts_search(pool, scope, query_text, pool_limit).await? {
+        for (id, rank) in fts_search(pool, audience, scope, query_text, pool_limit).await? {
             *id_scores.entry(id).or_insert(0.0) +=
                 1.0 / (RRF_K + f64::from(u32::try_from(rank).unwrap_or(u32::MAX)));
         }
@@ -143,16 +157,27 @@ pub async fn recall(
     let mut out: Vec<Recall> = Vec::new();
     for (id, base) in id_scores {
         let row = sqlx::query(
-            "SELECT scope, kind, source_ref, chunk_key, text, updated_at \
-             FROM mem_index WHERE id = ?",
+            "SELECT scope, audience_kind, audience_ref, kind, source_ref, chunk_key, text, updated_at \
+             FROM mem_index WHERE id = ? \
+             AND (scope != 'owner' OR audience_kind = 'global' \
+                  OR (audience_kind = ? AND audience_ref = ?))",
         )
         .bind(id)
+        .bind(audience.kind())
+        .bind(audience.reference())
         .fetch_optional(pool)
         .await?;
         let Some(r) = row else { continue };
         let scope_key: String = r.get(0);
-        let kind: String = r.get(1);
-        let updated_at: String = r.get(5);
+        let audience_kind: String = r.get(1);
+        let audience_ref: Option<String> = r.get(2);
+        let stored_audience = Audience::from_parts(&audience_kind, audience_ref.clone())
+            .ok_or_else(|| MemoryError::InvalidAudience {
+                kind: audience_kind,
+                reference: audience_ref,
+            })?;
+        let kind: String = r.get(3);
+        let updated_at: String = r.get(7);
         let mut score = base;
         if kind == "note" || kind == "journal" {
             let age_days = age_in_days(&updated_at, now);
@@ -162,10 +187,11 @@ pub async fn recall(
         out.push(Recall {
             index_id: id,
             scope: scope_key.parse().unwrap_or(Scope::Owner),
+            audience: stored_audience,
             kind,
-            source_ref: r.get(2),
-            chunk_key: r.get(3),
-            text: r.get(4),
+            source_ref: r.get(4),
+            chunk_key: r.get(5),
+            text: r.get(6),
             score,
         });
     }
@@ -225,6 +251,7 @@ mod tests {
     fn chunk(scope: Scope, kind: &str, key: &str, text: &str) -> IndexChunk {
         IndexChunk {
             scope,
+            audience: Audience::global(),
             kind: kind.into(),
             source_ref: key.into(),
             chunk_key: key.into(),
@@ -250,9 +277,17 @@ mod tests {
         )
         .await
         .unwrap();
-        let hits = recall(&p, &[Scope::Owner], "cats", None, 5, 180.0)
-            .await
-            .unwrap();
+        let hits = recall(
+            &p,
+            &Audience::global(),
+            &[Scope::Owner],
+            "cats",
+            None,
+            5,
+            180.0,
+        )
+        .await
+        .unwrap();
         assert!(!hits.is_empty());
         assert_eq!(hits[0].chunk_key, "a");
     }
@@ -276,6 +311,7 @@ mod tests {
         .unwrap();
         let hits = recall(
             &p,
+            &Audience::global(),
             &[Scope::Owner],
             "budget",
             Some(&[0.1, 0.1, 0.9]),
@@ -300,6 +336,7 @@ mod tests {
         delete_source(&p, &Scope::Self_, "s1").await.unwrap();
         let hits = recall(
             &p,
+            &Audience::global(),
             &[Scope::Self_],
             "hello",
             Some(&[1.0, 0.0, 0.0]),

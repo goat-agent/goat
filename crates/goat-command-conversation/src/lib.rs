@@ -10,7 +10,7 @@ pub use clear::Clear;
 pub use compact::Compact;
 pub use rename::Rename;
 pub use resume::Resume;
-pub use rewind::Rewind;
+pub use rewind::{Rewind, RewindScreen};
 
 pub fn all() -> Vec<Box<dyn Command>> {
     vec![

@@ -8,7 +8,7 @@ use std::{
 
 use goat_protocol::{TaskId, ToolCallId, ToolDisplay};
 use goat_tool::{
-    Tool, ToolContext, ToolDefinitionContext, ToolError, ToolFuture, ToolInvocation, ToolOutput,
+    Tool, ToolDefinitionContext, ToolError, ToolFuture, ToolInvocation, ToolOutput, ToolSandbox,
 };
 
 const SLUG_MAX_LEN: usize = 48;
@@ -54,14 +54,14 @@ impl Tool for ProposePlanTool {
         })
     }
 
-    fn run<'a>(&'a self, _input: &'a str, _ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, _input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async { Err(ToolError::execution("plan invocation is unavailable")) })
     }
 
     fn invoke<'a>(
         &'a self,
         _input: &'a str,
-        _ctx: &'a ToolContext,
+        _ctx: &'a ToolSandbox,
         invocation: ToolInvocation<'a>,
     ) -> ToolFuture<'a> {
         Box::pin(async move {
@@ -120,22 +120,22 @@ pub fn rejected_input(feedback: &str) -> String {
     }
 }
 
-pub fn resolve_path(dir: &Path, thread_id: i64, seed: &str) -> PathBuf {
-    if let Some(found) = existing_for_thread(dir, thread_id) {
+pub fn resolve_path(dir: &Path, conversation_id: i64, seed: &str) -> PathBuf {
+    if let Some(found) = existing_for_conversation(dir, conversation_id) {
         return found;
     }
     let slug = slugify(seed);
     if slug.is_empty() {
-        dir.join(format!("{thread_id}.md"))
+        dir.join(format!("{conversation_id}.md"))
     } else {
-        dir.join(format!("{thread_id}-{slug}.md"))
+        dir.join(format!("{conversation_id}-{slug}.md"))
     }
 }
 
-fn existing_for_thread(dir: &Path, thread_id: i64) -> Option<PathBuf> {
+fn existing_for_conversation(dir: &Path, conversation_id: i64) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
-    let exact = format!("{thread_id}.md");
-    let prefix = format!("{thread_id}-");
+    let exact = format!("{conversation_id}.md");
+    let prefix = format!("{conversation_id}-");
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
@@ -196,14 +196,14 @@ mod tests {
     }
 
     #[test]
-    fn path_uses_thread_id_and_slug() {
+    fn path_uses_conversation_id_and_slug() {
         let dir = tempfile::tempdir().unwrap();
         let path = resolve_path(dir.path(), 42, "Add plan mode");
         assert_eq!(path, dir.path().join("42-add-plan-mode.md"));
     }
 
     #[test]
-    fn path_reuses_existing_file_for_thread() {
+    fn path_reuses_existing_file_for_conversation() {
         let dir = tempfile::tempdir().unwrap();
         let existing = dir.path().join("7-earlier-title.md");
         std::fs::write(&existing, "plan").unwrap();
@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn path_falls_back_to_thread_id_when_slug_is_empty() {
+    fn path_falls_back_to_conversation_id_when_slug_is_empty() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(resolve_path(dir.path(), 9, "!!!"), dir.path().join("9.md"));
     }

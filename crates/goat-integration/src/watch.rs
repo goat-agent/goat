@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use goat_types::{AgentId, Event, IntegrationId, IntegrationUpdateKind, WorkflowItem};
+use rand::RngExt;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -12,6 +13,7 @@ use crate::{IntegrationError, IntegrationResult, IntegrationRuntime};
 
 pub const POLL: Duration = Duration::from_mins(2);
 pub const EVENT_CAP_PER_POLL: usize = 3;
+const SOURCE_GAP: Duration = Duration::from_secs(4);
 const MAX_BACKOFF_TICKS: u32 = 8;
 const AUTH_ALERT_STREAK: u32 = 5;
 
@@ -88,6 +90,7 @@ impl<S: WatchSource> DynWatchSource for S {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WatchSpec {
+    pub state_key: String,
     pub stream: String,
     pub query: String,
 }
@@ -102,6 +105,7 @@ pub struct CompiledWatch {
 pub struct WorkflowSource {
     pub integration: IntegrationId,
     pub account: String,
+    pub state_key: String,
     pub stream: String,
     pub compiled: CompiledWatch,
 }
@@ -142,6 +146,53 @@ pub fn backoff_skips(error_streak: u32) -> u32 {
         .saturating_sub(1)
 }
 
+fn startup_jitter(poll: Duration, sample: f64) -> Duration {
+    poll.mul_f64(sample)
+}
+
+fn tick_jitter(poll: Duration, sample: f64) -> Duration {
+    poll.mul_f64(0.75 + sample * 0.5)
+}
+
+fn random_sample() -> f64 {
+    rand::rng().random_range(0.0..=1.0)
+}
+
+#[derive(Clone)]
+pub(crate) struct PollBudget {
+    next: std::sync::Arc<tokio::sync::Mutex<tokio::time::Instant>>,
+    gap: Duration,
+}
+
+impl Default for PollBudget {
+    fn default() -> Self {
+        Self::new(SOURCE_GAP)
+    }
+}
+
+impl PollBudget {
+    pub(crate) fn new(gap: Duration) -> Self {
+        Self {
+            next: std::sync::Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now())),
+            gap,
+        }
+    }
+
+    async fn acquire(&self, cancel: &CancellationToken) -> bool {
+        let mut next = self.next.lock().await;
+        let now = tokio::time::Instant::now();
+        if *next > now {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => return false,
+                () = tokio::time::sleep_until(*next) => {}
+            }
+        }
+        *next = tokio::time::Instant::now() + self.gap;
+        true
+    }
+}
+
 #[derive(Default)]
 struct SourceHealth {
     error_streak: u32,
@@ -162,20 +213,21 @@ pub async fn run_workflow(
         sources = workflow.sources.len(),
         "workflow running",
     );
-    let mut interval = tokio::time::interval(workflow.poll);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut next_tick =
+        tokio::time::Instant::now() + startup_jitter(workflow.poll, random_sample());
     let mut health: Vec<SourceHealth> = workflow
         .sources
         .iter()
         .map(|_| SourceHealth::default())
         .collect();
 
-    loop {
+    'polling: loop {
         tokio::select! {
             biased;
             () = cancel.cancelled() => break,
-            _ = interval.tick() => {}
+            () = tokio::time::sleep_until(next_tick) => {}
         }
+        next_tick = tokio::time::Instant::now() + tick_jitter(workflow.poll, random_sample());
         if runtime.paused().await {
             continue;
         }
@@ -184,6 +236,9 @@ pub async fn run_workflow(
             if health.skip_ticks > 0 {
                 health.skip_ticks -= 1;
                 continue;
+            }
+            if !runtime.poll_budget.acquire(&cancel).await {
+                break 'polling;
             }
             match source.compiled.source.fetch_dyn().await {
                 Err(e) => {
@@ -267,13 +322,24 @@ pub async fn load_state(
     agent: AgentId,
     integration: &IntegrationId,
     account: &str,
-    stream: &str,
+    state_key: &str,
+    legacy_stream: &str,
 ) -> IntegrationResult<Option<WatchState>> {
-    let Some(raw) = runtime
-        .load_state(agent, integration, account, stream)
+    let raw = match runtime
+        .load_state(agent, integration, account, state_key)
         .await?
-    else {
-        return Ok(None);
+    {
+        Some(raw) => raw,
+        None if state_key != legacy_stream => {
+            let Some(raw) = runtime
+                .migrate_state(agent, integration, account, legacy_stream, state_key)
+                .await?
+            else {
+                return Ok(None);
+            };
+            raw
+        }
+        None => return Ok(None),
     };
     match serde_json::from_str::<WatchState>(&raw) {
         Ok(state) => Ok(Some(state)),
@@ -282,7 +348,7 @@ pub async fn load_state(
                 agent = %agent,
                 account = %account,
                 integration = %integration,
-                stream = %stream,
+                state_key = %state_key,
                 error = %e,
                 "stored watcher state is unreadable; starting cold and briefing nothing this poll",
             );
@@ -302,6 +368,7 @@ async fn process_source(
         agent,
         &source.integration,
         &source.account,
+        &source.state_key,
         &source.stream,
     )
     .await?;
@@ -345,7 +412,7 @@ async fn process_source(
             agent,
             &source.integration,
             &source.account,
-            &source.stream,
+            &source.state_key,
             &raw,
         )
         .await?;
@@ -416,7 +483,21 @@ fn publish(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use goat_auth::CredentialStore;
+    use goat_bus::EventBus;
+    use goat_store::SqliteStore;
+
     use super::*;
+
+    struct EmptySource;
+
+    impl WatchSource for EmptySource {
+        async fn fetch(&self) -> IntegrationResult<WatchPage> {
+            Ok(WatchPage::default())
+        }
+    }
 
     #[test]
     fn backoff_grows_and_caps() {
@@ -425,6 +506,109 @@ mod tests {
         assert_eq!(backoff_skips(2), 3);
         assert_eq!(backoff_skips(3), 7);
         assert_eq!(backoff_skips(9), 7);
+    }
+
+    #[test]
+    fn workflow_deadlines_have_startup_and_recurring_jitter() {
+        let poll = Duration::from_mins(2);
+        assert_eq!(startup_jitter(poll, 0.0), Duration::ZERO);
+        assert_eq!(startup_jitter(poll, 1.0), poll);
+        assert_eq!(tick_jitter(poll, 0.0), Duration::from_secs(90));
+        assert_eq!(tick_jitter(poll, 0.5), poll);
+        assert_eq!(tick_jitter(poll, 1.0), Duration::from_secs(150));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_budget_spaces_source_requests() {
+        let budget = PollBudget::default();
+        let cancel = CancellationToken::new();
+        assert!(budget.acquire(&cancel).await);
+        let (sent, mut received) = tokio::sync::oneshot::channel();
+        let started = tokio::time::Instant::now();
+        let waiting = budget.clone();
+        tokio::spawn(async move {
+            let acquired = waiting.acquire(&cancel).await;
+            sent.send((acquired, tokio::time::Instant::now())).unwrap();
+        });
+
+        tokio::time::advance(SOURCE_GAP.checked_sub(Duration::from_millis(1)).unwrap()).await;
+        assert!(matches!(
+            received.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let (acquired, at) = received.await.unwrap();
+        assert!(acquired);
+        assert_eq!(at.duration_since(started), SOURCE_GAP);
+    }
+
+    #[tokio::test]
+    async fn migrated_state_survives_a_display_rename_without_refiring() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&dir.path().join("goat.db"))
+            .await
+            .unwrap();
+        let runtime = IntegrationRuntime::new(
+            CredentialStore::new(dir.path().join("credentials.json")),
+            Arc::new(store),
+            EventBus::new(),
+        );
+        let agent = AgentId::from_slug("state-migration");
+        runtime
+            .store
+            .ensure_agent(agent, "state-migration", "State Migration")
+            .await
+            .unwrap();
+        let integration = IntegrationId::from_static("sentry");
+        let item = Observed::new("ISSUE-7", "2026-08-07", "existing", Value::Null);
+        let (state, _) = (crate::diff::RETAIN.diff)(None, std::slice::from_ref(&item));
+        runtime
+            .save_state(
+                agent,
+                &integration,
+                "default",
+                "issues",
+                &serde_json::to_string(&state).unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut source = WorkflowSource {
+            integration: integration.clone(),
+            account: "default".to_owned(),
+            state_key: "id:sentry-inbox".to_owned(),
+            stream: "issues".to_owned(),
+            compiled: CompiledWatch {
+                kind: IntegrationUpdateKind::Updated,
+                entity: "issue",
+                diff: crate::diff::RETAIN,
+                source: Box::new(EmptySource),
+            },
+        };
+
+        let first = process_source(&source, agent, &runtime, WatchPage::new(vec![item.clone()]))
+            .await
+            .unwrap();
+        source.stream = "errors".to_owned();
+        let after_rename = process_source(&source, agent, &runtime, WatchPage::new(vec![item]))
+            .await
+            .unwrap();
+
+        assert!(first.is_empty());
+        assert!(after_rename.is_empty());
+        assert!(
+            runtime
+                .load_state(agent, &integration, "default", "issues")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            runtime
+                .load_state(agent, &integration, "default", "id:sentry-inbox")
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

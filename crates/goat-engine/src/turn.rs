@@ -2,23 +2,35 @@ use std::fmt::Write as _;
 
 use goat_protocol::{Event, InputAttachment, Op, TaskId};
 use goat_provider::{ContentBlock, Message, MessageRole, Provider, ToolDefinition};
-use goat_tool::{SandboxPolicy, ToolContext, ToolRegistry};
+use goat_tool::{SandboxPolicy, ToolRegistry, ToolSandbox};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Ctx, Flow, Run, SessionState,
+    Flow, Run, SessionContext, SessionState,
     accounts::provider_for,
+    conversations::resolve_conversation_cwd,
     persist::{
-        effort_string, ensure_thread, finalize_turn, init_db_turn, now_ms, persist_shell_message,
-        thread_title,
+        conversation_title, effort_string, ensure_conversation, finalize_turn, init_db_turn,
+        now_ms, persist_shell_message,
     },
     prompt::build_system_prompt,
     rounds::{LoopOutcome, core_loop},
     shell,
-    threads::resolve_thread_cwd,
-    tools_exec::build_tool_defs,
+    tools_exec::{ToolAvailability, build_tool_defs},
 };
+
+#[derive(Clone, Copy)]
+enum AskAvailability {
+    Available,
+    Unavailable,
+}
+
+impl AskAvailability {
+    const fn is_available(self) -> bool {
+        matches!(self, Self::Available)
+    }
+}
 
 pub(crate) fn user_message(text: &str, attachments: &[InputAttachment]) -> Message {
     let mut content = Vec::new();
@@ -40,12 +52,11 @@ pub(crate) fn user_message(text: &str, attachments: &[InputAttachment]) -> Messa
 }
 
 fn top_regime(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     provider: &dyn Provider,
-    allow_ask: bool,
-    plan: bool,
+    availability: ToolAvailability,
 ) -> Vec<ToolDefinition> {
-    build_tool_defs(ctx, provider, None, true, allow_ask, plan)
+    build_tool_defs(ctx, provider, None, availability)
 }
 
 const SHELL_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(10);
@@ -58,7 +69,7 @@ enum ShellEnd {
 }
 
 async fn run_shell_command(tools: &ToolRegistry, command: &str, cwd: &std::path::Path) -> String {
-    let tool_ctx = match ToolContext::new(cwd) {
+    let tool_ctx = match ToolSandbox::new(cwd) {
         Ok(tool_ctx) => tool_ctx,
         Err(err) => return err.to_string(),
     };
@@ -86,7 +97,12 @@ pub(crate) enum TurnEnd {
     Shutdown,
 }
 
-pub(crate) async fn emit_task_error(ctx: &Ctx, id: TaskId, message: String, hint: Option<String>) {
+pub(crate) async fn emit_task_error(
+    ctx: &SessionContext,
+    id: TaskId,
+    message: String,
+    hint: Option<String>,
+) {
     let _ = ctx
         .events
         .send(Event::Error {
@@ -104,10 +120,10 @@ pub(crate) async fn emit_task_error(ctx: &Ctx, id: TaskId, message: String, hint
         .await;
 }
 
-pub(crate) async fn handle_idle_op(op: Op, ctx: &Ctx, state: &mut SessionState) {
+pub(crate) async fn handle_idle_op(op: Op, ctx: &SessionContext, state: &mut SessionState) {
     let store = &ctx.store;
     let events = &ctx.events;
-    let thread_id = state.thread_id;
+    let conversation_id = state.conversation_id;
     match op {
         Op::ProcessKill { process } => {
             let _ = ctx.background.kill(process, None).await;
@@ -116,9 +132,9 @@ pub(crate) async fn handle_idle_op(op: Op, ctx: &Ctx, state: &mut SessionState) 
             let _ = ctx.background.set_watch(process, on).await;
         }
         Op::SelectModel { target: chosen } => {
-            if let Some(tid) = thread_id
+            if let Some(tid) = conversation_id
                 && let Err(err) = store
-                    .update_thread_model(
+                    .update_conversation_model(
                         tid,
                         chosen.provider.clone(),
                         chosen.model.clone(),
@@ -128,7 +144,7 @@ pub(crate) async fn handle_idle_op(op: Op, ctx: &Ctx, state: &mut SessionState) 
                     )
                     .await
             {
-                tracing::warn!(%err, "failed to update thread model");
+                tracing::warn!(%err, "failed to update conversation model");
             }
             state.target = Some(chosen.clone());
             let _ = events.send(Event::ModelSelected { target: chosen }).await;
@@ -136,11 +152,11 @@ pub(crate) async fn handle_idle_op(op: Op, ctx: &Ctx, state: &mut SessionState) 
         Op::SetMode { mode } => {
             apply_mode(ctx, state, mode).await;
         }
-        Op::RenameThread { title } => {
-            crate::threads::handle_rename(store, thread_id, title, events).await;
+        Op::RenameConversation { title } => {
+            crate::conversations::handle_rename(store, conversation_id, title, events).await;
         }
-        Op::ListThreads {} => {
-            crate::threads::handle_list_threads(store, &ctx.cwd, events).await;
+        Op::ListConversations {} => {
+            crate::conversations::handle_list_conversations(store, &ctx.cwd, events).await;
         }
         Op::Login { .. }
         | Op::AddAccount { .. }
@@ -161,11 +177,16 @@ pub(crate) async fn handle_idle_op(op: Op, ctx: &Ctx, state: &mut SessionState) 
     }
 }
 
-async fn bind_plan_path(ctx: &Ctx, state: &mut SessionState, thread_id: Option<i64>, seed: &str) {
+async fn bind_plan_path(
+    ctx: &SessionContext,
+    state: &mut SessionState,
+    conversation_id: Option<i64>,
+    seed: &str,
+) {
     if !state.mode.is_plan() || state.plan_path.is_some() {
         return;
     }
-    let Some(tid) = thread_id else { return };
+    let Some(tid) = conversation_id else { return };
     let Some(dir) = goat_config::plans_dir() else {
         return;
     };
@@ -189,7 +210,11 @@ async fn bind_plan_path(ctx: &Ctx, state: &mut SessionState, thread_id: Option<i
         .await;
 }
 
-pub(crate) async fn apply_mode(ctx: &Ctx, state: &mut SessionState, mode: goat_protocol::Mode) {
+pub(crate) async fn apply_mode(
+    ctx: &SessionContext,
+    state: &mut SessionState,
+    mode: goat_protocol::Mode,
+) {
     state.mode = mode;
     if !mode.is_plan() {
         state.plan_path = None;
@@ -204,7 +229,7 @@ pub(crate) async fn apply_mode(ctx: &Ctx, state: &mut SessionState, mode: goat_p
 }
 
 pub(crate) async fn handle_plan_decision(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     decision: goat_protocol::PlanDecision,
     state: &mut SessionState,
     ops: &mut mpsc::Receiver<Op>,
@@ -221,13 +246,13 @@ pub(crate) async fn handle_plan_decision(
         std::collections::VecDeque::new(),
         state,
         ops,
-        true,
+        AskAvailability::Available,
     )
     .await
 }
 
 fn plan_decision_input(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     state: &SessionState,
     decision: &goat_protocol::PlanDecision,
 ) -> Option<crate::UserInput> {
@@ -269,7 +294,7 @@ enum PumpAction {
 }
 
 async fn pump_op(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     id: TaskId,
     op: Option<Op>,
     steering: &crate::SteeringQueue,
@@ -357,7 +382,7 @@ fn wake_notice(updates: &[(goat_protocol::RunId, crate::background::RunUpdate)])
 }
 
 pub(crate) async fn handle_wake(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     state: &mut SessionState,
     ops: &mut mpsc::Receiver<Op>,
 ) -> Flow {
@@ -383,13 +408,13 @@ pub(crate) async fn handle_wake(
         std::collections::VecDeque::new(),
         state,
         ops,
-        false,
+        AskAvailability::Unavailable,
     )
     .await
 }
 
 pub(crate) async fn handle_turn(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     id: TaskId,
     text: String,
     display: Option<String>,
@@ -409,24 +434,24 @@ pub(crate) async fn handle_turn(
         std::collections::VecDeque::new(),
         state,
         ops,
-        true,
+        AskAvailability::Available,
     )
     .await
 }
 
 async fn run_turn_chain(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     input: crate::UserInput,
     seed: std::collections::VecDeque<crate::UserInput>,
     state: &mut SessionState,
     ops: &mut mpsc::Receiver<Op>,
-    allow_ask: bool,
+    ask_availability: AskAvailability,
 ) -> Flow {
     let mut next = Some((input, seed));
     let mut pending: Vec<Op> = Vec::new();
     while let Some((turn_input, turn_seed)) = next.take() {
         let (flow, deferred) =
-            run_one_turn(ctx, turn_input, turn_seed, state, ops, allow_ask).await;
+            run_one_turn(ctx, turn_input, turn_seed, state, ops, ask_availability).await;
         pending.extend(deferred);
         match flow {
             TurnFlow::Shutdown => return Flow::Shutdown,
@@ -442,7 +467,7 @@ async fn run_turn_chain(
 }
 
 async fn drain_deferred(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     deferred: Vec<Op>,
     state: &mut SessionState,
     ops: &mut mpsc::Receiver<Op>,
@@ -478,7 +503,7 @@ async fn drain_deferred(
 }
 
 pub(crate) async fn handle_shell(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     id: TaskId,
     command: &str,
     state: &mut SessionState,
@@ -487,20 +512,20 @@ pub(crate) async fn handle_shell(
     if ctx.events.send(Event::TaskStarted { id }).await.is_err() {
         return Flow::Shutdown;
     }
-    let stored_thread = match state.target.as_ref() {
+    let stored_conversation = match state.target.as_ref() {
         Some(resolved) => {
-            ensure_thread(
+            ensure_conversation(
                 &ctx.store,
                 &ctx.cwd,
-                &mut state.thread_id,
+                &mut state.conversation_id,
                 resolved,
-                thread_title(&format!("! {command}")),
+                conversation_title(&format!("! {command}")),
             )
             .await
         }
         None => None,
     };
-    let cwd = resolve_thread_cwd(ctx, stored_thread).await;
+    let cwd = resolve_conversation_cwd(ctx, stored_conversation).await;
     let steering: crate::SteeringQueue = std::sync::Mutex::new(std::collections::VecDeque::new());
     let mut deferred: Vec<Op> = Vec::new();
     let outcome = {
@@ -541,7 +566,7 @@ pub(crate) async fn handle_shell(
             None,
         );
     }
-    let db_id = match stored_thread {
+    let db_id = match stored_conversation {
         Some(tid) => persist_shell_message(ctx, tid, &encoded).await,
         None => None,
     };
@@ -568,14 +593,22 @@ pub(crate) async fn handle_shell(
     );
     drop(steering);
     if let Some(next_input) = captured.pop_front() {
-        return Box::pin(run_turn_chain(ctx, next_input, captured, state, ops, true)).await;
+        return Box::pin(run_turn_chain(
+            ctx,
+            next_input,
+            captured,
+            state,
+            ops,
+            AskAvailability::Available,
+        ))
+        .await;
     }
     Flow::Continue
 }
 
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn handle_compact(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     id: TaskId,
     instructions: Option<String>,
     state: &mut SessionState,
@@ -619,10 +652,18 @@ pub(crate) async fn handle_compact(
     if ctx.events.send(Event::TaskStarted { id }).await.is_err() {
         return Flow::Shutdown;
     }
-    let cwd = resolve_thread_cwd(ctx, state.thread_id).await;
-    let tool_defs = top_regime(ctx, provider.as_ref(), true, false);
+    let cwd = resolve_conversation_cwd(ctx, state.conversation_id).await;
+    let tool_defs = top_regime(
+        ctx,
+        provider.as_ref(),
+        ToolAvailability {
+            delegation: true,
+            asking: true,
+            planning: false,
+        },
+    );
     let ids = crate::TurnIds {
-        stored_thread: state.thread_id,
+        stored_conversation: state.conversation_id,
         turn_db_id: None,
         user_message_db_id: None,
     };
@@ -712,19 +753,27 @@ pub(crate) async fn handle_compact(
     );
     drop(steering);
     if let Some(next_input) = captured.pop_front() {
-        return Box::pin(run_turn_chain(ctx, next_input, captured, state, ops, true)).await;
+        return Box::pin(run_turn_chain(
+            ctx,
+            next_input,
+            captured,
+            state,
+            ops,
+            AskAvailability::Available,
+        ))
+        .await;
     }
     Flow::Continue
 }
 
 #[allow(clippy::too_many_lines)]
 async fn run_one_turn(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     input: crate::UserInput,
     seed: std::collections::VecDeque<crate::UserInput>,
     state: &mut SessionState,
     ops: &mut mpsc::Receiver<Op>,
-    allow_ask: bool,
+    ask_availability: AskAvailability,
 ) -> (TurnFlow, Vec<Op>) {
     let id = input.id;
     let text = input.text;
@@ -766,11 +815,11 @@ async fn run_one_turn(
         &draft,
         &attachments,
         &resolved,
-        &mut state.thread_id,
+        &mut state.conversation_id,
         checkpoint,
     )
     .await;
-    bind_plan_path(ctx, state, ids.stored_thread, &text).await;
+    bind_plan_path(ctx, state, ids.stored_conversation, &text).await;
     let system = build_system_prompt(
         &ctx.cwd,
         &ctx.skills,
@@ -805,8 +854,16 @@ async fn run_one_turn(
         return (TurnFlow::Shutdown, Vec::new());
     }
 
-    let cwd = resolve_thread_cwd(ctx, ids.stored_thread).await;
-    let tool_defs = top_regime(ctx, provider.as_ref(), allow_ask, state.mode.is_plan());
+    let cwd = resolve_conversation_cwd(ctx, ids.stored_conversation).await;
+    let tool_defs = top_regime(
+        ctx,
+        provider.as_ref(),
+        ToolAvailability {
+            delegation: true,
+            asking: ask_availability.is_available(),
+            planning: state.mode.is_plan(),
+        },
+    );
     let steering: crate::SteeringQueue = std::sync::Mutex::new(seed);
     let run = Run::top(id, &ids, &steering);
     let env = crate::LoopEnv {
@@ -815,7 +872,7 @@ async fn run_one_turn(
         tool_defs,
         cwd,
         allow_delegate: true,
-        interactive: allow_ask,
+        interactive: ask_availability.is_available(),
         plan: state.mode.is_plan(),
         plan_path: state.plan_path.clone(),
         exec_policy: SandboxPolicy::Full,

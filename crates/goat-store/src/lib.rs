@@ -4,7 +4,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use goat_types::{
-    AgentId, Attachment, ChannelId, IncomingMessage, InstanceId, MessageId, ThreadId, UserHandle,
+    AgentId, Attachment, ChannelId, ConversationId, IncomingMessage, InstanceId, MessageId,
+    UserHandle,
 };
 use sqlx::ConnectOptions;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
@@ -49,7 +50,7 @@ pub enum MessageSender {
 }
 
 #[derive(Clone, Debug)]
-pub struct ThreadSummary {
+pub struct ConversationSummary {
     pub summary: String,
     pub summarized_count: usize,
 }
@@ -63,7 +64,7 @@ pub enum Direction {
 #[derive(Clone, Debug)]
 pub struct ToolInvocationRecord {
     pub agent: AgentId,
-    pub thread: ThreadId,
+    pub conversation: ConversationId,
     pub call_id: String,
     pub tool_name: String,
     pub args_json: serde_json::Value,
@@ -172,7 +173,7 @@ pub struct NewSchedule {
     pub agent: AgentId,
     pub instruction: String,
     pub tools: Vec<String>,
-    pub origin_conv: ThreadId,
+    pub origin_conv: ConversationId,
     pub schedule: ScheduleKind,
     pub timezone: Option<String>,
     pub created_by_msg_id: Option<MessageId>,
@@ -184,7 +185,7 @@ pub struct Schedule {
     pub agent: AgentId,
     pub instruction: String,
     pub tools: Vec<String>,
-    pub origin_conv: ThreadId,
+    pub origin_conv: ConversationId,
     pub schedule: ScheduleKind,
     pub timezone: Option<String>,
     pub status: ScheduleStatus,
@@ -275,7 +276,7 @@ pub struct NewGoal {
     pub parent: Option<i64>,
     pub priority: i64,
     pub origin: GoalOrigin,
-    pub origin_conv: Option<ThreadId>,
+    pub origin_conv: Option<ConversationId>,
     pub next_review_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -289,7 +290,7 @@ pub struct GoalRecord {
     pub status: GoalStatus,
     pub priority: i64,
     pub origin: GoalOrigin,
-    pub origin_conv: Option<ThreadId>,
+    pub origin_conv: Option<ConversationId>,
     pub next_review_at: Option<chrono::DateTime<chrono::Utc>>,
     pub last_reviewed_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -300,23 +301,27 @@ pub struct GoalRecord {
 pub trait Store: Send + Sync + 'static {
     async fn ensure_agent(&self, id: AgentId, slug: &str, display: &str) -> StoreResult<()>;
 
-    async fn ensure_thread(&self, conv: &ThreadId, agent: AgentId) -> StoreResult<()>;
+    async fn ensure_conversation(&self, conv: &ConversationId, agent: AgentId) -> StoreResult<()>;
 
     async fn append_incoming(&self, msg: &IncomingMessage) -> StoreResult<()>;
 
     async fn append_incoming_text(
         &self,
         agent: AgentId,
-        thread: &ThreadId,
+        conversation: &ConversationId,
         text: &str,
     ) -> StoreResult<()>;
 
-    async fn has_agent_activity(&self, agent: AgentId, thread: &ThreadId) -> StoreResult<bool>;
+    async fn has_agent_activity(
+        &self,
+        agent: AgentId,
+        conversation: &ConversationId,
+    ) -> StoreResult<bool>;
 
     async fn append_outgoing_text(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         text: &str,
         reply_to: Option<&MessageId>,
     ) -> StoreResult<()>;
@@ -324,7 +329,7 @@ pub trait Store: Send + Sync + 'static {
     async fn upsert_outgoing_text(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         id: &str,
         text: &str,
         reply_to: Option<&MessageId>,
@@ -341,30 +346,30 @@ pub trait Store: Send + Sync + 'static {
     async fn recent(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         limit: usize,
     ) -> StoreResult<Vec<HistoryRow>>;
 
-    async fn message_count(&self, agent: AgentId, conv: &ThreadId) -> StoreResult<usize>;
+    async fn message_count(&self, agent: AgentId, conv: &ConversationId) -> StoreResult<usize>;
 
     async fn messages_from(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         offset: usize,
         limit: usize,
     ) -> StoreResult<Vec<HistoryRow>>;
 
-    async fn get_thread_summary(
+    async fn get_conversation_summary(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
-    ) -> StoreResult<Option<ThreadSummary>>;
+        conv: &ConversationId,
+    ) -> StoreResult<Option<ConversationSummary>>;
 
-    async fn upsert_thread_summary(
+    async fn upsert_conversation_summary(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         summary: &str,
         summarized_count: usize,
     ) -> StoreResult<()>;
@@ -417,7 +422,7 @@ pub trait Store: Send + Sync + 'static {
 
     async fn all_pending_runs(&self) -> StoreResult<Vec<(i64, i64, DateTime<Utc>)>>;
 
-    async fn latest_thread(&self, agent: AgentId) -> StoreResult<Option<ThreadId>>;
+    async fn latest_conversation(&self, agent: AgentId) -> StoreResult<Option<ConversationId>>;
 
     async fn create_goal(&self, new: NewGoal) -> StoreResult<i64>;
 
@@ -440,7 +445,7 @@ pub trait Store: Send + Sync + 'static {
         agent: AgentId,
         integration: &str,
         account: &str,
-        stream: &str,
+        state_key: &str,
     ) -> StoreResult<Option<String>>;
 
     async fn set_integration_state(
@@ -448,9 +453,18 @@ pub trait Store: Send + Sync + 'static {
         agent: AgentId,
         integration: &str,
         account: &str,
-        stream: &str,
+        state_key: &str,
         state: &str,
     ) -> StoreResult<()>;
+
+    async fn migrate_integration_state(
+        &self,
+        agent: AgentId,
+        integration: &str,
+        account: &str,
+        legacy_key: &str,
+        state_key: &str,
+    ) -> StoreResult<Option<String>>;
 
     async fn record_observation(&self, new: NewObservation) -> StoreResult<i64>;
 
@@ -594,9 +608,9 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    async fn ensure_thread(&self, conv: &ThreadId, agent: AgentId) -> StoreResult<()> {
+    async fn ensure_conversation(&self, conv: &ConversationId, agent: AgentId) -> StoreResult<()> {
         sqlx::query(
-            r"INSERT INTO threads (id, agent_id, channel, instance, external, created_at)
+            r"INSERT INTO conversations (id, agent_id, channel, instance, external, created_at)
                VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO NOTHING",
         )
@@ -611,11 +625,11 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    async fn latest_thread(&self, agent: AgentId) -> StoreResult<Option<ThreadId>> {
+    async fn latest_conversation(&self, agent: AgentId) -> StoreResult<Option<ConversationId>> {
         let row: Option<(String, String, String)> = sqlx::query_as(
             r"SELECT c.channel, c.instance, c.external
-               FROM threads c
-               JOIN messages m ON m.thread_id = c.id
+               FROM conversations c
+               JOIN messages m ON m.conversation_id = c.id
                WHERE c.agent_id = ?
                GROUP BY c.id
                ORDER BY MAX(m.ts) DESC
@@ -629,7 +643,7 @@ impl Store for SqliteStore {
             None => Ok(None),
             Some((channel, instance, external)) => {
                 let instance = InstanceId(Uuid::parse_str(&instance).map_err(StoreError::Uuid)?);
-                Ok(Some(ThreadId::new(
+                Ok(Some(ConversationId::new(
                     ChannelId::new(channel),
                     instance,
                     external,
@@ -639,16 +653,17 @@ impl Store for SqliteStore {
     }
 
     async fn append_incoming(&self, msg: &IncomingMessage) -> StoreResult<()> {
-        self.ensure_thread(&msg.thread, msg.agent).await?;
+        self.ensure_conversation(&msg.conversation, msg.agent)
+            .await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, agent_id, direction, sender_kind, sender_key, sender_display,
+               (id, conversation_id, agent_id, direction, sender_kind, sender_key, sender_display,
                 body_kind, text, attachment_ref, attachments, reply_to, ts, raw)
                VALUES (?, ?, ?, 'in', 'user', ?, ?, 'text', ?, NULL, ?, ?, ?, ?)
                ON CONFLICT(id) DO NOTHING",
         )
         .bind(&msg.id.0)
-        .bind(msg.thread.to_key())
+        .bind(msg.conversation.to_key())
         .bind(msg.agent.to_string())
         .bind(&msg.from.external)
         .bind(&msg.from.display)
@@ -665,18 +680,18 @@ impl Store for SqliteStore {
     async fn append_incoming_text(
         &self,
         agent: AgentId,
-        thread: &ThreadId,
+        conversation: &ConversationId,
         text: &str,
     ) -> StoreResult<()> {
-        self.ensure_thread(thread, agent).await?;
+        self.ensure_conversation(conversation, agent).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, agent_id, direction, sender_kind, sender_key,
+               (id, conversation_id, agent_id, direction, sender_kind, sender_key,
                 body_kind, text, attachment_ref, reply_to, ts, raw)
                VALUES (?, ?, ?, 'in', 'agent', ?, 'text', ?, NULL, NULL, ?, NULL)",
         )
         .bind(Uuid::new_v4().to_string())
-        .bind(thread.to_key())
+        .bind(conversation.to_key())
         .bind(agent.to_string())
         .bind(agent.to_string())
         .bind(text)
@@ -686,16 +701,20 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    async fn has_agent_activity(&self, agent: AgentId, thread: &ThreadId) -> StoreResult<bool> {
+    async fn has_agent_activity(
+        &self,
+        agent: AgentId,
+        conversation: &ConversationId,
+    ) -> StoreResult<bool> {
         let row: (bool,) = sqlx::query_as(
             r"SELECT EXISTS(
                 SELECT 1 FROM messages
-                WHERE agent_id = ? AND thread_id = ? AND direction = 'out'
+                WHERE agent_id = ? AND conversation_id = ? AND direction = 'out'
                 LIMIT 1
             )",
         )
         .bind(agent.to_string())
-        .bind(thread.to_key())
+        .bind(conversation.to_key())
         .fetch_one(&*self.pool)
         .await?;
         Ok(row.0)
@@ -704,14 +723,14 @@ impl Store for SqliteStore {
     async fn append_outgoing_text(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         text: &str,
         reply_to: Option<&MessageId>,
     ) -> StoreResult<()> {
-        self.ensure_thread(conv, agent).await?;
+        self.ensure_conversation(conv, agent).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, agent_id, direction, sender_kind, sender_key,
+               (id, conversation_id, agent_id, direction, sender_kind, sender_key,
                 body_kind, text, attachment_ref, reply_to, ts, raw)
                VALUES (?, ?, ?, 'out', 'agent', ?, 'text', ?, NULL, ?, ?, NULL)",
         )
@@ -730,15 +749,15 @@ impl Store for SqliteStore {
     async fn upsert_outgoing_text(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         id: &str,
         text: &str,
         reply_to: Option<&MessageId>,
     ) -> StoreResult<()> {
-        self.ensure_thread(conv, agent).await?;
+        self.ensure_conversation(conv, agent).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, agent_id, direction, sender_kind, sender_key,
+               (id, conversation_id, agent_id, direction, sender_kind, sender_key,
                 body_kind, text, attachment_ref, reply_to, ts, raw)
                VALUES (?, ?, ?, 'out', 'agent', ?, 'text', ?, NULL, ?, ?, NULL)
                ON CONFLICT(id) DO UPDATE SET text = excluded.text, ts = excluded.ts",
@@ -756,15 +775,16 @@ impl Store for SqliteStore {
     }
 
     async fn append_tool_invocation(&self, record: ToolInvocationRecord) -> StoreResult<()> {
-        self.ensure_thread(&record.thread, record.agent).await?;
+        self.ensure_conversation(&record.conversation, record.agent)
+            .await?;
         sqlx::query(
             r"INSERT INTO tool_invocations
-               (id, thread_id, agent_id, call_id, tool_name, args_json, status,
+               (id, conversation_id, agent_id, call_id, tool_name, args_json, status,
                 output_preview, error, started_at, finished_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
-        .bind(record.thread.to_key())
+        .bind(record.conversation.to_key())
         .bind(record.agent.to_string())
         .bind(record.call_id)
         .bind(record.tool_name)
@@ -826,7 +846,7 @@ impl Store for SqliteStore {
     async fn recent(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         limit: usize,
     ) -> StoreResult<Vec<HistoryRow>> {
         let limit = i64::try_from(limit.max(1)).unwrap_or(i64::MAX);
@@ -834,7 +854,7 @@ impl Store for SqliteStore {
             r"SELECT direction, text, attachments, reply_to, ts,
                       sender_kind, sender_key, sender_display
                FROM messages
-               WHERE agent_id = ? AND thread_id = ? AND text IS NOT NULL
+               WHERE agent_id = ? AND conversation_id = ? AND text IS NOT NULL
                ORDER BY ts DESC
                LIMIT ?",
         )
@@ -852,10 +872,10 @@ impl Store for SqliteStore {
         Ok(history)
     }
 
-    async fn message_count(&self, agent: AgentId, conv: &ThreadId) -> StoreResult<usize> {
+    async fn message_count(&self, agent: AgentId, conv: &ConversationId) -> StoreResult<usize> {
         let row: (i64,) = sqlx::query_as(
             r"SELECT COUNT(*) FROM messages
-               WHERE agent_id = ? AND thread_id = ? AND text IS NOT NULL",
+               WHERE agent_id = ? AND conversation_id = ? AND text IS NOT NULL",
         )
         .bind(agent.to_string())
         .bind(conv.to_key())
@@ -867,7 +887,7 @@ impl Store for SqliteStore {
     async fn messages_from(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         offset: usize,
         limit: usize,
     ) -> StoreResult<Vec<HistoryRow>> {
@@ -878,7 +898,7 @@ impl Store for SqliteStore {
             r"SELECT direction, text, attachments, reply_to, ts,
                       sender_kind, sender_key, sender_display
                FROM messages
-               WHERE agent_id = ? AND thread_id = ? AND text IS NOT NULL
+               WHERE agent_id = ? AND conversation_id = ? AND text IS NOT NULL
                ORDER BY ts ASC, id ASC
                LIMIT ? OFFSET ?",
         )
@@ -891,38 +911,38 @@ impl Store for SqliteStore {
         rows.into_iter().map(history_row).collect()
     }
 
-    async fn get_thread_summary(
+    async fn get_conversation_summary(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
-    ) -> StoreResult<Option<ThreadSummary>> {
+        conv: &ConversationId,
+    ) -> StoreResult<Option<ConversationSummary>> {
         let row: Option<(String, i64)> = sqlx::query_as(
-            r"SELECT summary, summarized_count FROM thread_summary
-               WHERE agent_id = ? AND thread_id = ?",
+            r"SELECT summary, summarized_count FROM conversation_summary
+               WHERE agent_id = ? AND conversation_id = ?",
         )
         .bind(agent.to_string())
         .bind(conv.to_key())
         .fetch_optional(&*self.pool)
         .await?;
-        Ok(row.map(|(summary, count)| ThreadSummary {
+        Ok(row.map(|(summary, count)| ConversationSummary {
             summary,
             summarized_count: count.max(0) as usize,
         }))
     }
 
-    async fn upsert_thread_summary(
+    async fn upsert_conversation_summary(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         summary: &str,
         summarized_count: usize,
     ) -> StoreResult<()> {
-        self.ensure_thread(conv, agent).await?;
+        self.ensure_conversation(conv, agent).await?;
         sqlx::query(
-            r"INSERT INTO thread_summary
-               (thread_id, agent_id, summary, summarized_count, updated_at)
+            r"INSERT INTO conversation_summary
+               (conversation_id, agent_id, summary, summarized_count, updated_at)
                VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(thread_id) DO UPDATE SET
+               ON CONFLICT(conversation_id) DO UPDATE SET
                  summary = excluded.summary,
                  summarized_count = excluded.summarized_count,
                  updated_at = excluded.updated_at",
@@ -938,7 +958,8 @@ impl Store for SqliteStore {
     }
 
     async fn insert_schedule(&self, new: NewSchedule) -> StoreResult<i64> {
-        self.ensure_thread(&new.origin_conv, new.agent).await?;
+        self.ensure_conversation(&new.origin_conv, new.agent)
+            .await?;
         let (kind_str, once_at, cron) = match &new.schedule {
             ScheduleKind::Once(at) => ("once", Some(at.to_rfc3339()), None),
             ScheduleKind::Cron(expr) => ("cron", None, Some(expr.clone())),
@@ -1239,7 +1260,7 @@ impl Store for SqliteStore {
 
     async fn create_goal(&self, new: NewGoal) -> StoreResult<i64> {
         if let Some(conv) = &new.origin_conv {
-            self.ensure_thread(conv, new.agent).await?;
+            self.ensure_conversation(conv, new.agent).await?;
         }
         let now = Utc::now().to_rfc3339();
         let row: (i64,) = sqlx::query_as(
@@ -1255,7 +1276,11 @@ impl Store for SqliteStore {
         .bind(new.parent)
         .bind(new.priority)
         .bind(new.origin.as_str())
-        .bind(new.origin_conv.as_ref().map(goat_types::ThreadId::to_key))
+        .bind(
+            new.origin_conv
+                .as_ref()
+                .map(goat_types::ConversationId::to_key),
+        )
         .bind(new.next_review_at.map(|d| d.to_rfc3339()))
         .bind(&now)
         .bind(&now)
@@ -1344,16 +1369,16 @@ impl Store for SqliteStore {
         agent: AgentId,
         integration: &str,
         account: &str,
-        stream: &str,
+        state_key: &str,
     ) -> StoreResult<Option<String>> {
         let row: Option<(String,)> = sqlx::query_as(
             r"SELECT state FROM integration_state
-               WHERE agent_id = ? AND integration = ? AND account = ? AND stream = ?",
+               WHERE agent_id = ? AND integration = ? AND account = ? AND state_key = ?",
         )
         .bind(agent.to_string())
         .bind(integration)
         .bind(account)
-        .bind(stream)
+        .bind(state_key)
         .fetch_optional(&*self.pool)
         .await?;
         Ok(row.map(|(state,)| state))
@@ -1364,25 +1389,60 @@ impl Store for SqliteStore {
         agent: AgentId,
         integration: &str,
         account: &str,
-        stream: &str,
+        state_key: &str,
         state: &str,
     ) -> StoreResult<()> {
         sqlx::query(
             r"INSERT INTO integration_state
-               (agent_id, integration, account, stream, state, updated_at)
+               (agent_id, integration, account, state_key, state, updated_at)
                VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(agent_id, integration, account, stream)
+               ON CONFLICT(agent_id, integration, account, state_key)
                DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
         )
         .bind(agent.to_string())
         .bind(integration)
         .bind(account)
-        .bind(stream)
+        .bind(state_key)
         .bind(state)
         .bind(Utc::now().to_rfc3339())
         .execute(&*self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn migrate_integration_state(
+        &self,
+        agent: AgentId,
+        integration: &str,
+        account: &str,
+        legacy_key: &str,
+        state_key: &str,
+    ) -> StoreResult<Option<String>> {
+        let agent = agent.to_string();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r"UPDATE OR IGNORE integration_state SET state_key = ?
+               WHERE agent_id = ? AND integration = ? AND account = ? AND state_key = ?",
+        )
+        .bind(state_key)
+        .bind(&agent)
+        .bind(integration)
+        .bind(account)
+        .bind(legacy_key)
+        .execute(&mut *tx)
+        .await?;
+        let row: Option<(String,)> = sqlx::query_as(
+            r"SELECT state FROM integration_state
+               WHERE agent_id = ? AND integration = ? AND account = ? AND state_key = ?",
+        )
+        .bind(&agent)
+        .bind(integration)
+        .bind(account)
+        .bind(state_key)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(row.map(|(state,)| state))
     }
 
     async fn record_observation(&self, new: NewObservation) -> StoreResult<i64> {
@@ -1491,7 +1551,7 @@ async fn load_schedule(pool: &SqlitePool, id: i64) -> StoreResult<Schedule> {
                   s.schedule_kind, s.once_at, s.cron, s.timezone, s.status, s.created_at,
                   s.created_by_msg_id, c.channel, c.instance, c.external
            FROM scheduled_tasks s
-           JOIN threads c ON c.id = s.origin_conv
+           JOIN conversations c ON c.id = s.origin_conv
            WHERE s.id = ?",
     )
     .bind(id)
@@ -1501,7 +1561,7 @@ async fn load_schedule(pool: &SqlitePool, id: i64) -> StoreResult<Schedule> {
     let tools: Vec<String> = serde_json::from_str(&row.3)?;
     let agent = AgentId(Uuid::parse_str(&row.1)?);
     let instance = InstanceId(Uuid::parse_str(&row.13)?);
-    let origin_conv = ThreadId::new(ChannelId::new(row.12.clone()), instance, row.14.clone());
+    let origin_conv = ConversationId::new(ChannelId::new(row.12.clone()), instance, row.14.clone());
     let schedule = match row.5.as_str() {
         "once" => {
             let at = row.6.as_deref().ok_or(StoreError::InvalidEnum {
@@ -1609,7 +1669,7 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
                   g.last_reviewed_at, g.created_at, g.updated_at,
                   c.channel, c.instance, c.external
            FROM goals g
-           LEFT JOIN threads c ON c.id = g.origin_conv
+           LEFT JOIN conversations c ON c.id = g.origin_conv
            WHERE g.id = ?",
     )
     .bind(id)
@@ -1618,7 +1678,7 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
 
     let agent = AgentId(Uuid::parse_str(&row.1)?);
     let origin_conv = match (&row.12, &row.13, &row.14) {
-        (Some(channel), Some(instance), Some(external)) => Some(ThreadId::new(
+        (Some(channel), Some(instance), Some(external)) => Some(ConversationId::new(
             ChannelId::new(channel.clone()),
             InstanceId(Uuid::parse_str(instance)?),
             external.clone(),
@@ -1658,8 +1718,8 @@ mod tests {
         SqliteStore::open(&path).await.unwrap()
     }
 
-    fn fixture_conv() -> ThreadId {
-        ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1")
+    fn fixture_conv() -> ConversationId {
+        ConversationId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1")
     }
 
     async fn fixture_agent(store: &SqliteStore) -> AgentId {
@@ -1676,7 +1736,7 @@ mod tests {
         let msg = IncomingMessage {
             id: MessageId("m1".into()),
             agent: p,
-            thread: conv.clone(),
+            conversation: conv.clone(),
             from: UserHandle {
                 external: "u".into(),
                 display: None,
@@ -1735,7 +1795,7 @@ mod tests {
         let msg = IncomingMessage {
             id: MessageId("stable-external-id".into()),
             agent: p,
-            thread: conv.clone(),
+            conversation: conv.clone(),
             from: UserHandle {
                 external: "user-42".into(),
                 display: Some("Mutable Name".into()),
@@ -1782,7 +1842,7 @@ mod tests {
         s.append_incoming_text(p, &conv, "seed only").await.unwrap();
         assert!(
             !s.has_agent_activity(p, &conv).await.unwrap(),
-            "incoming-only thread has no agent activity"
+            "incoming-only conversation has no agent activity"
         );
 
         s.append_outgoing_text(p, &conv, "reply", None)
@@ -1803,7 +1863,7 @@ mod tests {
             let msg = IncomingMessage {
                 id: MessageId(format!("m{i}")),
                 agent: p,
-                thread: conv.clone(),
+                conversation: conv.clone(),
                 from: UserHandle {
                     external: "u".into(),
                     display: None,
@@ -1827,18 +1887,23 @@ mod tests {
         assert_eq!(middle[0].text, "msg 1");
         assert_eq!(middle[1].text, "msg 2");
 
-        assert!(s.get_thread_summary(p, &conv).await.unwrap().is_none());
-        s.upsert_thread_summary(p, &conv, "they discussed msgs 0-2", 3)
+        assert!(
+            s.get_conversation_summary(p, &conv)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        s.upsert_conversation_summary(p, &conv, "they discussed msgs 0-2", 3)
             .await
             .unwrap();
-        let summary = s.get_thread_summary(p, &conv).await.unwrap().unwrap();
+        let summary = s.get_conversation_summary(p, &conv).await.unwrap().unwrap();
         assert_eq!(summary.summarized_count, 3);
         assert_eq!(summary.summary, "they discussed msgs 0-2");
 
-        s.upsert_thread_summary(p, &conv, "updated", 4)
+        s.upsert_conversation_summary(p, &conv, "updated", 4)
             .await
             .unwrap();
-        let summary = s.get_thread_summary(p, &conv).await.unwrap().unwrap();
+        let summary = s.get_conversation_summary(p, &conv).await.unwrap().unwrap();
         assert_eq!(summary.summarized_count, 4);
         assert_eq!(summary.summary, "updated");
     }
@@ -1848,7 +1913,7 @@ mod tests {
         let s = fresh().await;
         let p = fixture_agent(&s).await;
         let conv = fixture_conv();
-        s.ensure_thread(&conv, p).await.unwrap();
+        s.ensure_conversation(&conv, p).await.unwrap();
         let due = Utc::now() + Duration::minutes(5);
         let schedule_id = s
             .insert_schedule(NewSchedule {
@@ -1880,7 +1945,7 @@ mod tests {
         let s = fresh().await;
         let p = fixture_agent(&s).await;
         let conv = fixture_conv();
-        s.ensure_thread(&conv, p).await.unwrap();
+        s.ensure_conversation(&conv, p).await.unwrap();
         let past = Utc::now() - Duration::minutes(1);
         let schedule_id = s
             .insert_schedule(NewSchedule {
@@ -1921,7 +1986,7 @@ mod tests {
         let s = fresh().await;
         let p = fixture_agent(&s).await;
         let conv = fixture_conv();
-        s.ensure_thread(&conv, p).await.unwrap();
+        s.ensure_conversation(&conv, p).await.unwrap();
         let due = Utc::now() + Duration::minutes(1);
         let schedule_id = s
             .insert_schedule(NewSchedule {
@@ -1957,7 +2022,7 @@ mod tests {
         let s = fresh().await;
         let p = fixture_agent(&s).await;
         let conv = fixture_conv();
-        s.ensure_thread(&conv, p).await.unwrap();
+        s.ensure_conversation(&conv, p).await.unwrap();
         let past = Utc::now() - Duration::minutes(30);
         let schedule_id = s
             .insert_schedule(NewSchedule {
@@ -1994,7 +2059,7 @@ mod tests {
         let s = fresh().await;
         let p = fixture_agent(&s).await;
         let conv = fixture_conv();
-        s.ensure_thread(&conv, p).await.unwrap();
+        s.ensure_conversation(&conv, p).await.unwrap();
 
         let schedule_id = s
             .insert_schedule(NewSchedule {
@@ -2029,7 +2094,7 @@ mod tests {
         let s = fresh().await;
         let p = fixture_agent(&s).await;
         let conv = fixture_conv();
-        s.ensure_thread(&conv, p).await.unwrap();
+        s.ensure_conversation(&conv, p).await.unwrap();
         let schedule_id = s
             .insert_schedule(NewSchedule {
                 agent: p,
@@ -2062,14 +2127,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn latest_thread_returns_most_recent() {
+    async fn latest_conversation_returns_most_recent() {
         let s = fresh().await;
         let p = fixture_agent(&s).await;
 
-        assert!(s.latest_thread(p).await.unwrap().is_none());
+        assert!(s.latest_conversation(p).await.unwrap().is_none());
 
-        let conv_old = ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:old");
-        let conv_new = ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:new");
+        let conv_old =
+            ConversationId::new(ChannelId::new("discord"), InstanceId::new(), "chat:old");
+        let conv_new =
+            ConversationId::new(ChannelId::new("discord"), InstanceId::new(), "chat:new");
 
         let earlier = Utc::now() - Duration::seconds(60);
         let later = Utc::now();
@@ -2077,7 +2144,7 @@ mod tests {
         s.append_incoming(&IncomingMessage {
             id: MessageId("m-old".into()),
             agent: p,
-            thread: conv_old.clone(),
+            conversation: conv_old.clone(),
             from: UserHandle {
                 external: "u".into(),
                 display: None,
@@ -2097,7 +2164,7 @@ mod tests {
         s.append_incoming(&IncomingMessage {
             id: MessageId("m-new".into()),
             agent: p,
-            thread: conv_new.clone(),
+            conversation: conv_new.clone(),
             from: UserHandle {
                 external: "u".into(),
                 display: None,
@@ -2114,7 +2181,7 @@ mod tests {
         .await
         .unwrap();
 
-        let latest = s.latest_thread(p).await.unwrap().unwrap();
+        let latest = s.latest_conversation(p).await.unwrap().unwrap();
         assert_eq!(latest.external, conv_new.external);
     }
 
@@ -2146,7 +2213,7 @@ mod tests {
         let s = fresh().await;
         let p = fixture_agent(&s).await;
         let conv = fixture_conv();
-        s.ensure_thread(&conv, p).await.unwrap();
+        s.ensure_conversation(&conv, p).await.unwrap();
 
         let id = s
             .create_goal(NewGoal {
@@ -2167,7 +2234,9 @@ mod tests {
         assert_eq!(g.priority, 3);
         assert_eq!(g.origin, GoalOrigin::SelfFormed);
         assert_eq!(
-            g.origin_conv.as_ref().map(goat_types::ThreadId::to_key),
+            g.origin_conv
+                .as_ref()
+                .map(goat_types::ConversationId::to_key),
             Some(conv.to_key())
         );
 
@@ -2374,6 +2443,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn populated_watch_state_survives_identity_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("goat.db");
+        goat_sqlite_vec::register();
+        let options = format!("sqlite://{}", path.display())
+            .parse::<sqlx::sqlite::SqliteConnectOptions>()
+            .unwrap()
+            .create_if_missing(true)
+            .disable_statement_logging();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE _sqlx_migrations_agent (
+                 version BIGINT PRIMARY KEY,
+                 description TEXT NOT NULL,
+                 installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                 success BOOLEAN NOT NULL,
+                 checksum BLOB NOT NULL,
+                 execution_time BIGINT NOT NULL
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let migrator = sqlx::migrate!("./migrations");
+        for migration in migrator.iter().filter(|migration| migration.version < 25) {
+            sqlx::raw_sql(migration.sql.clone())
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO _sqlx_migrations_agent
+                 (version, description, success, checksum, execution_time)
+                 VALUES (?, ?, TRUE, ?, 0)",
+            )
+            .bind(migration.version)
+            .bind(migration.description.as_ref())
+            .bind(migration.checksum.as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let agent = AgentId::from_slug("migration-proof");
+        sqlx::query(
+            "INSERT INTO agents (id, slug, display, created_at)
+             VALUES (?, 'migration-proof', 'Migration Proof', '2026-08-08T00:00:00Z')",
+        )
+        .bind(agent.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let state = r#"{"version":2,"seen":{"ISSUE-7":"2026-08-07"},"pending":{}}"#;
+        sqlx::query(
+            "INSERT INTO integration_state
+             (agent_id, integration, account, stream, state, updated_at)
+             VALUES (?, 'sentry', 'default', 'issues', ?, '2026-08-08T01:02:03Z')",
+        )
+        .bind(agent.to_string())
+        .bind(state)
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let store = SqliteStore::open(&path).await.unwrap();
+        let migrated = store
+            .migrate_integration_state(
+                agent,
+                "sentry",
+                "default",
+                "issues",
+                "query:is:unresolved is:for_review",
+            )
+            .await
+            .unwrap();
+        assert_eq!(migrated.as_deref(), Some(state));
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT state_key, state, updated_at FROM integration_state
+             WHERE agent_id = ? AND integration = 'sentry' AND account = 'default'",
+        )
+        .bind(agent.to_string())
+        .fetch_all(&*store.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![(
+                "query:is:unresolved is:for_review".to_owned(),
+                state.to_owned(),
+                "2026-08-08T01:02:03Z".to_owned(),
+            )]
+        );
+    }
+
+    #[tokio::test]
     async fn split_migrators_adopt_a_unified_database() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("goat.db");
@@ -2411,6 +2578,7 @@ mod tests {
             .chain(code.iter())
             .chain(memory.iter())
             .chain(proxy.iter())
+            .filter(|migration| migration.version <= 23)
             .collect::<Vec<_>>();
         migrations.sort_by_key(|migration| migration.version);
         assert_eq!(migrations.len(), 23);
@@ -2432,6 +2600,71 @@ mod tests {
             .unwrap();
         }
 
+        sqlx::raw_sql(
+            "INSERT INTO agents (id, slug, display, created_at)
+             VALUES ('agent-1', 'main', 'Main', '2026-01-01T00:00:00Z');
+             INSERT INTO threads (id, agent_id, channel, instance, external, created_at)
+             VALUES ('conversation-1', 'agent-1', 'discord', '00000000-0000-0000-0000-000000000001', 'dm:1', '2026-01-01T00:00:00Z');
+             INSERT INTO messages
+             (id, thread_id, agent_id, direction, body_kind, text, ts, sender_kind, sender_key, attachments)
+             VALUES ('message-1', 'conversation-1', 'agent-1', 'in', 'text', 'hello', '2026-01-01T00:00:01Z', 'user', 'user-1', '[]');
+             INSERT INTO tool_invocations
+             (id, thread_id, agent_id, call_id, tool_name, args_json, status, started_at, finished_at)
+             VALUES ('tool-1', 'conversation-1', 'agent-1', 'call-1', 'memory', '{}', 'ok', '2026-01-01T00:00:02Z', '2026-01-01T00:00:03Z');
+             INSERT INTO thread_summary
+             (thread_id, agent_id, summary, summarized_count, updated_at)
+             VALUES ('conversation-1', 'agent-1', 'summary', 1, '2026-01-01T00:00:04Z');
+             INSERT INTO code_threads
+             (id, cwd, title, provider, model, account, created_at, updated_at, effort)
+             VALUES (1, '/repo', 'title', 'openai', 'model', 'default', 1, 2, 'high');
+             INSERT INTO code_turns
+             (id, thread_id, task_id, provider, model, account, status, started_at, finished_at, effort)
+             VALUES (1, 1, 1, 'openai', 'model', 'default', 'done', 3, 4, 'high');
+             INSERT INTO code_messages
+             (id, thread_id, turn_id, role, body, created_at, parent_message_id)
+             VALUES (1, 1, 1, 'user', 'hello', 5, NULL);
+             UPDATE code_threads SET head_message_id = 1 WHERE id = 1;
+             INSERT INTO code_tool_calls
+             (id, thread_id, turn_id, call_id, name, input, status, summary, started_at, finished_at)
+             VALUES (1, 1, 1, 'call-1', 'Bash', '{}', 'done', 'ok', 6, 7);
+             INSERT INTO code_compactions
+             (id, thread_id, summary, after_message_id, preserved_message_ids, tokens_before, tokens_after, created_at)
+             VALUES (1, 1, 'compact', 1, '[]', 100, 50, 8);
+             INSERT INTO code_open_prompts
+             (thread_id, call_id, kind, payload, task_id, created_at)
+             VALUES (1, 'call-2', 'ask', '{}', 1, 9);
+             INSERT INTO code_checkpoints
+             (id, thread_id, prompt_message_id, draft, attachments, created_at)
+             VALUES (1, 1, 1, 'draft', '[]', 10);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let before = [
+            "threads",
+            "messages",
+            "tool_invocations",
+            "thread_summary",
+            "code_threads",
+            "code_turns",
+            "code_messages",
+            "code_tool_calls",
+            "code_compactions",
+            "code_open_prompts",
+            "code_checkpoints",
+        ]
+        .map(|table| sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")));
+        let mut before_counts = Vec::new();
+        for sql in before {
+            before_counts.push(
+                sqlx::query_scalar::<_, i64>(sql)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+            );
+        }
+
         SqliteStore::open(&path).await.unwrap();
         goat_memory::MemoryEngine::open(&path, dir.path(), None, 180.0)
             .await
@@ -2439,11 +2672,61 @@ mod tests {
         goat_code_store::CodeStore::open(&path).await.unwrap();
         goat_proxy_store::ProxyStore::open(&path).await.unwrap();
 
+        let after = [
+            "conversations",
+            "messages",
+            "tool_invocations",
+            "conversation_summary",
+            "code_conversations",
+            "code_turns",
+            "code_messages",
+            "code_tool_calls",
+            "code_compactions",
+            "code_open_prompts",
+            "code_checkpoints",
+        ]
+        .map(|table| sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")));
+        let mut after_counts = Vec::new();
+        for sql in after {
+            after_counts.push(
+                sqlx::query_scalar::<_, i64>(sql)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+            );
+        }
+        assert_eq!(before_counts, vec![1; 11]);
+        assert_eq!(after_counts, before_counts);
+        let message: String = sqlx::query_scalar(
+            "SELECT m.text FROM messages m
+             JOIN conversations c ON c.id = m.conversation_id
+             WHERE c.id = 'conversation-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(message, "hello");
+        let code_message: String = sqlx::query_scalar(
+            "SELECT m.body FROM code_messages m
+             JOIN code_conversations c ON c.id = m.conversation_id
+             WHERE c.id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(code_message, "hello");
+        let foreign_key_errors: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(foreign_key_errors, 0);
+
         for (table, expected) in [
             ("_sqlx_migrations", 23_i64),
-            ("_sqlx_migrations_agent", 19),
-            ("_sqlx_migrations_memory", 1),
-            ("_sqlx_migrations_code", 2),
+            ("_sqlx_migrations_agent", 21),
+            ("_sqlx_migrations_memory", 2),
+            ("_sqlx_migrations_code", 3),
             ("_sqlx_migrations_proxy", 1),
         ] {
             let sql = sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}"));

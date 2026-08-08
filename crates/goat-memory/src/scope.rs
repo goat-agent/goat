@@ -2,10 +2,13 @@ use std::fmt;
 use std::str::FromStr;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DomainName(String);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Scope {
     Owner,
     Self_,
-    Domain(String),
+    Domain(DomainName),
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -22,7 +25,7 @@ impl Scope {
     pub fn domain(name: impl Into<String>) -> Result<Self, ScopeError> {
         let name = name.into();
         if valid_domain(&name) {
-            Ok(Scope::Domain(name))
+            Ok(Scope::Domain(DomainName(name)))
         } else {
             Err(ScopeError::InvalidDomain(name))
         }
@@ -32,7 +35,7 @@ impl Scope {
         match self {
             Scope::Owner => "owner".to_string(),
             Scope::Self_ => "self".to_string(),
-            Scope::Domain(name) => format!("domain:{name}"),
+            Scope::Domain(name) => format!("domain:{}", name.0),
         }
     }
 
@@ -40,7 +43,7 @@ impl Scope {
         match self {
             Scope::Owner => "owner".to_string(),
             Scope::Self_ => "self".to_string(),
-            Scope::Domain(name) => format!("domain/{name}"),
+            Scope::Domain(name) => format!("domain/{}", name.0),
         }
     }
 }

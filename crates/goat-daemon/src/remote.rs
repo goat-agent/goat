@@ -6,10 +6,10 @@ use std::time::Duration;
 use goat_remote::{Device, Devices, RemoteHandler, RemoteSink, RemoteStream};
 
 use crate::conn::{ClientOrigin, serve_connection};
-use crate::manager::Manager;
+use crate::manager::CodeSessionHub;
 
 pub(crate) struct DaemonRemoteHandler {
-    pub(crate) manager: Manager,
+    pub(crate) manager: CodeSessionHub,
     pub(crate) devices: Devices,
     pub(crate) shutdown: tokio_util::sync::CancellationToken,
 }
@@ -45,7 +45,7 @@ impl RemoteHandler for DaemonRemoteHandler {
 }
 
 pub(crate) fn handler(
-    manager: Manager,
+    manager: CodeSessionHub,
     devices: Devices,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Arc<DaemonRemoteHandler> {

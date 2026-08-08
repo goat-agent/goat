@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use goat_agent_tool::{
-    ToolCall, ToolContext, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
+    ToolCall, ToolCaller, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
 };
 use goat_auth::CredentialStore;
 use goat_integration::{BindingMap, IntegrationBinding, IntegrationRuntime, drop_placeholder_args};
@@ -17,7 +17,7 @@ const TOOLS_STREAM: &str = "tools";
 const MAX_TOOL_NAME_LEN: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ToolDisposition {
+pub enum ToolDisposition {
     Enabled,
     Deferred,
     Skip,
@@ -328,7 +328,7 @@ struct McpPassthrough {
 
 #[async_trait]
 impl ToolHandler for McpPassthrough {
-    async fn call(&self, ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let name = self.service.id.as_str();
         let Some(binding) = self.bindings.get(&ctx.agent) else {
             return ToolOutput::error(format!(

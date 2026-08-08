@@ -60,18 +60,28 @@ pub struct IntegrationRuntime {
     pub credentials: CredentialStore,
     pub store: Arc<dyn Store>,
     pub bus: EventBus,
+    pub(crate) poll_budget: watch::PollBudget,
 }
 
 impl IntegrationRuntime {
+    pub fn new(credentials: CredentialStore, store: Arc<dyn Store>, bus: EventBus) -> Self {
+        Self {
+            credentials,
+            store,
+            bus,
+            poll_budget: watch::PollBudget::default(),
+        }
+    }
+
     pub async fn load_state(
         &self,
         agent: AgentId,
         integration: &IntegrationId,
         account: &str,
-        stream: &str,
+        state_key: &str,
     ) -> IntegrationResult<Option<String>> {
         self.store
-            .integration_state(agent, integration.as_str(), account, stream)
+            .integration_state(agent, integration.as_str(), account, state_key)
             .await
             .map_err(|e| store_err(&e))
     }
@@ -81,11 +91,25 @@ impl IntegrationRuntime {
         agent: AgentId,
         integration: &IntegrationId,
         account: &str,
-        stream: &str,
+        state_key: &str,
         state: &str,
     ) -> IntegrationResult<()> {
         self.store
-            .set_integration_state(agent, integration.as_str(), account, stream, state)
+            .set_integration_state(agent, integration.as_str(), account, state_key, state)
+            .await
+            .map_err(|e| store_err(&e))
+    }
+
+    pub async fn migrate_state(
+        &self,
+        agent: AgentId,
+        integration: &IntegrationId,
+        account: &str,
+        legacy_key: &str,
+        state_key: &str,
+    ) -> IntegrationResult<Option<String>> {
+        self.store
+            .migrate_integration_state(agent, integration.as_str(), account, legacy_key, state_key)
             .await
             .map_err(|e| store_err(&e))
     }
@@ -144,6 +168,8 @@ pub struct IntegrationMetadata {
 
 #[async_trait]
 pub trait Integration: Send + Sync + 'static {
+    fn as_any(&self) -> &dyn std::any::Any;
+
     fn id(&self) -> IntegrationId;
 
     fn metadata(&self) -> IntegrationMetadata;
@@ -235,11 +261,11 @@ mod tests {
         let store = SqliteStore::open(&dir.path().join("goat.db"))
             .await
             .unwrap();
-        let rt = IntegrationRuntime {
-            credentials: CredentialStore::new(dir.path().join("credentials.json")),
-            store: Arc::new(store),
-            bus: EventBus::new(),
-        };
+        let rt = IntegrationRuntime::new(
+            CredentialStore::new(dir.path().join("credentials.json")),
+            Arc::new(store),
+            EventBus::new(),
+        );
         (dir, rt)
     }
 

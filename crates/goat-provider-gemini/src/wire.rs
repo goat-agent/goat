@@ -607,11 +607,7 @@ mod tests {
             },
             Message {
                 role: MessageRole::User,
-                content: vec![ContentBlock::text_result(
-                    "real-id-1".to_owned(),
-                    "done",
-                    false,
-                )],
+                content: vec![ContentBlock::text_result("real-id-1".to_owned(), "done")],
             },
         ]);
         let inner = build_request(&req);
@@ -640,7 +636,6 @@ mod tests {
                 content: vec![ContentBlock::text_result(
                     "real-id-1".to_owned(),
                     "file content",
-                    false,
                 )],
             },
         ]);
@@ -665,7 +660,7 @@ mod tests {
             },
             Message {
                 role: MessageRole::User,
-                content: vec![ContentBlock::text_result("goat-1".to_owned(), "ok", false)],
+                content: vec![ContentBlock::text_result("goat-1".to_owned(), "ok")],
             },
         ]);
         let inner = build_request(&req);

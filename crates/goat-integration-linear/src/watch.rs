@@ -20,6 +20,7 @@ const SUMMARY_LIMIT: usize = 160;
 
 pub fn defaults(_: &IntegrationBinding) -> Vec<WatchSpec> {
     vec![WatchSpec {
+        state_key: STREAM.to_owned(),
         stream: STREAM.to_owned(),
         query: DEFAULT_QUERY.to_owned(),
     }]

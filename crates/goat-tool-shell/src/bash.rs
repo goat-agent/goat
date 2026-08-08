@@ -9,8 +9,8 @@ use std::{
 
 use goat_protocol::{GitFacts, ToolDisplay, ToolOutcome};
 use goat_tool::{
-    SandboxPolicy, Tool, ToolContext, ToolError, ToolErrorClass, ToolFuture, ToolOutcomeExtension,
-    ToolOutput, display,
+    SandboxPolicy, Tool, ToolError, ToolErrorClass, ToolFuture, ToolOutcomeExtension, ToolOutput,
+    ToolSandbox, display,
 };
 use serde::Deserialize;
 use tokio::{io::AsyncReadExt, process::Command, time};
@@ -115,7 +115,7 @@ impl Tool for BashTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async move {
             let args: Input = serde_json::from_str(input)?;
             let timeout_dur = match args.timeout_ms {
@@ -347,11 +347,11 @@ fn build_summary(body: &str, code: Option<i32>) -> Option<String> {
 mod tests {
     use super::{BashTool, pull_request_number, pull_request_url};
     use goat_protocol::{GitFacts, ToolOutcome};
-    use goat_tool::{Tool, ToolContext, ToolErrorClass, ToolOutput};
+    use goat_tool::{Tool, ToolErrorClass, ToolOutput, ToolSandbox};
     use std::{path::Path, process::Command};
 
-    fn ctx() -> ToolContext {
-        ToolContext::new(&std::env::temp_dir()).unwrap()
+    fn ctx() -> ToolSandbox {
+        ToolSandbox::new(&std::env::temp_dir()).unwrap()
     }
 
     fn output_git(output: &ToolOutput) -> Option<Box<GitFacts>> {
@@ -375,7 +375,7 @@ mod tests {
         assert!(ok, "git {args:?} failed");
     }
 
-    fn repo() -> Option<(tempfile::TempDir, ToolContext)> {
+    fn repo() -> Option<(tempfile::TempDir, ToolSandbox)> {
         let ready = Command::new("git")
             .arg("--version")
             .output()
@@ -387,7 +387,7 @@ mod tests {
         git(dir.path(), &["init", "-b", "main"]);
         git(dir.path(), &["config", "user.email", "t@example.invalid"]);
         git(dir.path(), &["config", "user.name", "Test"]);
-        let ctx = ToolContext::new(dir.path()).unwrap();
+        let ctx = ToolSandbox::new(dir.path()).unwrap();
         Some((dir, ctx))
     }
 
@@ -587,7 +587,7 @@ mod tests {
     async fn read_only_allows_reads() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
-        let mut ctx = ToolContext::new(dir.path()).unwrap();
+        let mut ctx = ToolSandbox::new(dir.path()).unwrap();
         ctx.exec_policy = goat_tool::SandboxPolicy::ReadOnly { network: false };
         let out = BashTool
             .run(r#"{"command":"cat a.txt"}"#, &ctx)
@@ -604,7 +604,7 @@ mod tests {
             .unwrap();
         let dir = home.join(format!(".goat-sandbox-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut ctx = ToolContext::new(&dir).unwrap();
+        let mut ctx = ToolSandbox::new(&dir).unwrap();
         ctx.exec_policy = goat_tool::SandboxPolicy::ReadOnly { network: false };
         let target = ctx.cwd.join("should-not-exist.txt");
         let command = format!("echo x > {}", target.display());

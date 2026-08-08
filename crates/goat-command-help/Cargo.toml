@@ -10,6 +10,8 @@ publish.workspace = true
 
 [dependencies]
 goat-command = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
 
 [lints]
 workspace = true

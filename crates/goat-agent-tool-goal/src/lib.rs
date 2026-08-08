@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use goat_agent_tool::{
-    ToolCall, ToolContext, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
+    ToolCall, ToolCaller, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
 };
 use goat_store::{GoalOrigin, GoalStatus, NewGoal, Store};
 use serde::Deserialize;
@@ -46,7 +46,7 @@ struct GoalTool {
 }
 
 impl GoalTool {
-    async fn run(&self, ctx: &ToolContext, cmd: GoalCmd) -> ToolOutput {
+    async fn run(&self, ctx: &ToolCaller, cmd: GoalCmd) -> ToolOutput {
         match cmd {
             GoalCmd::Create {
                 title,
@@ -69,7 +69,7 @@ impl GoalTool {
                     } else {
                         GoalOrigin::Owner
                     },
-                    origin_conv: Some(ctx.thread.clone()),
+                    origin_conv: Some(ctx.conversation.clone()),
                     next_review_at: review_in_days.map(review_at),
                 };
                 match self.store.create_goal(new).await {
@@ -133,7 +133,7 @@ fn parse_status(s: &str) -> Option<GoalStatus> {
 
 #[async_trait]
 impl ToolHandler for GoalTool {
-    async fn call(&self, ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let cmd: GoalCmd = match serde_json::from_value(call.arguments) {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(format!("invalid goal command: {e}")),
@@ -173,22 +173,23 @@ mod tests {
     use super::*;
     use goat_agent_tool::ToolReadState;
     use goat_store::SqliteStore;
-    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
+    use goat_types::{AgentId, ChannelId, ConversationId, InstanceId};
     use std::path::PathBuf;
 
-    async fn setup() -> (Arc<dyn Store>, ToolContext) {
+    async fn setup() -> (Arc<dyn Store>, ToolCaller) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("goat.db");
         std::mem::forget(dir);
         let store = SqliteStore::open(&path).await.unwrap();
         let agent = AgentId::new();
         store.ensure_agent(agent, "dev", "dev").await.unwrap();
-        let conv = ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1");
-        store.ensure_thread(&conv, agent).await.unwrap();
+        let conv = ConversationId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1");
+        store.ensure_conversation(&conv, agent).await.unwrap();
         let store: Arc<dyn Store> = Arc::new(store);
-        let ctx = ToolContext {
+        let ctx = ToolCaller {
             agent,
-            thread: conv,
+            conversation: conv,
+            audience: None,
             goat_root: PathBuf::from("/tmp"),
             read_state: ToolReadState::default(),
         };

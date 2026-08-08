@@ -3,11 +3,11 @@ use goat_protocol::Event;
 use goat_provider::{
     ContentBlock, Message, MessageRole, Provider, Request, StreamChunk, StreamError,
 };
-use goat_tool::ToolContext;
+use goat_tool::ToolSandbox;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Ctx, LoopEnv, Run,
+    LoopEnv, Run, SessionContext,
     compaction::ContextTracker,
     conversation::Conversation,
     persist::{now_ms, persist_message},
@@ -59,7 +59,7 @@ pub(crate) enum LoopOutcome {
     Failed(String, Option<String>),
 }
 
-async fn drain_steering(ctx: &Ctx, run: &Run<'_>, conversation: &mut Conversation) {
+async fn drain_steering(ctx: &SessionContext, run: &Run<'_>, conversation: &mut Conversation) {
     let Some(queue) = run.steering() else {
         return;
     };
@@ -77,15 +77,21 @@ async fn drain_steering(ctx: &Ctx, run: &Run<'_>, conversation: &mut Conversatio
             None => None,
         };
         if input.checkpoint
-            && let (Some(created), Some(thread_id)) = (
+            && let (Some(created), Some(conversation_id)) = (
                 created.as_ref(),
-                run.ids().and_then(|ids| ids.stored_thread),
+                run.ids().and_then(|ids| ids.stored_conversation),
             )
         {
             let draft = input.display.as_deref().unwrap_or(&input.text).to_owned();
             if let Err(err) = ctx
                 .checkpoints
-                .begin(thread_id, created, draft, &input.attachments, &ctx.cwd)
+                .begin(
+                    conversation_id,
+                    created,
+                    draft,
+                    &input.attachments,
+                    &ctx.cwd,
+                )
                 .await
             {
                 tracing::warn!(%err, "failed to create steering checkpoint");
@@ -175,7 +181,7 @@ fn tool_input_value(input: &str) -> serde_json::Value {
 }
 
 pub(crate) async fn run_round(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     run: &Run<'_>,
     provider: &dyn Provider,
     request: Request,
@@ -251,7 +257,7 @@ pub(crate) async fn run_round(
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) async fn process_round_output(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     run: &Run<'_>,
     env: &LoopEnv,
     round: RoundResult,
@@ -259,7 +265,7 @@ pub(crate) async fn process_round_output(
     tracker: &mut ContextTracker,
     rounds: usize,
     call_seq: &mut u64,
-    tool_ctx: &ToolContext,
+    tool_ctx: &ToolSandbox,
     token: &CancellationToken,
 ) -> RoundOutcome {
     if let Some(usage) = round.usage.clone() {
@@ -402,7 +408,7 @@ pub(crate) async fn process_round_output(
         let synthetic: Vec<ContentBlock> = pending_calls
             .iter()
             .map(|(vendor_id, _, _)| {
-                ContentBlock::text_result(vendor_id.clone(), "tool round limit reached", true)
+                ContentBlock::error_result(vendor_id.clone(), "tool round limit reached")
             })
             .collect();
         let message = Message {
@@ -434,14 +440,14 @@ pub(crate) async fn process_round_output(
 }
 
 pub(crate) async fn core_loop(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     run: &Run<'_>,
     env: &LoopEnv,
     token: &CancellationToken,
     conversation: &mut Conversation,
     tracker: &mut ContextTracker,
 ) -> LoopOutcome {
-    let mut tool_ctx = match ToolContext::new(&env.cwd) {
+    let mut tool_ctx = match ToolSandbox::new(&env.cwd) {
         Ok(tool_ctx) => tool_ctx,
         Err(err) => return LoopOutcome::Failed(err.to_string(), None),
     };

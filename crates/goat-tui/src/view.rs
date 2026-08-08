@@ -1,3 +1,4 @@
+use goat_command::Placement;
 use goat_worktree::WorkspaceKind;
 use ratatui::{
     Frame,
@@ -8,8 +9,8 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::{App, Overlay, shorten_home},
-    layout::{LIST_MAX, PAD_X, SCROLL_GUTTER, format_tokens},
+    app::{App, PendingScreen, shorten_home},
+    layout::{PAD_X, SCROLL_GUTTER, format_tokens},
     overlay, symbols,
     theme::Theme,
 };
@@ -24,13 +25,33 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         vertical: 0,
     });
 
-    if let Overlay::ImageZoom(source) = app.overlay() {
-        render_image_zoom(frame, area, app, theme, source);
-        return;
-    }
-
-    if let Overlay::Ask(..) = app.overlay() {
-        render_ask(frame, area, app, theme);
+    let full_reserve = match app.overlay() {
+        PendingScreen::Screen(screen) => match screen.placement() {
+            Placement::Full { reserve_bottom } => Some(reserve_bottom),
+            _ => None,
+        },
+        PendingScreen::None => None,
+    };
+    if let Some(reserve_bottom) = full_reserve {
+        if let Some(panel_h) = reserve_bottom {
+            let [header, transcript_area, _panel] = Layout::vertical([
+                Constraint::Length(2),
+                Constraint::Min(1),
+                Constraint::Length(panel_h.min(area.height.saturating_sub(2)).max(3)),
+            ])
+            .areas(area);
+            render_header(frame, header, app, theme);
+            render_transcript(frame, transcript_area, app, theme);
+            if let PendingScreen::Screen(screen) = app.overlay_mut() {
+                screen.render(frame, area, &theme);
+            }
+            render_toasts(frame, area, app, theme);
+        } else {
+            frame.render_widget(Block::new().style(theme.base()), area);
+            if let PendingScreen::Screen(screen) = app.overlay_mut() {
+                screen.render(frame, area, &theme);
+            }
+        }
         return;
     }
 
@@ -38,106 +59,45 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_toasts(frame, area, app, theme);
 }
 
-fn render_image_zoom(
-    frame: &mut Frame,
-    area: Rect,
-    app: &App,
-    theme: Theme,
-    source: &goat_protocol::ToolImageData,
-) {
-    let [body, hint] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
-    let img_area = body.inner(Margin {
-        horizontal: 2,
-        vertical: 1,
-    });
-    if let Some(picker) = app.picker.as_ref() {
-        crate::screenshot::render_zoom(frame, img_area, picker, source);
-    } else {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                " image preview unavailable in this terminal ",
-                theme.muted(),
-            ))),
-            img_area,
-        );
-    }
-    frame.render_widget(
-        Paragraph::new(overlay::hint_line(&[(symbols::key::ESC, "close")], theme)),
-        hint,
-    );
-}
-
-fn render_ask(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
-    let panel_h = match app.overlay() {
-        Overlay::Ask(picker, _) => picker
-            .desired_height()
-            .min(area.height.saturating_sub(2))
-            .max(3),
-        _ => 3,
-    };
-    let [header, transcript_area, _panel] = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Min(1),
-        Constraint::Length(panel_h),
-    ])
-    .areas(area);
-    render_header(frame, header, app, theme);
-    render_transcript(frame, transcript_area, app, theme);
-    if let Overlay::Ask(picker, _) = app.overlay() {
-        picker.render(frame, area, theme);
-    }
-    render_toasts(frame, area, app, theme);
-}
-
-enum Panel {
-    None,
-    Commands,
-    Account,
-    Files,
-    Runs(usize),
+struct PanelLayout {
+    height: u16,
+    hints: Option<Vec<goat_command::KeyHint>>,
+    composer_focused: bool,
 }
 
 const HEADER_H: u16 = 2;
 
-fn active_panel(app: &App) -> Panel {
-    match app.overlay() {
-        Overlay::Commands(_) => Panel::Commands,
-        Overlay::Account(_) => Panel::Account,
-        Overlay::Files(_) => Panel::Files,
-        Overlay::Runs(cursor) => Panel::Runs(*cursor),
-        _ => Panel::None,
-    }
+fn active_panel(app: &App) -> Option<PanelLayout> {
+    let PendingScreen::Screen(screen) = app.overlay() else {
+        return None;
+    };
+    let Placement::Panel {
+        height,
+        hints,
+        composer_focused,
+    } = screen.placement()
+    else {
+        return None;
+    };
+    Some(PanelLayout {
+        height,
+        hints,
+        composer_focused,
+    })
 }
 
-fn composer_focused(app: &App) -> bool {
-    !is_full_body_overlay(app) && !matches!(app.overlay(), Overlay::Runs(_))
+fn composer_focused(app: &App, panel: Option<&PanelLayout>) -> bool {
+    !is_full_body_overlay(app) && panel.is_none_or(|panel| panel.composer_focused)
 }
 
-fn panel_desired_height(app: &App, panel: &Panel) -> u16 {
-    match panel {
-        Panel::None => 0,
-        Panel::Commands => match app.overlay() {
-            Overlay::Commands(menu) => menu.desired_height(),
-            _ => 0,
-        },
-        Panel::Account => match app.overlay() {
-            Overlay::Account(menu) => menu.desired_height(),
-            _ => 0,
-        },
-        Panel::Files => match app.overlay() {
-            Overlay::Files(menu) => menu.desired_height(),
-            _ => 0,
-        },
-        Panel::Runs(_) => u16::try_from(app.run_targets().len())
-            .unwrap_or(1)
-            .clamp(1, u16::try_from(LIST_MAX).unwrap_or(10)),
-    }
+fn panel_desired_height(panel: Option<&PanelLayout>) -> u16 {
+    panel.map_or(0, |panel| panel.height)
 }
 
 fn render_main(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
     let composer_h = app.composer_height(area.width);
     let panel = active_panel(app);
-    let focused = composer_focused(app);
+    let focused = composer_focused(app, panel.as_ref());
     let full_body = is_full_body_overlay(app);
 
     let footer_h = 1u16;
@@ -148,7 +108,7 @@ fn render_main(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
         .saturating_add(footer_h);
     let stack_budget = area.height.saturating_sub(reserved);
 
-    let panel_want = panel_desired_height(app, &panel);
+    let panel_want = panel_desired_height(panel.as_ref());
     let preview_want = if full_body {
         0
     } else {
@@ -176,67 +136,42 @@ fn render_main(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
     render_header(frame, header, app, theme);
     render_transcript(frame, body, app, theme);
     render_full_body_overlay(frame, body, app, theme);
-    render_panel(frame, panel_area, app, theme, &panel);
+    render_panel(frame, panel_area, app, theme, panel.as_ref());
     render_composer_preview(frame, preview_area, app, theme);
     app.composer()
         .render(frame, composer_area, theme, focused, app.plan_mode());
-    render_hint(frame, footer_area, app, theme, &panel);
+    render_hint(frame, footer_area, app, theme, panel.as_ref());
 }
 
-fn render_hint(frame: &mut Frame, area: Rect, app: &App, theme: Theme, panel: &Panel) {
+fn render_hint(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    theme: Theme,
+    panel: Option<&PanelLayout>,
+) {
     if area.height == 0 {
         return;
     }
-    match panel {
-        Panel::Commands => frame.render_widget(
-            Paragraph::new(overlay::hint_line(
-                &[
-                    (symbols::key::TAB, "complete"),
-                    (symbols::key::ENTER, "run"),
-                ],
-                theme,
-            )),
+    if let Some(hints) = panel.and_then(|panel| panel.hints.as_ref()) {
+        let pairs: Vec<_> = hints.iter().map(|hint| (hint.key, hint.label)).collect();
+        frame.render_widget(
+            Paragraph::new(overlay::hint_line(&pairs, theme)),
             area.inner(Margin {
                 horizontal: PAD_X,
                 vertical: 0,
             }),
-        ),
-        Panel::Runs(_) => render_run_footer(frame, area, theme),
-        Panel::Account => frame.render_widget(
-            Paragraph::new(overlay::hint_line(
-                &[
-                    (symbols::key::ARROWS_UPDOWN, "navigate"),
-                    (symbols::key::ENTER, "select"),
-                    (symbols::key::ESC, "cancel"),
-                ],
-                theme,
-            )),
-            area.inner(Margin {
-                horizontal: PAD_X,
-                vertical: 0,
-            }),
-        ),
-        Panel::None | Panel::Files => {
-            if footer_visible(app) {
-                render_footer(frame, area, app, theme);
-            }
-        }
+        );
+    } else if footer_visible(app) {
+        render_footer(frame, area, app, theme);
     }
 }
 
 fn is_full_body_overlay(app: &App) -> bool {
-    matches!(
-        app.overlay(),
-        Overlay::Config(_)
-            | Overlay::Model(_)
-            | Overlay::Effort(_)
-            | Overlay::Thread(_)
-            | Overlay::Rewind(_)
-            | Overlay::Usage
-            | Overlay::Status
-            | Overlay::Help
-            | Overlay::Plan(_)
-    )
+    match app.overlay() {
+        PendingScreen::Screen(screen) => matches!(screen.placement(), Placement::Overlay),
+        PendingScreen::None => false,
+    }
 }
 
 fn fit_stack(panel_want: u16, preview_want: u16, budget: u16) -> (u16, u16) {
@@ -246,155 +181,26 @@ fn fit_stack(panel_want: u16, preview_want: u16, budget: u16) -> (u16, u16) {
 }
 
 fn render_full_body_overlay(frame: &mut Frame, body: Rect, app: &mut App, theme: Theme) {
-    match app.overlay() {
-        Overlay::Config(config) => config.render(frame, body, theme),
-        Overlay::Model(picker) => picker.render(frame, body, theme),
-        Overlay::Effort(picker) => picker.render(frame, body, theme),
-        Overlay::Thread(picker) => picker.render(frame, body, theme),
-        Overlay::Rewind(picker) => picker.render(frame, body, theme),
-        Overlay::Usage => {
-            let view = app.build_usage_view();
-            view.render(frame, body, theme);
-        }
-        Overlay::Status => {
-            let rows = app.status_rows();
-            let view = crate::status::StatusView::new(&rows);
-            view.render(frame, body, theme);
-        }
-        Overlay::Help => crate::help::render(frame, body, theme),
-        _ => {}
-    }
-    if let Overlay::Plan(sheet) = app.overlay_mut() {
-        sheet.render(frame, body, theme);
+    if let PendingScreen::Screen(screen) = app.overlay_mut()
+        && matches!(screen.placement(), Placement::Overlay)
+    {
+        screen.render(frame, body, &theme);
     }
 }
 
-fn render_panel(frame: &mut Frame, area: Rect, app: &App, theme: Theme, panel: &Panel) {
-    if area.height == 0 {
+fn render_panel(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    theme: Theme,
+    panel: Option<&PanelLayout>,
+) {
+    if area.height == 0 || panel.is_none() {
         return;
     }
-    match panel {
-        Panel::None => {}
-        Panel::Commands => {
-            if let Overlay::Commands(menu) = app.overlay() {
-                menu.render(frame, area, theme);
-            }
-        }
-        Panel::Account => {
-            if let Overlay::Account(menu) = app.overlay() {
-                menu.render(frame, area, theme);
-            }
-        }
-        Panel::Files => {
-            if let Overlay::Files(menu) = app.overlay() {
-                menu.render(frame, area, theme);
-            }
-        }
-        Panel::Runs(cursor) => render_run_panel(frame, area, app, theme, *cursor),
+    if let PendingScreen::Screen(screen) = app.overlay_mut() {
+        screen.render(frame, area, &theme);
     }
-}
-
-fn render_run_panel(frame: &mut Frame, area: Rect, app: &App, theme: Theme, cursor: usize) {
-    let spinner = app.spinner_frame();
-    let inner_width = usize::from(area.width);
-    let mut rows: Vec<Line> = Vec::new();
-    let mut index = 0usize;
-    for run in app.subagent_runs() {
-        let selected = index == cursor;
-        let (marker, marker_style) = match run.done {
-            None => (spinner, theme.accent()),
-            Some(true) => (symbols::ui::CHECK, theme.success()),
-            Some(false) => (symbols::ui::CROSS, theme.error()),
-        };
-        let name_style = if selected { theme.key() } else { theme.muted() };
-        let mut left = vec![
-            Span::styled(marker, marker_style),
-            Span::raw(" "),
-            Span::styled(run.subagent_type.clone(), name_style),
-        ];
-        if !run.label.is_empty() {
-            left.push(Span::styled(symbols::ui::SEPARATOR, theme.muted()));
-            left.push(Span::styled(run.label.clone(), theme.muted()));
-        }
-        let metrics = if inner_width >= 72 {
-            let mut parts = Vec::new();
-            if run.tools > 0 {
-                parts.push(format!("{} tools", run.tools));
-            }
-            if run.tokens > 0 {
-                parts.push(format!("{} tok", crate::layout::format_tokens(run.tokens)));
-            }
-            let finished = run.finished_at.unwrap_or_else(std::time::Instant::now);
-            parts.push(crate::transcript::format_elapsed(
-                finished.saturating_duration_since(run.started_at).as_secs(),
-            ));
-            Some(Span::styled(
-                parts.join(symbols::ui::SEPARATOR),
-                theme.muted(),
-            ))
-        } else {
-            None
-        };
-        rows.push(overlay::selection_row(
-            theme,
-            selected,
-            inner_width,
-            left,
-            metrics,
-        ));
-        index += 1;
-    }
-    for run in app.process_runs() {
-        let selected = index == cursor;
-        let (marker, marker_style) = match run.state {
-            goat_protocol::ProcessState::Running => (spinner, theme.accent()),
-            goat_protocol::ProcessState::Exited => match run.exit_code {
-                Some(0) | None => (symbols::ui::CHECK, theme.success()),
-                Some(_) => (symbols::ui::CROSS, theme.error()),
-            },
-        };
-        let name_style = if selected { theme.key() } else { theme.muted() };
-        let left = vec![
-            Span::styled(marker, marker_style),
-            Span::raw(" "),
-            Span::styled(format!("#{}", run.id), name_style),
-            Span::styled(symbols::ui::SEPARATOR, theme.muted()),
-            Span::styled(flatten_command(&run.command), theme.muted()),
-        ];
-        rows.push(overlay::selection_row(
-            theme,
-            selected,
-            inner_width,
-            left,
-            None,
-        ));
-        index += 1;
-    }
-    frame.render_widget(Paragraph::new(rows), area);
-}
-
-fn flatten_command(command: &str) -> String {
-    let flat = command.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() > 48 {
-        let head: String = flat.chars().take(48).collect();
-        format!("{head}{}", symbols::ui::ELLIPSIS)
-    } else {
-        flat
-    }
-}
-
-fn render_run_footer(frame: &mut Frame, area: Rect, theme: Theme) {
-    frame.render_widget(
-        Paragraph::new(overlay::hint_line(
-            &[
-                (symbols::key::ARROWS_UPDOWN, "move"),
-                (symbols::key::ENTER, "open"),
-                (symbols::key::ESC, "back"),
-            ],
-            theme,
-        )),
-        area,
-    );
 }
 
 fn render_toasts(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
@@ -410,18 +216,18 @@ fn footer_visible(app: &App) -> bool {
 }
 
 fn render_selection(frame: &mut Frame, app: &mut App, theme: Theme) {
-    let Some(sel) = app.selection else {
+    let Some(sel) = app.viewport.selection else {
         return;
     };
-    if app.active_transcript().version() != app.selection_version {
-        app.selection = None;
+    if app.active_transcript().version() != app.viewport.selection_version {
+        app.viewport.selection = None;
         return;
     }
     if sel.is_empty() {
         return;
     }
-    let area = app.transcript_area;
-    let scroll = app.scroll;
+    let area = app.viewport.area;
+    let scroll = app.viewport.scroll;
     let (start, end) = sel.bounds();
     let left = area.x.saturating_add(PAD_X);
     let right = area.x.saturating_add(area.width);
@@ -463,7 +269,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme)
     };
     let body_width = content.width.saturating_sub(PAD_X);
     app.clamp_scroll(content.height, body_width);
-    app.transcript_area = content;
+    app.viewport.area = content;
     let working = app.working_state();
     let queued = app.queued_labels();
     app.transcript().render(
@@ -478,7 +284,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme)
             working: working.as_ref(),
             queued: &queued,
             hl: &app.highlighter,
-            picker: app.picker.as_ref(),
+            picker: app.picker.as_deref(),
         },
     );
     render_selection(frame, app, theme);
@@ -573,7 +379,7 @@ fn render_composer_preview(frame: &mut Frame, area: Rect, app: &App, theme: Them
         None => {}
         Some(crate::composer::CursorToken::Image(att)) => {
             frame.render_widget(block, area);
-            if let Some(picker) = app.picker.as_ref() {
+            if let Some(picker) = app.picker.as_deref() {
                 let source = goat_protocol::ToolImageData {
                     media_type: att.media_type.clone(),
                     data: att.data.clone(),
@@ -805,7 +611,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let model = model_label(app, theme);
     let ctx = ctx_label(app);
     let rates = rate_labels(app);
-    let windows = window_label(app.window_count);
+    let windows = window_label(app.window_count());
     let model_w = model.as_ref().map_or(0, |(label, _)| label.width());
     let ctx_w = ctx.as_ref().map_or(0, |(label, _)| label.width());
     let rates_w = rates

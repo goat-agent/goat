@@ -7,10 +7,10 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::{
+use goat_command::{
+    Theme,
     overlay::{clamp_u16, hint_line, overlay_layout, selection_row},
     symbols,
-    theme::Theme,
 };
 
 use super::state::{FIELD_LABEL_W, Field};

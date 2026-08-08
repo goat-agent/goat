@@ -1,16 +1,16 @@
 # AGENTS.md — goat-engine
 
-`GoatAgent` is the production `Engine`. The crate is split by responsibility; `lib.rs` is the
-shared-types hub (`GoatAgent`, `run()` op loop, `Shared`/`Ctx`, `SessionState`,
+`CodingEngine` is the production `Engine`. The crate is split by responsibility; `lib.rs` is the
+shared-types hub (`CodingEngine`, `run()` op loop, `SessionServices`/`SessionContext`, `SessionState`,
 `Run`/`Report`/`TurnIds`, `LoopEnv`, `Flow`) and every module imports from it.
 
-`Ctx` is a newtype over `Arc<Shared>` that derefs to it, and `LoopEnv` owns its provider, target,
+`SessionContext` is a newtype over `Arc<SessionServices>` that derefs to it, and `LoopEnv` owns its provider, target,
 tool defs and cwd rather than borrowing them. Both are owned on purpose: a detached run outlives
 the turn that started it, so anything it reads has to be `'static` and `Send`. The one interior
-mutability is `Shared::registry` (`Mutex<Arc<Registry>>`, swapped wholesale by login and account
+mutability is `SessionServices::registry` (`Mutex<Arc<Registry>>`, swapped wholesale by login and account
 removal — never mutated in place). `SessionState` bundles the four mutable per-session fields
-(`target`, `conversation`, `tracker`, `thread_id`) threaded through the turn lifecycle; it stays
-outside `Ctx` because a background run must not touch it.
+(`target`, `conversation`, `tracker`, `conversation_id`) threaded through the turn lifecycle; it stays
+outside `SessionContext` because a background run must not touch it.
 
 ## Modules
 
@@ -18,8 +18,8 @@ outside `Ctx` because a background run must not touch it.
 |---|---|
 | `prompt` | `SYSTEM_PROMPT`, system-prompt assembly, skill listing |
 | `accounts` | login/account lifecycle, model discovery, per-account registries, `provider_for` |
-| `threads` | thread listing/rename/resume, stored-message parsing |
-| `persist` | every goat-store write: threads, turns, messages, tool calls, `now_ms` |
+| `conversations` | conversation listing/rename/resume, stored-message parsing |
+| `persist` | every goat-store write: conversations, turns, messages, tool calls, `now_ms` |
 | `turn` | `handle_turn` (top-level turn lifecycle, mid-turn op select loop), `handle_idle_op`, `handle_shell`, `handle_compact`, `SessionState`, `TurnEnd` |
 | `rounds` | `core_loop`, `run_round` (provider stream consumption), `process_round_output` |
 | `tools_exec` | tool defs, parallel tool batches, `execute_tool` routing, display helpers |
@@ -42,6 +42,6 @@ outside `Ctx` because a background run must not touch it.
 is the one intentional back-edge (the delegation recursion itself, boxed). That back-edge is why
 `delegate::run_child` returns an explicitly boxed `Send` future instead of an `async fn`: the cycle
 `run_delegation → detach → run_child → core_loop → run_delegation` gives `Send` inference nothing to
-anchor on, and `tokio::spawn` needs the bound. `turn`/`threads`/`accounts` lean on `persist`;
-`accounts` and `threads` are otherwise leaves. Engine integration tests live in `lib.rs`; unit tests
+anchor on, and `tokio::spawn` needs the bound. `turn`/`conversations`/`accounts` lean on `persist`;
+`accounts` and `conversations` are otherwise leaves. Engine integration tests live in `lib.rs`; unit tests
 sit next to what they exercise.
