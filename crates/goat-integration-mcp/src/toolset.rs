@@ -17,7 +17,7 @@ const TOOLS_STREAM: &str = "tools";
 const MAX_TOOL_NAME_LEN: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ToolDisposition {
+pub enum ToolDisposition {
     Enabled,
     Deferred,
     Skip,

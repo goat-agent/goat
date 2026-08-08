@@ -1534,18 +1534,27 @@ impl App {
         targets
     }
 
+    pub(crate) fn run_row_count(&self) -> usize {
+        self.run_targets().len() + 1
+    }
+
     pub(crate) fn move_run_cursor(&mut self, cursor: usize) {
-        if cursor < self.run_targets().len() {
+        if cursor < self.run_row_count() {
             self.overlay = Overlay::Runs(cursor);
             self.dirty = true;
         }
     }
 
     pub(crate) fn open_run(&mut self, cursor: usize) {
-        let targets = self.run_targets();
-        if let Some(target) = targets.get(cursor).copied() {
-            self.overlay = Overlay::None;
-            self.set_main_view(target.view());
+        let view = if cursor == 0 {
+            Some(MainView::Live)
+        } else {
+            self.run_targets()
+                .get(cursor - 1)
+                .map(|target| target.view())
+        };
+        if let Some(view) = view {
+            self.set_main_view(view);
             self.follow = true;
             self.dirty = true;
         }
@@ -1555,11 +1564,11 @@ impl App {
         let Some(cursor) = self.run_selector() else {
             return;
         };
-        let len = self.run_targets().len();
-        if len == 0 {
+        let rows = self.run_row_count();
+        if self.run_targets().is_empty() {
             self.close_run_selector();
-        } else if cursor >= len {
-            self.overlay = Overlay::Runs(len - 1);
+        } else if cursor >= rows {
+            self.overlay = Overlay::Runs(rows - 1);
             self.dirty = true;
         }
     }
@@ -1577,6 +1586,10 @@ impl App {
     pub(crate) fn process_runs(&self) -> &[ProcessRunView] {
         &self.process_runs
     }
+    pub(crate) fn main_view(&self) -> MainView {
+        self.main_view
+    }
+
     pub(crate) fn run_selector(&self) -> Option<usize> {
         match self.overlay {
             Overlay::Runs(cursor) => Some(cursor),
@@ -3285,7 +3298,7 @@ mod tests {
         assert!(app.subagent_status().is_none());
 
         assert_eq!(app.transcript().items.len(), 2);
-        app.open_run(0);
+        app.open_run(1);
         assert!(matches!(app.main_view, super::MainView::Subagent(_)));
         assert_eq!(app.transcript().items.len(), 1);
         app.close_run_selector();
@@ -3648,7 +3661,7 @@ mod tests {
     fn selecting_a_process_swaps_the_main_view() {
         let mut app = App::new(Theme::dark(), &test_origin());
         process_started(&mut app, 1, "pnpm dev");
-        app.open_run(0);
+        app.open_run(1);
         assert!(matches!(app.main_view, super::MainView::Process(_)));
         app.close_run_selector();
         assert!(matches!(app.main_view, super::MainView::Live));
@@ -3658,7 +3671,7 @@ mod tests {
     fn reset_agents_keeps_process_runs_and_view() {
         let mut app = App::new(Theme::dark(), &test_origin());
         process_started(&mut app, 1, "pnpm dev");
-        app.open_run(0);
+        app.open_run(1);
         app.reset_subagents();
         assert_eq!(app.process_runs().len(), 1);
         assert!(matches!(app.main_view, super::MainView::Process(_)));
@@ -3702,7 +3715,7 @@ mod tests {
     fn reconcile_retains_viewed_run_even_if_absent() {
         let mut app = App::new(Theme::dark(), &test_origin());
         process_started(&mut app, 1, "pnpm dev");
-        app.open_run(0);
+        app.open_run(1);
         app.on_engine(EngineEvent::ProcessListChanged { processes: vec![] });
         assert_eq!(app.process_runs().len(), 1);
         assert!(matches!(app.main_view, super::MainView::Process(_)));
@@ -3733,16 +3746,48 @@ mod tests {
             "opening the selector must not commit to a run"
         );
 
-        app.move_run_cursor(1);
-        assert_eq!(app.run_selector(), Some(1));
+        app.move_run_cursor(2);
+        assert_eq!(app.run_selector(), Some(2));
         assert!(
             matches!(app.main_view, super::MainView::Live),
             "browsing must not swap the body under the user"
         );
 
-        app.open_run(1);
+        app.open_run(2);
         assert!(matches!(app.main_view, super::MainView::Process(_)));
-        assert_eq!(app.run_selector(), None, "opening closes the list");
+        assert_eq!(
+            app.run_selector(),
+            Some(2),
+            "selecting keeps the list open on the chosen row"
+        );
+    }
+
+    #[test]
+    fn selecting_main_row_restores_the_live_view() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        subagent_started(&mut app, 1, "explore");
+        app.move_run_cursor(1);
+        app.open_run(1);
+        assert!(matches!(app.main_view, super::MainView::Subagent(_)));
+
+        app.move_run_cursor(0);
+        app.open_run(0);
+        assert!(matches!(app.main_view, super::MainView::Live));
+        assert_eq!(app.run_selector(), Some(0));
+    }
+
+    #[test]
+    fn down_past_the_last_row_closes_the_selector() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::new(Theme::dark(), &test_origin());
+        subagent_started(&mut app, 1, "explore");
+        app.move_run_cursor(1);
+        assert_eq!(app.run_selector(), Some(1));
+
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.run_selector(), None);
+        assert!(matches!(app.main_view, super::MainView::Live));
     }
 
     #[test]
@@ -3773,7 +3818,7 @@ mod tests {
             id: finished,
             ok: true,
         });
-        app.open_run(0);
+        app.open_run(1);
         assert!(matches!(app.main_view, super::MainView::Subagent(_)));
 
         app.reset_subagents();

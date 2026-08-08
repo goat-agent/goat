@@ -50,6 +50,10 @@ pub struct GithubIntegration;
 
 #[async_trait]
 impl Integration for GithubIntegration {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn id(&self) -> IntegrationId {
         ID
     }
