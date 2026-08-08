@@ -2790,6 +2790,11 @@ dependencies = [
 name = "goat-command"
 version = "0.1.0"
 dependencies = [
+ "crossterm 0.29.0",
+ "goat-client",
+ "goat-github",
+ "goat-protocol",
+ "goat-worktree",
  "ratatui",
  "unicode-width 0.2.2",
 ]
