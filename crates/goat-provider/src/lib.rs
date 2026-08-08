@@ -87,15 +87,19 @@ pub enum ContentBlock {
 }
 
 impl ContentBlock {
-    pub fn text_result(
-        tool_use_id: impl Into<String>,
-        text: impl Into<String>,
-        is_error: bool,
-    ) -> Self {
+    pub fn text_result(tool_use_id: impl Into<String>, text: impl Into<String>) -> Self {
         Self::ToolResult {
             tool_use_id: tool_use_id.into(),
             content: vec![Self::Text { text: text.into() }],
-            is_error,
+            is_error: false,
+        }
+    }
+
+    pub fn error_result(tool_use_id: impl Into<String>, text: impl Into<String>) -> Self {
+        Self::ToolResult {
+            tool_use_id: tool_use_id.into(),
+            content: vec![Self::Text { text: text.into() }],
+            is_error: true,
         }
     }
 

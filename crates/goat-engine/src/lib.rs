@@ -492,7 +492,7 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
                     provider,
                     DEFAULT_ACCOUNT.to_owned(),
                     credential,
-                    false,
+                    accounts::AccountCollisionPolicy::Replace,
                 )
                 .await;
                 accounts::clear_account_registries(&ctx.account_registries);
@@ -502,7 +502,14 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
                 name,
                 credential,
             } => {
-                accounts::handle_login(&ctx, provider, name, credential, true).await;
+                accounts::handle_login(
+                    &ctx,
+                    provider,
+                    name,
+                    credential,
+                    accounts::AccountCollisionPolicy::Reject,
+                )
+                .await;
                 accounts::clear_account_registries(&ctx.account_registries);
             }
             Op::RemoveAccount { provider, name } => {

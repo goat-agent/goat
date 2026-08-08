@@ -22,6 +22,11 @@ pub(crate) struct RestoreReport {
     pub(crate) skipped: usize,
 }
 
+enum CheckpointFileState {
+    Baseline,
+    Touched,
+}
+
 pub(crate) struct CheckpointTracker {
     store: Store,
     active: AtomicI64,
@@ -75,7 +80,8 @@ impl CheckpointTracker {
             let image = snapshot(&path)
                 .await
                 .unwrap_or_else(|_| unsupported_image());
-            self.record(checkpoint_id, path, image, false).await?;
+            self.record(checkpoint_id, path, image, CheckpointFileState::Baseline)
+                .await?;
         }
         self.active.store(checkpoint_id, Ordering::Release);
         Ok(checkpoint_id)
@@ -98,7 +104,8 @@ impl CheckpointTracker {
             return Ok(());
         }
         let image = snapshot(&path).await?;
-        self.record(checkpoint_id, path, image, true).await
+        self.record(checkpoint_id, path, image, CheckpointFileState::Touched)
+            .await
     }
 
     async fn record(
@@ -106,7 +113,7 @@ impl CheckpointTracker {
         checkpoint_id: i64,
         path: PathBuf,
         image: FileImage,
-        touched: bool,
+        state: CheckpointFileState,
     ) -> Result<(), String> {
         self.store
             .record_checkpoint_file(NewCheckpointFile {
@@ -115,7 +122,7 @@ impl CheckpointTracker {
                 content: image.content,
                 mode: image.mode,
                 supported: image.supported,
-                touched,
+                touched: matches!(state, CheckpointFileState::Touched),
             })
             .await
             .map_err(|err| err.to_string())

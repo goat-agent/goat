@@ -17,8 +17,20 @@ use crate::{
     rounds::{LoopOutcome, core_loop},
     shell,
     threads::resolve_thread_cwd,
-    tools_exec::build_tool_defs,
+    tools_exec::{ToolAvailability, build_tool_defs},
 };
+
+#[derive(Clone, Copy)]
+enum AskAvailability {
+    Available,
+    Unavailable,
+}
+
+impl AskAvailability {
+    const fn is_available(self) -> bool {
+        matches!(self, Self::Available)
+    }
+}
 
 pub(crate) fn user_message(text: &str, attachments: &[InputAttachment]) -> Message {
     let mut content = Vec::new();
@@ -42,10 +54,9 @@ pub(crate) fn user_message(text: &str, attachments: &[InputAttachment]) -> Messa
 fn top_regime(
     ctx: &SessionContext,
     provider: &dyn Provider,
-    allow_ask: bool,
-    plan: bool,
+    availability: ToolAvailability,
 ) -> Vec<ToolDefinition> {
-    build_tool_defs(ctx, provider, None, true, allow_ask, plan)
+    build_tool_defs(ctx, provider, None, availability)
 }
 
 const SHELL_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(10);
@@ -235,7 +246,7 @@ pub(crate) async fn handle_plan_decision(
         std::collections::VecDeque::new(),
         state,
         ops,
-        true,
+        AskAvailability::Available,
     )
     .await
 }
@@ -397,7 +408,7 @@ pub(crate) async fn handle_wake(
         std::collections::VecDeque::new(),
         state,
         ops,
-        false,
+        AskAvailability::Unavailable,
     )
     .await
 }
@@ -423,7 +434,7 @@ pub(crate) async fn handle_turn(
         std::collections::VecDeque::new(),
         state,
         ops,
-        true,
+        AskAvailability::Available,
     )
     .await
 }
@@ -434,13 +445,13 @@ async fn run_turn_chain(
     seed: std::collections::VecDeque<crate::UserInput>,
     state: &mut SessionState,
     ops: &mut mpsc::Receiver<Op>,
-    allow_ask: bool,
+    ask_availability: AskAvailability,
 ) -> Flow {
     let mut next = Some((input, seed));
     let mut pending: Vec<Op> = Vec::new();
     while let Some((turn_input, turn_seed)) = next.take() {
         let (flow, deferred) =
-            run_one_turn(ctx, turn_input, turn_seed, state, ops, allow_ask).await;
+            run_one_turn(ctx, turn_input, turn_seed, state, ops, ask_availability).await;
         pending.extend(deferred);
         match flow {
             TurnFlow::Shutdown => return Flow::Shutdown,
@@ -582,7 +593,15 @@ pub(crate) async fn handle_shell(
     );
     drop(steering);
     if let Some(next_input) = captured.pop_front() {
-        return Box::pin(run_turn_chain(ctx, next_input, captured, state, ops, true)).await;
+        return Box::pin(run_turn_chain(
+            ctx,
+            next_input,
+            captured,
+            state,
+            ops,
+            AskAvailability::Available,
+        ))
+        .await;
     }
     Flow::Continue
 }
@@ -634,7 +653,15 @@ pub(crate) async fn handle_compact(
         return Flow::Shutdown;
     }
     let cwd = resolve_thread_cwd(ctx, state.thread_id).await;
-    let tool_defs = top_regime(ctx, provider.as_ref(), true, false);
+    let tool_defs = top_regime(
+        ctx,
+        provider.as_ref(),
+        ToolAvailability {
+            delegation: true,
+            asking: true,
+            planning: false,
+        },
+    );
     let ids = crate::TurnIds {
         stored_thread: state.thread_id,
         turn_db_id: None,
@@ -726,7 +753,15 @@ pub(crate) async fn handle_compact(
     );
     drop(steering);
     if let Some(next_input) = captured.pop_front() {
-        return Box::pin(run_turn_chain(ctx, next_input, captured, state, ops, true)).await;
+        return Box::pin(run_turn_chain(
+            ctx,
+            next_input,
+            captured,
+            state,
+            ops,
+            AskAvailability::Available,
+        ))
+        .await;
     }
     Flow::Continue
 }
@@ -738,7 +773,7 @@ async fn run_one_turn(
     seed: std::collections::VecDeque<crate::UserInput>,
     state: &mut SessionState,
     ops: &mut mpsc::Receiver<Op>,
-    allow_ask: bool,
+    ask_availability: AskAvailability,
 ) -> (TurnFlow, Vec<Op>) {
     let id = input.id;
     let text = input.text;
@@ -820,7 +855,15 @@ async fn run_one_turn(
     }
 
     let cwd = resolve_thread_cwd(ctx, ids.stored_thread).await;
-    let tool_defs = top_regime(ctx, provider.as_ref(), allow_ask, state.mode.is_plan());
+    let tool_defs = top_regime(
+        ctx,
+        provider.as_ref(),
+        ToolAvailability {
+            delegation: true,
+            asking: ask_availability.is_available(),
+            planning: state.mode.is_plan(),
+        },
+    );
     let steering: crate::SteeringQueue = std::sync::Mutex::new(seed);
     let run = Run::top(id, &ids, &steering);
     let env = crate::LoopEnv {
@@ -829,7 +872,7 @@ async fn run_one_turn(
         tool_defs,
         cwd,
         allow_delegate: true,
-        interactive: allow_ask,
+        interactive: ask_availability.is_available(),
         plan: state.mode.is_plan(),
         plan_path: state.plan_path.clone(),
         exec_policy: SandboxPolicy::Full,

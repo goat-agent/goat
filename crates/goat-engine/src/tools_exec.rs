@@ -200,7 +200,7 @@ async fn execute_tool(
             })
             .await;
         return ToolExecResult {
-            result_content: ContentBlock::text_result(prep.vendor_id, "interrupted", true),
+            result_content: ContentBlock::error_result(prep.vendor_id, "interrupted"),
             cancelled: true,
         };
     };
@@ -336,13 +336,18 @@ pub(crate) async fn run_tool_batch(
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ToolAvailability {
+    pub(crate) delegation: bool,
+    pub(crate) asking: bool,
+    pub(crate) planning: bool,
+}
+
 pub(crate) fn build_tool_defs(
     ctx: &SessionContext,
     provider: &dyn Provider,
     selection: Option<&ToolSelection>,
-    allow_delegate: bool,
-    allow_ask: bool,
-    plan: bool,
+    availability: ToolAvailability,
 ) -> Vec<ToolDefinition> {
     if !provider.capabilities().tools {
         return Vec::new();
@@ -350,9 +355,9 @@ pub(crate) fn build_tool_defs(
     let defs: Vec<ToolDefinition> = ctx
         .tools
         .specs_for(ToolDefinitionContext {
-            interactive: allow_ask,
-            top_level: allow_delegate,
-            planning: plan,
+            interactive: availability.asking,
+            top_level: availability.delegation,
+            planning: availability.planning,
         })
         .into_iter()
         .filter(|spec| selection.is_none_or(|sel| sel.allows(spec.name)))

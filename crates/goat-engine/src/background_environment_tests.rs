@@ -22,7 +22,12 @@ async fn foreground_and_background_bash_receive_the_same_environment() {
     let (events, mut event_rx) = mpsc::channel(64);
     let runs = crate::background::Runs::new(events, Arc::new(Notify::new()), None);
     let started = runs
-        .spawn("env | sort | cksum", None, cwd.path(), false)
+        .spawn(
+            "env | sort | cksum",
+            None,
+            cwd.path(),
+            crate::background::WatchMode::CompletionOnly,
+        )
         .await
         .unwrap();
 

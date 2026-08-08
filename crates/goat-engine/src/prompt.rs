@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn language_anchor_appends_only_for_top_run() {
         use goat_provider::ContentBlock;
-        let base = vec![ContentBlock::text_result("call_1", "ok", false)];
+        let base = vec![ContentBlock::text_result("call_1", "ok")];
         let top = super::append_language_anchor(base.clone(), true);
         assert_eq!(top.len(), 2);
         assert!(matches!(

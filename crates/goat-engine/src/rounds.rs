@@ -402,7 +402,7 @@ pub(crate) async fn process_round_output(
         let synthetic: Vec<ContentBlock> = pending_calls
             .iter()
             .map(|(vendor_id, _, _)| {
-                ContentBlock::text_result(vendor_id.clone(), "tool round limit reached", true)
+                ContentBlock::error_result(vendor_id.clone(), "tool round limit reached")
             })
             .collect();
         let message = Message {

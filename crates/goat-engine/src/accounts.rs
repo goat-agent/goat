@@ -297,15 +297,20 @@ async fn validate_stored(
     }
 }
 
+pub(crate) enum AccountCollisionPolicy {
+    Replace,
+    Reject,
+}
+
 pub(crate) async fn handle_login(
     ctx: &SessionContext,
     provider: String,
     name: String,
     credential: LoginCredential,
-    dedup: bool,
+    collision_policy: AccountCollisionPolicy,
 ) {
     let key = CredentialKey::model(provider.clone(), name.clone());
-    if dedup
+    if matches!(collision_policy, AccountCollisionPolicy::Reject)
         && ctx
             .credentials
             .entries()

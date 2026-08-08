@@ -33,7 +33,11 @@ impl BackgroundProcessService for EngineBackgroundProcessService {
                     &request.command,
                     request.name.as_deref(),
                     &request.cwd,
-                    request.watch,
+                    if request.watch {
+                        background::WatchMode::OutputAndCompletion
+                    } else {
+                        background::WatchMode::CompletionOnly
+                    },
                     request.label,
                 )
                 .await

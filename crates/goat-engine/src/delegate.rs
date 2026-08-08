@@ -15,7 +15,7 @@ use crate::{
     prompt::compose_child_system,
     rounds::{LoopOutcome, core_loop},
     subagent::SubagentSpec,
-    tools_exec::build_tool_defs,
+    tools_exec::{ToolAvailability, build_tool_defs},
 };
 
 pub(crate) const MAX_CONCURRENT_SUBAGENTS: usize = 8;
@@ -243,9 +243,11 @@ async fn run_child_inner(
         ctx,
         provider.as_ref(),
         Some(&spec.tools),
-        false,
-        false,
-        false,
+        ToolAvailability {
+            delegation: false,
+            asking: false,
+            planning: false,
+        },
     );
     let mut conversation = Conversation::new();
     conversation.push(

@@ -23,6 +23,14 @@ use state::{Field, InputStage, Row, RowKind, Section};
 
 pub use state::{ConfigOutcome, StageKind};
 
+#[derive(Clone, Copy)]
+pub struct ConfigScreenSettings {
+    pub dark_theme: bool,
+    pub mouse_capture: bool,
+    pub computer_use: bool,
+    pub browser: bool,
+}
+
 pub struct ConfigScreen {
     section: Section,
     providers: Vec<AccountEntry>,
@@ -36,22 +44,16 @@ pub struct ConfigScreen {
 }
 
 impl ConfigScreen {
-    pub fn new(
-        providers: Vec<AccountEntry>,
-        dark_theme: bool,
-        mouse_capture: bool,
-        computer_use: bool,
-        browser: bool,
-    ) -> Self {
+    pub fn new(providers: Vec<AccountEntry>, settings: ConfigScreenSettings) -> Self {
         let mut config = Self {
             section: Section::Providers,
             providers,
             cursor: 0,
             stage: InputStage::List,
-            dark_theme,
-            mouse_capture,
-            computer_use,
-            browser,
+            dark_theme: settings.dark_theme,
+            mouse_capture: settings.mouse_capture,
+            computer_use: settings.computer_use,
+            browser: settings.browser,
             error: None,
         };
         config.cursor = config.first_selectable();
@@ -836,7 +838,7 @@ impl goat_command::Screen for ConfigScreen {
 mod tests {
     use goat_protocol::{AccountEntry, AccountInfo, AuthMethod, LoginCredential};
 
-    use super::{ConfigOutcome, ConfigScreen, Field};
+    use super::{ConfigOutcome, ConfigScreen, ConfigScreenSettings, Field};
 
     fn make_providers() -> Vec<AccountEntry> {
         vec![
@@ -870,9 +872,21 @@ mod tests {
         }]
     }
 
+    fn config_screen(providers: Vec<AccountEntry>) -> ConfigScreen {
+        ConfigScreen::new(
+            providers,
+            ConfigScreenSettings {
+                dark_theme: true,
+                mouse_capture: true,
+                computer_use: false,
+                browser: false,
+            },
+        )
+    }
+
     #[test]
     fn oauth_choice_then_browser_flow() {
-        let mut config = ConfigScreen::new(oauth_provider(), true, true, false, false);
+        let mut config = config_screen(oauth_provider());
         config.enter();
         assert!(matches!(config.stage, super::InputStage::Choosing { .. }));
         config.move_down();
@@ -898,7 +912,7 @@ mod tests {
 
     #[test]
     fn oauth_choice_api_key_branch() {
-        let mut config = ConfigScreen::new(oauth_provider(), true, true, false, false);
+        let mut config = config_screen(oauth_provider());
         config.enter();
         config.enter();
         assert!(matches!(
@@ -912,7 +926,7 @@ mod tests {
 
     #[test]
     fn tab_switches_section() {
-        let mut config = ConfigScreen::new(make_providers(), true, true, false, false);
+        let mut config = config_screen(make_providers());
         assert_eq!(config.section, super::Section::Providers);
         config.tab();
         assert_eq!(config.section, super::Section::Appearance);
@@ -922,7 +936,7 @@ mod tests {
 
     #[test]
     fn move_down_skips_provider_headers() {
-        let config_rows = ConfigScreen::new(make_providers(), true, true, false, false);
+        let config_rows = config_screen(make_providers());
         assert_eq!(config_rows.cursor, 1);
         let mut config = config_rows;
         config.move_down();
@@ -933,7 +947,7 @@ mod tests {
 
     #[test]
     fn add_account_flow_api_key() {
-        let mut config = ConfigScreen::new(make_providers(), true, true, false, false);
+        let mut config = config_screen(make_providers());
         config.move_down();
         let out = config.enter();
         assert!(matches!(out, ConfigOutcome::Pending));
@@ -963,7 +977,7 @@ mod tests {
 
     #[test]
     fn remove_account_row() {
-        let mut config = ConfigScreen::new(make_providers(), true, true, false, false);
+        let mut config = config_screen(make_providers());
         let out = config.remove_selected();
         assert!(matches!(
             out,
@@ -974,7 +988,7 @@ mod tests {
 
     #[test]
     fn theme_toggle_in_appearance() {
-        let mut config = ConfigScreen::new(make_providers(), true, true, false, false);
+        let mut config = config_screen(make_providers());
         config.tab();
         let out = config.enter();
         assert!(matches!(out, ConfigOutcome::SetTheme { dark: false }));
@@ -983,7 +997,7 @@ mod tests {
 
     #[test]
     fn backspace_clears_input() {
-        let mut config = ConfigScreen::new(make_providers(), true, true, false, false);
+        let mut config = config_screen(make_providers());
         config.move_down();
         config.enter();
         for _ in 0.."default".len() {
@@ -1001,7 +1015,7 @@ mod tests {
 
     #[test]
     fn tab_switches_field_in_adding() {
-        let mut config = ConfigScreen::new(make_providers(), true, true, false, false);
+        let mut config = config_screen(make_providers());
         config.move_down();
         config.enter();
         if let super::InputStage::Adding { field, .. } = &config.stage {

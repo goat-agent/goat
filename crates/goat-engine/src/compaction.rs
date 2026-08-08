@@ -639,7 +639,7 @@ mod compact_tests {
             },
             Message {
                 role: MessageRole::User,
-                content: vec![ContentBlock::text_result(id, "r".repeat(size), false)],
+                content: vec![ContentBlock::text_result(id, "r".repeat(size))],
             },
         ]
     }

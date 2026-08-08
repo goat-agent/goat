@@ -280,6 +280,12 @@ pub(crate) struct RetryState {
     pub(crate) until: std::time::Instant,
 }
 
+#[derive(Clone, Copy)]
+enum BoundsPolicy {
+    Reject,
+    Clamp,
+}
+
 impl App {
     pub(crate) fn set_terminal_bg(&mut self, bg: Option<ratatui::style::Color>) {
         self.settings.terminal_bg = bg;
@@ -1004,7 +1010,13 @@ impl App {
             || self.screens.handles.run_screen.upgrade().is_some()
     }
 
-    fn screen_to_cache(&self, col: u16, row: u16, clamp: bool) -> Option<(usize, u16)> {
+    fn screen_to_cache(
+        &self,
+        col: u16,
+        row: u16,
+        bounds_policy: BoundsPolicy,
+    ) -> Option<(usize, u16)> {
+        let clamp = matches!(bounds_policy, BoundsPolicy::Clamp);
         let area = self.viewport.area;
         let selectable_len = self.active_transcript().selectable_len();
         if area.height == 0 || selectable_len == 0 {
@@ -1077,7 +1089,7 @@ impl App {
         if !self.selection_allowed() {
             return;
         }
-        let Some((line, content_col)) = self.screen_to_cache(col, row, false) else {
+        let Some((line, content_col)) = self.screen_to_cache(col, row, BoundsPolicy::Reject) else {
             return;
         };
         if let Some(url) = self.active_transcript().url_at(line, content_col) {
@@ -1091,8 +1103,10 @@ impl App {
     }
 
     fn on_left_down(&mut self, col: u16, row: u16) {
-        let on_content = self.screen_to_cache(col, row, false).is_some();
-        let Some(pos) = self.screen_to_cache(col, row, true) else {
+        let on_content = self
+            .screen_to_cache(col, row, BoundsPolicy::Reject)
+            .is_some();
+        let Some(pos) = self.screen_to_cache(col, row, BoundsPolicy::Clamp) else {
             self.viewport.selection = None;
             self.viewport.last_click = None;
             self.dirty = true;
@@ -1141,7 +1155,8 @@ impl App {
                 self.on_left_down(mouse.column, mouse.row);
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                if let Some(pos) = self.screen_to_cache(mouse.column, mouse.row, true)
+                if let Some(pos) =
+                    self.screen_to_cache(mouse.column, mouse.row, BoundsPolicy::Clamp)
                     && let Some(sel) = self.viewport.selection.as_mut()
                     && sel.dragging
                 {
