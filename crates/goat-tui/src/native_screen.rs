@@ -582,7 +582,16 @@ impl Screen for ImageZoomScreen {
 
     fn handle_input(&mut self, event: &InputEvent, _session: &mut dyn Session) -> InputOutcome {
         let outcome = match event {
-            InputEvent::Key(_) | InputEvent::Mouse(_) => ScreenOutcome::Close,
+            InputEvent::Key(_) => ScreenOutcome::Close,
+            InputEvent::Mouse(mouse)
+                if matches!(
+                    mouse.kind,
+                    crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                ) =>
+            {
+                ScreenOutcome::Close
+            }
+            InputEvent::Mouse(_) => ScreenOutcome::Continue,
             _ => return InputOutcome::Ignored,
         };
         InputOutcome::Handled(outcome)
