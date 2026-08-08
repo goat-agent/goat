@@ -23,8 +23,7 @@ use crate::{
     files::FileMenu,
     highlight::SyntectHighlighter,
     native_screen::{
-        AskScreen, CommandMenuScreen, FileMenuScreen, ImageZoomScreen, RunRow, RunScreen,
-        RunScreenState,
+        CommandMenuScreen, FileMenuScreen, ImageZoomScreen, RunRow, RunScreen, RunScreenState,
     },
     symbols,
     theme::Theme,
@@ -172,6 +171,12 @@ struct ScreenHandles {
     run_screen: std::sync::Weak<std::sync::Mutex<RunScreenState>>,
 }
 
+struct ScreenState {
+    active: PendingScreen,
+    waiting: Option<Box<dyn Screen>>,
+    handles: ScreenHandles,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     settings: SettingsState,
@@ -181,7 +186,7 @@ pub struct App {
     catalog: ModelCatalog,
     git: GitChrome,
     arming: ArmingTimers,
-    screens: ScreenHandles,
+    screens: ScreenState,
     pub(crate) composer: Composer,
     pub(crate) highlighter: SyntectHighlighter,
     pub(crate) cwd: String,
@@ -200,8 +205,6 @@ pub struct App {
     pub(crate) threads: Vec<goat_protocol::ThreadSummary>,
     pub(crate) mode: goat_protocol::Mode,
     pub(crate) plan_path: Option<String>,
-    pub(crate) overlay: PendingScreen,
-    pub(crate) pending: PendingState,
     pub(crate) commands: CommandRegistry,
     pub(crate) toasts: Vec<crate::toast::Toast>,
     pub(crate) subagent_runs: Vec<SubagentRunView>,
@@ -218,11 +221,6 @@ pub struct App {
     pub(crate) files: Vec<String>,
     pub(crate) files_loaded: bool,
     pub(crate) outbox: Vec<Op>,
-}
-
-#[derive(Default)]
-pub(crate) struct PendingState {
-    pub(crate) ask: Option<AskScreen>,
 }
 
 #[derive(Default)]
@@ -354,7 +352,11 @@ impl App {
                 branch_poll: BRANCH_POLL_TICKS,
             },
             arming: ArmingTimers::default(),
-            screens: ScreenHandles::default(),
+            screens: ScreenState {
+                active: PendingScreen::None,
+                waiting: None,
+                handles: ScreenHandles::default(),
+            },
             composer: Composer::default(),
             highlighter: SyntectHighlighter::new(),
             cwd,
@@ -368,8 +370,6 @@ impl App {
             threads: Vec::new(),
             mode: goat_protocol::Mode::Normal,
             plan_path: None,
-            overlay: PendingScreen::None,
-            pending: PendingState::default(),
             commands: CommandRegistry::builtin(),
             toasts: Vec::new(),
             subagent_runs: Vec::new(),
@@ -448,7 +448,7 @@ impl App {
             }
             AppEvent::Input(CtEvent::Key(key)) if key.kind == KeyEventKind::Press => {
                 let ops = self.on_key(key);
-                self.promote_pending_ask();
+                self.promote_waiting_screen();
                 ops
             }
             AppEvent::Input(CtEvent::Paste(text)) => {
@@ -492,7 +492,7 @@ impl App {
             AppEvent::Engine(event) => {
                 let mut ops = self.notify_screen(&event);
                 ops.extend(self.on_engine(event));
-                self.promote_pending_ask();
+                self.promote_waiting_screen();
                 self.dirty = true;
                 ops
             }
@@ -584,15 +584,15 @@ impl App {
         loop {
             match outcome {
                 ScreenOutcome::Continue => {
-                    if matches!(self.overlay, PendingScreen::None) {
-                        self.overlay = PendingScreen::Screen(screen);
+                    if matches!(self.screens.active, PendingScreen::None) {
+                        self.screens.active = PendingScreen::Screen(screen);
                     }
                     return ops;
                 }
                 ScreenOutcome::Close => return ops,
                 ScreenOutcome::Effect(effect) => {
                     ops.extend(self.apply_command_effect(effect));
-                    if !matches!(self.overlay, PendingScreen::None) {
+                    if !matches!(self.screens.active, PendingScreen::None) {
                         return ops;
                     }
                     outcome = screen.tick();
@@ -602,10 +602,10 @@ impl App {
     }
 
     fn handle_screen_input(&mut self, event: &CtEvent) -> Option<Vec<Op>> {
-        let mut screen = match std::mem::replace(&mut self.overlay, PendingScreen::None) {
+        let mut screen = match std::mem::replace(&mut self.screens.active, PendingScreen::None) {
             PendingScreen::Screen(screen) => screen,
             overlay @ PendingScreen::None => {
-                self.overlay = overlay;
+                self.screens.active = overlay;
                 return None;
             }
         };
@@ -615,12 +615,12 @@ impl App {
         self.apply_collaborator_changes();
         match input {
             InputOutcome::Ignored => {
-                self.overlay = PendingScreen::Screen(screen);
+                self.screens.active = PendingScreen::Screen(screen);
                 None
             }
             InputOutcome::Handled(outcome) => {
                 let ops = self.apply_screen_outcome(screen, outcome);
-                if self.screens.command_menu.upgrade().is_some() {
+                if self.screens.handles.command_menu.upgrade().is_some() {
                     self.update_command_menu();
                 }
                 Some(ops)
@@ -629,10 +629,10 @@ impl App {
     }
 
     fn tick_screen(&mut self) -> Vec<Op> {
-        let mut screen = match std::mem::replace(&mut self.overlay, PendingScreen::None) {
+        let mut screen = match std::mem::replace(&mut self.screens.active, PendingScreen::None) {
             PendingScreen::Screen(screen) => screen,
             overlay @ PendingScreen::None => {
-                self.overlay = overlay;
+                self.screens.active = overlay;
                 return Vec::new();
             }
         };
@@ -641,15 +641,32 @@ impl App {
     }
 
     fn notify_screen(&mut self, event: &EngineEvent) -> Vec<Op> {
-        let mut screen = match std::mem::replace(&mut self.overlay, PendingScreen::None) {
-            PendingScreen::Screen(screen) => screen,
-            overlay @ PendingScreen::None => {
-                self.overlay = overlay;
-                return Vec::new();
+        let mut ops = Vec::new();
+        if let PendingScreen::Screen(mut screen) =
+            std::mem::replace(&mut self.screens.active, PendingScreen::None)
+        {
+            let outcome = screen.on_event(event, self);
+            self.apply_collaborator_changes();
+            ops.extend(self.apply_screen_outcome(screen, outcome));
+        }
+        if let Some(mut screen) = self.screens.waiting.take() {
+            let mut outcome = screen.on_event(event, self);
+            self.apply_collaborator_changes();
+            loop {
+                match outcome {
+                    ScreenOutcome::Continue => {
+                        self.screens.waiting = Some(screen);
+                        break;
+                    }
+                    ScreenOutcome::Close => break,
+                    ScreenOutcome::Effect(effect) => {
+                        ops.extend(self.apply_command_effect(effect));
+                        outcome = screen.tick();
+                    }
+                }
             }
-        };
-        let outcome = screen.on_event(event, self);
-        self.apply_screen_outcome(screen, outcome)
+        }
+        ops
     }
 
     pub(crate) fn request_rewind(&mut self) -> Vec<Op> {
@@ -877,15 +894,15 @@ impl App {
 
     pub(crate) fn update_command_menu(&mut self) {
         if self.composer.shell() {
-            if self.screens.command_menu.upgrade().is_some()
-                || self.screens.file_menu.upgrade().is_some()
+            if self.screens.handles.command_menu.upgrade().is_some()
+                || self.screens.handles.file_menu.upgrade().is_some()
             {
-                self.overlay = PendingScreen::None;
+                self.screens.active = PendingScreen::None;
             }
             return;
         }
         if let Some(query) = self.composer.at_query() {
-            if let Some(menu) = self.screens.file_menu.upgrade() {
+            if let Some(menu) = self.screens.handles.file_menu.upgrade() {
                 menu.lock().unwrap().update(&query);
             } else {
                 if !self.files_loaded {
@@ -896,13 +913,13 @@ impl App {
                     !self.files_loaded,
                     &query,
                 ));
-                self.screens.file_menu = handle;
-                self.overlay = PendingScreen::Screen(Box::new(screen));
+                self.screens.handles.file_menu = handle;
+                self.screens.active = PendingScreen::Screen(Box::new(screen));
             }
             return;
         }
-        if self.screens.file_menu.upgrade().is_some() {
-            self.overlay = PendingScreen::None;
+        if self.screens.handles.file_menu.upgrade().is_some() {
+            self.screens.active = PendingScreen::None;
         }
         let text = self.composer.text();
         let trimmed = text.trim_start();
@@ -930,18 +947,18 @@ impl App {
         if trimmed.starts_with('/')
             && slash_command_name(trimmed).is_none_or(|name| !name.contains('/'))
         {
-            if let Some(menu) = self.screens.command_menu.upgrade() {
+            if let Some(menu) = self.screens.handles.command_menu.upgrade() {
                 menu.lock()
                     .unwrap()
                     .update(&self.commands, trimmed, &context);
             } else {
                 let (screen, handle) =
                     CommandMenuScreen::new(CommandMenu::new(&self.commands, trimmed, &context));
-                self.screens.command_menu = handle;
-                self.overlay = PendingScreen::Screen(Box::new(screen));
+                self.screens.handles.command_menu = handle;
+                self.screens.active = PendingScreen::Screen(Box::new(screen));
             }
-        } else if self.screens.command_menu.upgrade().is_some() {
-            self.overlay = PendingScreen::None;
+        } else if self.screens.handles.command_menu.upgrade().is_some() {
+            self.screens.active = PendingScreen::None;
         }
     }
 
@@ -969,21 +986,22 @@ impl App {
     }
 
     pub(crate) fn wheel_scroll_allowed(&self) -> bool {
-        matches!(self.overlay, PendingScreen::None)
-            || self.screens.run_screen.upgrade().is_some()
-            || self.screens.command_menu.upgrade().is_some()
-            || self.screens.file_menu.upgrade().is_some()
+        matches!(self.screens.active, PendingScreen::None)
+            || self.screens.handles.run_screen.upgrade().is_some()
+            || self.screens.handles.command_menu.upgrade().is_some()
+            || self.screens.handles.file_menu.upgrade().is_some()
     }
 
     pub(crate) fn overlay_captures_text(&self) -> bool {
-        match &self.overlay {
+        match &self.screens.active {
             PendingScreen::Screen(screen) => screen.captures_text(),
             PendingScreen::None => false,
         }
     }
 
     pub(crate) fn selection_allowed(&self) -> bool {
-        matches!(self.overlay, PendingScreen::None) || self.screens.run_screen.upgrade().is_some()
+        matches!(self.screens.active, PendingScreen::None)
+            || self.screens.handles.run_screen.upgrade().is_some()
     }
 
     fn screen_to_cache(&self, col: u16, row: u16, clamp: bool) -> Option<(usize, u16)> {
@@ -1065,7 +1083,7 @@ impl App {
         if let Some(url) = self.active_transcript().url_at(line, content_col) {
             self.host_actions.pending_open = Some(url);
         } else if let Some(img) = self.active_transcript().image_at(line) {
-            self.overlay = PendingScreen::Screen(Box::new(ImageZoomScreen::new(
+            self.screens.active = PendingScreen::Screen(Box::new(ImageZoomScreen::new(
                 Box::new(img),
                 self.picker.clone(),
             )));
@@ -1177,12 +1195,12 @@ impl App {
         self.turn.retry = None;
         self.turn.compacting = false;
     }
-    pub(crate) fn promote_pending_ask(&mut self) {
-        if (matches!(self.overlay, PendingScreen::None)
-            || self.screens.command_menu.upgrade().is_some())
-            && let Some(screen) = self.pending.ask.take()
+    pub(crate) fn promote_waiting_screen(&mut self) {
+        if (matches!(self.screens.active, PendingScreen::None)
+            || self.screens.handles.command_menu.upgrade().is_some())
+            && let Some(screen) = self.screens.waiting.take()
         {
-            self.overlay = PendingScreen::Screen(Box::new(screen));
+            self.screens.active = PendingScreen::Screen(screen);
             self.dirty = true;
         }
     }
@@ -1383,10 +1401,10 @@ impl App {
         self.viewport.scroll
     }
     pub(crate) fn overlay(&self) -> &PendingScreen {
-        &self.overlay
+        &self.screens.active
     }
     pub(crate) fn overlay_mut(&mut self) -> &mut PendingScreen {
-        &mut self.overlay
+        &mut self.screens.active
     }
     pub(crate) fn plan_mode(&self) -> bool {
         self.mode.is_plan()
@@ -1464,12 +1482,12 @@ impl App {
         if cursor >= self.run_row_count() {
             return;
         }
-        if let Some(state) = self.screens.run_screen.upgrade() {
+        if let Some(state) = self.screens.handles.run_screen.upgrade() {
             state.lock().unwrap().cursor = cursor;
         } else {
             let (screen, handle) = RunScreen::new(self.run_rows(), cursor);
-            self.screens.run_screen = handle;
-            self.overlay = PendingScreen::Screen(Box::new(screen));
+            self.screens.handles.run_screen = handle;
+            self.screens.active = PendingScreen::Screen(Box::new(screen));
         }
         self.dirty = true;
     }
@@ -1488,7 +1506,7 @@ impl App {
     }
 
     fn sync_run_selector(&mut self) {
-        let Some(state) = self.screens.run_screen.upgrade() else {
+        let Some(state) = self.screens.handles.run_screen.upgrade() else {
             return;
         };
         if self.run_targets().is_empty() {
@@ -1527,7 +1545,7 @@ impl App {
     }
 
     pub(crate) fn close_run_selector(&mut self) {
-        self.overlay = PendingScreen::None;
+        self.screens.active = PendingScreen::None;
         self.set_main_view(MainView::Live);
         self.viewport.follow = true;
         self.dirty = true;
@@ -1535,6 +1553,7 @@ impl App {
 
     pub(crate) fn run_selector(&self) -> Option<usize> {
         self.screens
+            .handles
             .run_screen
             .upgrade()
             .map(|state| state.lock().unwrap().cursor)
@@ -2130,7 +2149,7 @@ mod tests {
     fn plan_proposed_opens_the_sheet_and_approve_resolves_it() {
         let mut app = App::new(Theme::dark(), &test_origin());
         proposed(&mut app);
-        assert!(matches!(app.overlay, PendingScreen::Screen(_)));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
         let ops = app.on_key(press(KeyCode::Char('a'), KeyModifiers::NONE));
         assert!(matches!(
             ops.as_slice(),
@@ -2139,7 +2158,7 @@ mod tests {
                 ..
             }]
         ));
-        assert!(matches!(app.overlay, PendingScreen::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -2164,7 +2183,7 @@ mod tests {
             ] => assert_eq!(feedback, "too big"),
             other => panic!("expected a reject with feedback, got {other:?}"),
         }
-        assert!(matches!(app.overlay, PendingScreen::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -2201,7 +2220,7 @@ mod tests {
         proposed(&mut app);
         let ops = app.on_key(press(KeyCode::Esc, KeyModifiers::NONE));
         assert!(ops.is_empty(), "esc must not send a decision");
-        assert!(matches!(app.overlay, PendingScreen::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -2212,7 +2231,7 @@ mod tests {
             mode: goat_protocol::Mode::Normal,
             plan_path: None,
         }));
-        assert!(matches!(app.overlay, PendingScreen::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
         assert!(!app.plan_mode());
     }
 
@@ -2467,7 +2486,7 @@ mod tests {
         let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('!'), KeyModifiers::NONE));
         app.on_key(press(KeyCode::Char('/'), KeyModifiers::NONE));
-        assert!(matches!(app.overlay, PendingScreen::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
         app.composer.insert_str("usr/bin/true");
         let ops = app.submit();
         assert!(
@@ -2606,7 +2625,7 @@ mod tests {
                 code_changes: true,
             }],
         }));
-        assert!(matches!(app.overlay, PendingScreen::Screen(_)));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
 
         let choose_point = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
         assert!(choose_point.is_empty());
@@ -2618,7 +2637,7 @@ mod tests {
                 scope: RewindScope::CodeAndConversation,
             }]
         );
-        assert!(matches!(app.overlay, PendingScreen::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -2778,7 +2797,7 @@ mod tests {
         app.composer.insert_str("/model");
         let ops = app.submit();
         assert!(ops.is_empty());
-        assert!(matches!(app.overlay, PendingScreen::Screen(_)));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
     }
 
     #[test]
@@ -2787,7 +2806,7 @@ mod tests {
         app.composer.insert_str("/model");
         app.submit();
         app.on_key(press(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(matches!(app.overlay, PendingScreen::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -2800,7 +2819,7 @@ mod tests {
         app.submit();
         let ops = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(ops.as_slice(), [Op::SelectModel { .. }]));
-        assert!(matches!(app.overlay, PendingScreen::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -2830,7 +2849,7 @@ mod tests {
         app.submit();
         let ops = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
         assert!(ops.is_empty());
-        assert!(matches!(app.overlay, PendingScreen::Screen(_)));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
     }
 
     #[test]
@@ -2863,7 +2882,7 @@ mod tests {
         assert!(ops.is_empty());
         assert!(app.turn.active.is_none());
         assert!(matches!(
-            &app.overlay,
+            &app.screens.active,
             PendingScreen::Screen(screen) if matches!(screen.placement(), goat_command::Placement::Overlay)
         ));
         assert!(app.viewport.transcript.items.is_empty());
@@ -2921,7 +2940,7 @@ mod tests {
         let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.dispatch_slash_command("/effort");
         assert!(ops.is_empty());
-        assert!(matches!(app.overlay, PendingScreen::Screen(_)));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
         assert!(app.toasts.is_empty());
     }
 
@@ -2939,13 +2958,13 @@ mod tests {
         select_model(&mut app, "openai", "gpt");
         let ops = app.dispatch_slash_command("/effort");
         assert!(ops.is_empty());
-        assert!(matches!(app.overlay, PendingScreen::Screen(_)));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
         app.on_key(press(KeyCode::Down, KeyModifiers::NONE));
         let ops = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
         assert!(
             matches!(ops.as_slice(), [Op::SelectModel { target }] if target.effort == Some(Effort::High))
         );
-        assert!(matches!(app.overlay, PendingScreen::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -2991,7 +3010,7 @@ mod tests {
         });
         let ops = app.dispatch_slash_command("/model claude");
         assert!(matches!(ops.as_slice(), [Op::SelectModel { target }] if target.model == "claude"));
-        assert!(matches!(app.overlay, PendingScreen::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -3014,7 +3033,7 @@ mod tests {
             matches!(ops.as_slice(), [Op::SelectModel { target }] if target.effort == Some(Effort::High)),
             "expected direct SelectModel, got {ops:?}"
         );
-        assert!(matches!(app.overlay, PendingScreen::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -3034,7 +3053,7 @@ mod tests {
             matches!(ops.as_slice(), [Op::SelectModel { target }] if target.provider == "anthropic" && target.model == "claude"),
             "expected direct SelectModel, got {ops:?}"
         );
-        assert!(matches!(app.overlay, PendingScreen::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -3049,7 +3068,7 @@ mod tests {
         let ops = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
         assert!(ops.is_empty(), "account choice defers selection");
         assert!(
-            matches!(app.overlay, PendingScreen::Screen(_)),
+            matches!(app.screens.active, PendingScreen::Screen(_)),
             "expected light account panel, not a heavy picker"
         );
         app.on_key(press(KeyCode::Down, KeyModifiers::NONE));
@@ -3058,7 +3077,7 @@ mod tests {
             matches!(ops.as_slice(), [Op::SelectModel { target }] if target.account == "personal"),
             "expected the second account, got {ops:?}"
         );
-        assert!(matches!(app.overlay, PendingScreen::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     fn multi_account_entry(provider: &str, model: &str, accounts: &[&str]) -> ModelEntry {
@@ -3098,7 +3117,7 @@ mod tests {
             matches!(ops.as_slice(), [Op::SelectModel { target }] if target.model == "anthropic/claude"),
             "expected direct SelectModel, got {ops:?}"
         );
-        assert!(matches!(app.overlay, PendingScreen::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -3107,7 +3126,7 @@ mod tests {
         let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.dispatch_slash_command("/resume");
         assert!(matches!(ops.as_slice(), [Op::ListThreads {}]));
-        assert!(matches!(app.overlay, PendingScreen::Screen(_)));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
         let ops = app.update(AppEvent::Engine(EngineEvent::ThreadsListed {
             threads: vec![ThreadSummary {
                 id: 7,
@@ -3118,7 +3137,7 @@ mod tests {
             }],
         }));
         assert!(ops.is_empty());
-        assert!(matches!(app.overlay, PendingScreen::Screen(_)));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
     }
 
     #[test]
@@ -3137,7 +3156,7 @@ mod tests {
             }],
         }));
         assert!(matches!(ops.as_slice(), [Op::Resume { thread_id: 42 }]));
-        assert!(matches!(app.overlay, PendingScreen::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -3399,13 +3418,37 @@ mod tests {
                 multiple: false,
             }],
         });
-        assert!(matches!(app.overlay, PendingScreen::Screen(_)));
-        assert!(app.pending.ask.is_some());
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
+        assert!(app.screens.waiting.is_some());
 
-        app.overlay = PendingScreen::None;
-        app.promote_pending_ask();
-        assert!(matches!(app.overlay, PendingScreen::Screen(_)));
-        assert!(app.pending.ask.is_none());
+        app.screens.active = PendingScreen::None;
+        app.promote_waiting_screen();
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
+        assert!(app.screens.waiting.is_none());
+    }
+
+    #[test]
+    fn dismissed_waiting_ask_is_removed_before_promotion() {
+        use goat_protocol::{AskQuestion, ToolCallId};
+        let mut app = App::new(Theme::dark(), &test_origin());
+        app.dispatch_slash_command("/help");
+        app.update(AppEvent::Engine(EngineEvent::AskStarted {
+            id: TaskId(1),
+            call: ToolCallId(9),
+            questions: vec![AskQuestion {
+                question: "ok?".to_owned(),
+                options: Vec::new(),
+                multiple: false,
+            }],
+        }));
+        assert!(app.screens.waiting.is_some());
+
+        app.update(AppEvent::Engine(EngineEvent::AskDismissed {
+            id: TaskId(1),
+            call: ToolCallId(9),
+        }));
+        assert!(app.screens.waiting.is_none());
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
     }
 
     #[test]

@@ -418,10 +418,6 @@ impl AskScreen {
         }
     }
 
-    pub fn call(&self) -> ToolCallId {
-        self.call
-    }
-
     fn submit(&mut self, answers: Vec<String>) -> ScreenOutcome {
         self.done = true;
         ScreenOutcome::Effect(CommandEffect::Dispatch(vec![Op::Answer {

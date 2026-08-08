@@ -80,7 +80,7 @@ impl App {
                 Vec::new()
             }
             KeyCode::Enter => {
-                self.overlay = PendingScreen::None;
+                self.screens.active = PendingScreen::None;
                 self.dirty = true;
                 self.submit()
             }
@@ -171,7 +171,7 @@ impl App {
                     self.arming.rewind = None;
                     return vec![Op::Interrupt { id }];
                 }
-                self.overlay = PendingScreen::None;
+                self.screens.active = PendingScreen::None;
                 if self.composer.is_empty() {
                     self.arming.clear = None;
                     if self.composer.shell() {

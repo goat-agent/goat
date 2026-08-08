@@ -32,9 +32,9 @@ impl App {
                 if !self.focused {
                     self.queue_notification(crate::notification::Notification::Attention);
                 }
-                self.overlay = PendingScreen::Screen(Box::new(goat_commands::PlanScreen::new(
-                    call, plan, path,
-                )));
+                self.screens.active = PendingScreen::Screen(Box::new(
+                    goat_commands::PlanScreen::new(call, plan, path),
+                ));
                 self.dirty = true;
             }
             EngineEvent::ThreadsListed { threads } => {
@@ -54,7 +54,7 @@ impl App {
             EngineEvent::FilesListed { entries } => {
                 self.files = entries;
                 self.files_loaded = true;
-                if let Some(menu) = self.screens.file_menu.upgrade() {
+                if let Some(menu) = self.screens.handles.file_menu.upgrade() {
                     let query = self.composer.at_query().unwrap_or_default();
                     menu.lock().unwrap().fill(self.files.clone(), &query);
                 }
@@ -135,7 +135,9 @@ impl App {
                     self.viewport.transcript.push_thinking_delta(&chunk);
                 }
             }
-            EngineEvent::LoginProviders { .. } | EngineEvent::LoginStatus { .. } => {}
+            EngineEvent::LoginProviders { .. }
+            | EngineEvent::LoginStatus { .. }
+            | EngineEvent::AskDismissed { .. } => {}
             EngineEvent::ThreadBound { thread_id } => {
                 self.session.thread_id = Some(thread_id);
             }
@@ -439,25 +441,14 @@ impl App {
                     self.queue_notification(crate::notification::Notification::Attention);
                 }
                 let screen = AskScreen::new(AskPicker::new(questions), id, call);
-                if matches!(self.overlay, PendingScreen::None)
-                    || self.screens.command_menu.upgrade().is_some()
+                if matches!(self.screens.active, PendingScreen::None)
+                    || self.screens.handles.command_menu.upgrade().is_some()
                 {
-                    self.overlay = PendingScreen::Screen(Box::new(screen));
+                    self.screens.active = PendingScreen::Screen(Box::new(screen));
                 } else {
-                    self.pending.ask = Some(screen);
+                    self.screens.waiting = Some(Box::new(screen));
                 }
                 self.dirty = true;
-            }
-            EngineEvent::AskDismissed { call, .. } => {
-                if self
-                    .pending
-                    .ask
-                    .as_ref()
-                    .is_some_and(|screen| screen.call() == call)
-                {
-                    self.pending.ask = None;
-                    self.dirty = true;
-                }
             }
             EngineEvent::Usage {
                 id,
