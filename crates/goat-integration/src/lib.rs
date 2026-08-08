@@ -60,9 +60,19 @@ pub struct IntegrationRuntime {
     pub credentials: CredentialStore,
     pub store: Arc<dyn Store>,
     pub bus: EventBus,
+    pub(crate) poll_budget: watch::PollBudget,
 }
 
 impl IntegrationRuntime {
+    pub fn new(credentials: CredentialStore, store: Arc<dyn Store>, bus: EventBus) -> Self {
+        Self {
+            credentials,
+            store,
+            bus,
+            poll_budget: watch::PollBudget::default(),
+        }
+    }
+
     pub async fn load_state(
         &self,
         agent: AgentId,
@@ -237,11 +247,11 @@ mod tests {
         let store = SqliteStore::open(&dir.path().join("goat.db"))
             .await
             .unwrap();
-        let rt = IntegrationRuntime {
-            credentials: CredentialStore::new(dir.path().join("credentials.json")),
-            store: Arc::new(store),
-            bus: EventBus::new(),
-        };
+        let rt = IntegrationRuntime::new(
+            CredentialStore::new(dir.path().join("credentials.json")),
+            Arc::new(store),
+            EventBus::new(),
+        );
         (dir, rt)
     }
 

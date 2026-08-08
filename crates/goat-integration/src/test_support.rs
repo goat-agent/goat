@@ -21,11 +21,13 @@ const PATIENCE: Duration = Duration::from_secs(5);
 
 pub async fn runtime_in(dir: &Path) -> IntegrationRuntime {
     let store = SqliteStore::open(&dir.join("goat.db")).await.unwrap();
-    IntegrationRuntime {
-        credentials: CredentialStore::new(dir.join("credentials.json")),
-        store: Arc::new(store),
-        bus: EventBus::new(),
-    }
+    let mut runtime = IntegrationRuntime::new(
+        CredentialStore::new(dir.join("credentials.json")),
+        Arc::new(store),
+        EventBus::new(),
+    );
+    runtime.poll_budget = crate::watch::PollBudget::new(Duration::ZERO);
+    runtime
 }
 
 pub async fn agent_in(runtime: &IntegrationRuntime) -> AgentId {

@@ -705,11 +705,11 @@ async fn build_shared(base: &RuntimeBase, agents: &[AgentConfig]) -> RuntimeShar
     let integrations = goat_integration::registry_from_inventory();
     let connections = load_integration_connections(&base.paths.config_json);
     let integration_bindings = build_integration_bindings(agents, &integrations, &connections);
-    let integration_runtime = IntegrationRuntime {
-        credentials: base.credentials.clone(),
-        store: base.store.clone(),
-        bus: base.bus.clone(),
-    };
+    let integration_runtime = IntegrationRuntime::new(
+        base.credentials.clone(),
+        base.store.clone(),
+        base.bus.clone(),
+    );
     let mut integration_tool_names: HashMap<String, Vec<String>> = HashMap::new();
     for (id, integration) in &integrations {
         if let Some(bindings) = integration_bindings.get(id).filter(|b| !b.is_empty()) {

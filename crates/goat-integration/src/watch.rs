@@ -13,6 +13,7 @@ use crate::{IntegrationError, IntegrationResult, IntegrationRuntime};
 
 pub const POLL: Duration = Duration::from_mins(2);
 pub const EVENT_CAP_PER_POLL: usize = 3;
+const SOURCE_GAP: Duration = Duration::from_secs(4);
 const MAX_BACKOFF_TICKS: u32 = 8;
 const AUTH_ALERT_STREAK: u32 = 5;
 
@@ -155,6 +156,41 @@ fn random_sample() -> f64 {
     rand::rng().random_range(0.0..=1.0)
 }
 
+#[derive(Clone)]
+pub(crate) struct PollBudget {
+    next: std::sync::Arc<tokio::sync::Mutex<tokio::time::Instant>>,
+    gap: Duration,
+}
+
+impl Default for PollBudget {
+    fn default() -> Self {
+        Self::new(SOURCE_GAP)
+    }
+}
+
+impl PollBudget {
+    pub(crate) fn new(gap: Duration) -> Self {
+        Self {
+            next: std::sync::Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now())),
+            gap,
+        }
+    }
+
+    async fn acquire(&self, cancel: &CancellationToken) -> bool {
+        let mut next = self.next.lock().await;
+        let now = tokio::time::Instant::now();
+        if *next > now {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => return false,
+                () = tokio::time::sleep_until(*next) => {}
+            }
+        }
+        *next = tokio::time::Instant::now() + self.gap;
+        true
+    }
+}
+
 #[derive(Default)]
 struct SourceHealth {
     error_streak: u32,
@@ -183,7 +219,7 @@ pub async fn run_workflow(
         .map(|_| SourceHealth::default())
         .collect();
 
-    loop {
+    'polling: loop {
         tokio::select! {
             biased;
             () = cancel.cancelled() => break,
@@ -198,6 +234,9 @@ pub async fn run_workflow(
             if health.skip_ticks > 0 {
                 health.skip_ticks -= 1;
                 continue;
+            }
+            if !runtime.poll_budget.acquire(&cancel).await {
+                break 'polling;
             }
             match source.compiled.source.fetch_dyn().await {
                 Err(e) => {
@@ -449,6 +488,30 @@ mod tests {
         assert_eq!(tick_jitter(poll, 0.0), Duration::from_secs(90));
         assert_eq!(tick_jitter(poll, 0.5), poll);
         assert_eq!(tick_jitter(poll, 1.0), Duration::from_secs(150));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_budget_spaces_source_requests() {
+        let budget = PollBudget::default();
+        let cancel = CancellationToken::new();
+        assert!(budget.acquire(&cancel).await);
+        let (sent, mut received) = tokio::sync::oneshot::channel();
+        let started = tokio::time::Instant::now();
+        let waiting = budget.clone();
+        tokio::spawn(async move {
+            let acquired = waiting.acquire(&cancel).await;
+            sent.send((acquired, tokio::time::Instant::now())).unwrap();
+        });
+
+        tokio::time::advance(SOURCE_GAP.checked_sub(Duration::from_millis(1)).unwrap()).await;
+        assert!(matches!(
+            received.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let (acquired, at) = received.await.unwrap();
+        assert!(acquired);
+        assert_eq!(at.duration_since(started), SOURCE_GAP);
     }
 
     #[test]
