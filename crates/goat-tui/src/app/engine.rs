@@ -17,10 +17,10 @@ impl App {
                 self.usage.turn_tokens = 0;
             }
             EngineEvent::ModelListChanged { entries } => {
-                self.models = entries;
-                self.models_loaded = true;
+                self.catalog.models = entries;
+                self.catalog.loaded = true;
             }
-            EngineEvent::ModelSelected { target } => self.model = Some(target),
+            EngineEvent::ModelSelected { target } => self.catalog.selected = Some(target),
             EngineEvent::ModeChanged { mode, plan_path } => {
                 self.mode = mode;
                 self.plan_path = plan_path;
@@ -41,20 +41,20 @@ impl App {
                 self.threads = threads;
             }
             EngineEvent::RewindPointsListed { .. } => {
-                self.rewind_arm = None;
+                self.arming.rewind = None;
                 self.dirty = true;
             }
             EngineEvent::ConversationRewound { draft } => {
                 self.composer.clear();
                 self.composer.insert_str(&draft.text);
                 self.composer.push_attachments(draft.attachments);
-                self.follow = true;
+                self.viewport.follow = true;
                 self.dirty = true;
             }
             EngineEvent::FilesListed { entries } => {
                 self.files = entries;
                 self.files_loaded = true;
-                if let Some(menu) = self.file_menu.upgrade() {
+                if let Some(menu) = self.screens.file_menu.upgrade() {
                     let query = self.composer.at_query().unwrap_or_default();
                     menu.lock().unwrap().fill(self.files.clone(), &query);
                 }
@@ -65,43 +65,51 @@ impl App {
                 context_tokens,
                 compaction_threshold,
             } => {
-                self.transcript.clear();
+                self.viewport.transcript.clear();
                 self.reset_subagents();
                 self.turn = crate::app::TurnStatus::default();
-                self.scroll = 0;
-                self.follow = true;
+                self.viewport.scroll = 0;
+                self.viewport.follow = true;
                 for entry in entries {
                     match entry {
                         TranscriptEntry::User { text, attachments } => {
-                            self.transcript
+                            self.viewport
+                                .transcript
                                 .push_user_with_attachments(text, attachments);
                         }
                         TranscriptEntry::Assistant { text } => {
-                            self.transcript.commit_text(&text);
+                            self.viewport.transcript.commit_text(&text);
                         }
                         TranscriptEntry::Thinking { text } => {
-                            self.transcript.push_thinking(text);
+                            self.viewport.transcript.push_thinking(text);
                         }
                         TranscriptEntry::Tool { call, outcome } => {
                             let id = call.id;
-                            self.transcript.push_tool(call);
-                            self.transcript
-                                .finish_tool(id, outcome, self.picker.as_deref());
+                            self.viewport.transcript.push_tool(call);
+                            self.viewport.transcript.finish_tool(
+                                id,
+                                outcome,
+                                self.picker.as_deref(),
+                            );
                         }
                         TranscriptEntry::SubagentGroup { group, members } => {
-                            self.transcript.push_restored_agent_group(group, members);
+                            self.viewport
+                                .transcript
+                                .push_restored_agent_group(group, members);
                         }
                         TranscriptEntry::Compaction {
                             tokens_before,
                             tokens_after,
                         } => {
-                            self.transcript.push_compaction(tokens_before, tokens_after);
+                            self.viewport
+                                .transcript
+                                .push_compaction(tokens_before, tokens_after);
                         }
                         TranscriptEntry::Shell { command, output }
                         | TranscriptEntry::Process { command, output } => {
                             let id = TaskId(0);
-                            self.transcript.push_shell(id, command);
-                            self.transcript.finish_shell(id, output);
+                            self.viewport.transcript.push_shell(id, command);
+                            self.viewport.transcript.finish_shell(id, output);
                         }
                     }
                 }
@@ -117,19 +125,19 @@ impl App {
                         },
                     );
                 }
-                self.model = Some(target);
+                self.catalog.selected = Some(target);
             }
             EngineEvent::ThinkingDelta { id, chunk } => {
                 self.turn.thinking = true;
                 if let Some(i) = self.subagent_index(id) {
                     self.subagent_runs[i].transcript.push_thinking_delta(&chunk);
                 } else {
-                    self.transcript.push_thinking_delta(&chunk);
+                    self.viewport.transcript.push_thinking_delta(&chunk);
                 }
             }
             EngineEvent::LoginProviders { .. } | EngineEvent::LoginStatus { .. } => {}
             EngineEvent::ThreadBound { thread_id } => {
-                self.thread_id = Some(thread_id);
+                self.session.thread_id = Some(thread_id);
             }
             EngineEvent::ProcessListChanged { processes } => {
                 self.reconcile_processes(&processes);
@@ -191,15 +199,19 @@ impl App {
                             run.transcript.push_compaction(tokens_before, tokens_after);
                             (run.parent, run.call)
                         };
-                        self.transcript.add_subagent_tokens(parent, call, tokens);
+                        self.viewport
+                            .transcript
+                            .add_subagent_tokens(parent, call, tokens);
                     }
                 } else {
                     self.turn.compacting = false;
                     if ok {
                         self.usage.turn_tokens +=
                             u64::from(usage.input_tokens) + u64::from(usage.output_tokens);
-                        self.transcript.push_compaction(tokens_before, tokens_after);
-                        if let Some(model) = &self.model {
+                        self.viewport
+                            .transcript
+                            .push_compaction(tokens_before, tokens_after);
+                        if let Some(model) = &self.catalog.selected {
                             let key = (model.provider.clone(), model.account.clone());
                             let total = self.usage.total.entry(key.clone()).or_default();
                             total.0 += u64::from(usage.input_tokens);
@@ -230,9 +242,10 @@ impl App {
                     .is_some();
                 if !sent_by_us && self.turn.active.is_none() {
                     self.reset_subagents();
-                    self.follow = true;
+                    self.viewport.follow = true;
                 }
-                self.transcript
+                self.viewport
+                    .transcript
                     .push_user_with_display(display.unwrap_or_else(|| text.clone()), attachments);
                 self.dirty = true;
             }
@@ -271,7 +284,7 @@ impl App {
                 if let Some(i) = self.subagent_index(id) {
                     self.subagent_runs[i].transcript.discard_stream();
                 } else {
-                    self.transcript.discard_stream();
+                    self.viewport.transcript.discard_stream();
                     self.turn.retry = Some(super::RetryState {
                         attempt,
                         max_attempts,
@@ -283,7 +296,7 @@ impl App {
                 self.dirty = true;
             }
             EngineEvent::AccountsChanged { providers } => {
-                self.account_entries = providers;
+                self.catalog.accounts = providers;
             }
             EngineEvent::SkillsChanged { skills } => {
                 self.commands.set_skills(&skills);
@@ -296,18 +309,20 @@ impl App {
                 if let Some(i) = self.subagent_index(id) {
                     self.subagent_runs[i].transcript.push_delta(&chunk);
                 } else {
-                    self.transcript.push_delta(&chunk);
+                    self.viewport.transcript.push_delta(&chunk);
                 }
             }
             EngineEvent::TextDone { id, text } => {
                 if let Some(i) = self.subagent_index(id) {
                     self.subagent_runs[i].transcript.commit_text(&text);
                 } else {
-                    self.transcript.commit_text(&text);
+                    self.viewport.transcript.commit_text(&text);
                 }
             }
             EngineEvent::SubagentGroupStarted { id, group, members } => {
-                self.transcript.push_subagent_group(id, group, members);
+                self.viewport
+                    .transcript
+                    .push_subagent_group(id, group, members);
             }
             EngineEvent::ToolStarted { id, call } => {
                 self.turn.thinking = false;
@@ -321,9 +336,11 @@ impl App {
                         run.transcript.push_tool(call);
                         (run.parent, run.call)
                     };
-                    self.transcript.add_subagent_tool(parent, parent_call);
-                } else if !self.transcript.is_subagent_group_call(id, call.id) {
-                    self.transcript.push_tool(call);
+                    self.viewport
+                        .transcript
+                        .add_subagent_tool(parent, parent_call);
+                } else if !self.viewport.transcript.is_subagent_group_call(id, call.id) {
+                    self.viewport.transcript.push_tool(call);
                 }
             }
             EngineEvent::ToolDone { id, call, outcome } => {
@@ -333,13 +350,14 @@ impl App {
                         outcome,
                         self.picker.as_deref(),
                     );
-                } else if self.transcript.is_subagent_group_call(id, call) {
-                    if !self.transcript.detached_group_member(id, call) {
-                        self.transcript.finish_subagent(id, call, outcome);
+                } else if self.viewport.transcript.is_subagent_group_call(id, call) {
+                    if !self.viewport.transcript.detached_group_member(id, call) {
+                        self.viewport.transcript.finish_subagent(id, call, outcome);
                     }
                 } else {
-                    let touched = outcome.ok && self.transcript.touches_pull_request(call);
-                    self.transcript
+                    let touched = outcome.ok && self.viewport.transcript.touches_pull_request(call);
+                    self.viewport
+                        .transcript
                         .finish_tool(call, outcome, self.picker.as_deref());
                     if touched {
                         self.forget_pull_request();
@@ -347,7 +365,7 @@ impl App {
                 }
             }
             EngineEvent::ShellDone { id, output } => {
-                self.transcript.finish_shell(id, output);
+                self.viewport.transcript.finish_shell(id, output);
             }
             EngineEvent::SubagentStarted {
                 id,
@@ -356,7 +374,7 @@ impl App {
                 subagent_type,
                 label,
             } => {
-                self.transcript.start_subagent(parent, call);
+                self.viewport.transcript.start_subagent(parent, call);
                 self.subagent_runs.push(super::SubagentRunView {
                     id,
                     parent,
@@ -377,8 +395,8 @@ impl App {
                     self.subagent_runs[i].finished_at = Some(std::time::Instant::now());
                     self.subagent_runs[i].transcript.complete(!ok);
                     let (parent, call) = (self.subagent_runs[i].parent, self.subagent_runs[i].call);
-                    if self.transcript.detached_group_member(parent, call) {
-                        self.transcript.finish_subagent(
+                    if self.viewport.transcript.detached_group_member(parent, call) {
+                        self.viewport.transcript.finish_subagent(
                             parent,
                             call,
                             goat_protocol::ToolOutcome {
@@ -396,15 +414,15 @@ impl App {
                 if !self.focused {
                     self.queue_notification(crate::notification::Notification::Completion);
                 }
-                self.transcript.flush_thinking();
-                self.transcript.complete(interrupted);
+                self.viewport.transcript.flush_thinking();
+                self.viewport.transcript.complete(interrupted);
                 self.reset_active_state();
                 if interrupted {
                     self.restore_queued_to_composer();
                 }
             }
             EngineEvent::Error { message, hint, .. } => {
-                self.transcript.push_error(message, hint);
+                self.viewport.transcript.push_error(message, hint);
                 self.reset_active_state();
                 self.restore_queued_to_composer();
             }
@@ -422,7 +440,7 @@ impl App {
                 }
                 let screen = AskScreen::new(AskPicker::new(questions), id, call);
                 if matches!(self.overlay, PendingScreen::None)
-                    || self.command_menu.upgrade().is_some()
+                    || self.screens.command_menu.upgrade().is_some()
                 {
                     self.overlay = PendingScreen::Screen(Box::new(screen));
                 } else {
@@ -456,7 +474,9 @@ impl App {
                         run.tokens = run.tokens.saturating_add(tokens);
                         (run.parent, run.call)
                     };
-                    self.transcript.add_subagent_tokens(parent, call, tokens);
+                    self.viewport
+                        .transcript
+                        .add_subagent_tokens(parent, call, tokens);
                 } else {
                     self.usage.turn_tokens = self.usage.turn_tokens.saturating_add(tokens);
                     let key = (provider, account);

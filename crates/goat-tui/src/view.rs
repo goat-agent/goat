@@ -216,18 +216,18 @@ fn footer_visible(app: &App) -> bool {
 }
 
 fn render_selection(frame: &mut Frame, app: &mut App, theme: Theme) {
-    let Some(sel) = app.selection else {
+    let Some(sel) = app.viewport.selection else {
         return;
     };
-    if app.active_transcript().version() != app.selection_version {
-        app.selection = None;
+    if app.active_transcript().version() != app.viewport.selection_version {
+        app.viewport.selection = None;
         return;
     }
     if sel.is_empty() {
         return;
     }
-    let area = app.transcript_area;
-    let scroll = app.scroll;
+    let area = app.viewport.area;
+    let scroll = app.viewport.scroll;
     let (start, end) = sel.bounds();
     let left = area.x.saturating_add(PAD_X);
     let right = area.x.saturating_add(area.width);
@@ -269,7 +269,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme)
     };
     let body_width = content.width.saturating_sub(PAD_X);
     app.clamp_scroll(content.height, body_width);
-    app.transcript_area = content;
+    app.viewport.area = content;
     let working = app.working_state();
     let queued = app.queued_labels();
     app.transcript().render(
@@ -611,7 +611,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let model = model_label(app, theme);
     let ctx = ctx_label(app);
     let rates = rate_labels(app);
-    let windows = window_label(app.window_count);
+    let windows = window_label(app.window_count());
     let model_w = model.as_ref().map_or(0, |(label, _)| label.width());
     let ctx_w = ctx.as_ref().map_or(0, |(label, _)| label.width());
     let rates_w = rates

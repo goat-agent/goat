@@ -95,28 +95,86 @@ struct PrLookup {
     branch: String,
 }
 
+struct GitChrome {
+    workspace: Option<goat_worktree::Workspace>,
+    pull_request: Option<goat_github::PrInfo>,
+    pull_request_branch: Option<String>,
+    pull_request_inflight: bool,
+    pull_request_poll: u16,
+    pull_request_enabled: bool,
+    branch_poll: u16,
+}
+
+pub(crate) struct TranscriptViewport {
+    pub(crate) transcript: Transcript,
+    pub(crate) scroll: usize,
+    pub(crate) follow: bool,
+    pub(crate) rows: u16,
+    pub(crate) area: ratatui::layout::Rect,
+    pub(crate) selection: Option<crate::select::Selection>,
+    pub(crate) selection_version: u64,
+    pub(crate) last_click: Option<(std::time::Instant, usize, u16)>,
+}
+
+struct HostActions {
+    pending_copy: Option<String>,
+    pending_open: Option<String>,
+}
+
+struct SessionState {
+    session_id: Option<u64>,
+    client_id: Option<u64>,
+    thread_id: Option<i64>,
+    daemon: Option<Identity>,
+    started: std::time::Instant,
+    window_count: usize,
+}
+
+struct ModelCatalog {
+    models: Vec<ModelEntry>,
+    loaded: bool,
+    selected: Option<ModelTarget>,
+    accounts: Vec<AccountEntry>,
+}
+
+struct SettingsState {
+    theme: Theme,
+    terminal_bg: Option<ratatui::style::Color>,
+    mouse_capture: bool,
+    computer_use: bool,
+    browser: bool,
+}
+
+#[derive(Default)]
+struct ArmingTimers {
+    quit: Option<u16>,
+    clear: Option<u16>,
+    rewind: Option<u16>,
+}
+
+#[derive(Default)]
+struct ScreenHandles {
+    command_menu: std::sync::Weak<std::sync::Mutex<CommandMenu>>,
+    file_menu: std::sync::Weak<std::sync::Mutex<FileMenu>>,
+    run_screen: std::sync::Weak<std::sync::Mutex<RunScreenState>>,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
-    pub(crate) theme: Theme,
-    pub(crate) terminal_bg: Option<ratatui::style::Color>,
-    pub(crate) transcript: Transcript,
+    settings: SettingsState,
+    pub(crate) viewport: TranscriptViewport,
+    host_actions: HostActions,
+    session: SessionState,
+    catalog: ModelCatalog,
+    git: GitChrome,
+    arming: ArmingTimers,
+    screens: ScreenHandles,
     pub(crate) composer: Composer,
     pub(crate) highlighter: SyntectHighlighter,
     pub(crate) cwd: String,
     pub(crate) remote: Option<String>,
-    git_workspace: Option<goat_worktree::Workspace>,
-    pr: Option<goat_github::PrInfo>,
-    pr_branch: Option<String>,
-    pr_inflight: bool,
-    pr_poll: u16,
-    pr_enabled: bool,
     pub(crate) next_task: u64,
-    pub(crate) window_count: usize,
     pub(crate) spinner: usize,
-    pub(crate) quit_arm: Option<u16>,
-    pub(crate) clear_arm: Option<u16>,
-    pub(crate) rewind_arm: Option<u16>,
-    branch_poll: u16,
     pub(crate) queued: Vec<(
         TaskId,
         String,
@@ -126,31 +184,12 @@ pub struct App {
     pub(crate) should_quit: bool,
     pub(crate) exit_requested: bool,
     pub(crate) dirty: bool,
-    pub(crate) scroll: usize,
-    pub(crate) follow: bool,
-    pub(crate) viewport_rows: u16,
-    pub(crate) selection: Option<crate::select::Selection>,
-    pub(crate) selection_version: u64,
-    pub(crate) transcript_area: ratatui::layout::Rect,
-    pub(crate) pending_copy: Option<String>,
-    pub(crate) pending_open: Option<String>,
-    pub(crate) last_click: Option<(std::time::Instant, usize, u16)>,
-    pub(crate) models: Vec<ModelEntry>,
-    pub(crate) models_loaded: bool,
     pub(crate) threads: Vec<goat_protocol::ThreadSummary>,
-    pub(crate) model: Option<ModelTarget>,
     pub(crate) mode: goat_protocol::Mode,
     pub(crate) plan_path: Option<String>,
     pub(crate) overlay: PendingScreen,
     pub(crate) pending: PendingState,
-    pub(crate) account_entries: Vec<AccountEntry>,
-    pub(crate) mouse_capture: bool,
-    pub(crate) computer_use: bool,
-    pub(crate) browser: bool,
     pub(crate) commands: CommandRegistry,
-    command_menu: std::sync::Weak<std::sync::Mutex<CommandMenu>>,
-    file_menu: std::sync::Weak<std::sync::Mutex<FileMenu>>,
-    run_screen: std::sync::Weak<std::sync::Mutex<RunScreenState>>,
     pub(crate) toasts: Vec<crate::toast::Toast>,
     pub(crate) subagent_runs: Vec<SubagentRunView>,
     pub(crate) process_runs: Vec<ProcessRunView>,
@@ -166,11 +205,6 @@ pub struct App {
     pub(crate) files: Vec<String>,
     pub(crate) files_loaded: bool,
     pub(crate) outbox: Vec<Op>,
-    pub(crate) session_id: Option<u64>,
-    pub(crate) client_id: Option<u64>,
-    pub(crate) thread_id: Option<i64>,
-    pub(crate) daemon: Option<Identity>,
-    pub(crate) started: std::time::Instant,
 }
 
 #[derive(Default)]
@@ -237,9 +271,9 @@ pub(crate) struct RetryState {
 
 impl App {
     pub(crate) fn set_terminal_bg(&mut self, bg: Option<ratatui::style::Color>) {
-        self.terminal_bg = bg;
-        self.theme = self.theme.with_base(bg);
-        self.transcript.invalidate();
+        self.settings.terminal_bg = bg;
+        self.settings.theme = self.settings.theme.with_base(bg);
+        self.viewport.transcript.invalidate();
         for run in &mut self.subagent_runs {
             run.transcript.invalidate();
         }
@@ -256,55 +290,68 @@ impl App {
             .flatten();
         let cfg = goat_config::Config::load();
         Self {
-            theme,
-            terminal_bg: None,
-            transcript: Transcript::default(),
+            settings: SettingsState {
+                theme,
+                terminal_bg: None,
+                mouse_capture: cfg.mouse_capture_enabled,
+                computer_use: cfg.computer_use_enabled,
+                browser: cfg.browser_enabled,
+            },
+            viewport: TranscriptViewport {
+                transcript: Transcript::default(),
+                scroll: 0,
+                follow: true,
+                rows: 0,
+                area: ratatui::layout::Rect::default(),
+                selection: None,
+                selection_version: 0,
+                last_click: None,
+            },
+            host_actions: HostActions {
+                pending_copy: None,
+                pending_open: None,
+            },
+            session: SessionState {
+                session_id: origin.session,
+                client_id: origin.client,
+                thread_id: None,
+                daemon: origin.daemon.clone(),
+                started: std::time::Instant::now(),
+                window_count: 1,
+            },
+            catalog: ModelCatalog {
+                models: Vec::new(),
+                loaded: false,
+                selected: None,
+                accounts: Vec::new(),
+            },
+            git: GitChrome {
+                workspace: git_workspace,
+                pull_request: None,
+                pull_request_branch: None,
+                pull_request_inflight: false,
+                pull_request_poll: 0,
+                pull_request_enabled: !remote && goat_github::gh_available(),
+                branch_poll: BRANCH_POLL_TICKS,
+            },
+            arming: ArmingTimers::default(),
+            screens: ScreenHandles::default(),
             composer: Composer::default(),
             highlighter: SyntectHighlighter::new(),
             cwd,
             remote: origin.remote.clone(),
-            git_workspace,
-            pr: None,
-            pr_branch: None,
-            pr_inflight: false,
-            pr_poll: 0,
-            pr_enabled: !remote && goat_github::gh_available(),
             next_task: 1,
-            window_count: 1,
             spinner: 0,
-            quit_arm: None,
-            clear_arm: None,
-            rewind_arm: None,
-            branch_poll: BRANCH_POLL_TICKS,
             queued: Vec::new(),
             should_quit: false,
             exit_requested: false,
             dirty: true,
-            scroll: 0,
-            follow: true,
-            viewport_rows: 0,
-            selection: None,
-            selection_version: 0,
-            transcript_area: ratatui::layout::Rect::default(),
-            pending_copy: None,
-            pending_open: None,
-            last_click: None,
-            models: Vec::new(),
-            models_loaded: false,
             threads: Vec::new(),
-            model: None,
             mode: goat_protocol::Mode::Normal,
             plan_path: None,
             overlay: PendingScreen::None,
             pending: PendingState::default(),
-            account_entries: Vec::new(),
-            mouse_capture: cfg.mouse_capture_enabled,
-            computer_use: cfg.computer_use_enabled,
-            browser: cfg.browser_enabled,
             commands: CommandRegistry::builtin(),
-            command_menu: std::sync::Weak::new(),
-            file_menu: std::sync::Weak::new(),
-            run_screen: std::sync::Weak::new(),
             toasts: Vec::new(),
             subagent_runs: Vec::new(),
             process_runs: Vec::new(),
@@ -320,11 +367,6 @@ impl App {
             files: Vec::new(),
             files_loaded: false,
             outbox: Vec::new(),
-            session_id: origin.session,
-            client_id: origin.client,
-            thread_id: None,
-            daemon: origin.daemon.clone(),
-            started: std::time::Instant::now(),
         }
     }
 
@@ -342,45 +384,45 @@ impl App {
                     self.spinner = self.spinner.wrapping_add(1);
                     self.dirty = true;
                 }
-                if let Some(ticks) = &mut self.quit_arm {
+                if let Some(ticks) = &mut self.arming.quit {
                     *ticks = ticks.saturating_sub(1);
                     if *ticks == 0 {
-                        self.quit_arm = None;
+                        self.arming.quit = None;
                         self.dirty = true;
                     }
                 }
-                if let Some(ticks) = &mut self.clear_arm {
+                if let Some(ticks) = &mut self.arming.clear {
                     *ticks = ticks.saturating_sub(1);
                     if *ticks == 0 {
-                        self.clear_arm = None;
+                        self.arming.clear = None;
                         self.dirty = true;
                     }
                 }
-                if let Some(ticks) = &mut self.rewind_arm {
+                if let Some(ticks) = &mut self.arming.rewind {
                     *ticks = ticks.saturating_sub(1);
                     if *ticks == 0 {
-                        self.rewind_arm = None;
+                        self.arming.rewind = None;
                         self.dirty = true;
                     }
                 }
                 if crate::toast::tick(&mut self.toasts) {
                     self.dirty = true;
                 }
-                self.branch_poll = self.branch_poll.saturating_sub(1);
-                if self.branch_poll == 0 {
-                    self.branch_poll = BRANCH_POLL_TICKS;
+                self.git.branch_poll = self.git.branch_poll.saturating_sub(1);
+                if self.git.branch_poll == 0 {
+                    self.git.branch_poll = BRANCH_POLL_TICKS;
                     self.refresh_git_branch();
                 }
-                self.pr_poll = self.pr_poll.saturating_sub(1);
+                self.git.pull_request_poll = self.git.pull_request_poll.saturating_sub(1);
                 screen_ops
             }
             AppEvent::PrStatus { branch, pr } => {
-                self.pr_inflight = false;
-                if self.git_workspace.as_ref().map(|w| w.git_branch.as_str())
+                self.git.pull_request_inflight = false;
+                if self.git.workspace.as_ref().map(|w| w.git_branch.as_str())
                     == Some(branch.as_str())
                 {
-                    self.pr = pr;
-                    self.pr_branch = Some(branch);
+                    self.git.pull_request = pr;
+                    self.git.pull_request_branch = Some(branch);
                     self.dirty = true;
                 }
                 Vec::new()
@@ -463,8 +505,8 @@ impl App {
                 Vec::new()
             }
             AppEvent::Presence(count) => {
-                if self.window_count != count {
-                    self.window_count = count;
+                if self.session.window_count != count {
+                    self.session.window_count = count;
                     self.dirty = true;
                 }
                 Vec::new()
@@ -491,12 +533,12 @@ impl App {
                     match op {
                         Op::SetMode { mode } => self.mode = *mode,
                         Op::Clear {} => {
-                            self.transcript.clear();
+                            self.viewport.transcript.clear();
                             self.reset_subagents();
                             self.turn = TurnStatus::default();
                             self.clear_ctx_indicator();
-                            self.scroll = 0;
-                            self.follow = true;
+                            self.viewport.scroll = 0;
+                            self.viewport.follow = true;
                         }
                         _ => {}
                     }
@@ -554,7 +596,7 @@ impl App {
             }
             InputOutcome::Handled(outcome) => {
                 let ops = self.apply_screen_outcome(screen, outcome);
-                if self.command_menu.upgrade().is_some() {
+                if self.screens.command_menu.upgrade().is_some() {
                     self.update_command_menu();
                 }
                 Some(ops)
@@ -587,7 +629,7 @@ impl App {
     }
 
     pub(crate) fn request_rewind(&mut self) -> Vec<Op> {
-        self.rewind_arm = None;
+        self.arming.rewind = None;
         if self.turn.active.is_some() || !self.queued.is_empty() {
             self.push_toast(
                 NotifyKind::Info,
@@ -651,8 +693,8 @@ impl App {
         self.next_task += 1;
         self.turn.active = Some(id);
         self.turn.active_shell = true;
-        self.transcript.push_shell(id, command.clone());
-        self.follow = true;
+        self.viewport.transcript.push_shell(id, command.clone());
+        self.viewport.follow = true;
         vec![Op::SubmitShell { id, command }]
     }
 
@@ -663,7 +705,7 @@ impl App {
     ) -> Vec<Op> {
         let id = TaskId(self.next_task);
         self.next_task += 1;
-        self.follow = true;
+        self.viewport.follow = true;
         self.dirty = true;
         if self.turn.active.is_none() {
             self.turn.active = Some(id);
@@ -682,7 +724,7 @@ impl App {
     pub(crate) fn submit_command(&mut self, display: String, prompt: String) -> Vec<Op> {
         let id = TaskId(self.next_task);
         self.next_task += 1;
-        self.follow = true;
+        self.viewport.follow = true;
         self.dirty = true;
         if self.turn.active.is_none() {
             self.turn.active = Some(id);
@@ -750,20 +792,22 @@ impl App {
     }
 
     pub(crate) fn current_model_supports_images(&self) -> bool {
-        let Some(model) = &self.model else {
+        let Some(model) = &self.catalog.selected else {
             return false;
         };
-        self.models
+        self.catalog
+            .models
             .iter()
             .find(|entry| entry.provider == model.provider && entry.model == model.model)
             .is_some_and(|entry| entry.supports_images)
     }
 
     pub(crate) fn current_efforts(&self) -> Vec<Effort> {
-        let Some(model) = &self.model else {
+        let Some(model) = &self.catalog.selected else {
             return Vec::new();
         };
-        self.models
+        self.catalog
+            .models
             .iter()
             .find(|entry| entry.provider == model.provider && entry.model == model.model)
             .map(|entry| entry.efforts.clone())
@@ -785,7 +829,8 @@ impl App {
     }
 
     fn model_choice_options(&self) -> Vec<RuntimeChoice> {
-        self.models
+        self.catalog
+            .models
             .iter()
             .map(|entry| {
                 let name = format!("{}/{}", entry.provider, entry.model);
@@ -808,13 +853,15 @@ impl App {
 
     pub(crate) fn update_command_menu(&mut self) {
         if self.composer.shell() {
-            if self.command_menu.upgrade().is_some() || self.file_menu.upgrade().is_some() {
+            if self.screens.command_menu.upgrade().is_some()
+                || self.screens.file_menu.upgrade().is_some()
+            {
                 self.overlay = PendingScreen::None;
             }
             return;
         }
         if let Some(query) = self.composer.at_query() {
-            if let Some(menu) = self.file_menu.upgrade() {
+            if let Some(menu) = self.screens.file_menu.upgrade() {
                 menu.lock().unwrap().update(&query);
             } else {
                 if !self.files_loaded {
@@ -825,12 +872,12 @@ impl App {
                     !self.files_loaded,
                     &query,
                 ));
-                self.file_menu = handle;
+                self.screens.file_menu = handle;
                 self.overlay = PendingScreen::Screen(Box::new(screen));
             }
             return;
         }
-        if self.file_menu.upgrade().is_some() {
+        if self.screens.file_menu.upgrade().is_some() {
             self.overlay = PendingScreen::None;
         }
         let text = self.composer.text();
@@ -842,7 +889,7 @@ impl App {
                 command: "effort",
                 parameter: "level",
                 options: &effort_options,
-                empty_hint: if self.model.is_some() {
+                empty_hint: if self.catalog.selected.is_some() {
                     "this model does not support reasoning effort"
                 } else {
                     "select a model first"
@@ -859,49 +906,49 @@ impl App {
         if trimmed.starts_with('/')
             && slash_command_name(trimmed).is_none_or(|name| !name.contains('/'))
         {
-            if let Some(menu) = self.command_menu.upgrade() {
+            if let Some(menu) = self.screens.command_menu.upgrade() {
                 menu.lock()
                     .unwrap()
                     .update(&self.commands, trimmed, &context);
             } else {
                 let (screen, handle) =
                     CommandMenuScreen::new(CommandMenu::new(&self.commands, trimmed, &context));
-                self.command_menu = handle;
+                self.screens.command_menu = handle;
                 self.overlay = PendingScreen::Screen(Box::new(screen));
             }
-        } else if self.command_menu.upgrade().is_some() {
+        } else if self.screens.command_menu.upgrade().is_some() {
             self.overlay = PendingScreen::None;
         }
     }
 
     pub(crate) fn clamp_scroll(&mut self, viewport_height: u16, content_width: u16) {
-        self.viewport_rows = viewport_height;
+        self.viewport.rows = viewport_height;
         let max = self
             .content_height(content_width)
             .saturating_sub(usize::from(viewport_height));
-        if self.follow {
-            self.scroll = max;
+        if self.viewport.follow {
+            self.viewport.scroll = max;
         } else {
-            if self.scroll > max {
-                self.scroll = max;
+            if self.viewport.scroll > max {
+                self.viewport.scroll = max;
             }
-            self.follow = self.scroll >= max;
+            self.viewport.follow = self.viewport.scroll >= max;
         }
     }
 
     pub(crate) fn page_rows(&self) -> usize {
-        usize::from(self.viewport_rows.saturating_sub(1)).max(1)
+        usize::from(self.viewport.rows.saturating_sub(1)).max(1)
     }
 
     fn wheel_step(&self) -> usize {
-        (usize::from(self.viewport_rows) / 4).max(3)
+        (usize::from(self.viewport.rows) / 4).max(3)
     }
 
     pub(crate) fn wheel_scroll_allowed(&self) -> bool {
         matches!(self.overlay, PendingScreen::None)
-            || self.run_screen.upgrade().is_some()
-            || self.command_menu.upgrade().is_some()
-            || self.file_menu.upgrade().is_some()
+            || self.screens.run_screen.upgrade().is_some()
+            || self.screens.command_menu.upgrade().is_some()
+            || self.screens.file_menu.upgrade().is_some()
     }
 
     pub(crate) fn overlay_captures_text(&self) -> bool {
@@ -912,25 +959,25 @@ impl App {
     }
 
     pub(crate) fn selection_allowed(&self) -> bool {
-        matches!(self.overlay, PendingScreen::None) || self.run_screen.upgrade().is_some()
+        matches!(self.overlay, PendingScreen::None) || self.screens.run_screen.upgrade().is_some()
     }
 
     fn screen_to_cache(&self, col: u16, row: u16, clamp: bool) -> Option<(usize, u16)> {
-        let area = self.transcript_area;
+        let area = self.viewport.area;
         let selectable_len = self.active_transcript().selectable_len();
         if area.height == 0 || selectable_len == 0 {
             return None;
         }
-        let bottom = (self.scroll + usize::from(area.height))
+        let bottom = (self.viewport.scroll + usize::from(area.height))
             .min(selectable_len)
             .saturating_sub(1);
         let line = if row < area.y {
             if !clamp {
                 return None;
             }
-            self.scroll
+            self.viewport.scroll
         } else {
-            let candidate = self.scroll + usize::from(row - area.y);
+            let candidate = self.viewport.scroll + usize::from(row - area.y);
             if candidate > bottom {
                 if !clamp {
                     return None;
@@ -953,8 +1000,9 @@ impl App {
     }
 
     fn valid_selection(&self) -> Option<crate::select::Selection> {
-        self.selection
-            .filter(|_| self.active_transcript().version() == self.selection_version)
+        self.viewport
+            .selection
+            .filter(|_| self.active_transcript().version() == self.viewport.selection_version)
     }
 
     fn copy_selection(&mut self) {
@@ -967,7 +1015,7 @@ impl App {
         if text.is_empty() {
             return;
         }
-        self.pending_copy = Some(text);
+        self.host_actions.pending_copy = Some(text);
         self.toasts.push(crate::toast::Toast::new(
             goat_protocol::NotifyKind::Info,
             "copied".to_owned(),
@@ -976,11 +1024,11 @@ impl App {
     }
 
     pub(crate) fn take_pending_copy(&mut self) -> Option<String> {
-        self.pending_copy.take()
+        self.host_actions.pending_copy.take()
     }
 
     pub(crate) fn take_pending_open(&mut self) -> Option<String> {
-        self.pending_open.take()
+        self.host_actions.pending_open.take()
     }
 
     fn on_left_click(&mut self, col: u16, row: u16) {
@@ -991,7 +1039,7 @@ impl App {
             return;
         };
         if let Some(url) = self.active_transcript().url_at(line, content_col) {
-            self.pending_open = Some(url);
+            self.host_actions.pending_open = Some(url);
         } else if let Some(img) = self.active_transcript().image_at(line) {
             self.overlay = PendingScreen::Screen(Box::new(ImageZoomScreen::new(
                 Box::new(img),
@@ -1003,31 +1051,31 @@ impl App {
     fn on_left_down(&mut self, col: u16, row: u16) {
         let on_content = self.screen_to_cache(col, row, false).is_some();
         let Some(pos) = self.screen_to_cache(col, row, true) else {
-            self.selection = None;
-            self.last_click = None;
+            self.viewport.selection = None;
+            self.viewport.last_click = None;
             self.dirty = true;
             return;
         };
-        self.selection_version = self.active_transcript().version();
+        self.viewport.selection_version = self.active_transcript().version();
         let now = std::time::Instant::now();
         let double = on_content
-            && self.last_click.is_some_and(|(t, l, c)| {
+            && self.viewport.last_click.is_some_and(|(t, l, c)| {
                 l == pos.0
                     && c.abs_diff(pos.1) <= 1
                     && now.duration_since(t) < std::time::Duration::from_millis(400)
             });
         if double && let Some((lo, hi)) = self.active_transcript().word_bounds_at(pos.0, pos.1) {
-            self.selection = Some(crate::select::Selection {
+            self.viewport.selection = Some(crate::select::Selection {
                 anchor: (pos.0, lo),
                 focus: (pos.0, hi),
                 dragging: false,
             });
-            self.last_click = None;
+            self.viewport.last_click = None;
             self.dirty = true;
             return;
         }
-        self.selection = Some(crate::select::Selection::new(pos));
-        self.last_click = if on_content {
+        self.viewport.selection = Some(crate::select::Selection::new(pos));
+        self.viewport.last_click = if on_content {
             Some((now, pos.0, pos.1))
         } else {
             None
@@ -1039,12 +1087,12 @@ impl App {
         use crossterm::event::MouseButton;
         match mouse.kind {
             MouseEventKind::ScrollUp if self.wheel_scroll_allowed() => {
-                self.scroll = self.scroll.saturating_sub(self.wheel_step());
-                self.follow = false;
+                self.viewport.scroll = self.viewport.scroll.saturating_sub(self.wheel_step());
+                self.viewport.follow = false;
                 self.dirty = true;
             }
             MouseEventKind::ScrollDown if self.wheel_scroll_allowed() => {
-                self.scroll = self.scroll.saturating_add(self.wheel_step());
+                self.viewport.scroll = self.viewport.scroll.saturating_add(self.wheel_step());
                 self.dirty = true;
             }
             MouseEventKind::Down(MouseButton::Left) if self.selection_allowed() => {
@@ -1052,7 +1100,7 @@ impl App {
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(pos) = self.screen_to_cache(mouse.column, mouse.row, true)
-                    && let Some(sel) = self.selection.as_mut()
+                    && let Some(sel) = self.viewport.selection.as_mut()
                     && sel.dragging
                 {
                     sel.focus = pos;
@@ -1060,11 +1108,11 @@ impl App {
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                if let Some(sel) = self.selection {
+                if let Some(sel) = self.viewport.selection {
                     if sel.is_empty() {
-                        self.selection = None;
+                        self.viewport.selection = None;
                         self.on_left_click(mouse.column, mouse.row);
-                    } else if let Some(active) = self.selection.as_mut() {
+                    } else if let Some(active) = self.viewport.selection.as_mut() {
                         active.dragging = false;
                     }
                     self.dirty = true;
@@ -1079,7 +1127,7 @@ impl App {
     }
 
     pub(crate) fn theme(&self) -> Theme {
-        self.theme
+        self.settings.theme
     }
     pub(crate) fn transcript(&self) -> &Transcript {
         self.active_transcript()
@@ -1106,7 +1154,8 @@ impl App {
         self.turn.compacting = false;
     }
     pub(crate) fn promote_pending_ask(&mut self) {
-        if (matches!(self.overlay, PendingScreen::None) || self.command_menu.upgrade().is_some())
+        if (matches!(self.overlay, PendingScreen::None)
+            || self.screens.command_menu.upgrade().is_some())
             && let Some(screen) = self.pending.ask.take()
         {
             self.overlay = PendingScreen::Screen(Box::new(screen));
@@ -1116,11 +1165,14 @@ impl App {
     pub(crate) fn cwd(&self) -> &str {
         &self.cwd
     }
+    pub(crate) fn window_count(&self) -> usize {
+        self.session.window_count
+    }
     pub(crate) fn workspace_snapshot(&self) -> Option<&goat_worktree::Workspace> {
-        self.git_workspace.as_ref()
+        self.git.workspace.as_ref()
     }
     fn refresh_git_branch(&mut self) {
-        let Some(ws) = self.git_workspace.as_ref() else {
+        let Some(ws) = self.git.workspace.as_ref() else {
             return;
         };
         let Some(branch) = ws.head_branch() else {
@@ -1129,56 +1181,56 @@ impl App {
         if branch == ws.git_branch {
             return;
         }
-        if let Some(ws) = self.git_workspace.as_mut() {
+        if let Some(ws) = self.git.workspace.as_mut() {
             ws.git_branch = branch;
         }
-        self.pr = None;
-        self.pr_branch = None;
-        self.pr_poll = 0;
+        self.git.pull_request = None;
+        self.git.pull_request_branch = None;
+        self.git.pull_request_poll = 0;
         self.dirty = true;
     }
     pub(crate) fn forget_pull_request(&mut self) {
-        self.pr = None;
-        self.pr_branch = None;
-        self.pr_poll = 0;
+        self.git.pull_request = None;
+        self.git.pull_request_branch = None;
+        self.git.pull_request_poll = 0;
         self.dirty = true;
     }
     pub(crate) fn current_pr(&self) -> Option<&goat_github::PrInfo> {
-        let ws = self.git_workspace.as_ref()?;
-        if self.pr_branch.as_deref() == Some(ws.git_branch.as_str()) {
-            self.pr.as_ref()
+        let ws = self.git.workspace.as_ref()?;
+        if self.git.pull_request_branch.as_deref() == Some(ws.git_branch.as_str()) {
+            self.git.pull_request.as_ref()
         } else {
             None
         }
     }
     fn take_pending_pr_lookup(&mut self) -> Option<PrLookup> {
-        if !self.pr_enabled || self.pr_inflight {
+        if !self.git.pull_request_enabled || self.git.pull_request_inflight {
             return None;
         }
-        let ws = self.git_workspace.as_ref()?;
+        let ws = self.git.workspace.as_ref()?;
         if ws.git_branch.is_empty() {
             return None;
         }
-        let stale = self.pr_branch.as_deref() != Some(ws.git_branch.as_str());
-        if !stale && self.pr_poll > 0 {
+        let stale = self.git.pull_request_branch.as_deref() != Some(ws.git_branch.as_str());
+        if !stale && self.git.pull_request_poll > 0 {
             return None;
         }
-        self.pr_inflight = true;
-        self.pr_poll = PR_POLL_TICKS;
+        self.git.pull_request_inflight = true;
+        self.git.pull_request_poll = PR_POLL_TICKS;
         Some(PrLookup {
             repo_root: ws.repo_root.clone(),
             branch: ws.git_branch.clone(),
         })
     }
     pub(crate) fn quit_armed(&self) -> bool {
-        self.quit_arm.is_some()
+        self.arming.quit.is_some()
     }
     pub(crate) fn clear_armed(&self) -> bool {
-        self.clear_arm.is_some()
+        self.arming.clear.is_some()
     }
 
     pub(crate) fn rewind_armed(&self) -> bool {
-        self.rewind_arm.is_some()
+        self.arming.rewind.is_some()
     }
 
     pub(crate) fn push_toast(&mut self, kind: NotifyKind, message: String) {
@@ -1197,7 +1249,7 @@ impl App {
     }
 
     pub(crate) fn clear_ctx_indicator(&mut self) {
-        if let Some(model) = &self.model {
+        if let Some(model) = &self.catalog.selected {
             let key = (model.provider.clone(), model.account.clone());
             self.usage.last.remove(&key);
         }
@@ -1213,7 +1265,7 @@ impl App {
         if !self.is_busy() {
             return None;
         }
-        let grouped_agents = self.transcript.has_running_subagent_group();
+        let grouped_agents = self.viewport.transcript.has_running_subagent_group();
         let label = self
             .retry_status()
             .or_else(|| self.compacting_status())
@@ -1236,7 +1288,7 @@ impl App {
     }
 
     fn transcript_has_running_activity(&self) -> bool {
-        self.transcript.items.iter().any(|item| {
+        self.viewport.transcript.items.iter().any(|item| {
             matches!(
                 item,
                 crate::transcript::Item::Tool {
@@ -1283,7 +1335,7 @@ impl App {
     pub(crate) fn content_height(&self, width: u16) -> usize {
         self.active_transcript().content_height(
             width,
-            self.theme,
+            self.settings.theme,
             &self.highlighter,
             &self.cwd,
             self.working_state().as_ref(),
@@ -1291,7 +1343,7 @@ impl App {
         )
     }
     pub(crate) fn scroll(&self) -> usize {
-        self.scroll
+        self.viewport.scroll
     }
     pub(crate) fn overlay(&self) -> &PendingScreen {
         &self.overlay
@@ -1303,14 +1355,15 @@ impl App {
         self.mode.is_plan()
     }
     pub(crate) fn follow(&self) -> bool {
-        self.follow
+        self.viewport.follow
     }
     pub(crate) fn current_model(&self) -> Option<&ModelTarget> {
-        self.model.as_ref()
+        self.catalog.selected.as_ref()
     }
 
     pub(crate) fn provider_has_multiple_accounts(&self, provider: &str) -> bool {
-        self.account_entries
+        self.catalog
+            .accounts
             .iter()
             .find(|e| e.provider == provider)
             .is_some_and(|e| e.accounts.len() > 1)
@@ -1334,25 +1387,25 @@ impl App {
 
     fn set_main_view(&mut self, view: MainView) {
         if self.main_view != view {
-            self.selection = None;
-            self.last_click = None;
+            self.viewport.selection = None;
+            self.viewport.last_click = None;
         }
         self.main_view = view;
     }
 
     pub(crate) fn active_transcript(&self) -> &Transcript {
         match self.main_view {
-            MainView::Live => &self.transcript,
+            MainView::Live => &self.viewport.transcript,
             MainView::Subagent(id) => self
                 .subagent_runs
                 .iter()
                 .find(|run| run.id == id)
-                .map_or(&self.transcript, |run| &run.transcript),
+                .map_or(&self.viewport.transcript, |run| &run.transcript),
             MainView::Process(id) => self
                 .process_runs
                 .iter()
                 .find(|run| run.id == id)
-                .map_or(&self.transcript, |run| &run.transcript),
+                .map_or(&self.viewport.transcript, |run| &run.transcript),
         }
     }
 
@@ -1374,11 +1427,11 @@ impl App {
         if cursor >= self.run_row_count() {
             return;
         }
-        if let Some(state) = self.run_screen.upgrade() {
+        if let Some(state) = self.screens.run_screen.upgrade() {
             state.lock().unwrap().cursor = cursor;
         } else {
             let (screen, handle) = RunScreen::new(self.run_rows(), cursor);
-            self.run_screen = handle;
+            self.screens.run_screen = handle;
             self.overlay = PendingScreen::Screen(Box::new(screen));
         }
         self.dirty = true;
@@ -1392,13 +1445,13 @@ impl App {
         };
         if let Some(view) = view {
             self.set_main_view(view);
-            self.follow = true;
+            self.viewport.follow = true;
             self.dirty = true;
         }
     }
 
     fn sync_run_selector(&mut self) {
-        let Some(state) = self.run_screen.upgrade() else {
+        let Some(state) = self.screens.run_screen.upgrade() else {
             return;
         };
         if self.run_targets().is_empty() {
@@ -1439,12 +1492,13 @@ impl App {
     pub(crate) fn close_run_selector(&mut self) {
         self.overlay = PendingScreen::None;
         self.set_main_view(MainView::Live);
-        self.follow = true;
+        self.viewport.follow = true;
         self.dirty = true;
     }
 
     pub(crate) fn run_selector(&self) -> Option<usize> {
-        self.run_screen
+        self.screens
+            .run_screen
             .upgrade()
             .map(|state| state.lock().unwrap().cursor)
     }
@@ -1501,14 +1555,14 @@ impl App {
     }
 
     pub(crate) fn current_context_window(&self) -> Option<u32> {
-        let model = self.model.as_ref()?;
+        let model = self.catalog.selected.as_ref()?;
         self.context_window
             .get(&(model.provider.clone(), model.account.clone()))
             .copied()
     }
 
     pub(crate) fn ctx_indicator(&self) -> Option<(f32, u64, u32)> {
-        let model = self.model.as_ref()?;
+        let model = self.catalog.selected.as_ref()?;
         let window = self.current_context_window()?;
         let key = (model.provider.clone(), model.account.clone());
         let usage = self.usage.last.get(&key)?;
@@ -1519,7 +1573,7 @@ impl App {
     }
 
     pub(crate) fn rate_limit_indicator(&self) -> Option<Vec<(String, f32)>> {
-        let model = self.model.as_ref()?;
+        let model = self.catalog.selected.as_ref()?;
         let key = (model.provider.clone(), model.account.clone());
         let (snapshot, _) = self.usage.rate_limits.get(&key)?;
         (!snapshot.windows.is_empty()).then(|| {
@@ -1534,12 +1588,12 @@ impl App {
 
 impl Settings for App {
     fn theme(&self) -> Theme {
-        self.theme
+        self.settings.theme
     }
 
     fn set_theme(&mut self, theme: Theme) {
-        self.theme = theme.with_base(self.terminal_bg);
-        self.transcript.invalidate();
+        self.settings.theme = theme.with_base(self.settings.terminal_bg);
+        self.viewport.transcript.invalidate();
         for run in &mut self.subagent_runs {
             run.transcript.invalidate();
         }
@@ -1553,11 +1607,11 @@ impl Settings for App {
     }
 
     fn mouse_capture(&self) -> bool {
-        self.mouse_capture
+        self.settings.mouse_capture
     }
 
     fn set_mouse_capture(&mut self, enabled: bool) {
-        self.mouse_capture = enabled;
+        self.settings.mouse_capture = enabled;
         tui::set_mouse_capture(enabled);
         let mut cfg = goat_config::Config::load();
         cfg.mouse_capture_enabled = enabled;
@@ -1565,22 +1619,22 @@ impl Settings for App {
     }
 
     fn computer_use(&self) -> bool {
-        self.computer_use
+        self.settings.computer_use
     }
 
     fn set_computer_use(&mut self, enabled: bool) {
-        self.computer_use = enabled;
+        self.settings.computer_use = enabled;
         let mut cfg = goat_config::Config::load();
         cfg.computer_use_enabled = enabled;
         self.persist_config(&cfg);
     }
 
     fn browser(&self) -> bool {
-        self.browser
+        self.settings.browser
     }
 
     fn set_browser(&mut self, enabled: bool) {
-        self.browser = enabled;
+        self.settings.browser = enabled;
         let mut cfg = goat_config::Config::load();
         cfg.browser_enabled = enabled;
         self.persist_config(&cfg);
@@ -1589,20 +1643,20 @@ impl Settings for App {
 
 impl Viewport for App {
     fn scroll(&self) -> usize {
-        self.scroll
+        self.viewport.scroll
     }
 
     fn set_scroll(&mut self, scroll: usize) {
-        self.scroll = scroll;
+        self.viewport.scroll = scroll;
         self.dirty = true;
     }
 
     fn follow(&self) -> bool {
-        self.follow
+        self.viewport.follow
     }
 
     fn set_follow(&mut self, follow: bool) {
-        self.follow = follow;
+        self.viewport.follow = follow;
         self.dirty = true;
     }
 
@@ -1633,11 +1687,11 @@ impl Viewport for App {
 
 impl Session for App {
     fn models(&self) -> &[ModelEntry] {
-        &self.models
+        &self.catalog.models
     }
 
     fn current_model(&self) -> Option<&ModelTarget> {
-        self.model.as_ref()
+        self.catalog.selected.as_ref()
     }
 
     fn threads(&self) -> &[goat_protocol::ThreadSummary] {
@@ -1653,34 +1707,34 @@ impl Session for App {
     }
 
     fn accounts(&self) -> &[AccountEntry] {
-        &self.account_entries
+        &self.catalog.accounts
     }
 
     fn snapshot(&self) -> SessionSnapshot {
         SessionSnapshot {
-            session_id: self.session_id,
-            client_id: self.client_id,
-            thread_id: self.thread_id,
-            daemon: self.daemon.clone(),
-            model: self.model.clone(),
-            models_loaded: self.models_loaded,
+            session_id: self.session.session_id,
+            client_id: self.session.client_id,
+            thread_id: self.session.thread_id,
+            daemon: self.session.daemon.clone(),
+            model: self.catalog.selected.clone(),
+            models_loaded: self.catalog.loaded,
             mode: self.mode,
             plan_path: self.plan_path.clone(),
             cwd: self.cwd.clone(),
             remote: self.remote.clone(),
-            workspace: self.git_workspace.clone(),
+            workspace: self.git.workspace.clone(),
             pull_request: self.current_pr().cloned(),
-            window_count: self.window_count,
+            window_count: self.session.window_count,
             queued_count: self.queued.len(),
             process_count: self.processes.len(),
             skill_count: self.commands.specs().len(),
-            transcript_entries: self.transcript.entry_count(),
-            mouse_capture: self.mouse_capture,
-            computer_use: self.computer_use,
-            browser: self.browser,
-            dark_theme: self.theme.is_dark(),
+            transcript_entries: self.viewport.transcript.entry_count(),
+            mouse_capture: self.settings.mouse_capture,
+            computer_use: self.settings.computer_use,
+            browser: self.settings.browser,
+            dark_theme: self.settings.theme.is_dark(),
             log_path: goat_config::log_dir().map(|dir| format!("{}/goat.log", dir.display())),
-            started: self.started,
+            started: self.session.started,
         }
     }
 
@@ -1747,7 +1801,7 @@ pub async fn run(
     initial_ops: Vec<Op>,
 ) -> color_eyre::Result<ExitReason> {
     let mut app = App::new(theme, &origin);
-    let (mut terminal, picker, background) = tui::init(app.mouse_capture)?;
+    let (mut terminal, picker, background) = tui::init(app.settings.mouse_capture)?;
     app.picker = picker.map(std::sync::Arc::new);
     app.set_terminal_bg(background);
     let result = event_loop(
@@ -1949,8 +2003,8 @@ mod tests {
             &Origin::remote("/srv/work".to_owned(), "box".to_owned()),
         );
         assert_eq!(app.cwd(), "box:/srv/work");
-        assert!(!app.pr_enabled);
-        assert!(app.git_workspace.is_none());
+        assert!(!app.git.pull_request_enabled);
+        assert!(app.git.workspace.is_none());
     }
 
     #[test]
@@ -2130,7 +2184,8 @@ mod tests {
     }
 
     fn user_lines(app: &App) -> usize {
-        app.transcript
+        app.viewport
+            .transcript
             .items
             .iter()
             .filter(|item| matches!(item, crate::transcript::Item::User(_)))
@@ -2176,14 +2231,14 @@ mod tests {
             attachments: Vec::new(),
         });
         assert_eq!(user_lines(&app), 1);
-        assert!(app.follow);
+        assert!(app.viewport.follow);
     }
 
     #[test]
     fn steering_echo_does_not_reset_agents() {
         let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::TaskStarted { id: TaskId(1) });
-        app.follow = false;
+        app.viewport.follow = false;
         app.on_engine(EngineEvent::UserMessage {
             id: TaskId(2),
             text: "mid turn".to_owned(),
@@ -2191,7 +2246,7 @@ mod tests {
             attachments: Vec::new(),
         });
         assert_eq!(user_lines(&app), 1);
-        assert!(!app.follow, "mid-turn echo does not force follow");
+        assert!(!app.viewport.follow, "mid-turn echo does not force follow");
     }
 
     #[test]
@@ -2359,7 +2414,7 @@ mod tests {
         assert!(app.turn.active.is_some());
         assert!(app.turn.active_shell);
         assert!(matches!(
-            app.transcript.items.last(),
+            app.viewport.transcript.items.last(),
             Some(crate::transcript::Item::Shell { .. })
         ));
     }
@@ -2430,7 +2485,7 @@ mod tests {
         assert!(app.turn.active.is_none());
         assert!(!app.turn.active_shell);
         assert!(matches!(
-            app.transcript.items.last(),
+            app.viewport.transcript.items.last(),
             Some(crate::transcript::Item::Shell {
                 status: crate::transcript::ShellStatus::Done(output),
                 ..
@@ -2566,16 +2621,16 @@ mod tests {
     #[test]
     fn scroll_follow_resets_on_submit() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        app.follow = false;
+        app.viewport.follow = false;
         app.composer.insert_str("hello");
         app.submit();
-        assert!(app.follow);
+        assert!(app.viewport.follow);
     }
 
     fn filled_app() -> App {
         let mut app = App::new(Theme::dark(), &test_origin());
         for i in 0..30 {
-            app.transcript.push_user(format!("message {i}"));
+            app.viewport.transcript.push_user(format!("message {i}"));
         }
         app.clamp_scroll(10, 80);
         app
@@ -2595,8 +2650,8 @@ mod tests {
     #[test]
     fn clamp_scroll_materializes_bottom_when_following() {
         let app = filled_app();
-        assert!(app.follow);
-        assert_eq!(app.scroll, app.content_height(80) - 10);
+        assert!(app.viewport.follow);
+        assert_eq!(app.viewport.scroll, app.content_height(80) - 10);
     }
 
     #[test]
@@ -2604,14 +2659,14 @@ mod tests {
         use crossterm::event::MouseEventKind;
         let mut app = filled_app();
         app.update(mouse(MouseEventKind::ScrollUp));
-        assert!(!app.follow);
+        assert!(!app.viewport.follow);
         app.clamp_scroll(10, 80);
-        assert!(!app.follow);
+        assert!(!app.viewport.follow);
         for _ in 0..40 {
             app.update(mouse(MouseEventKind::ScrollDown));
         }
         app.clamp_scroll(10, 80);
-        assert!(app.follow);
+        assert!(app.viewport.follow);
     }
 
     #[test]
@@ -2620,57 +2675,57 @@ mod tests {
         let mut app = filled_app();
         app.update(mouse(MouseEventKind::ScrollUp));
         app.clamp_scroll(10, 80);
-        let before = app.scroll;
+        let before = app.viewport.scroll;
         app.dispatch_slash_command("/model");
         app.update(mouse(MouseEventKind::ScrollUp));
-        assert_eq!(app.scroll, before);
+        assert_eq!(app.viewport.scroll, before);
     }
 
     #[test]
     fn home_and_end_jump_transcript_when_composer_empty() {
         let mut app = filled_app();
         app.on_key(press(KeyCode::Home, KeyModifiers::NONE));
-        assert_eq!(app.scroll, 0);
-        assert!(!app.follow);
+        assert_eq!(app.viewport.scroll, 0);
+        assert!(!app.viewport.follow);
         app.clamp_scroll(10, 80);
-        assert_eq!(app.scroll, 0);
+        assert_eq!(app.viewport.scroll, 0);
         app.on_key(press(KeyCode::End, KeyModifiers::NONE));
         app.clamp_scroll(10, 80);
-        assert!(app.follow);
-        assert_eq!(app.scroll, app.content_height(80) - 10);
+        assert!(app.viewport.follow);
+        assert_eq!(app.viewport.scroll, app.content_height(80) - 10);
     }
 
     #[test]
     fn page_up_scrolls_by_viewport_and_unfollows() {
         let mut app = filled_app();
-        let bottom = app.scroll;
+        let bottom = app.viewport.scroll;
         app.on_key(press(KeyCode::PageUp, KeyModifiers::NONE));
-        assert!(!app.follow);
-        assert_eq!(app.scroll, bottom - 9);
+        assert!(!app.viewport.follow);
+        assert_eq!(app.viewport.scroll, bottom - 9);
     }
 
     #[test]
     fn clear_command_empties_transcript_and_emits_clear() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        app.transcript.push_user("earlier message");
-        app.scroll = 9;
-        app.follow = false;
+        app.viewport.transcript.push_user("earlier message");
+        app.viewport.scroll = 9;
+        app.viewport.follow = false;
         app.composer.insert_str("/clear");
         let ops = app.submit();
         assert!(matches!(ops.as_slice(), [Op::Clear {}]));
-        assert!(app.transcript.items.is_empty());
-        assert_eq!(app.scroll, 0);
-        assert!(app.follow);
+        assert!(app.viewport.transcript.items.is_empty());
+        assert_eq!(app.viewport.scroll, 0);
+        assert!(app.viewport.follow);
     }
 
     #[test]
     fn clear_command_rebinds_even_while_active() {
         let mut app = App::new(Theme::dark(), &test_origin());
         app.turn.active = Some(TaskId(1));
-        app.transcript.push_user("in flight");
+        app.viewport.transcript.push_user("in flight");
         let ops = app.dispatch_slash_command("/clear");
         assert_eq!(ops, vec![Op::Clear {}]);
-        assert!(app.transcript.items.is_empty());
+        assert!(app.viewport.transcript.items.is_empty());
         assert!(app.turn.active.is_none());
     }
 
@@ -2768,7 +2823,7 @@ mod tests {
             &app.overlay,
             PendingScreen::Screen(screen) if matches!(screen.placement(), goat_command::Placement::Overlay)
         ));
-        assert!(app.transcript.items.is_empty());
+        assert!(app.viewport.transcript.items.is_empty());
     }
 
     #[test]
@@ -2878,7 +2933,7 @@ mod tests {
         select_model(&mut app, "openai", "gpt");
         let ops = app.dispatch_slash_command("/effort max");
         assert!(ops.is_empty());
-        assert!(app.transcript.items.is_empty());
+        assert!(app.viewport.transcript.items.is_empty());
         assert_eq!(app.toasts.len(), 1);
     }
 
@@ -3046,7 +3101,7 @@ mod tests {
     fn conversation_restored_rebuilds_transcript() {
         use goat_protocol::{ToolCall, ToolCallId, ToolOutcome, TranscriptEntry};
         let mut app = App::new(Theme::dark(), &test_origin());
-        app.transcript.push_user("stale");
+        app.viewport.transcript.push_user("stale");
         app.on_engine(EngineEvent::ConversationRestored {
             target: ModelTarget {
                 provider: "anthropic".to_owned(),
@@ -3080,13 +3135,13 @@ mod tests {
                 },
             ],
         });
-        assert_eq!(app.transcript.items.len(), 3);
+        assert_eq!(app.viewport.transcript.items.len(), 3);
         assert!(matches!(
-            &app.transcript.items[0],
+            &app.viewport.transcript.items[0],
             crate::transcript::Item::User(_)
         ));
         assert!(matches!(
-            &app.transcript.items[2],
+            &app.viewport.transcript.items[2],
             crate::transcript::Item::Tool { .. }
         ));
         assert_eq!(
@@ -3145,7 +3200,7 @@ mod tests {
             },
         });
 
-        assert_eq!(app.transcript.items.len(), 2);
+        assert_eq!(app.viewport.transcript.items.len(), 2);
         assert_eq!(app.subagent_runs[0].transcript.items.len(), 1);
         assert!(app.subagent_status().is_some_and(|s| s.contains("explore")));
 
@@ -3200,7 +3255,7 @@ mod tests {
                 },
             });
         }
-        assert_eq!(app.transcript.items.len(), 1);
+        assert_eq!(app.viewport.transcript.items.len(), 1);
         assert!(app.working_state().is_none());
 
         let child = TaskId(8);
@@ -3254,7 +3309,8 @@ mod tests {
             },
         });
 
-        let crate::transcript::Item::SubagentGroup(group) = &app.transcript.items[0] else {
+        let crate::transcript::Item::SubagentGroup(group) = &app.viewport.transcript.items[0]
+        else {
             panic!("expected agent group")
         };
         assert_eq!(group.members[0].tools, 1);
@@ -3312,7 +3368,7 @@ mod tests {
     #[test]
     fn ctx_and_rate_limit_indicators_use_active_model() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        app.model = Some(ModelTarget {
+        app.catalog.selected = Some(ModelTarget {
             provider: "anthropic".to_owned(),
             model: "sonnet".to_owned(),
             account: "default".to_owned(),
@@ -3367,7 +3423,7 @@ mod tests {
     #[test]
     fn usage_attributes_to_event_model_not_current() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        app.model = Some(ModelTarget {
+        app.catalog.selected = Some(ModelTarget {
             provider: "anthropic".to_owned(),
             model: "sonnet".to_owned(),
             account: "default".to_owned(),
@@ -3410,11 +3466,11 @@ mod tests {
     fn presence_updates_window_count_and_marks_dirty() {
         let mut app = App::new(Theme::dark(), &test_origin());
         app.take_dirty();
-        assert_eq!(app.window_count, 1);
+        assert_eq!(app.session.window_count, 1);
 
         let ops = app.update(super::AppEvent::Presence(3));
         assert!(ops.is_empty());
-        assert_eq!(app.window_count, 3);
+        assert_eq!(app.session.window_count, 3);
         assert!(app.take_dirty());
     }
 

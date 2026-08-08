@@ -18,9 +18,9 @@ impl App {
             if ch == 'c' {
                 return self.on_ctrl_c();
             }
-            self.quit_arm = None;
-            self.clear_arm = None;
-            self.rewind_arm = None;
+            self.arming.quit = None;
+            self.arming.clear = None;
+            self.arming.rewind = None;
             match ch {
                 'a' => {
                     self.dirty |= self.composer.move_home();
@@ -34,16 +34,16 @@ impl App {
                     self.dirty = true;
                 }
                 't' => {
-                    self.dirty |= self.transcript.toggle_thinking();
+                    self.dirty |= self.viewport.transcript.toggle_thinking();
                 }
                 _ => {}
             }
             return Vec::new();
         }
-        self.quit_arm = None;
+        self.arming.quit = None;
         if !matches!(key.code, KeyCode::Esc) {
-            self.clear_arm = None;
-            self.rewind_arm = None;
+            self.arming.clear = None;
+            self.arming.rewind = None;
         }
         let mut ops = self.on_normal_key(key);
         ops.extend(self.tick_screen());
@@ -60,13 +60,13 @@ impl App {
                 vec![Op::SetMode { mode }]
             }
             KeyCode::PageUp => {
-                self.scroll = self.scroll.saturating_sub(self.page_rows());
-                self.follow = false;
+                self.viewport.scroll = self.viewport.scroll.saturating_sub(self.page_rows());
+                self.viewport.follow = false;
                 self.dirty = true;
                 Vec::new()
             }
             KeyCode::PageDown => {
-                self.scroll = self.scroll.saturating_add(self.page_rows());
+                self.viewport.scroll = self.viewport.scroll.saturating_add(self.page_rows());
                 self.dirty = true;
                 Vec::new()
             }
@@ -124,8 +124,8 @@ impl App {
             }
             KeyCode::Home => {
                 if self.composer.is_empty() {
-                    self.scroll = 0;
-                    self.follow = false;
+                    self.viewport.scroll = 0;
+                    self.viewport.follow = false;
                     self.dirty = true;
                 } else {
                     self.dirty |= self.composer.move_home();
@@ -134,7 +134,7 @@ impl App {
             }
             KeyCode::End => {
                 if self.composer.is_empty() {
-                    self.follow = true;
+                    self.viewport.follow = true;
                     self.dirty = true;
                 } else {
                     self.dirty |= self.composer.move_end();
@@ -163,33 +163,33 @@ impl App {
             }
             KeyCode::Esc => {
                 self.dirty = true;
-                if self.selection.take().is_some() {
+                if self.viewport.selection.take().is_some() {
                     return Vec::new();
                 }
                 if let Some(id) = self.turn.active {
-                    self.clear_arm = None;
-                    self.rewind_arm = None;
+                    self.arming.clear = None;
+                    self.arming.rewind = None;
                     return vec![Op::Interrupt { id }];
                 }
                 self.overlay = PendingScreen::None;
                 if self.composer.is_empty() {
-                    self.clear_arm = None;
+                    self.arming.clear = None;
                     if self.composer.shell() {
-                        self.rewind_arm = None;
+                        self.arming.rewind = None;
                         self.composer.exit_shell();
                         return Vec::new();
                     }
-                    if self.rewind_arm.take().is_some() {
+                    if self.arming.rewind.take().is_some() {
                         return self.request_rewind();
                     }
-                    self.rewind_arm = Some(CLEAR_ARM_TICKS);
+                    self.arming.rewind = Some(CLEAR_ARM_TICKS);
                     return Vec::new();
                 }
-                self.rewind_arm = None;
-                if self.clear_arm.take().is_some() {
+                self.arming.rewind = None;
+                if self.arming.clear.take().is_some() {
                     self.composer.discard();
                 } else {
-                    self.clear_arm = Some(CLEAR_ARM_TICKS);
+                    self.arming.clear = Some(CLEAR_ARM_TICKS);
                 }
                 Vec::new()
             }
@@ -210,18 +210,18 @@ impl App {
 
     pub(crate) fn on_ctrl_c(&mut self) -> Vec<Op> {
         self.dirty = true;
-        self.clear_arm = None;
+        self.arming.clear = None;
         if self.turn.active_shell
             && let Some(id) = self.turn.active
         {
             return vec![Op::Interrupt { id }];
         }
-        if self.quit_arm.is_some() {
+        if self.arming.quit.is_some() {
             self.exit_requested = true;
             self.should_quit = true;
         } else {
             self.composer.discard();
-            self.quit_arm = Some(QUIT_ARM_TICKS);
+            self.arming.quit = Some(QUIT_ARM_TICKS);
         }
         Vec::new()
     }
