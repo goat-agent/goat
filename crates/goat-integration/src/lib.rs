@@ -78,10 +78,10 @@ impl IntegrationRuntime {
         agent: AgentId,
         integration: &IntegrationId,
         account: &str,
-        stream: &str,
+        state_key: &str,
     ) -> IntegrationResult<Option<String>> {
         self.store
-            .integration_state(agent, integration.as_str(), account, stream)
+            .integration_state(agent, integration.as_str(), account, state_key)
             .await
             .map_err(|e| store_err(&e))
     }
@@ -91,11 +91,25 @@ impl IntegrationRuntime {
         agent: AgentId,
         integration: &IntegrationId,
         account: &str,
-        stream: &str,
+        state_key: &str,
         state: &str,
     ) -> IntegrationResult<()> {
         self.store
-            .set_integration_state(agent, integration.as_str(), account, stream, state)
+            .set_integration_state(agent, integration.as_str(), account, state_key, state)
+            .await
+            .map_err(|e| store_err(&e))
+    }
+
+    pub async fn migrate_state(
+        &self,
+        agent: AgentId,
+        integration: &IntegrationId,
+        account: &str,
+        legacy_key: &str,
+        state_key: &str,
+    ) -> IntegrationResult<Option<String>> {
+        self.store
+            .migrate_integration_state(agent, integration.as_str(), account, legacy_key, state_key)
             .await
             .map_err(|e| store_err(&e))
     }

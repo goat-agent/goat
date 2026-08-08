@@ -32,6 +32,7 @@ pub fn defaults(binding: &IntegrationBinding) -> Vec<WatchSpec> {
         return Vec::new();
     }
     vec![WatchSpec {
+        state_key: STREAM.to_owned(),
         stream: STREAM.to_owned(),
         query: DEFAULT_QUERY.to_owned(),
     }]
@@ -216,6 +217,7 @@ mod tests {
         assert_eq!(
             defaults(&bound),
             vec![WatchSpec {
+                state_key: STREAM.to_owned(),
                 stream: STREAM.to_owned(),
                 query: DEFAULT_QUERY.to_owned(),
             }]

@@ -152,10 +152,12 @@ mod tests {
             GithubIntegration.default_watch(&binding),
             vec![
                 WatchSpec {
+                    state_key: "review".to_owned(),
                     stream: "review".to_owned(),
                     query: "is:open is:pr review-requested:@me".to_owned(),
                 },
                 WatchSpec {
+                    state_key: "assigned".to_owned(),
                     stream: "assigned".to_owned(),
                     query: "is:open assignee:@me".to_owned(),
                 },

@@ -50,6 +50,7 @@ pub struct WatchWorkflow {
 pub struct WatchSourceEntry {
     pub source: String,
     pub query: String,
+    pub id: Option<String>,
     pub stream: Option<String>,
 }
 

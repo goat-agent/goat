@@ -494,9 +494,14 @@ fn declared_watch(
                             .stream
                             .clone()
                             .unwrap_or_else(|| workflow.name.clone());
+                        let state_key = entry.id.as_ref().map_or_else(
+                            || format!("query:{}", entry.query),
+                            |id| format!("id:{id}"),
+                        );
                         (
                             entry.source.clone(),
                             WatchSpec {
+                                state_key,
                                 stream,
                                 query: entry.query.clone(),
                             },
@@ -551,9 +556,17 @@ fn resolve_watch_sources(
                 reject("the integration is not bound to this agent");
                 continue;
             };
-            let key = (name.clone(), binding.account.clone(), spec.stream.clone());
+            if spec.state_key == "id:" {
+                reject("source `id` cannot be empty");
+                continue;
+            }
+            let key = (
+                name.clone(),
+                binding.account.clone(),
+                spec.state_key.clone(),
+            );
             if !seen.insert(key) {
-                reject("duplicate stream; name it explicitly with `stream`");
+                reject("duplicate source identity; set a unique `id`");
                 continue;
             }
             resolved.push(ResolvedSource {
@@ -635,6 +648,7 @@ fn build_watch_plan(raw: &AgentConfig, shared: &RuntimeShared) -> (Vec<Workflow>
         let entry = WorkflowSource {
             integration: source.integration.id(),
             account: source.binding.account,
+            state_key: source.spec.state_key,
             stream: source.spec.stream,
             compiled,
         };
@@ -1283,6 +1297,7 @@ mod tests {
             sources: vec![goat_agent_config::WatchSourceEntry {
                 source: "fake".into(),
                 query: query.into(),
+                id: None,
                 stream: None,
             }],
         }]);

@@ -116,6 +116,7 @@ impl WatchContract {
         WorkflowSource {
             integration: self.integration.clone(),
             account: "default".to_owned(),
+            state_key: self.stream.clone(),
             stream: self.stream.clone(),
             compiled: CompiledWatch {
                 kind: self.kind,
@@ -324,6 +325,7 @@ async fn unreadable_state_starts_cold_instead_of_replaying(contract: &WatchContr
         &contract.integration,
         "default",
         &contract.stream,
+        &contract.stream,
     )
     .await
     .unwrap();
@@ -342,6 +344,7 @@ fn bundle_source(name: &'static str, diff: DiffOps, source: ScriptedSource) -> W
     WorkflowSource {
         integration: IntegrationId::from_static(name),
         account: "default".to_owned(),
+        state_key: "inbox".to_owned(),
         stream: "inbox".to_owned(),
         compiled: CompiledWatch {
             kind: IntegrationUpdateKind::Assigned,

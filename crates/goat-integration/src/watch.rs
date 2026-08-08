@@ -90,6 +90,7 @@ impl<S: WatchSource> DynWatchSource for S {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WatchSpec {
+    pub state_key: String,
     pub stream: String,
     pub query: String,
 }
@@ -104,6 +105,7 @@ pub struct CompiledWatch {
 pub struct WorkflowSource {
     pub integration: IntegrationId,
     pub account: String,
+    pub state_key: String,
     pub stream: String,
     pub compiled: CompiledWatch,
 }
@@ -320,13 +322,24 @@ pub async fn load_state(
     agent: AgentId,
     integration: &IntegrationId,
     account: &str,
-    stream: &str,
+    state_key: &str,
+    legacy_stream: &str,
 ) -> IntegrationResult<Option<WatchState>> {
-    let Some(raw) = runtime
-        .load_state(agent, integration, account, stream)
+    let raw = match runtime
+        .load_state(agent, integration, account, state_key)
         .await?
-    else {
-        return Ok(None);
+    {
+        Some(raw) => raw,
+        None if state_key != legacy_stream => {
+            let Some(raw) = runtime
+                .migrate_state(agent, integration, account, legacy_stream, state_key)
+                .await?
+            else {
+                return Ok(None);
+            };
+            raw
+        }
+        None => return Ok(None),
     };
     match serde_json::from_str::<WatchState>(&raw) {
         Ok(state) => Ok(Some(state)),
@@ -335,7 +348,7 @@ pub async fn load_state(
                 agent = %agent,
                 account = %account,
                 integration = %integration,
-                stream = %stream,
+                state_key = %state_key,
                 error = %e,
                 "stored watcher state is unreadable; starting cold and briefing nothing this poll",
             );
@@ -355,6 +368,7 @@ async fn process_source(
         agent,
         &source.integration,
         &source.account,
+        &source.state_key,
         &source.stream,
     )
     .await?;
@@ -398,7 +412,7 @@ async fn process_source(
             agent,
             &source.integration,
             &source.account,
-            &source.stream,
+            &source.state_key,
             &raw,
         )
         .await?;
@@ -469,7 +483,21 @@ fn publish(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use goat_auth::CredentialStore;
+    use goat_bus::EventBus;
+    use goat_store::SqliteStore;
+
     use super::*;
+
+    struct EmptySource;
+
+    impl WatchSource for EmptySource {
+        async fn fetch(&self) -> IntegrationResult<WatchPage> {
+            Ok(WatchPage::default())
+        }
+    }
 
     #[test]
     fn backoff_grows_and_caps() {
@@ -512,6 +540,75 @@ mod tests {
         let (acquired, at) = received.await.unwrap();
         assert!(acquired);
         assert_eq!(at.duration_since(started), SOURCE_GAP);
+    }
+
+    #[tokio::test]
+    async fn migrated_state_survives_a_display_rename_without_refiring() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&dir.path().join("goat.db"))
+            .await
+            .unwrap();
+        let runtime = IntegrationRuntime::new(
+            CredentialStore::new(dir.path().join("credentials.json")),
+            Arc::new(store),
+            EventBus::new(),
+        );
+        let agent = AgentId::from_slug("state-migration");
+        runtime
+            .store
+            .ensure_agent(agent, "state-migration", "State Migration")
+            .await
+            .unwrap();
+        let integration = IntegrationId::from_static("sentry");
+        let item = Observed::new("ISSUE-7", "2026-08-07", "existing", Value::Null);
+        let (state, _) = (crate::diff::RETAIN.diff)(None, std::slice::from_ref(&item));
+        runtime
+            .save_state(
+                agent,
+                &integration,
+                "default",
+                "issues",
+                &serde_json::to_string(&state).unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut source = WorkflowSource {
+            integration: integration.clone(),
+            account: "default".to_owned(),
+            state_key: "id:sentry-inbox".to_owned(),
+            stream: "issues".to_owned(),
+            compiled: CompiledWatch {
+                kind: IntegrationUpdateKind::Updated,
+                entity: "issue",
+                diff: crate::diff::RETAIN,
+                source: Box::new(EmptySource),
+            },
+        };
+
+        let first = process_source(&source, agent, &runtime, WatchPage::new(vec![item.clone()]))
+            .await
+            .unwrap();
+        source.stream = "errors".to_owned();
+        let after_rename = process_source(&source, agent, &runtime, WatchPage::new(vec![item]))
+            .await
+            .unwrap();
+
+        assert!(first.is_empty());
+        assert!(after_rename.is_empty());
+        assert!(
+            runtime
+                .load_state(agent, &integration, "default", "issues")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            runtime
+                .load_state(agent, &integration, "default", "id:sentry-inbox")
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

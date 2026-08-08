@@ -214,6 +214,7 @@ mod tests {
         let runtime = goat_integration::test_support::runtime_in(dir.path()).await;
         let binding = IntegrationBinding::from_config(json!({ "query_tool": "custom_query" }));
         let spec = WatchSpec {
+            state_key: crate::STREAM.to_owned(),
             stream: crate::STREAM.to_owned(),
             query: "view:https://www.notion.so/x?v=1".to_owned(),
         };

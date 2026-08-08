@@ -164,6 +164,7 @@ fn watch_from_config(
                 .map(|entry| WatchSourceEntry {
                     source: entry.source,
                     query: entry.query,
+                    id: entry.id,
                     stream: entry.stream,
                 })
                 .collect(),
@@ -176,6 +177,8 @@ fn watch_from_config(
 struct WatchEntryRuntimeConfig {
     source: String,
     query: String,
+    #[serde(default)]
+    id: Option<String>,
     #[serde(default)]
     stream: Option<String>,
 }
@@ -358,7 +361,7 @@ mod tests {
             r#"{ "model": "anthropic/claude-x",
                  "watch": { "inbox": [
                    { "source": "linear", "query": "assignee:@me is:open" },
-                   { "source": "github", "query": "is:open assignee:@me", "stream": "assigned" }
+                   { "source": "github", "query": "is:open assignee:@me", "id": "github-assigned", "stream": "assigned" }
                  ] } }"#,
         )
         .unwrap();
@@ -369,7 +372,9 @@ mod tests {
         assert_eq!(watch[0].name, "inbox");
         assert_eq!(watch[0].sources.len(), 2);
         assert_eq!(watch[0].sources[0].source, "linear");
+        assert_eq!(watch[0].sources[0].id, None);
         assert_eq!(watch[0].sources[0].stream, None);
+        assert_eq!(watch[0].sources[1].id.as_deref(), Some("github-assigned"));
         assert_eq!(watch[0].sources[1].stream.as_deref(), Some("assigned"));
     }
 

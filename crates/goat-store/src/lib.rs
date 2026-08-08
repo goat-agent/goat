@@ -445,7 +445,7 @@ pub trait Store: Send + Sync + 'static {
         agent: AgentId,
         integration: &str,
         account: &str,
-        stream: &str,
+        state_key: &str,
     ) -> StoreResult<Option<String>>;
 
     async fn set_integration_state(
@@ -453,9 +453,18 @@ pub trait Store: Send + Sync + 'static {
         agent: AgentId,
         integration: &str,
         account: &str,
-        stream: &str,
+        state_key: &str,
         state: &str,
     ) -> StoreResult<()>;
+
+    async fn migrate_integration_state(
+        &self,
+        agent: AgentId,
+        integration: &str,
+        account: &str,
+        legacy_key: &str,
+        state_key: &str,
+    ) -> StoreResult<Option<String>>;
 
     async fn record_observation(&self, new: NewObservation) -> StoreResult<i64>;
 
@@ -1360,16 +1369,16 @@ impl Store for SqliteStore {
         agent: AgentId,
         integration: &str,
         account: &str,
-        stream: &str,
+        state_key: &str,
     ) -> StoreResult<Option<String>> {
         let row: Option<(String,)> = sqlx::query_as(
             r"SELECT state FROM integration_state
-               WHERE agent_id = ? AND integration = ? AND account = ? AND stream = ?",
+               WHERE agent_id = ? AND integration = ? AND account = ? AND state_key = ?",
         )
         .bind(agent.to_string())
         .bind(integration)
         .bind(account)
-        .bind(stream)
+        .bind(state_key)
         .fetch_optional(&*self.pool)
         .await?;
         Ok(row.map(|(state,)| state))
@@ -1380,25 +1389,60 @@ impl Store for SqliteStore {
         agent: AgentId,
         integration: &str,
         account: &str,
-        stream: &str,
+        state_key: &str,
         state: &str,
     ) -> StoreResult<()> {
         sqlx::query(
             r"INSERT INTO integration_state
-               (agent_id, integration, account, stream, state, updated_at)
+               (agent_id, integration, account, state_key, state, updated_at)
                VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(agent_id, integration, account, stream)
+               ON CONFLICT(agent_id, integration, account, state_key)
                DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
         )
         .bind(agent.to_string())
         .bind(integration)
         .bind(account)
-        .bind(stream)
+        .bind(state_key)
         .bind(state)
         .bind(Utc::now().to_rfc3339())
         .execute(&*self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn migrate_integration_state(
+        &self,
+        agent: AgentId,
+        integration: &str,
+        account: &str,
+        legacy_key: &str,
+        state_key: &str,
+    ) -> StoreResult<Option<String>> {
+        let agent = agent.to_string();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r"UPDATE OR IGNORE integration_state SET state_key = ?
+               WHERE agent_id = ? AND integration = ? AND account = ? AND state_key = ?",
+        )
+        .bind(state_key)
+        .bind(&agent)
+        .bind(integration)
+        .bind(account)
+        .bind(legacy_key)
+        .execute(&mut *tx)
+        .await?;
+        let row: Option<(String,)> = sqlx::query_as(
+            r"SELECT state FROM integration_state
+               WHERE agent_id = ? AND integration = ? AND account = ? AND state_key = ?",
+        )
+        .bind(&agent)
+        .bind(integration)
+        .bind(account)
+        .bind(state_key)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(row.map(|(state,)| state))
     }
 
     async fn record_observation(&self, new: NewObservation) -> StoreResult<i64> {
@@ -2399,6 +2443,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn populated_watch_state_survives_identity_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("goat.db");
+        goat_sqlite_vec::register();
+        let options = format!("sqlite://{}", path.display())
+            .parse::<sqlx::sqlite::SqliteConnectOptions>()
+            .unwrap()
+            .create_if_missing(true)
+            .disable_statement_logging();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE _sqlx_migrations_agent (
+                 version BIGINT PRIMARY KEY,
+                 description TEXT NOT NULL,
+                 installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                 success BOOLEAN NOT NULL,
+                 checksum BLOB NOT NULL,
+                 execution_time BIGINT NOT NULL
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let migrator = sqlx::migrate!("./migrations");
+        for migration in migrator.iter().filter(|migration| migration.version < 25) {
+            sqlx::raw_sql(migration.sql.clone())
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO _sqlx_migrations_agent
+                 (version, description, success, checksum, execution_time)
+                 VALUES (?, ?, TRUE, ?, 0)",
+            )
+            .bind(migration.version)
+            .bind(migration.description.as_ref())
+            .bind(migration.checksum.as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let agent = AgentId::from_slug("migration-proof");
+        sqlx::query(
+            "INSERT INTO agents (id, slug, display, created_at)
+             VALUES (?, 'migration-proof', 'Migration Proof', '2026-08-08T00:00:00Z')",
+        )
+        .bind(agent.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let state = r#"{"version":2,"seen":{"ISSUE-7":"2026-08-07"},"pending":{}}"#;
+        sqlx::query(
+            "INSERT INTO integration_state
+             (agent_id, integration, account, stream, state, updated_at)
+             VALUES (?, 'sentry', 'default', 'issues', ?, '2026-08-08T01:02:03Z')",
+        )
+        .bind(agent.to_string())
+        .bind(state)
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let store = SqliteStore::open(&path).await.unwrap();
+        let migrated = store
+            .migrate_integration_state(
+                agent,
+                "sentry",
+                "default",
+                "issues",
+                "query:is:unresolved is:for_review",
+            )
+            .await
+            .unwrap();
+        assert_eq!(migrated.as_deref(), Some(state));
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT state_key, state, updated_at FROM integration_state
+             WHERE agent_id = ? AND integration = 'sentry' AND account = 'default'",
+        )
+        .bind(agent.to_string())
+        .fetch_all(&*store.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![(
+                "query:is:unresolved is:for_review".to_owned(),
+                state.to_owned(),
+                "2026-08-08T01:02:03Z".to_owned(),
+            )]
+        );
+    }
+
+    #[tokio::test]
     async fn split_migrators_adopt_a_unified_database() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("goat.db");
@@ -2582,7 +2724,7 @@ mod tests {
 
         for (table, expected) in [
             ("_sqlx_migrations", 23_i64),
-            ("_sqlx_migrations_agent", 20),
+            ("_sqlx_migrations_agent", 21),
             ("_sqlx_migrations_memory", 1),
             ("_sqlx_migrations_code", 3),
             ("_sqlx_migrations_proxy", 1),
