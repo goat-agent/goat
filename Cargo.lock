@@ -3005,6 +3005,7 @@ dependencies = [
  "goat-store",
  "goat-types",
  "inventory",
+ "rand 0.10.2",
  "serde",
  "serde_json",
  "tempfile",

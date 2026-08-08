@@ -22,6 +22,7 @@ serde       = { workspace = true }
 tempfile    = { workspace = true, optional = true }
 async-trait = { workspace = true }
 inventory   = { workspace = true }
+rand        = { workspace = true }
 serde_json  = { workspace = true }
 thiserror   = { workspace = true }
 tokio       = { workspace = true }

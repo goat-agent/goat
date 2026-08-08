@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use goat_types::{AgentId, Event, IntegrationId, IntegrationUpdateKind, WorkflowItem};
+use rand::RngExt;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -142,6 +143,18 @@ pub fn backoff_skips(error_streak: u32) -> u32 {
         .saturating_sub(1)
 }
 
+fn startup_jitter(poll: Duration, sample: f64) -> Duration {
+    poll.mul_f64(sample)
+}
+
+fn tick_jitter(poll: Duration, sample: f64) -> Duration {
+    poll.mul_f64(0.75 + sample * 0.5)
+}
+
+fn random_sample() -> f64 {
+    rand::rng().random_range(0.0..=1.0)
+}
+
 #[derive(Default)]
 struct SourceHealth {
     error_streak: u32,
@@ -162,8 +175,8 @@ pub async fn run_workflow(
         sources = workflow.sources.len(),
         "workflow running",
     );
-    let mut interval = tokio::time::interval(workflow.poll);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut next_tick =
+        tokio::time::Instant::now() + startup_jitter(workflow.poll, random_sample());
     let mut health: Vec<SourceHealth> = workflow
         .sources
         .iter()
@@ -174,8 +187,9 @@ pub async fn run_workflow(
         tokio::select! {
             biased;
             () = cancel.cancelled() => break,
-            _ = interval.tick() => {}
+            () = tokio::time::sleep_until(next_tick) => {}
         }
+        next_tick = tokio::time::Instant::now() + tick_jitter(workflow.poll, random_sample());
         if runtime.paused().await {
             continue;
         }
@@ -425,6 +439,16 @@ mod tests {
         assert_eq!(backoff_skips(2), 3);
         assert_eq!(backoff_skips(3), 7);
         assert_eq!(backoff_skips(9), 7);
+    }
+
+    #[test]
+    fn workflow_deadlines_have_startup_and_recurring_jitter() {
+        let poll = Duration::from_mins(2);
+        assert_eq!(startup_jitter(poll, 0.0), Duration::ZERO);
+        assert_eq!(startup_jitter(poll, 1.0), poll);
+        assert_eq!(tick_jitter(poll, 0.0), Duration::from_secs(90));
+        assert_eq!(tick_jitter(poll, 0.5), poll);
+        assert_eq!(tick_jitter(poll, 1.0), Duration::from_secs(150));
     }
 
     #[test]
