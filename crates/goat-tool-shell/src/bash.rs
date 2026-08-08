@@ -46,6 +46,8 @@ impl Drop for ChildGuard {
     }
 }
 
+pub const NAME: &str = "Bash";
+
 pub struct BashTool;
 
 #[derive(Deserialize)]
@@ -85,7 +87,7 @@ impl ToolOutcomeExtension for GitOutcome {
 
 impl Tool for BashTool {
     fn name(&self) -> &'static str {
-        "Bash"
+        NAME
     }
 
     fn description(&self) -> &'static str {

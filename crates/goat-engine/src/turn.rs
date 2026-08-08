@@ -62,7 +62,7 @@ async fn run_shell_command(tools: &ToolRegistry, command: &str, cwd: &std::path:
         Ok(tool_ctx) => tool_ctx,
         Err(err) => return err.to_string(),
     };
-    let Some(tool) = tools.get("Bash") else {
+    let Some(tool) = tools.get(goat_tool_shell::SHELL_TOOL) else {
         return "shell tool unavailable".to_owned();
     };
     let input = serde_json::json!({
