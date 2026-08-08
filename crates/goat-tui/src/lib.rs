@@ -13,13 +13,11 @@ mod overlay;
 mod picker;
 mod screenshot;
 mod select;
-pub(crate) mod status;
 pub mod symbols;
 mod theme;
 mod toast;
 mod transcript;
 mod tui;
-pub(crate) mod usage;
 mod view;
 mod wrap;
 

@@ -28,7 +28,6 @@ impl App {
                     return result;
                 }
             }
-            Overlay::Usage | Overlay::Status => return self.on_usage_key(key),
             Overlay::ImageZoom(_) => {
                 self.overlay = Overlay::None;
                 self.dirty = true;
@@ -464,33 +463,6 @@ impl App {
             }
             KeyCode::PageDown => {
                 self.scroll = self.scroll.saturating_add(self.page_rows());
-                self.dirty = true;
-            }
-            _ => {}
-        }
-        Vec::new()
-    }
-
-    pub(crate) fn on_usage_key(&mut self, key: KeyEvent) -> Vec<Op> {
-        match key.code {
-            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
-                self.overlay = Overlay::None;
-                self.dirty = true;
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.usage.scroll = self.usage.scroll.saturating_sub(1);
-                self.dirty = true;
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.usage.scroll = self.usage.scroll.saturating_add(1);
-                self.dirty = true;
-            }
-            KeyCode::PageUp => {
-                self.usage.scroll = self.usage.scroll.saturating_sub(8);
-                self.dirty = true;
-            }
-            KeyCode::PageDown => {
-                self.usage.scroll = self.usage.scroll.saturating_add(8);
                 self.dirty = true;
             }
             _ => {}

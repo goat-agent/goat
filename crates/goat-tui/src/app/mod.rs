@@ -26,9 +26,7 @@ use crate::{
     symbols,
     theme::Theme,
     transcript::Transcript,
-    tui,
-    usage::UsageView,
-    view,
+    tui, view,
 };
 
 pub(crate) struct SubagentRunView {
@@ -82,8 +80,6 @@ pub(crate) enum Overlay {
     Files(FileMenu),
     Runs(usize),
     Ask(AskPicker, ToolCallId),
-    Usage,
-    Status,
     ImageZoom(Box<goat_protocol::ToolImageData>),
 }
 
@@ -553,17 +549,6 @@ impl App {
             }
             CommandEffect::Error(message) => {
                 self.push_toast(NotifyKind::Error, message);
-                Vec::new()
-            }
-            CommandEffect::OpenUsage => {
-                self.overlay = Overlay::Usage;
-                self.usage.scroll = 0;
-                self.dirty = true;
-                Vec::new()
-            }
-            CommandEffect::OpenStatus => {
-                self.overlay = Overlay::Status;
-                self.dirty = true;
                 Vec::new()
             }
             CommandEffect::Noop => Vec::new(),
@@ -1546,136 +1531,6 @@ impl App {
             .copied()
     }
 
-    pub(crate) fn build_usage_view(&self) -> UsageView<'_> {
-        UsageView::new(
-            &self.account_entries,
-            &self.usage.last,
-            &self.usage.total,
-            &self.usage.rate_limits,
-            self.current_context_window(),
-            self.model.as_ref(),
-            self.usage.scroll,
-        )
-    }
-
-    pub(crate) fn status_rows(&self) -> Vec<crate::status::StatusRow> {
-        use crate::status::{StatusRow, daemon_label, uptime};
-        let mut rows = Vec::new();
-        rows.push(StatusRow {
-            label: "session",
-            value: match (self.session_id, self.client_id) {
-                (Some(session), Some(client)) => format!("#{session} · client {client}"),
-                (Some(session), None) => format!("#{session}"),
-                _ => "—".to_owned(),
-            },
-        });
-        rows.push(StatusRow {
-            label: "thread",
-            value: self
-                .thread_id
-                .map_or_else(|| "—".to_owned(), |id| id.to_string()),
-        });
-        if let Some(daemon) = &self.daemon {
-            rows.push(StatusRow {
-                label: "daemon",
-                value: daemon_label(daemon),
-            });
-        }
-        rows.push(StatusRow {
-            label: "model",
-            value: self.model.as_ref().map_or_else(
-                || "—".to_owned(),
-                |model| {
-                    let multiple = self.provider_has_multiple_accounts(&model.provider);
-                    crate::view::model_status_label(model, multiple)
-                },
-            ),
-        });
-        if self.mode.is_plan() {
-            rows.push(StatusRow {
-                label: "mode",
-                value: self
-                    .plan_path
-                    .as_deref()
-                    .map_or_else(|| "plan".to_owned(), |path| format!("plan · {path}")),
-            });
-        }
-        rows.push(StatusRow {
-            label: "cwd",
-            value: self.cwd.clone(),
-        });
-        rows.push(StatusRow {
-            label: "target",
-            value: self
-                .remote
-                .as_ref()
-                .map_or_else(|| "local".to_owned(), |name| format!("remote: {name}")),
-        });
-        if let Some(workspace) = self.workspace_snapshot() {
-            rows.push(StatusRow {
-                label: "worktree",
-                value: crate::view::location_line_full(workspace),
-            });
-        }
-        if let Some(pr) = self.current_pr() {
-            rows.push(StatusRow {
-                label: "pr",
-                value: format!("#{} {}", pr.number, pr_state_label(pr.state)),
-            });
-        }
-        rows.push(StatusRow {
-            label: "windows",
-            value: self.window_count.to_string(),
-        });
-        rows.push(StatusRow {
-            label: "queued",
-            value: format!(
-                "{} · processes {} · skills {}",
-                self.queued.len(),
-                self.processes.len(),
-                self.commands.specs().len()
-            ),
-        });
-        rows.push(StatusRow {
-            label: "transcript",
-            value: format!("{} entries", self.transcript.entry_count()),
-        });
-        rows.push(StatusRow {
-            label: "toggles",
-            value: format!(
-                "mouse {} · computer {} · browser {}",
-                toggle_label(self.mouse_capture),
-                toggle_label(self.computer_use),
-                toggle_label(self.browser)
-            ),
-        });
-        rows.push(StatusRow {
-            label: "theme",
-            value: if self.theme.is_dark() {
-                "dark".to_owned()
-            } else {
-                "light".to_owned()
-            },
-        });
-        if let Some(log_dir) = goat_config::log_dir() {
-            rows.push(StatusRow {
-                label: "log",
-                value: format!("{}/goat.log", log_dir.display()),
-            });
-        }
-        rows.push(StatusRow {
-            label: "uptime",
-            value: uptime(self.started),
-        });
-        if let Some(thread) = self.thread_id {
-            rows.push(StatusRow {
-                label: "resume",
-                value: format!("goat code --resume {thread}"),
-            });
-        }
-        rows
-    }
-
     pub(crate) fn ctx_indicator(&self) -> Option<(f32, u64, u32)> {
         let model = self.model.as_ref()?;
         let window = self.current_context_window()?;
@@ -2092,18 +1947,6 @@ fn prepare_input_event(
     }
 }
 
-fn toggle_label(enabled: bool) -> &'static str {
-    if enabled { "✓" } else { "✗" }
-}
-
-fn pr_state_label(state: goat_github::PrState) -> &'static str {
-    match state {
-        goat_github::PrState::Open => "open",
-        goat_github::PrState::Merged => "merged",
-        goat_github::PrState::Closed => "closed",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
@@ -2132,43 +1975,6 @@ mod tests {
         assert_eq!(app.cwd(), "box:/srv/work");
         assert!(!app.pr_enabled);
         assert!(app.git_workspace.is_none());
-    }
-
-    #[test]
-    fn thread_bound_event_updates_status_thread() {
-        let mut app = App::new(Theme::dark(), &test_origin());
-        assert!(app.thread_id.is_none());
-        app.on_engine(EngineEvent::ThreadBound { thread_id: 87 });
-        assert_eq!(app.thread_id, Some(87));
-        let rows = app.status_rows();
-        let thread = rows.iter().find(|row| row.label == "thread").unwrap();
-        assert_eq!(thread.value, "87");
-        let resume = rows.iter().find(|row| row.label == "resume").unwrap();
-        assert_eq!(resume.value, "goat code --resume 87");
-    }
-
-    #[test]
-    fn status_command_opens_status_overlay() {
-        let mut app = App::new(Theme::dark(), &test_origin());
-        assert!(matches!(app.overlay(), Overlay::None));
-        app.dispatch_slash_command("/status");
-        assert!(matches!(app.overlay(), Overlay::Status));
-    }
-
-    #[test]
-    fn status_rows_report_origin_session_and_client() {
-        let origin = Origin::local("/tmp/work".to_owned());
-        let origin = Origin {
-            session: Some(12),
-            client: Some(7),
-            ..origin
-        };
-        let app = App::new(Theme::dark(), &origin);
-        let rows = app.status_rows();
-        let session = rows.iter().find(|row| row.label == "session").unwrap();
-        assert_eq!(session.value, "#12 · client 7");
-        let target = rows.iter().find(|row| row.label == "target").unwrap();
-        assert_eq!(target.value, "local");
     }
 
     #[test]

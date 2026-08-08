@@ -12,11 +12,11 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::{
+use goat_command::{
+    Theme,
     layout::{OVERLAY_CHROME_PLAIN, OVERLAY_W, format_tokens},
     overlay::{self, centered_rect, clamp_u16, overlay_frame, overlay_layout_plain},
     symbols,
-    theme::Theme,
 };
 
 const BAR_WIDTH: usize = 12;
@@ -350,5 +350,66 @@ impl<'a> UsageView<'a> {
         }
         frame.render_widget(Paragraph::new(visible), body_area);
         let _ = hint_area;
+    }
+}
+
+pub struct UsageScreen {
+    accounts: Vec<AccountEntry>,
+    usage: goat_command::UsageState,
+    context_window: Option<u32>,
+    model: Option<ModelTarget>,
+}
+
+impl UsageScreen {
+    pub fn new(
+        accounts: Vec<AccountEntry>,
+        usage: goat_command::UsageState,
+        context_window: Option<u32>,
+        model: Option<ModelTarget>,
+    ) -> Self {
+        Self {
+            accounts,
+            usage,
+            context_window,
+            model,
+        }
+    }
+}
+
+impl goat_command::Screen for UsageScreen {
+    fn placement(&self) -> goat_command::Placement {
+        goat_command::Placement::Overlay
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        UsageView::new(
+            &self.accounts,
+            &self.usage.last,
+            &self.usage.total,
+            &self.usage.rate_limits,
+            self.context_window,
+            self.model.as_ref(),
+            self.usage.scroll,
+        )
+        .render(frame, area, *theme);
+    }
+
+    fn handle_input(
+        &mut self,
+        event: &crossterm::event::Event,
+        _session: &mut dyn goat_command::Session,
+    ) -> goat_command::InputOutcome {
+        use crossterm::event::{Event as InputEvent, KeyCode};
+        use goat_command::{InputOutcome, ScreenOutcome};
+        let InputEvent::Key(key) = event else {
+            return InputOutcome::Ignored;
+        };
+        let outcome =
+            if key.code == KeyCode::Esc || goat_command::keymap::ctrl_key(key) == Some('c') {
+                ScreenOutcome::Close
+            } else {
+                ScreenOutcome::Continue
+            };
+        InputOutcome::Handled(outcome)
     }
 }

@@ -56,7 +56,7 @@ pub trait Screen: Send {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct UsageState {
     pub last: HashMap<(String, String), Usage>,
     pub total: HashMap<(String, String), (u64, u64)>,

@@ -15,6 +15,9 @@ goat-auth = { workspace = true }
 goat-search-provider = { workspace = true }
 goat-search-providers = { workspace = true }
 goat-protocol = { workspace = true }
+goat-client = { workspace = true }
+goat-github = { workspace = true }
+goat-worktree = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 unicode-width = { workspace = true }

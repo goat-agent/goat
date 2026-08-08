@@ -250,7 +250,6 @@ fn render_hint(frame: &mut Frame, area: Rect, app: &App, theme: Theme, panel: &P
 fn is_full_body_overlay(app: &App) -> bool {
     match app.overlay() {
         Overlay::Screen(screen) => matches!(screen.placement(), Placement::Overlay),
-        Overlay::Usage | Overlay::Status => true,
         _ => false,
     }
 }
@@ -262,18 +261,6 @@ fn fit_stack(panel_want: u16, preview_want: u16, budget: u16) -> (u16, u16) {
 }
 
 fn render_full_body_overlay(frame: &mut Frame, body: Rect, app: &mut App, theme: Theme) {
-    match app.overlay() {
-        Overlay::Usage => {
-            let view = app.build_usage_view();
-            view.render(frame, body, theme);
-        }
-        Overlay::Status => {
-            let rows = app.status_rows();
-            let view = crate::status::StatusView::new(&rows);
-            view.render(frame, body, theme);
-        }
-        _ => {}
-    }
     if let Overlay::Screen(screen) = app.overlay_mut()
         && matches!(screen.placement(), Placement::Overlay)
     {
