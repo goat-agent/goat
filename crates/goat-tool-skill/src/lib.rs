@@ -1,7 +1,19 @@
-use goat_tool::{Tool, ToolContext, ToolError, ToolFuture, ToolOutput};
+use goat_tool::{Tool, ToolContext, ToolError, ToolErrorClass, ToolFuture, ToolOutput};
 use serde::Deserialize;
 
 pub struct SkillTool;
+
+#[derive(Debug, thiserror::Error)]
+enum SkillError {
+    #[error("unknown skill: {name}")]
+    Unknown { name: String },
+}
+
+impl From<SkillError> for ToolError {
+    fn from(error: SkillError) -> Self {
+        ToolError::new(ToolErrorClass::NotFound, error.to_string())
+    }
+}
 
 #[derive(Deserialize)]
 struct Input {
@@ -40,7 +52,7 @@ impl Tool for SkillTool {
             let skills = goat_skill::load(&ctx.cwd);
             match skills.get(&args.name) {
                 Some(skill) => Ok(ToolOutput::text(skill.body.clone())),
-                None => Err(ToolError::UnknownSkill { name: args.name }),
+                None => Err(SkillError::Unknown { name: args.name }.into()),
             }
         })
     }
@@ -53,7 +65,7 @@ pub fn all() -> Vec<Box<dyn Tool>> {
 #[cfg(test)]
 mod tests {
     use super::SkillTool;
-    use goat_tool::{Tool, ToolContext, ToolError};
+    use goat_tool::{Tool, ToolContext, ToolErrorClass};
 
     fn write_project_skill(dir: &std::path::Path, name: &str, contents: &str) {
         let skill_dir = dir.join(goat_config::PROJECT_SKILLS_SUBDIR).join(name);
@@ -79,6 +91,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ToolContext::new(dir.path()).unwrap();
         let result = SkillTool.run(r#"{"name":"missing"}"#, &ctx).await;
-        assert!(matches!(result, Err(ToolError::UnknownSkill { .. })));
+        assert!(matches!(
+            result,
+            Err(error) if error.class() == ToolErrorClass::NotFound
+        ));
     }
 }

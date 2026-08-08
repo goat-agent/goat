@@ -196,7 +196,7 @@ mod tests {
             .await;
         assert!(matches!(
             result,
-            Err(goat_tool::ToolError::PathBlocked { .. })
+            Err(error) if error.class() == goat_tool::ToolErrorClass::Policy
         ));
     }
 

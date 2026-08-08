@@ -1,8 +1,8 @@
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolContext, ToolError, ToolFuture, ToolOutput, display};
+use goat_tool::{Tool, ToolContext, ToolFuture, ToolOutput, display};
 use serde::Deserialize;
 
-use crate::tools::relative_display;
+use crate::{error::FsError, tools::relative_display};
 
 pub struct EditTool;
 
@@ -37,6 +37,12 @@ impl Tool for EditTool {
         })
     }
 
+    fn mutation_path(&self, input: &str) -> Option<String> {
+        serde_json::from_str::<Input>(input)
+            .ok()
+            .map(|args| args.path)
+    }
+
     fn display_input(&self, input: &str) -> ToolDisplay {
         match serde_json::from_str::<Input>(input) {
             Ok(args) => ToolDisplay::primary(display::call_sig(
@@ -53,21 +59,21 @@ impl Tool for EditTool {
             let resolved = ctx.resolve(&args.path)?;
             ctx.ensure_writable(&resolved, &args.path)?;
             if !resolved.exists() {
-                return Err(ToolError::NotFound { path: args.path });
+                return Err(FsError::NotFound { path: args.path }.into());
             }
             let bytes = tokio::fs::read(&resolved)
                 .await
-                .map_err(|source| ToolError::Io {
+                .map_err(|source| FsError::Io {
                     path: args.path.clone(),
                     source,
                 })?;
             let contents = String::from_utf8_lossy(&bytes).into_owned();
             let count = contents.matches(&args.old_string).count();
             if count == 0 {
-                return Err(ToolError::EditNoMatch { path: args.path });
+                return Err(FsError::NoMatch { path: args.path }.into());
             }
             if !args.replace_all && count > 1 {
-                return Err(ToolError::EditNotUnique { path: args.path });
+                return Err(FsError::NotUnique { path: args.path }.into());
             }
             let replaced = if args.replace_all { count } else { 1 };
             let updated = if args.replace_all {
@@ -77,7 +83,7 @@ impl Tool for EditTool {
             };
             tokio::fs::write(&resolved, updated.as_bytes())
                 .await
-                .map_err(|source| ToolError::Io {
+                .map_err(|source| FsError::Io {
                     path: args.path.clone(),
                     source,
                 })?;
@@ -142,7 +148,7 @@ fn diff_summary(old: &str, new: &str, replaced: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::EditTool;
-    use goat_tool::{Tool, ToolContext, ToolError};
+    use goat_tool::{Tool, ToolContext, ToolErrorClass};
 
     fn ctx(dir: &std::path::Path) -> ToolContext {
         ToolContext::new(dir).unwrap()
@@ -177,7 +183,10 @@ mod tests {
                 &ctx,
             )
             .await;
-        assert!(matches!(result, Err(ToolError::EditNoMatch { .. })));
+        assert!(matches!(
+            result,
+            Err(error) if error.class() == ToolErrorClass::Execution
+        ));
     }
 
     #[tokio::test]
@@ -191,7 +200,10 @@ mod tests {
                 &ctx,
             )
             .await;
-        assert!(matches!(result, Err(ToolError::EditNotUnique { .. })));
+        assert!(matches!(
+            result,
+            Err(error) if error.class() == ToolErrorClass::Execution
+        ));
     }
 
     #[tokio::test]

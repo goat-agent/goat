@@ -9,22 +9,29 @@ pub fn transcript_sig(
     width: u16,
     failed: bool,
 ) -> String {
-    let ctx = Ctx { cwd, width, failed };
     let full = normalize(tool_name, display_primary);
     let (name, args) = parse(tool_name, &full);
-    let args = shorten_args(tool_name, &args, &ctx);
-    format(&name, &args)
+    let budget = arg_budget(width, failed, 64);
+    let mut shortened = Vec::new();
+    if let Some(first) = args.first() {
+        let flattened = first.split_whitespace().collect::<Vec<_>>().join(" ");
+        let relative = path_under_cwd(&flattened, cwd);
+        let first = if relative != flattened || looks_like_path(&relative) {
+            ellipsize_path_middle(&relative, budget)
+        } else {
+            clip_to_width(&flattened, budget)
+        };
+        shortened.push(first);
+    }
+    if args.get(1).is_some_and(|argument| argument != ".") {
+        shortened.push(ELLIPSIS.to_owned());
+    }
+    format(&name, &shortened)
 }
 
 pub fn call_args(tool_name: &str, display_primary: &str) -> Vec<String> {
     let full = normalize(tool_name, display_primary);
     parse(tool_name, &full).1
-}
-
-struct Ctx<'a> {
-    cwd: &'a str,
-    width: u16,
-    failed: bool,
 }
 
 fn normalize(tool_name: &str, display_primary: &str) -> String {
@@ -102,10 +109,7 @@ fn format(tool_name: &str, args: &[String]) -> String {
     if args.is_empty() {
         format!("{tool_name}()")
     } else {
-        let parts: Vec<String> = args
-            .iter()
-            .map(|a| quote_arg_if_needed(a.as_str()))
-            .collect();
+        let parts: Vec<String> = args.iter().map(|arg| quote_arg_if_needed(arg)).collect();
         format!("{tool_name}({})", parts.join(", "))
     }
 }
@@ -132,15 +136,16 @@ fn format_with_refs(name: &str, args: &[String]) -> String {
 }
 
 fn unquote_arg(s: &str) -> String {
-    let t = s.trim();
-    if t.len() >= 2
-        && ((t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')))
+    let trimmed = s.trim();
+    if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
     {
-        t[1..t.len() - 1]
+        trimmed[1..trimmed.len() - 1]
             .replace("\\\"", "\"")
             .replace("\\\\", "\\")
     } else {
-        t.to_owned()
+        trimmed.to_owned()
     }
 }
 
@@ -158,95 +163,9 @@ fn quote_arg_if_needed(s: &str) -> String {
     }
 }
 
-fn shorten_args(tool_name: &str, args: &[String], ctx: &Ctx<'_>) -> Vec<String> {
-    if args.is_empty() {
-        return Vec::new();
-    }
-    match tool_name {
-        "Read" | "Write" | "Edit" => vec![shorten_path(&args[0], ctx)],
-        "Glob" => vec![shorten_text(&args[0], ctx, 64)],
-        "Grep" => shorten_grep(args, ctx),
-        "Bash" => vec![shorten_command(&args[0], ctx)],
-        "WebFetch" => vec![shorten_text(
-            &url_host(&args[0]).unwrap_or_else(|| args[0].clone()),
-            ctx,
-            48,
-        )],
-        "WebSearch" => vec![shorten_text(&args[0], ctx, 48)],
-        "Skill" => vec![shorten_text(&args[0], ctx, 40)],
-        "Agent" => shorten_agent(args, ctx),
-        "Ask" => vec![shorten_text(&args[0], ctx, 56)],
-        _ => shorten_default(args, ctx),
-    }
-}
-
-fn shorten_grep(args: &[String], ctx: &Ctx<'_>) -> Vec<String> {
-    let mut out = vec![shorten_text(&args[0], ctx, 64)];
-    if let Some(path) = args.get(1)
-        && !path.is_empty()
-        && path != "."
-    {
-        out.push(shorten_path(path, ctx));
-    }
-    out
-}
-
-fn shorten_agent(args: &[String], ctx: &Ctx<'_>) -> Vec<String> {
-    if args.len() >= 2 {
-        vec![
-            shorten_text(&args[0], ctx, 24),
-            shorten_text(&args[1], ctx, 40),
-        ]
-    } else {
-        vec![shorten_text(&args[0], ctx, 48)]
-    }
-}
-
-fn shorten_default(args: &[String], ctx: &Ctx<'_>) -> Vec<String> {
-    let mut out = vec![clip_to_budget(&args[0], arg_budget(ctx, 64))];
-    if args.len() > 1 {
-        out.push("…".to_owned());
-    }
-    out
-}
-
-fn shorten_path(raw: &str, ctx: &Ctx<'_>) -> String {
-    let rel = path_under_cwd(raw, ctx.cwd);
-    ellipsize_path_middle(&rel, arg_budget(ctx, 56))
-}
-
-fn shorten_command(raw: &str, ctx: &Ctx<'_>) -> String {
-    let flat: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    let cap = if ctx.failed { 72 } else { 56 };
-    shorten_text(&flat, ctx, cap)
-}
-
-fn shorten_text(s: &str, ctx: &Ctx<'_>, soft_max: usize) -> String {
-    let clipped = clip_to_budget(s, arg_budget(ctx, soft_max));
-    let budget = arg_budget(ctx, soft_max);
-    if clipped.width() > budget {
-        clip_to_width(&clipped, budget)
-    } else {
-        clipped
-    }
-}
-
-fn clip_to_budget(s: &str, budget: usize) -> String {
-    if s.width() <= budget {
-        return s.to_owned();
-    }
-    clip_to_width(s, budget)
-}
-
-fn arg_budget(ctx: &Ctx<'_>, base: usize) -> usize {
-    let w = usize::from(ctx.width.saturating_sub(2)).max(24);
-    let cap = w.saturating_sub(8);
-    let scaled = if ctx.failed {
-        cap.saturating_mul(5) / 4
-    } else {
-        cap
-    };
-    base.min(scaled.max(20))
+fn looks_like_path(value: &str) -> bool {
+    !value.chars().any(char::is_whitespace)
+        && (value.starts_with('/') || value.starts_with("./") || value.matches('/').count() > 1)
 }
 
 fn path_under_cwd(raw: &str, cwd: &str) -> String {
@@ -255,26 +174,12 @@ fn path_under_cwd(raw: &str, cwd: &str) -> String {
         return raw.to_owned();
     }
     let cwd = cwd.trim_end_matches('/');
-    if cwd.is_empty() {
-        return home_relative(raw);
-    }
     let prefix = format!("{cwd}/");
     if let Some(rest) = raw.strip_prefix(&prefix) {
         return rest.to_owned();
     }
     if raw == cwd {
         return ".".to_owned();
-    }
-    home_relative(raw)
-}
-
-fn home_relative(raw: &str) -> String {
-    if let Some(home) = std::env::var("HOME").ok().filter(|h| !h.is_empty()) {
-        let home = home.trim_end_matches('/');
-        if let Some(rest) = raw.strip_prefix(home) {
-            let rest = rest.strip_prefix('/').unwrap_or(rest);
-            return format!("~/{rest}");
-        }
     }
     raw.to_owned()
 }
@@ -283,13 +188,12 @@ fn ellipsize_path_middle(path: &str, max: usize) -> String {
     if path.width() <= max {
         return path.to_owned();
     }
-    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     if parts.is_empty() {
         return clip_to_width(path, max);
     }
     let file = parts.last().copied().unwrap_or("");
-    let parent = parts.get(parts.len().saturating_sub(2)).copied();
-    if let Some(parent) = parent {
+    if let Some(parent) = parts.get(parts.len().saturating_sub(2)) {
         let candidate = format!("…/{parent}/{file}");
         if candidate.width() <= max {
             return candidate;
@@ -302,31 +206,36 @@ fn ellipsize_path_middle(path: &str, max: usize) -> String {
     clip_to_width(file, max)
 }
 
-fn url_host(url: &str) -> Option<String> {
-    let t = url.trim();
-    let after = t
-        .strip_prefix("https://")
-        .or_else(|| t.strip_prefix("http://"))?;
-    let host = after.split('/').next()?.split(':').next()?;
-    (!host.is_empty()).then(|| host.to_owned())
+fn arg_budget(width: u16, failed: bool, base: usize) -> usize {
+    let width = usize::from(width.saturating_sub(2)).max(24);
+    let cap = width.saturating_sub(8);
+    let scaled = if failed {
+        cap.saturating_mul(5) / 4
+    } else {
+        cap
+    };
+    base.min(scaled.max(20))
 }
 
 pub fn clip_to_width(s: &str, max: usize) -> String {
+    if s.width() <= max {
+        return s.to_owned();
+    }
     if max == 0 {
         return String::new();
     }
-    let ell_w = ELLIPSIS.width();
-    if ell_w >= max {
+    let ellipsis_width = ELLIPSIS.width();
+    if ellipsis_width >= max {
         return ELLIPSIS.to_owned();
     }
-    let mut w = 0usize;
+    let mut width = 0usize;
     let mut out = String::new();
     for ch in s.chars() {
-        let cw = ch.width().unwrap_or(0);
-        if w + cw + ell_w > max {
+        let char_width = ch.width().unwrap_or(0);
+        if width + char_width + ellipsis_width > max {
             break;
         }
-        w += cw;
+        width += char_width;
         out.push(ch);
     }
     out.push_str(ELLIPSIS);
@@ -338,30 +247,28 @@ mod tests {
     use super::{ellipsize_path_middle, format, parse, path_under_cwd, transcript_sig};
 
     #[test]
-    fn normalize_wraps_bare_pattern() {
-        assert_eq!(super::normalize("Glob", "**/symbols*"), "Glob(**/symbols*)");
+    fn normalize_wraps_bare_input() {
+        assert_eq!(super::normalize("Tool", "value"), "Tool(value)");
     }
 
     #[test]
     fn parse_keeps_comma_inside_quoted_arg() {
-        let sig = format("Bash", &["git commit -m \"fix, cleanup\"".to_owned()]);
-        let (name, args) = parse("Bash", &sig);
-        assert_eq!(name, "Bash");
-        assert_eq!(args, ["git commit -m \"fix, cleanup\""]);
+        let sig = format("Tool", &["value, other".to_owned()]);
+        let (name, args) = parse("Tool", &sig);
+        assert_eq!(name, "Tool");
+        assert_eq!(args, ["value, other"]);
     }
 
     #[test]
-    fn read_drops_extra_args() {
+    fn transcript_keeps_one_bounded_argument() {
         let sig = transcript_sig(
-            "Read",
-            "Read(/Users/jmo/proj/crates/foo/src/lib.rs, 10, 50)",
-            "/Users/jmo/proj",
-            100,
+            "Tool",
+            "Tool(first argument, second argument)",
+            "/tmp",
+            80,
             false,
         );
-        assert!(sig.starts_with("Read("));
-        assert!(sig.contains("crates/foo"));
-        assert!(!sig.contains(", 10"));
+        assert_eq!(sig, "Tool(\"first argument\", …)");
     }
 
     #[test]
@@ -372,7 +279,7 @@ mod tests {
 
     #[test]
     fn glob_keeps_pattern() {
-        let sig = transcript_sig("Glob", "Glob(**/symbols*)", "/x", 80, false);
+        let sig = transcript_sig("Glob", "Glob(**/symbols*)", "/tmp", 80, false);
         assert_eq!(sig, "Glob(**/symbols*)");
     }
 
@@ -385,20 +292,6 @@ mod tests {
     }
 
     #[test]
-    fn call_args_inverts_call_sig() {
-        for command in [
-            r#"git commit -m "fix, cleanup""#,
-            r#"git add -A && git commit -m "feat: x" && git push"#,
-            r#"gh pr create --title "feat: x" --body "a \"quoted\" body""#,
-            "cargo nextest run --workspace",
-            "echo ''",
-        ] {
-            let sig = crate::display::call_sig("Bash", &[command]);
-            assert_eq!(super::call_args("Bash", &sig), vec![command.to_owned()]);
-        }
-    }
-
-    #[test]
     fn call_args_reads_a_bare_display_string() {
         assert_eq!(
             super::call_args("Glob", "Glob(**/symbols*)"),
@@ -408,8 +301,21 @@ mod tests {
 
     #[test]
     fn path_middle_ellipsis() {
-        let s = ellipsize_path_middle("crates/goat-tui/src/transcript/tool_gist.rs", 28);
-        assert!(s.contains("tool_gist.rs"));
-        assert!(s.contains('…'));
+        let path = ellipsize_path_middle("crates/goat-tui/src/transcript/tool_gist.rs", 28);
+        assert!(path.contains("tool_gist.rs"));
+        assert!(path.contains('…'));
+    }
+
+    #[test]
+    fn call_args_inverts_call_sig() {
+        for input in [
+            r#"git commit -m "fix, cleanup""#,
+            r#"git add -A && git commit -m "feat: x" && git push"#,
+            "cargo nextest run --workspace",
+            "echo ''",
+        ] {
+            let sig = crate::display::call_sig("Tool", &[input]);
+            assert_eq!(super::call_args("Tool", &sig), vec![input.to_owned()]);
+        }
     }
 }

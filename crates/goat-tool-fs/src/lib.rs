@@ -1,3 +1,4 @@
+mod error;
 mod tools;
 
 pub use tools::edit::EditTool;

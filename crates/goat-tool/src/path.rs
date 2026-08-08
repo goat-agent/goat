@@ -35,50 +35,38 @@ pub fn resolve_with_policy(
         cwd.join(candidate)
     };
     let normalized = lexical_normalize(&joined);
+    let escaped = || ToolError::policy(format!("path escapes the session directory: {raw}"));
+    let blocked_error =
+        || ToolError::policy(format!("path is outside the active workspace: {raw}"));
     if !within(cwd, extra, &normalized) {
-        return Err(ToolError::PathEscape {
-            path: raw.to_owned(),
-        });
+        return Err(escaped());
     }
     if blocked_path(blocked, &normalized) {
-        return Err(ToolError::PathBlocked {
-            path: raw.to_owned(),
-        });
+        return Err(blocked_error());
     }
     if normalized.exists() {
-        let canonical = normalized.canonicalize().map_err(|source| ToolError::Io {
-            path: raw.to_owned(),
-            source,
-        })?;
+        let canonical = normalized
+            .canonicalize()
+            .map_err(|source| ToolError::io(format!("io error on {raw}: {source}")))?;
         if !within(cwd, extra, &canonical) {
-            return Err(ToolError::PathEscape {
-                path: raw.to_owned(),
-            });
+            return Err(escaped());
         }
         if blocked_path(blocked, &canonical) {
-            return Err(ToolError::PathBlocked {
-                path: raw.to_owned(),
-            });
+            return Err(blocked_error());
         }
     } else {
-        let real = real_ancestor_path(&normalized).ok_or_else(|| ToolError::PathEscape {
-            path: raw.to_owned(),
-        })?;
+        let real = real_ancestor_path(&normalized).ok_or_else(escaped)?;
         let real_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
         let real_extra = extra.map(|e| e.canonicalize().unwrap_or_else(|_| e.to_path_buf()));
         if !within(&real_cwd, real_extra.as_deref(), &real) {
-            return Err(ToolError::PathEscape {
-                path: raw.to_owned(),
-            });
+            return Err(escaped());
         }
         let real_blocked: Vec<PathBuf> = blocked
             .iter()
             .map(|b| b.canonicalize().unwrap_or_else(|_| b.clone()))
             .collect();
         if blocked_path(&real_blocked, &real) {
-            return Err(ToolError::PathBlocked {
-                path: raw.to_owned(),
-            });
+            return Err(blocked_error());
         }
     }
     Ok(normalized)
@@ -129,22 +117,22 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{resolve_in_cwd, resolve_with_policy};
-    use crate::error::ToolError;
+    use crate::error::ToolErrorClass;
 
     #[test]
     fn parent_traversal_escapes() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().canonicalize().unwrap();
-        let result = resolve_in_cwd(&cwd, "../escape");
-        assert!(matches!(result, Err(ToolError::PathEscape { .. })));
+        let error = resolve_in_cwd(&cwd, "../escape").unwrap_err();
+        assert_eq!(error.class(), ToolErrorClass::Policy);
     }
 
     #[test]
     fn absolute_outside_escapes() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().canonicalize().unwrap();
-        let result = resolve_in_cwd(&cwd, "/etc/passwd");
-        assert!(matches!(result, Err(ToolError::PathEscape { .. })));
+        let error = resolve_in_cwd(&cwd, "/etc/passwd").unwrap_err();
+        assert_eq!(error.class(), ToolErrorClass::Policy);
     }
 
     #[test]
@@ -168,8 +156,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().canonicalize().unwrap();
         let blocked = vec![cwd.join(".goat").join("worktrees")];
-        let result = resolve_with_policy(&cwd, None, &blocked, ".goat/worktrees/plan/file");
-        assert!(matches!(result, Err(ToolError::PathBlocked { .. })));
+        let error =
+            resolve_with_policy(&cwd, None, &blocked, ".goat/worktrees/plan/file").unwrap_err();
+        assert_eq!(error.class(), ToolErrorClass::Policy);
     }
 
     #[test]
@@ -188,8 +177,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().canonicalize().unwrap();
         symlink("/etc", cwd.join("link")).unwrap();
-        let result = resolve_in_cwd(&cwd, "link/passwd");
-        assert!(matches!(result, Err(ToolError::PathEscape { .. })));
+        let error = resolve_in_cwd(&cwd, "link/passwd").unwrap_err();
+        assert_eq!(error.class(), ToolErrorClass::Policy);
     }
 
     #[cfg(unix)]
@@ -201,8 +190,8 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         let outside = outside.path().canonicalize().unwrap();
         symlink(&outside, cwd.join("link")).unwrap();
-        let result = resolve_in_cwd(&cwd, "link/newfile.txt");
-        assert!(matches!(result, Err(ToolError::PathEscape { .. })));
+        let error = resolve_in_cwd(&cwd, "link/newfile.txt").unwrap_err();
+        assert_eq!(error.class(), ToolErrorClass::Policy);
     }
 
     #[cfg(unix)]
@@ -212,8 +201,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().canonicalize().unwrap();
         symlink("/etc/nonexistent-goat-target", cwd.join("dl")).unwrap();
-        let result = resolve_in_cwd(&cwd, "dl");
-        assert!(matches!(result, Err(ToolError::PathEscape { .. })));
+        let error = resolve_in_cwd(&cwd, "dl").unwrap_err();
+        assert_eq!(error.class(), ToolErrorClass::Policy);
     }
 
     #[test]
@@ -244,8 +233,8 @@ mod tests {
             .join("plan")
             .display()
             .to_string();
-        let result = resolve_with_policy(&cwd, None, &blocked, &raw);
-        assert!(matches!(result, Err(ToolError::PathBlocked { .. })));
+        let error = resolve_with_policy(&cwd, None, &blocked, &raw).unwrap_err();
+        assert_eq!(error.class(), ToolErrorClass::Policy);
     }
 
     #[test]
@@ -254,12 +243,13 @@ mod tests {
         let cwd = dir.path().canonicalize().unwrap();
         let blocked = vec![cwd.join(".goat").join("worktrees")];
         let target = cwd.join(".goat").join("worktrees").join("plan");
-        let result = resolve_with_policy(
+        let error = resolve_with_policy(
             &cwd,
             Some(PathBuf::from(&target).as_path()),
             &blocked,
             target.to_str().unwrap(),
-        );
-        assert!(matches!(result, Err(ToolError::PathBlocked { .. })));
+        )
+        .unwrap_err();
+        assert_eq!(error.class(), ToolErrorClass::Policy);
     }
 }

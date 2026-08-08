@@ -1,8 +1,8 @@
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolContext, ToolError, ToolFuture, ToolOutput, display};
+use goat_tool::{Tool, ToolContext, ToolFuture, ToolOutput, display};
 use serde::Deserialize;
 
-use crate::tools::relative_display;
+use crate::{error::FsError, tools::relative_display};
 
 pub struct WriteTool;
 
@@ -32,6 +32,12 @@ impl Tool for WriteTool {
         })
     }
 
+    fn mutation_path(&self, input: &str) -> Option<String> {
+        serde_json::from_str::<Input>(input)
+            .ok()
+            .map(|args| args.path)
+    }
+
     fn display_input(&self, input: &str) -> ToolDisplay {
         match serde_json::from_str::<Input>(input) {
             Ok(args) => ToolDisplay::primary(display::call_sig(
@@ -50,7 +56,7 @@ impl Tool for WriteTool {
             if let Some(parent) = resolved.parent() {
                 tokio::fs::create_dir_all(parent)
                     .await
-                    .map_err(|source| ToolError::Io {
+                    .map_err(|source| FsError::Io {
                         path: args.path.clone(),
                         source,
                     })?;
@@ -58,7 +64,7 @@ impl Tool for WriteTool {
             let line_count = args.content.lines().count();
             tokio::fs::write(&resolved, args.content.as_bytes())
                 .await
-                .map_err(|source| ToolError::Io {
+                .map_err(|source| FsError::Io {
                     path: args.path.clone(),
                     source,
                 })?;
@@ -75,7 +81,7 @@ impl Tool for WriteTool {
 #[cfg(test)]
 mod tests {
     use super::WriteTool;
-    use goat_tool::{Tool, ToolContext, ToolError};
+    use goat_tool::{Tool, ToolContext, ToolErrorClass};
 
     fn ctx(dir: &std::path::Path) -> ToolContext {
         ToolContext::new(dir).unwrap()
@@ -113,7 +119,10 @@ mod tests {
         let result = WriteTool
             .run(r#"{"path":"../evil.txt","content":"x"}"#, &ctx)
             .await;
-        assert!(matches!(result, Err(ToolError::PathEscape { .. })));
+        assert!(matches!(
+            result,
+            Err(error) if error.class() == ToolErrorClass::Policy
+        ));
     }
 
     #[tokio::test]
@@ -126,7 +135,10 @@ mod tests {
         let blocked = WriteTool
             .run(r#"{"path":"other.txt","content":"x"}"#, &ctx)
             .await;
-        assert!(matches!(blocked, Err(ToolError::WriteBlocked { .. })));
+        assert!(matches!(
+            blocked,
+            Err(error) if error.class() == ToolErrorClass::Policy
+        ));
         let allowed = WriteTool
             .run(r#"{"path":"PLAN.md","content":"plan"}"#, &ctx)
             .await;

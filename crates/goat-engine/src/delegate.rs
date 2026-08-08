@@ -1,9 +1,10 @@
-use std::{fmt::Write as _, sync::Arc, sync::atomic::Ordering};
+use std::{sync::Arc, sync::Weak, sync::atomic::Ordering};
 
-use goat_protocol::{
-    Effort, Event, ModelTarget, SubagentGroupMember, TaskId, ToolCallId, ToolDisplay,
+use goat_protocol::{Effort, Event, ModelTarget, TaskId, ToolCallId};
+use goat_provider::{ContentBlock, Message, MessageRole, Provider};
+use goat_tool_delegate::{
+    DelegateFuture, DelegateInvocation, DelegateRequest, DelegateResult, DelegationService,
 };
-use goat_provider::{ContentBlock, Message, MessageRole, Provider, ToolDefinition};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -18,122 +19,32 @@ use crate::{
 };
 
 pub(crate) const MAX_CONCURRENT_SUBAGENTS: usize = 8;
-pub(crate) const SUBAGENT_TOOL_NAME: &str = "Subagent";
-pub(crate) const SUBAGENT_KILL_TOOL_NAME: &str = "SubagentKill";
 
-#[derive(serde::Deserialize)]
-struct SubagentInput {
-    subagent_type: String,
-    name: String,
-    prompt: String,
-    #[serde(default)]
-    background: bool,
+pub(crate) struct EngineDelegationService {
+    shared: std::sync::Mutex<Weak<crate::Shared>>,
 }
 
-#[derive(serde::Deserialize)]
-struct KillInput {
-    run: goat_protocol::RunId,
-}
-
-pub(crate) fn subagent_tool_def(ctx: &Ctx) -> ToolDefinition {
-    let names: Vec<String> = ctx.subagents.names();
-    let mut description = String::from(
-        "Delegate a self-contained task to a subagent that runs in its own context with a restricted tool set and returns only its final report. Prefer this for focused investigation or work that would otherwise flood the main context. Issue several Subagent calls in one response to run them in parallel. Set background=true to detach it instead: the call returns a run id immediately and a fresh turn wakes you with the report when it finishes, so if you have other work to get on with, detach it and end your turn rather than waiting. Stop a detached one with SubagentKill. Available subagent_type values:",
-    );
-    for spec in ctx.subagents.iter() {
-        let _ = write!(description, "\n- {}: {}", spec.name, spec.description);
-    }
-    ToolDefinition {
-        name: SUBAGENT_TOOL_NAME.to_owned(),
-        description,
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "subagent_type": {
-                    "type": "string",
-                    "enum": names,
-                },
-                "name": {
-                    "type": "string",
-                    "description": "A short name for this run, a few words naming the job rather than restating the instruction — it is what every view of the run is labelled with.",
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": "A complete, self-contained instruction for the subagent. It does not see the conversation, so include all needed context.",
-                },
-                "background": {
-                    "type": "boolean",
-                    "description": "detach it and return a run id instead of waiting for the report (default false)",
-                },
-            },
-            "required": ["subagent_type", "name", "prompt"],
-        }),
-    }
-}
-
-pub(crate) fn subagent_kill_tool_def() -> ToolDefinition {
-    ToolDefinition {
-        name: SUBAGENT_KILL_TOOL_NAME.to_owned(),
-        description: "Stop a detached subagent run started with Subagent(background=true). It will not report back.".to_owned(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "run": {"type": "string", "description": "run id from Subagent(background=true)"}
-            },
-            "required": ["run"],
-        }),
-    }
-}
-
-pub(crate) async fn run_subagent_kill(ctx: &Ctx, input_json: &str) -> Result<String, String> {
-    let args: KillInput =
-        serde_json::from_str(input_json).map_err(|err| format!("invalid input: {err}"))?;
-    ctx.background
-        .kill(args.run, Some(crate::background::Kind::Subagent))
-        .await?;
-    Ok(format!("Killed subagent run #{}.", args.run))
-}
-
-pub(crate) fn subagent_kill_display(input: &str) -> ToolDisplay {
-    match serde_json::from_str::<KillInput>(input) {
-        Ok(args) => ToolDisplay::primary(format!("SubagentKill(#{})", args.run)),
-        Err(_) => ToolDisplay::primary(SUBAGENT_KILL_TOOL_NAME.to_owned()),
-    }
-}
-
-pub(crate) fn subagent_call_display(input: &str) -> ToolDisplay {
-    match serde_json::from_str::<SubagentInput>(input) {
-        Ok(args) => {
-            let mut parts = Vec::with_capacity(3);
-            if args.background {
-                parts.push("background");
-            }
-            parts.push(args.subagent_type.as_str());
-            parts.push(args.name.as_str());
-            ToolDisplay::primary(goat_tool::display::call_sig(SUBAGENT_TOOL_NAME, &parts))
+impl EngineDelegationService {
+    pub(crate) fn new() -> Self {
+        Self {
+            shared: std::sync::Mutex::new(Weak::new()),
         }
-        Err(_) => goat_tool::display::generic_named(SUBAGENT_TOOL_NAME, input),
     }
-}
 
-pub(crate) fn wants_background(input_json: &str) -> bool {
-    serde_json::from_str::<SubagentInput>(input_json).is_ok_and(|args| args.background)
-}
+    pub(crate) fn attach(&self, ctx: &Ctx) {
+        *self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::downgrade(&ctx.0);
+    }
 
-pub(crate) fn subagent_group_member(call: ToolCallId, input: &str) -> SubagentGroupMember {
-    match serde_json::from_str::<SubagentInput>(input) {
-        Ok(args) => SubagentGroupMember {
-            call,
-            subagent_type: args.subagent_type,
-            label: args.name,
-            background: args.background,
-        },
-        Err(_) => SubagentGroupMember {
-            call,
-            subagent_type: "subagent".to_owned(),
-            label: "subagent".to_owned(),
-            background: false,
-        },
+    fn context(&self) -> Result<Ctx, String> {
+        self.shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .upgrade()
+            .map(Ctx)
+            .ok_or_else(|| "delegation service unavailable".to_owned())
     }
 }
 
@@ -187,39 +98,98 @@ impl Origin {
     }
 }
 
-pub(crate) async fn run_delegation(
-    ctx: &Ctx,
-    env: &LoopEnv,
-    input_json: &str,
-    parent: TaskId,
-    call: ToolCallId,
-    token: &CancellationToken,
-) -> Result<String, String> {
-    let args: SubagentInput =
-        serde_json::from_str(input_json).map_err(|err| format!("invalid Subagent input: {err}"))?;
-    if ctx.subagents.get(&args.subagent_type).is_none() {
-        return Err(format!("unknown subagent_type: {}", args.subagent_type));
+impl DelegationService for EngineDelegationService {
+    fn run<'a>(
+        &'a self,
+        request: DelegateRequest,
+        invocation: DelegateInvocation<'a>,
+    ) -> DelegateFuture<'a, DelegateResult> {
+        Box::pin(async move {
+            let ctx = self.context()?;
+            let env = invocation
+                .host
+                .and_then(|host| host.downcast_ref::<LoopEnv>())
+                .ok_or_else(|| "delegation environment unavailable".to_owned())?;
+            if ctx.subagents.get(&request.subagent_type).is_none() {
+                return Err(format!("unknown subagent_type: {}", request.subagent_type));
+            }
+            let origin = Origin::of(env);
+            if request.background {
+                let run = detach(
+                    &ctx,
+                    origin,
+                    request,
+                    invocation.run_label,
+                    invocation.parent,
+                    invocation.call,
+                )
+                .await;
+                return Ok(DelegateResult::Started(run));
+            }
+            let permit = tokio::select! {
+                biased;
+                () = invocation.cancellation.cancelled() => None,
+                acquired = ctx.semaphore.acquire() => acquired.ok(),
+            };
+            let Some(_permit) = permit else {
+                return Err("subagent interrupted".to_owned());
+            };
+            let child_token = invocation.cancellation.child_token();
+            run_child(
+                &ctx,
+                &origin,
+                &request,
+                invocation.parent,
+                invocation.call,
+                &child_token,
+            )
+            .await
+            .map(DelegateResult::Completed)
+        })
     }
-    let origin = Origin::of(env);
-    if args.background {
-        return detach(ctx, origin, args, parent, call).await;
+
+    fn kill(&self, run: goat_protocol::RunId) -> DelegateFuture<'_, ()> {
+        Box::pin(async move {
+            self.context()?
+                .background
+                .kill(run, Some(crate::background::Kind::Child))
+                .await
+        })
     }
-    let child_token = token.child_token();
-    run_child(ctx, &origin, &args, parent, call, &child_token).await
+
+    fn group_started(
+        &self,
+        parent: TaskId,
+        group: ToolCallId,
+        members: Vec<goat_protocol::SubagentGroupMember>,
+    ) -> DelegateFuture<'_, ()> {
+        Box::pin(async move {
+            let _ = self
+                .context()?
+                .events
+                .send(Event::SubagentGroupStarted {
+                    id: parent,
+                    group,
+                    members,
+                })
+                .await;
+            Ok(())
+        })
+    }
 }
 
 async fn detach(
     ctx: &Ctx,
     origin: Origin,
-    args: SubagentInput,
+    args: DelegateRequest,
+    label: &str,
     parent: TaskId,
     call: ToolCallId,
-) -> Result<String, String> {
+) -> goat_protocol::RunId {
     let cancel = CancellationToken::new();
-    let subagent_type = args.subagent_type.clone();
     let run_id = ctx
         .background
-        .register_subagent(&args.name, cancel.clone())
+        .register_child_labeled(&args.name, cancel.clone(), label)
         .await;
     let ctx = ctx.clone();
     tokio::spawn(async move {
@@ -230,11 +200,9 @@ async fn detach(
             run_child(&ctx, &origin, &args, parent, call, &cancel).await
         };
         drop(permit);
-        ctx.background.finish_subagent(run_id, result).await;
+        ctx.background.finish_child(run_id, result).await;
     });
-    Ok(format!(
-        "Started subagent run #{run_id} ({subagent_type}). A fresh turn will wake you with its report when it finishes, so if you have other work to get on with, do that and end your turn instead of waiting. Stop it with SubagentKill(run={run_id})."
-    ))
+    run_id
 }
 
 type ChildFuture<'a> =
@@ -243,7 +211,7 @@ type ChildFuture<'a> =
 fn run_child<'a>(
     ctx: &'a Ctx,
     origin: &'a Origin,
-    args: &'a SubagentInput,
+    args: &'a DelegateRequest,
     parent: TaskId,
     call: ToolCallId,
     token: &'a CancellationToken,
@@ -254,7 +222,7 @@ fn run_child<'a>(
 async fn run_child_inner(
     ctx: &Ctx,
     origin: &Origin,
-    args: &SubagentInput,
+    args: &DelegateRequest,
     parent: TaskId,
     call: ToolCallId,
     token: &CancellationToken,
@@ -307,7 +275,7 @@ async fn run_child_inner(
         tool_defs,
         cwd: origin.cwd.clone(),
         allow_delegate: false,
-        allow_ask: false,
+        interactive: false,
         plan: false,
         plan_path: None,
         exec_policy: crate::subagent::tighter(&origin.exec_policy, &spec.exec_policy),

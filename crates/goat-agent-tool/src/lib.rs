@@ -8,11 +8,7 @@ use goat_types::{AgentId, ThreadId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-mod command_safety;
-
 mod path;
-
-pub use command_safety::deny_reason;
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize)]
 pub struct ToolName(Cow<'static, str>);
