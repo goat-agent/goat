@@ -375,7 +375,11 @@ impl goat_command::Screen for ModelScreen {
         }
     }
 
-    fn on_event(&mut self, event: &goat_protocol::Event) -> goat_command::ScreenOutcome {
+    fn on_event(
+        &mut self,
+        event: &goat_protocol::Event,
+        _session: &mut dyn goat_command::Session,
+    ) -> goat_command::ScreenOutcome {
         if let goat_protocol::Event::ModelListChanged { entries } = event {
             self.set_entries(entries.clone());
         }

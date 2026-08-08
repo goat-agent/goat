@@ -24,7 +24,7 @@ use crate::{
     config::{Config, ConfigOutcome},
     files::FileMenu,
     highlight::SyntectHighlighter,
-    picker::{RewindPicker, ThreadPicker},
+    picker::RewindPicker,
     symbols,
     theme::Theme,
     transcript::Transcript,
@@ -32,11 +32,6 @@ use crate::{
     usage::UsageView,
     view,
 };
-
-pub(crate) enum ResumeIntent {
-    Picker,
-    Index(usize),
-}
 
 pub(crate) struct SubagentRunView {
     pub(crate) subagent_type: String,
@@ -85,7 +80,6 @@ impl RunTarget {
 pub(crate) enum Overlay {
     None,
     Screen(Box<dyn Screen>),
-    Thread(ThreadPicker),
     Rewind(RewindPicker),
     Config(Config),
     Commands(CommandMenu),
@@ -205,7 +199,6 @@ pub struct App {
 #[derive(Default)]
 pub(crate) struct PendingState {
     pub(crate) ask: Option<(AskPicker, ToolCallId)>,
-    pub(crate) resume: Option<ResumeIntent>,
 }
 
 #[derive(Default)]
@@ -542,14 +535,6 @@ impl App {
                 self.dirty = true;
                 vec![Op::SetMode { mode }]
             }
-            CommandEffect::OpenThreadPicker => {
-                self.pending.resume = Some(ResumeIntent::Picker);
-                vec![Op::ListThreads {}]
-            }
-            CommandEffect::ResumeIndex(index) => {
-                self.pending.resume = Some(ResumeIntent::Index(index));
-                vec![Op::ListThreads {}]
-            }
             CommandEffect::OpenRewind => self.request_rewind(),
             CommandEffect::OpenConfig => {
                 self.overlay = Overlay::Config(Config::new(
@@ -678,7 +663,7 @@ impl App {
                 return Vec::new();
             }
         };
-        let outcome = screen.on_event(event);
+        let outcome = screen.on_event(event, self);
         self.apply_screen_outcome(screen, outcome)
     }
 
@@ -2212,7 +2197,7 @@ mod tests {
         RateWindow, RewindDraft, RewindPoint, RewindScope, TaskId, Usage,
     };
 
-    use super::{App, Origin, Overlay};
+    use super::{App, AppEvent, Origin, Overlay};
     use crate::theme::Theme;
 
     fn test_origin() -> Origin {
@@ -3325,7 +3310,8 @@ mod tests {
         let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.dispatch_slash_command("/resume");
         assert!(matches!(ops.as_slice(), [Op::ListThreads {}]));
-        let ops = app.on_engine(EngineEvent::ThreadsListed {
+        assert!(matches!(app.overlay, Overlay::Screen(_)));
+        let ops = app.update(AppEvent::Engine(EngineEvent::ThreadsListed {
             threads: vec![ThreadSummary {
                 id: 7,
                 title: "first chat".to_owned(),
@@ -3333,9 +3319,9 @@ mod tests {
                 updated_at: 1,
                 live: false,
             }],
-        });
+        }));
         assert!(ops.is_empty());
-        assert!(matches!(app.overlay, Overlay::Thread(_)));
+        assert!(matches!(app.overlay, Overlay::Screen(_)));
     }
 
     #[test]
@@ -3344,7 +3330,7 @@ mod tests {
         let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.dispatch_slash_command("/resume 1");
         assert!(matches!(ops.as_slice(), [Op::ListThreads {}]));
-        let ops = app.on_engine(EngineEvent::ThreadsListed {
+        let ops = app.update(AppEvent::Engine(EngineEvent::ThreadsListed {
             threads: vec![ThreadSummary {
                 id: 42,
                 title: "chat".to_owned(),
@@ -3352,9 +3338,9 @@ mod tests {
                 updated_at: 1,
                 live: false,
             }],
-        });
+        }));
         assert!(matches!(ops.as_slice(), [Op::Resume { thread_id: 42 }]));
-        assert!(!matches!(app.overlay, Overlay::Thread(_)));
+        assert!(matches!(app.overlay, Overlay::None));
     }
 
     #[test]

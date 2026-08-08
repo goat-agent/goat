@@ -1,15 +1,14 @@
 use goat_protocol::{
-    Event as EngineEvent, NotifyKind, Op, ProcessExitReason, ProcessInfo, ProcessState, RunId,
-    TaskId, TranscriptEntry,
+    Event as EngineEvent, Op, ProcessExitReason, ProcessInfo, ProcessState, RunId, TaskId,
+    TranscriptEntry,
 };
 
-use super::{App, MainView, Overlay, ProcessRunView, ResumeIntent};
-use crate::{ask::AskPicker, picker::ThreadPicker};
+use super::{App, MainView, Overlay, ProcessRunView};
+use crate::ask::AskPicker;
 
 impl App {
     #[allow(clippy::too_many_lines)]
     pub(crate) fn on_engine(&mut self, event: EngineEvent) -> Vec<Op> {
-        let mut ops = Vec::new();
         match event {
             EngineEvent::TaskStarted { id } => {
                 self.turn.active = Some(id);
@@ -43,24 +42,7 @@ impl App {
                 self.dirty = true;
             }
             EngineEvent::ThreadsListed { threads } => {
-                self.threads.clone_from(&threads);
-                match self.pending.resume.take() {
-                    Some(ResumeIntent::Picker) => {
-                        self.overlay = Overlay::Thread(ThreadPicker::new(threads));
-                    }
-                    Some(ResumeIntent::Index(index)) => match threads.get(index) {
-                        Some(thread) => ops.push(Op::Resume {
-                            thread_id: thread.id,
-                        }),
-                        None => {
-                            self.push_toast(
-                                NotifyKind::Error,
-                                format!("no conversation #{}", index + 1),
-                            );
-                        }
-                    },
-                    None => {}
-                }
+                self.threads = threads;
             }
             EngineEvent::RewindPointsListed { points } => {
                 self.overlay = Overlay::Rewind(crate::picker::RewindPicker::new(points));
@@ -517,7 +499,7 @@ impl App {
                 self.dirty = true;
             }
         }
-        ops
+        Vec::new()
     }
 
     pub(crate) fn subagent_index(&self, id: TaskId) -> Option<usize> {

@@ -251,7 +251,6 @@ fn is_full_body_overlay(app: &App) -> bool {
     match app.overlay() {
         Overlay::Screen(screen) => matches!(screen.placement(), Placement::Overlay),
         Overlay::Config(_)
-        | Overlay::Thread(_)
         | Overlay::Rewind(_)
         | Overlay::Usage
         | Overlay::Status
@@ -269,7 +268,6 @@ fn fit_stack(panel_want: u16, preview_want: u16, budget: u16) -> (u16, u16) {
 fn render_full_body_overlay(frame: &mut Frame, body: Rect, app: &mut App, theme: Theme) {
     match app.overlay() {
         Overlay::Config(config) => config.render(frame, body, theme),
-        Overlay::Thread(picker) => picker.render(frame, body, theme),
         Overlay::Rewind(picker) => picker.render(frame, body, theme),
         Overlay::Usage => {
             let view = app.build_usage_view();

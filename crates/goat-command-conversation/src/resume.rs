@@ -1,6 +1,11 @@
+mod screen;
+
 use goat_command::{
-    Command, CommandEffect, CommandInvocation, CommandShape, ParameterSpec, ParameterValue,
+    Command, CommandEffect, CommandInvocation, CommandShape, ParameterSpec, ParameterValue, Session,
 };
+use goat_protocol::NotifyKind;
+
+pub use screen::ResumeScreen;
 
 pub struct Resume;
 
@@ -22,26 +27,31 @@ impl Command for Resume {
         }])
     }
 
-    fn run(
-        &self,
-        invocation: CommandInvocation,
-        _session: &mut dyn goat_command::Session,
-    ) -> CommandEffect {
-        if let Some(n) = invocation.integer("n") {
-            match usize::try_from(n) {
-                Ok(n) if n >= 1 => CommandEffect::ResumeIndex(n - 1),
-                _ => CommandEffect::Error("resume index must be at least 1".to_owned()),
+    fn run(&self, invocation: CommandInvocation, session: &mut dyn Session) -> CommandEffect {
+        if let Some(index) = invocation.integer("n") {
+            match usize::try_from(index) {
+                Ok(index) if index >= 1 => {
+                    CommandEffect::Show(Box::new(ResumeScreen::indexed(index - 1)))
+                }
+                _ => {
+                    session.notify(
+                        NotifyKind::Error,
+                        "resume index must be at least 1".to_owned(),
+                    );
+                    CommandEffect::Noop
+                }
             }
         } else {
-            CommandEffect::OpenThreadPicker
+            CommandEffect::Show(Box::new(ResumeScreen::new(session.threads().to_vec())))
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Resume;
     use goat_command::{Command, CommandEffect, CommandInvocation, ParsedParameter, ParsedValue};
+
+    use super::Resume;
 
     fn invocation(parameters: Vec<ParsedParameter>) -> CommandInvocation {
         CommandInvocation {
@@ -59,11 +69,11 @@ mod tests {
             invocation(Vec::new()),
             &mut goat_command::EmptySession::default(),
         );
-        assert!(matches!(effect, CommandEffect::OpenThreadPicker));
+        assert!(matches!(effect, CommandEffect::Show(_)));
     }
 
     #[test]
-    fn positive_index_is_zero_based() {
+    fn positive_index_opens_hidden_interaction() {
         let effect = Resume.run(
             invocation(vec![ParsedParameter {
                 name: "n".to_owned(),
@@ -71,20 +81,22 @@ mod tests {
             }]),
             &mut goat_command::EmptySession::default(),
         );
-        assert!(matches!(effect, CommandEffect::ResumeIndex(2)));
+        assert!(matches!(effect, CommandEffect::Show(_)));
     }
 
     #[test]
-    fn zero_or_negative_is_error() {
+    fn zero_or_negative_notifies() {
         for value in [0, -1] {
+            let mut session = goat_command::EmptySession::default();
             let effect = Resume.run(
                 invocation(vec![ParsedParameter {
                     name: "n".to_owned(),
                     value: ParsedValue::Integer(value),
                 }]),
-                &mut goat_command::EmptySession::default(),
+                &mut session,
             );
-            assert!(matches!(effect, CommandEffect::Error(_)));
+            assert!(matches!(effect, CommandEffect::Noop));
+            assert_eq!(session.notifications().len(), 1);
         }
     }
 }

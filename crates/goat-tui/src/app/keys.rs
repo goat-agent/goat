@@ -2,12 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use goat_protocol::Op;
 
 use super::{App, CLEAR_ARM_TICKS, Overlay, QUIT_ARM_TICKS};
-use crate::{
-    ask::AskOutcome,
-    config::ConfigOutcome,
-    keymap,
-    picker::{RewindOutcome, ThreadOutcome},
-};
+use crate::{ask::AskOutcome, config::ConfigOutcome, keymap, picker::RewindOutcome};
 
 impl App {
     pub(crate) fn on_key(&mut self, key: KeyEvent) -> Vec<Op> {
@@ -21,7 +16,6 @@ impl App {
         }
         match &self.overlay {
             Overlay::Screen(_) => {}
-            Overlay::Thread(_) => return self.on_thread_picker_key(key),
             Overlay::Rewind(_) => return self.on_rewind_picker_key(key),
             Overlay::Config(_) => return self.on_config_key(key),
             Overlay::Runs(_) => return self.on_run_selector_key(key),
@@ -395,39 +389,6 @@ impl App {
             }
             _ => Vec::new(),
         }
-    }
-
-    pub(crate) fn on_thread_picker_key(&mut self, key: KeyEvent) -> Vec<Op> {
-        self.dirty = true;
-        if let Some(ch) = keymap::ctrl_key(&key) {
-            if ch == 'c' {
-                self.overlay = Overlay::None;
-            }
-            return Vec::new();
-        }
-        match key.code {
-            KeyCode::Esc => self.overlay = Overlay::None,
-            KeyCode::Up => {
-                if let Overlay::Thread(picker) = &mut self.overlay {
-                    picker.move_up();
-                }
-            }
-            KeyCode::Down => {
-                if let Overlay::Thread(picker) = &mut self.overlay {
-                    picker.move_down();
-                }
-            }
-            KeyCode::Enter => {
-                if let Overlay::Thread(picker) = &self.overlay
-                    && let ThreadOutcome::Selected(thread_id) = picker.choose()
-                {
-                    self.overlay = Overlay::None;
-                    return vec![Op::Resume { thread_id }];
-                }
-            }
-            _ => {}
-        }
-        Vec::new()
     }
 
     pub(crate) fn on_rewind_picker_key(&mut self, key: KeyEvent) -> Vec<Op> {

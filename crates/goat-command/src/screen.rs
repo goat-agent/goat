@@ -48,7 +48,7 @@ pub trait Screen: Send {
     }
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme);
     fn handle_input(&mut self, event: &InputEvent, session: &mut dyn Session) -> InputOutcome;
-    fn on_event(&mut self, _event: &Event) -> ScreenOutcome {
+    fn on_event(&mut self, _event: &Event, _session: &mut dyn Session) -> ScreenOutcome {
         ScreenOutcome::Continue
     }
     fn tick(&mut self) -> ScreenOutcome {
