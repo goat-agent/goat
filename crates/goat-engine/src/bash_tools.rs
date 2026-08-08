@@ -81,7 +81,7 @@ impl BackgroundProcessService for EngineBackgroundProcessService {
     }
 }
 
-pub(crate) async fn roster_message(ctx: &crate::Ctx) -> Option<goat_provider::Message> {
+pub(crate) async fn roster_message(ctx: &crate::SessionContext) -> Option<goat_provider::Message> {
     let running = ctx.background.roster().await;
     if running.is_empty() {
         return None;

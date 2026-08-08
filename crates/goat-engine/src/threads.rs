@@ -8,7 +8,7 @@ use goat_tool::{ToolBatchCall, ToolHistoryGroup};
 use tokio::sync::mpsc;
 
 use crate::{
-    Ctx,
+    SessionContext,
     prompt::build_system_prompt,
     tools_exec::{call_display, summarize_line},
 };
@@ -32,7 +32,7 @@ pub(crate) fn parse_content_blocks(body: &str) -> Vec<ContentBlock> {
 }
 
 pub(crate) async fn resolve_thread_cwd(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     stored_thread: Option<i64>,
 ) -> std::path::PathBuf {
     match stored_thread {
@@ -116,7 +116,7 @@ pub(crate) async fn handle_rename(
     }
 }
 
-pub(crate) async fn handle_list_rewind_points(ctx: &Ctx, thread_id: Option<i64>) {
+pub(crate) async fn handle_list_rewind_points(ctx: &SessionContext, thread_id: Option<i64>) {
     let events = &ctx.events;
     let Some(thread_id) = thread_id else {
         let _ = events
@@ -154,7 +154,7 @@ pub(crate) async fn handle_list_rewind_points(ctx: &Ctx, thread_id: Option<i64>)
 }
 
 pub(crate) async fn handle_rewind(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     checkpoint_id: i64,
     scope: RewindScope,
     state: &mut crate::SessionState,
@@ -472,7 +472,11 @@ fn rebuild_entries(
     (entries, parsed)
 }
 
-pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate::SessionState) {
+pub(crate) async fn handle_resume(
+    ctx: &crate::SessionContext,
+    tid: i64,
+    state: &mut crate::SessionState,
+) {
     let store = &ctx.store;
     let skills: &[SkillInfo] = &ctx.skills;
     let tools = &ctx.tools;
@@ -612,7 +616,10 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn handle_resume_latest(ctx: &crate::Ctx, state: &mut crate::SessionState) {
+pub(crate) async fn handle_resume_latest(
+    ctx: &crate::SessionContext,
+    state: &mut crate::SessionState,
+) {
     let store = &ctx.store;
     let events = &ctx.events;
     let cwd_key = ctx.cwd.display().to_string();

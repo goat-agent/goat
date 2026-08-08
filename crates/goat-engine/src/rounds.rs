@@ -7,7 +7,7 @@ use goat_tool::ToolSandbox;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Ctx, LoopEnv, Run,
+    LoopEnv, Run, SessionContext,
     compaction::ContextTracker,
     conversation::Conversation,
     persist::{now_ms, persist_message},
@@ -59,7 +59,7 @@ pub(crate) enum LoopOutcome {
     Failed(String, Option<String>),
 }
 
-async fn drain_steering(ctx: &Ctx, run: &Run<'_>, conversation: &mut Conversation) {
+async fn drain_steering(ctx: &SessionContext, run: &Run<'_>, conversation: &mut Conversation) {
     let Some(queue) = run.steering() else {
         return;
     };
@@ -175,7 +175,7 @@ fn tool_input_value(input: &str) -> serde_json::Value {
 }
 
 pub(crate) async fn run_round(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     run: &Run<'_>,
     provider: &dyn Provider,
     request: Request,
@@ -251,7 +251,7 @@ pub(crate) async fn run_round(
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) async fn process_round_output(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     run: &Run<'_>,
     env: &LoopEnv,
     round: RoundResult,
@@ -434,7 +434,7 @@ pub(crate) async fn process_round_output(
 }
 
 pub(crate) async fn core_loop(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     run: &Run<'_>,
     env: &LoopEnv,
     token: &CancellationToken,

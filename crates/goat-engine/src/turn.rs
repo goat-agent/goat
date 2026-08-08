@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Ctx, Flow, Run, SessionState,
+    Flow, Run, SessionContext, SessionState,
     accounts::provider_for,
     persist::{
         effort_string, ensure_thread, finalize_turn, init_db_turn, now_ms, persist_shell_message,
@@ -40,7 +40,7 @@ pub(crate) fn user_message(text: &str, attachments: &[InputAttachment]) -> Messa
 }
 
 fn top_regime(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     provider: &dyn Provider,
     allow_ask: bool,
     plan: bool,
@@ -86,7 +86,12 @@ pub(crate) enum TurnEnd {
     Shutdown,
 }
 
-pub(crate) async fn emit_task_error(ctx: &Ctx, id: TaskId, message: String, hint: Option<String>) {
+pub(crate) async fn emit_task_error(
+    ctx: &SessionContext,
+    id: TaskId,
+    message: String,
+    hint: Option<String>,
+) {
     let _ = ctx
         .events
         .send(Event::Error {
@@ -104,7 +109,7 @@ pub(crate) async fn emit_task_error(ctx: &Ctx, id: TaskId, message: String, hint
         .await;
 }
 
-pub(crate) async fn handle_idle_op(op: Op, ctx: &Ctx, state: &mut SessionState) {
+pub(crate) async fn handle_idle_op(op: Op, ctx: &SessionContext, state: &mut SessionState) {
     let store = &ctx.store;
     let events = &ctx.events;
     let thread_id = state.thread_id;
@@ -161,7 +166,12 @@ pub(crate) async fn handle_idle_op(op: Op, ctx: &Ctx, state: &mut SessionState) 
     }
 }
 
-async fn bind_plan_path(ctx: &Ctx, state: &mut SessionState, thread_id: Option<i64>, seed: &str) {
+async fn bind_plan_path(
+    ctx: &SessionContext,
+    state: &mut SessionState,
+    thread_id: Option<i64>,
+    seed: &str,
+) {
     if !state.mode.is_plan() || state.plan_path.is_some() {
         return;
     }
@@ -189,7 +199,11 @@ async fn bind_plan_path(ctx: &Ctx, state: &mut SessionState, thread_id: Option<i
         .await;
 }
 
-pub(crate) async fn apply_mode(ctx: &Ctx, state: &mut SessionState, mode: goat_protocol::Mode) {
+pub(crate) async fn apply_mode(
+    ctx: &SessionContext,
+    state: &mut SessionState,
+    mode: goat_protocol::Mode,
+) {
     state.mode = mode;
     if !mode.is_plan() {
         state.plan_path = None;
@@ -204,7 +218,7 @@ pub(crate) async fn apply_mode(ctx: &Ctx, state: &mut SessionState, mode: goat_p
 }
 
 pub(crate) async fn handle_plan_decision(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     decision: goat_protocol::PlanDecision,
     state: &mut SessionState,
     ops: &mut mpsc::Receiver<Op>,
@@ -227,7 +241,7 @@ pub(crate) async fn handle_plan_decision(
 }
 
 fn plan_decision_input(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     state: &SessionState,
     decision: &goat_protocol::PlanDecision,
 ) -> Option<crate::UserInput> {
@@ -269,7 +283,7 @@ enum PumpAction {
 }
 
 async fn pump_op(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     id: TaskId,
     op: Option<Op>,
     steering: &crate::SteeringQueue,
@@ -357,7 +371,7 @@ fn wake_notice(updates: &[(goat_protocol::RunId, crate::background::RunUpdate)])
 }
 
 pub(crate) async fn handle_wake(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     state: &mut SessionState,
     ops: &mut mpsc::Receiver<Op>,
 ) -> Flow {
@@ -389,7 +403,7 @@ pub(crate) async fn handle_wake(
 }
 
 pub(crate) async fn handle_turn(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     id: TaskId,
     text: String,
     display: Option<String>,
@@ -415,7 +429,7 @@ pub(crate) async fn handle_turn(
 }
 
 async fn run_turn_chain(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     input: crate::UserInput,
     seed: std::collections::VecDeque<crate::UserInput>,
     state: &mut SessionState,
@@ -442,7 +456,7 @@ async fn run_turn_chain(
 }
 
 async fn drain_deferred(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     deferred: Vec<Op>,
     state: &mut SessionState,
     ops: &mut mpsc::Receiver<Op>,
@@ -478,7 +492,7 @@ async fn drain_deferred(
 }
 
 pub(crate) async fn handle_shell(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     id: TaskId,
     command: &str,
     state: &mut SessionState,
@@ -575,7 +589,7 @@ pub(crate) async fn handle_shell(
 
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn handle_compact(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     id: TaskId,
     instructions: Option<String>,
     state: &mut SessionState,
@@ -719,7 +733,7 @@ pub(crate) async fn handle_compact(
 
 #[allow(clippy::too_many_lines)]
 async fn run_one_turn(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     input: crate::UserInput,
     seed: std::collections::VecDeque<crate::UserInput>,
     state: &mut SessionState,

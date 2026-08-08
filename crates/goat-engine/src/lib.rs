@@ -128,7 +128,7 @@ impl Engine for GoatAgent {
     }
 }
 
-pub(crate) struct Shared {
+pub(crate) struct SessionServices {
     registry: std::sync::Mutex<Arc<Registry>>,
     pub(crate) account_registries: std::sync::Mutex<HashMap<String, Arc<Registry>>>,
     pub(crate) credentials: CredentialStore,
@@ -153,7 +153,7 @@ pub(crate) struct Shared {
     pub(crate) date: String,
 }
 
-impl Shared {
+impl SessionServices {
     pub(crate) fn registry(&self) -> Arc<Registry> {
         self.registry
             .lock()
@@ -170,10 +170,10 @@ impl Shared {
 }
 
 #[derive(Clone)]
-pub(crate) struct Ctx(Arc<Shared>);
+pub(crate) struct SessionContext(Arc<SessionServices>);
 
-impl std::ops::Deref for Ctx {
-    type Target = Shared;
+impl std::ops::Deref for SessionContext {
+    type Target = SessionServices;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -392,7 +392,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     let account_registries: std::sync::Mutex<HashMap<String, Arc<Registry>>> =
         std::sync::Mutex::new(HashMap::new());
 
-    let ctx = Ctx(Arc::new(Shared {
+    let ctx = SessionContext(Arc::new(SessionServices {
         registry: std::sync::Mutex::new(Arc::new(registry)),
         account_registries,
         credentials,

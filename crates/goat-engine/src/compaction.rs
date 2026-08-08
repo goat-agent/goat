@@ -330,7 +330,7 @@ enum CollectFail {
 }
 
 async fn collect_with_retry(
-    ctx: &crate::Ctx,
+    ctx: &crate::SessionContext,
     run: &crate::Run<'_>,
     provider: &dyn goat_provider::Provider,
     request: &goat_provider::Request,
@@ -379,7 +379,7 @@ async fn collect_with_retry(
 }
 
 pub(crate) async fn compact(
-    ctx: &crate::Ctx,
+    ctx: &crate::SessionContext,
     run: &crate::Run<'_>,
     env: &crate::LoopEnv,
     conversation: &mut crate::conversation::Conversation,
@@ -411,7 +411,7 @@ pub(crate) async fn compact(
 }
 
 async fn compact_inner(
-    ctx: &crate::Ctx,
+    ctx: &crate::SessionContext,
     run: &crate::Run<'_>,
     env: &crate::LoopEnv,
     conversation: &mut crate::conversation::Conversation,

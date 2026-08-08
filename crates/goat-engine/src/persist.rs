@@ -6,7 +6,7 @@ use goat_code_store::{
 use goat_protocol::{Effort, Event, ModelTarget, TaskId, ToolOutcome};
 use goat_provider::{ContentBlock, Message, MessageRole};
 
-use crate::{Ctx, TurnIds, turn::TurnEnd};
+use crate::{SessionContext, TurnIds, turn::TurnEnd};
 
 pub(crate) fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(
@@ -23,7 +23,7 @@ pub(crate) fn effort_string(effort: Option<Effort>) -> Option<String> {
 }
 
 pub(crate) async fn create_tool_call_record(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     ids: &TurnIds,
     vendor_id: &str,
     name: &str,
@@ -53,7 +53,11 @@ pub(crate) async fn create_tool_call_record(
     }
 }
 
-pub(crate) async fn finish_tool_db(ctx: &Ctx, db_id: Option<i64>, outcome: &ToolOutcome) {
+pub(crate) async fn finish_tool_db(
+    ctx: &SessionContext,
+    db_id: Option<i64>,
+    outcome: &ToolOutcome,
+) {
     let Some(db) = db_id else {
         return;
     };
@@ -114,7 +118,7 @@ pub(crate) async fn ensure_thread(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn init_db_turn(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     id: TaskId,
     message: &Message,
     text: &str,
@@ -198,7 +202,7 @@ pub(crate) async fn init_db_turn(
 }
 
 pub(crate) async fn persist_message(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     ids: &TurnIds,
     message: &Message,
 ) -> Option<CreatedMessage> {
@@ -230,7 +234,11 @@ pub(crate) async fn persist_message(
     }
 }
 
-pub(crate) async fn persist_shell_message(ctx: &Ctx, thread_id: i64, encoded: &str) -> Option<i64> {
+pub(crate) async fn persist_shell_message(
+    ctx: &SessionContext,
+    thread_id: i64,
+    encoded: &str,
+) -> Option<i64> {
     let body = serde_json::to_string(&vec![ContentBlock::Text {
         text: encoded.to_owned(),
     }])
@@ -254,7 +262,12 @@ pub(crate) async fn persist_shell_message(ctx: &Ctx, thread_id: i64, encoded: &s
     }
 }
 
-pub(crate) async fn finalize_turn(ctx: &Ctx, id: TaskId, outcome: &TurnEnd, ids: &TurnIds) {
+pub(crate) async fn finalize_turn(
+    ctx: &SessionContext,
+    id: TaskId,
+    outcome: &TurnEnd,
+    ids: &TurnIds,
+) {
     match outcome {
         TurnEnd::Done => {
             if let Some(turn) = ids.turn_db_id

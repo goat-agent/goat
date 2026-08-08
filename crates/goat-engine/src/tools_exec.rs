@@ -7,7 +7,7 @@ use goat_tool::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Ctx, LoopEnv, Run,
+    LoopEnv, Run, SessionContext,
     persist::{create_tool_call_record, finish_tool_db},
     subagent::ToolSelection,
 };
@@ -94,7 +94,7 @@ struct RegularToolCall<'a> {
 }
 
 async fn run_regular_tool(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     request: RegularToolCall<'_>,
 ) -> Option<Result<ToolOutput, String>> {
     let RegularToolCall {
@@ -145,7 +145,7 @@ pub(crate) fn cap_tool_result(mut content: String) -> String {
 }
 
 async fn execute_tool(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     run: &Run<'_>,
     env: &LoopEnv,
     prep: &Prepared<'_>,
@@ -241,7 +241,12 @@ async fn execute_tool(
     }
 }
 
-async fn announce_batch(ctx: &Ctx, run: &Run<'_>, env: &LoopEnv, prepared: &[Prepared<'_>]) {
+async fn announce_batch(
+    ctx: &SessionContext,
+    run: &Run<'_>,
+    env: &LoopEnv,
+    prepared: &[Prepared<'_>],
+) {
     let Some(first) = prepared.first().filter(|_| prepared.len() > 1) else {
         return;
     };
@@ -272,7 +277,7 @@ async fn announce_batch(ctx: &Ctx, run: &Run<'_>, env: &LoopEnv, prepared: &[Pre
 }
 
 pub(crate) async fn run_tool_batch(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     run: &Run<'_>,
     env: &LoopEnv,
     pending_calls: &[(String, String, String)],
@@ -332,7 +337,7 @@ pub(crate) async fn run_tool_batch(
 }
 
 pub(crate) fn build_tool_defs(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     provider: &dyn Provider,
     selection: Option<&ToolSelection>,
     allow_delegate: bool,

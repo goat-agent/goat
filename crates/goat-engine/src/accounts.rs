@@ -18,7 +18,7 @@ use goat_provider::{ModelListSource, Provider};
 use goat_providers::{DEFAULT_ACCOUNT, Registry};
 use tokio::sync::mpsc;
 
-use crate::Ctx;
+use crate::SessionContext;
 
 const DISCOVER_TIMEOUT_SECS: u64 = 15;
 
@@ -75,7 +75,7 @@ pub(crate) async fn emit_accounts_changed(
         .await;
 }
 
-pub(crate) async fn handle_remove_account(ctx: &Ctx, provider: String, name: String) {
+pub(crate) async fn handle_remove_account(ctx: &SessionContext, provider: String, name: String) {
     let key = CredentialKey::model(provider.clone(), name.clone());
     if let Err(err) = ctx.credentials.remove(&key) {
         tracing::warn!(%err, "failed to remove account");
@@ -246,7 +246,7 @@ async fn run_self_oauth(
 }
 
 async fn finalize_login(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     provider: String,
     name: String,
     key: CredentialKey,
@@ -298,7 +298,7 @@ async fn validate_stored(
 }
 
 pub(crate) async fn handle_login(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     provider: String,
     name: String,
     credential: LoginCredential,
@@ -554,7 +554,7 @@ pub(crate) async fn discover_ready(
     model_list_entries(&providers, credentials, user).await
 }
 
-pub(crate) async fn refresh_model_list(ctx: &Ctx) {
+pub(crate) async fn refresh_model_list(ctx: &SessionContext) {
     let entries = discover_ready(&ctx.registry(), &ctx.credentials, &ctx.user).await;
     let _ = ctx.events.send(Event::ModelListChanged { entries }).await;
 }
@@ -567,7 +567,7 @@ pub(crate) fn clear_account_registries(cache: &std::sync::Mutex<HashMap<String, 
 }
 
 pub(crate) fn provider_for(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     account: &str,
     id: &goat_provider::ProviderId,
 ) -> Option<Arc<dyn Provider>> {

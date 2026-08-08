@@ -8,7 +8,7 @@ use goat_tool_delegate::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Ctx, LoopEnv, Run,
+    LoopEnv, Run, SessionContext,
     accounts::provider_for,
     compaction::ContextTracker,
     conversation::Conversation,
@@ -21,7 +21,7 @@ use crate::{
 pub(crate) const MAX_CONCURRENT_SUBAGENTS: usize = 8;
 
 pub(crate) struct EngineDelegationService {
-    shared: std::sync::Mutex<Weak<crate::Shared>>,
+    shared: std::sync::Mutex<Weak<crate::SessionServices>>,
 }
 
 impl EngineDelegationService {
@@ -31,25 +31,25 @@ impl EngineDelegationService {
         }
     }
 
-    pub(crate) fn attach(&self, ctx: &Ctx) {
+    pub(crate) fn attach(&self, ctx: &SessionContext) {
         *self
             .shared
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::downgrade(&ctx.0);
     }
 
-    fn context(&self) -> Result<Ctx, String> {
+    fn context(&self) -> Result<SessionContext, String> {
         self.shared
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .upgrade()
-            .map(Ctx)
+            .map(SessionContext)
             .ok_or_else(|| "delegation service unavailable".to_owned())
     }
 }
 
 fn resolve_subagent_model(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     parent: &ModelTarget,
     spec: &SubagentSpec,
 ) -> Option<(Arc<dyn Provider>, String, Option<Effort>)> {
@@ -179,7 +179,7 @@ impl DelegationService for EngineDelegationService {
 }
 
 async fn detach(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     origin: Origin,
     args: DelegateRequest,
     label: &str,
@@ -209,7 +209,7 @@ type ChildFuture<'a> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>;
 
 fn run_child<'a>(
-    ctx: &'a Ctx,
+    ctx: &'a SessionContext,
     origin: &'a Origin,
     args: &'a DelegateRequest,
     parent: TaskId,
@@ -220,7 +220,7 @@ fn run_child<'a>(
 }
 
 async fn run_child_inner(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     origin: &Origin,
     args: &DelegateRequest,
     parent: TaskId,
