@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AccountEntry, InputAttachment, LoginProvider, Mode, ModelEntry, ModelTarget, ProcessExitReason,
-    ProcessInfo, RateLimitSnapshot, RewindDraft, RewindPoint, RunId, SkillInfo,
-    SubagentGroupMember, TaskId, ThreadSummary, ToolCall, ToolCallId, ToolOutcome, TranscriptEntry,
-    Usage,
+    AccountEntry, ConversationSummary, InputAttachment, LoginProvider, Mode, ModelEntry,
+    ModelTarget, ProcessExitReason, ProcessInfo, RateLimitSnapshot, RewindDraft, RewindPoint,
+    RunId, SkillInfo, SubagentGroupMember, TaskId, ToolCall, ToolCallId, ToolOutcome,
+    TranscriptEntry, Usage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -79,8 +79,8 @@ pub enum Event {
         plan: String,
         path: String,
     },
-    ThreadsListed {
-        threads: Vec<ThreadSummary>,
+    ConversationsListed {
+        conversations: Vec<ConversationSummary>,
     },
     RewindPointsListed {
         points: Vec<RewindPoint>,
@@ -184,8 +184,8 @@ pub enum Event {
         tokens_after: u32,
         usage: Usage,
     },
-    ThreadBound {
-        thread_id: i64,
+    ConversationBound {
+        conversation_id: i64,
     },
     ProcessStarted {
         process: RunId,

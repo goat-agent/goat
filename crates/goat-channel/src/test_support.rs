@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use goat_types::{AgentId, ChannelId, InstanceId, MessageId, OutgoingBody, Surface, ThreadId};
+use goat_types::{
+    AgentId, ChannelId, ConversationId, InstanceId, MessageId, OutgoingBody, Surface,
+};
 use tokio::sync::Mutex;
 
 use crate::{
@@ -12,7 +14,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub enum MockEvent {
     Send {
-        conv: ThreadId,
+        conv: ConversationId,
         body: OutgoingBody,
         reply_to: Option<MessageId>,
         sent_id: MessageId,
@@ -22,10 +24,10 @@ pub enum MockEvent {
         body: OutgoingBody,
     },
     Typing {
-        conv: ThreadId,
+        conv: ConversationId,
     },
     OpenThread {
-        parent: ThreadId,
+        parent: ConversationId,
         anchor: Option<MessageId>,
         title: String,
     },
@@ -106,13 +108,13 @@ impl ChannelHandle for MockChannelHandle {
         self.capabilities
     }
 
-    async fn surface(&self, _thread: &ThreadId) -> ChannelResult<Surface> {
+    async fn surface(&self, _thread: &ConversationId) -> ChannelResult<Surface> {
         Err(ChannelError::Unsupported("mock surface is unspecified"))
     }
 
     async fn send(
         &self,
-        conv: &ThreadId,
+        conv: &ConversationId,
         body: OutgoingBody,
         reply_to: Option<MessageId>,
     ) -> ChannelResult<SentRef> {
@@ -142,7 +144,7 @@ impl ChannelHandle for MockChannelHandle {
         Ok(())
     }
 
-    async fn typing(&self, conv: &ThreadId) -> ChannelResult<TypingGuard> {
+    async fn typing(&self, conv: &ConversationId) -> ChannelResult<TypingGuard> {
         self.events
             .lock()
             .await
@@ -156,16 +158,16 @@ impl ChannelHandle for MockChannelHandle {
 
     async fn open_thread(
         &self,
-        parent: &ThreadId,
+        parent: &ConversationId,
         anchor: Option<&MessageId>,
         title: &str,
-    ) -> ChannelResult<ThreadId> {
+    ) -> ChannelResult<ConversationId> {
         self.events.lock().await.push(MockEvent::OpenThread {
             parent: parent.clone(),
             anchor: anchor.cloned(),
             title: title.to_string(),
         });
-        Ok(ThreadId::new(
+        Ok(ConversationId::new(
             parent.channel.clone(),
             parent.instance,
             "g:1:c:99999",

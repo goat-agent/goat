@@ -25,8 +25,8 @@ use goat_store::{
     ToolInvocationRecord, ToolInvocationStatus,
 };
 use goat_types::{
-    AgentId, Event, IncomingMessage, IntegrationId, IntegrationUpdateKind, MessageId,
-    SCHEDULE_FALLBACK_TIMEZONE, Surface, ThreadId, WorkflowItem,
+    AgentId, ConversationId, Event, IncomingMessage, IntegrationId, IntegrationUpdateKind,
+    MessageId, SCHEDULE_FALLBACK_TIMEZONE, Surface, WorkflowItem,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -263,7 +263,7 @@ impl Drop for TurnGuard {
 struct StoreSink {
     store: Arc<dyn Store>,
     agent: AgentId,
-    thread: ThreadId,
+    conversation: ConversationId,
     id: String,
     reply_to: Option<MessageId>,
 }
@@ -278,7 +278,7 @@ impl OutgoingSink for StoreSink {
             .store
             .upsert_outgoing_text(
                 self.agent,
-                &self.thread,
+                &self.conversation,
                 &self.id,
                 text,
                 self.reply_to.as_ref(),
@@ -392,7 +392,7 @@ impl Brain {
                                 warn!(agent = %self.agent, error = ?e, "append incoming");
                                 continue;
                             }
-                            let key = (msg.thread.clone(), msg.from.external.clone());
+                            let key = (msg.conversation.clone(), msg.from.external.clone());
                             if msg.command.is_some() {
                                 if let Some(prev) = buffer.take(&key)
                                     && let Err(e) = self.handle_turn(&channels, prev.last).await
@@ -478,7 +478,7 @@ impl Brain {
             Engagement::Skip => Ok(false),
             Engagement::NeedsActivity => Ok(self
                 .store
-                .has_agent_activity(self.agent, &msg.thread)
+                .has_agent_activity(self.agent, &msg.conversation)
                 .await?),
             Engagement::Engage => Ok(true),
         }
@@ -500,9 +500,11 @@ impl Brain {
     ) -> Result<()> {
         let handle = channels
             .iter()
-            .find(|h| h.id() == msg.thread.channel && h.instance() == msg.thread.instance)
+            .find(|h| {
+                h.id() == msg.conversation.channel && h.instance() == msg.conversation.instance
+            })
             .cloned()
-            .ok_or_else(|| anyhow!("no channel handle for {:?}", msg.thread))?;
+            .ok_or_else(|| anyhow!("no channel handle for {:?}", msg.conversation))?;
 
         let turn = handle.prepare_turn(&msg).await?;
         let reply_to = turn.reply_to.clone();
@@ -510,12 +512,12 @@ impl Brain {
         let sink: Arc<StoreSink> = Arc::new(StoreSink {
             store: self.store.clone(),
             agent: self.agent,
-            thread: msg.thread.clone(),
+            conversation: msg.conversation.clone(),
             id: uuid::Uuid::new_v4().to_string(),
             reply_to: Some(msg.id.clone()),
         });
 
-        let (summary, mut messages) = self.load_context(&msg.thread).await?;
+        let (summary, mut messages) = self.load_context(&msg.conversation).await?;
         if let Some(call) = msg.command.clone() {
             match self.commands.call(call).await {
                 Ok(CommandOutput::Query { content }) => messages.push(LlmMessage {
@@ -527,7 +529,7 @@ impl Brain {
                         .renderer
                         .render(
                             handle,
-                            msg.thread.clone(),
+                            msg.conversation.clone(),
                             reply_to.clone(),
                             text_stream(self.default_model.clone(), text),
                             Some(sink.clone()),
@@ -560,7 +562,7 @@ impl Brain {
             .complete_with_tools(
                 handle,
                 TurnRoute {
-                    thread: msg.thread.clone(),
+                    conversation: msg.conversation.clone(),
                     reply_to,
                     surface: msg.surface,
                     thread_open,
@@ -658,7 +660,7 @@ impl Brain {
         if out.is_empty() { None } else { Some(out) }
     }
 
-    async fn history_messages(&self, conv: &ThreadId) -> Result<Vec<LlmMessage>> {
+    async fn history_messages(&self, conv: &ConversationId) -> Result<Vec<LlmMessage>> {
         let history = self
             .store
             .recent(self.agent, conv, self.history_window)
@@ -667,7 +669,10 @@ impl Brain {
         Ok(rows_to_messages(history))
     }
 
-    async fn load_context(&self, conv: &ThreadId) -> Result<(Option<String>, Vec<LlmMessage>)> {
+    async fn load_context(
+        &self,
+        conv: &ConversationId,
+    ) -> Result<(Option<String>, Vec<LlmMessage>)> {
         if !self.summarize_enabled {
             return Ok((None, self.history_messages(conv).await?));
         }
@@ -773,7 +778,7 @@ impl Brain {
         mode: TurnMode,
         summary: Option<String>,
         sink: Option<Arc<dyn OutgoingSink>>,
-    ) -> Result<(RenderSummary, ThreadId)> {
+    ) -> Result<(RenderSummary, ConversationId)> {
         const MAX_TOOL_ROUNDS: usize = 1000;
 
         let provider = self.providers.route(&self.default_model)?;
@@ -846,20 +851,20 @@ impl Brain {
                             edits: 0,
                             final_text: "skip".into(),
                         },
-                        route.thread,
+                        route.conversation,
                     ));
                 }
                 let summary = self
                     .renderer
                     .render(
                         handle,
-                        route.thread.clone(),
+                        route.conversation.clone(),
                         route.reply_to,
                         text_stream(self.default_model.clone(), final_text),
                         sink.clone(),
                     )
                     .await?;
-                return Ok((summary, route.thread));
+                return Ok((summary, route.conversation));
             }
 
             messages.push(assistant_tool_call_message(&folded.tool_calls));
@@ -877,7 +882,7 @@ impl Brain {
                         Some((title, seed)) => {
                             let anchor = route.thread_open.as_ref().map(|c| c.anchor.clone());
                             match handle
-                                .open_thread(&route.thread, anchor.as_ref(), &title)
+                                .open_thread(&route.conversation, anchor.as_ref(), &title)
                                 .await
                             {
                                 Ok(new_thread) => {
@@ -885,7 +890,7 @@ impl Brain {
                                         .store
                                         .append_incoming_text(self.agent, &new_thread, &seed)
                                         .await;
-                                    route.thread = new_thread;
+                                    route.conversation = new_thread;
                                     route.reply_to = None;
                                     route.thread_open = None;
                                     messages.push(tool_result_message(
@@ -907,7 +912,12 @@ impl Brain {
                 }
 
                 let output = self
-                    .execute_tool(&route.thread, &call, read_state.clone(), &allowed_tools)
+                    .execute_tool(
+                        &route.conversation,
+                        &call,
+                        read_state.clone(),
+                        &allowed_tools,
+                    )
                     .await;
                 messages.push(LlmMessage {
                     role: Role::Tool,
@@ -926,7 +936,7 @@ impl Brain {
                     edits: 0,
                     final_text: String::new(),
                 },
-                route.thread,
+                route.conversation,
             ));
         }
         let text = "I stopped because tool execution exceeded the safety round limit.".to_string();
@@ -934,13 +944,13 @@ impl Brain {
             .renderer
             .render(
                 handle,
-                route.thread.clone(),
+                route.conversation.clone(),
                 route.reply_to,
                 text_stream(self.default_model.clone(), text),
                 sink.clone(),
             )
             .await?;
-        Ok((summary, route.thread))
+        Ok((summary, route.conversation))
     }
 
     async fn finish_run_logged(
@@ -1033,7 +1043,7 @@ impl Brain {
             .complete_with_tools(
                 handle,
                 TurnRoute {
-                    thread: conv.clone(),
+                    conversation: conv.clone(),
                     reply_to: None,
                     surface,
                     thread_open: None,
@@ -1139,7 +1149,7 @@ impl Brain {
             .complete_with_tools(
                 handle,
                 TurnRoute {
-                    thread: thread.clone(),
+                    conversation: thread.clone(),
                     reply_to: None,
                     surface,
                     thread_open: None,
@@ -1204,7 +1214,7 @@ impl Brain {
             .complete_with_tools(
                 handle,
                 TurnRoute {
-                    thread: thread.clone(),
+                    conversation: thread.clone(),
                     reply_to: None,
                     surface,
                     thread_open: None,
@@ -1259,7 +1269,7 @@ impl Brain {
 
     async fn execute_tool(
         &self,
-        conv: &ThreadId,
+        conv: &ConversationId,
         call: &ModelToolCall,
         read_state: ToolReadState,
         allowed_tools: &HashSet<String>,
@@ -1290,7 +1300,7 @@ impl Brain {
         }
         let ctx = ToolCaller {
             agent: self.agent,
-            thread: conv.clone(),
+            conversation: conv.clone(),
             goat_root: self.goat_root.clone(),
             read_state,
         };
@@ -1312,7 +1322,7 @@ impl Brain {
 
     async fn audit_tool_call(
         &self,
-        conv: &ThreadId,
+        conv: &ConversationId,
         call: &ModelToolCall,
         resolved_name: String,
         output: &ToolOutput,
@@ -1327,7 +1337,7 @@ impl Brain {
         let output_text = output.text_for_model();
         let record = ToolInvocationRecord {
             agent: self.agent,
-            thread: conv.clone(),
+            conversation: conv.clone(),
             call_id: call.id.clone(),
             tool_name: resolved_name,
             args_json: call.arguments.clone(),
@@ -1370,7 +1380,7 @@ fn assistant_tool_call_message(calls: &[ModelToolCall]) -> LlmMessage {
 }
 
 struct TurnRoute {
-    thread: ThreadId,
+    conversation: ConversationId,
     reply_to: Option<MessageId>,
     surface: Surface,
     thread_open: Option<ThreadOpenCtx>,
@@ -1388,7 +1398,7 @@ struct Pending {
 }
 
 struct IntakeBuffer {
-    pending: HashMap<(ThreadId, String), Pending>,
+    pending: HashMap<(ConversationId, String), Pending>,
     debounce: std::time::Duration,
     ceiling: std::time::Duration,
 }
@@ -1402,7 +1412,7 @@ impl IntakeBuffer {
         }
     }
 
-    fn push(&mut self, key: (ThreadId, String), msg: IncomingMessage, now: Instant) {
+    fn push(&mut self, key: (ConversationId, String), msg: IncomingMessage, now: Instant) {
         if let Some(existing) = self.pending.get_mut(&key) {
             existing.last = msg;
             existing.deadline = (now + self.debounce).min(existing.first_seen + self.ceiling);
@@ -1424,7 +1434,7 @@ impl IntakeBuffer {
     }
 
     fn drain_due(&mut self, now: Instant) -> Vec<IncomingMessage> {
-        let due: Vec<(ThreadId, String)> = self
+        let due: Vec<(ConversationId, String)> = self
             .pending
             .iter()
             .filter(|(_, p)| p.deadline <= now)
@@ -1435,7 +1445,7 @@ impl IntakeBuffer {
             .collect()
     }
 
-    fn take(&mut self, key: &(ThreadId, String)) -> Option<Pending> {
+    fn take(&mut self, key: &(ConversationId, String)) -> Option<Pending> {
         self.pending.remove(key)
     }
 }
@@ -2374,15 +2384,15 @@ mod tests {
 
     use std::time::Duration;
 
-    fn intake_thread(external: &str) -> ThreadId {
-        ThreadId::new(
+    fn intake_thread(external: &str) -> ConversationId {
+        ConversationId::new(
             goat_types::ChannelId::new("test"),
             goat_types::InstanceId::from_slug("i"),
             external,
         )
     }
 
-    fn intake_msg(thread: ThreadId, from: &str, text: &str) -> IncomingMessage {
+    fn intake_msg(conversation: ConversationId, from: &str, text: &str) -> IncomingMessage {
         IncomingMessage {
             id: MessageId(String::new()),
             agent: AgentId::from_slug("test"),

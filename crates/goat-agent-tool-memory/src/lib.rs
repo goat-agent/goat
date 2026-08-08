@@ -419,7 +419,7 @@ fn spec_fact() -> ToolSpec {
 mod tests {
     use super::*;
     use goat_agent_tool::ToolReadState;
-    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
+    use goat_types::{AgentId, ChannelId, ConversationId, InstanceId};
     use std::path::PathBuf;
 
     async fn setup() -> (Arc<MemoryEngine>, ToolCaller, tempfile::TempDir) {
@@ -432,7 +432,11 @@ mod tests {
         );
         let ctx = ToolCaller {
             agent: AgentId::new(),
-            thread: ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1"),
+            conversation: ConversationId::new(
+                ChannelId::new("discord"),
+                InstanceId::new(),
+                "chat:1",
+            ),
             goat_root: PathBuf::from("/tmp"),
             read_state: ToolReadState::default(),
         };

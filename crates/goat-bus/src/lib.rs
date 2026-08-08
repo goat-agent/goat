@@ -77,14 +77,14 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use goat_types::{
-        ChannelId, IncomingMessage, InstanceId, MessageId, Surface, ThreadId, UserHandle,
+        ChannelId, ConversationId, IncomingMessage, InstanceId, MessageId, Surface, UserHandle,
     };
 
     fn mk_in(agent: AgentId) -> Event {
         Event::Incoming(IncomingMessage {
             id: MessageId("m".into()),
             agent,
-            thread: ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "x"),
+            conversation: ConversationId::new(ChannelId::new("discord"), InstanceId::new(), "x"),
             from: UserHandle {
                 external: "u".into(),
                 display: None,

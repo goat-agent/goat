@@ -6,7 +6,8 @@ use goat_channel::{
     SentRef, TypingGuard,
 };
 use goat_types::{
-    AgentId, ChannelId, IncomingMessage, InstanceId, MessageId, OutgoingBody, Surface, ThreadId,
+    AgentId, ChannelId, ConversationId, IncomingMessage, InstanceId, MessageId, OutgoingBody,
+    Surface,
 };
 
 use crate::api::SlackApi;
@@ -57,7 +58,7 @@ impl ChannelHandle for SlackHandle {
         CAPABILITIES
     }
 
-    async fn surface(&self, stored_thread: &ThreadId) -> ChannelResult<Surface> {
+    async fn surface(&self, stored_thread: &ConversationId) -> ChannelResult<Surface> {
         let coords = thread::parse(&stored_thread.external)?;
         if coords.channel.starts_with('D') {
             Ok(Surface::Dm)
@@ -70,7 +71,7 @@ impl ChannelHandle for SlackHandle {
 
     async fn send(
         &self,
-        conv: &ThreadId,
+        conv: &ConversationId,
         body: OutgoingBody,
         _reply_to: Option<MessageId>,
     ) -> ChannelResult<SentRef> {
@@ -89,7 +90,7 @@ impl ChannelHandle for SlackHandle {
         self.api.update_message(&channel, &ts, &text).await
     }
 
-    async fn typing(&self, _conv: &ThreadId) -> ChannelResult<TypingGuard> {
+    async fn typing(&self, _conv: &ConversationId) -> ChannelResult<TypingGuard> {
         Ok(TypingGuard::noop())
     }
 
@@ -106,13 +107,13 @@ impl ChannelHandle for SlackHandle {
 
     async fn open_thread(
         &self,
-        parent: &ThreadId,
+        parent: &ConversationId,
         anchor: Option<&MessageId>,
         _title: &str,
-    ) -> ChannelResult<ThreadId> {
+    ) -> ChannelResult<ConversationId> {
         let coords = thread::parse(&parent.external)?;
         if let Some(existing) = coords.thread_ts {
-            return Ok(ThreadId::new(
+            return Ok(ConversationId::new(
                 ID.clone(),
                 parent.instance,
                 thread::external(&coords.channel, Some(&existing)),
@@ -123,7 +124,7 @@ impl ChannelHandle for SlackHandle {
                 "slack: a thread needs the parent message it hangs off".to_string(),
             )
         })?;
-        Ok(ThreadId::new(
+        Ok(ConversationId::new(
             ID.clone(),
             parent.instance,
             thread::external(&coords.channel, Some(&anchor.0)),
@@ -215,7 +216,7 @@ mod tests {
             ChannelIdentity::new("bot", "bot"),
             Arc::new(SlackApi::new("token").unwrap()),
         );
-        let thread = |external| ThreadId::new(ID.clone(), handle.instance, external);
+        let thread = |external| ConversationId::new(ID.clone(), handle.instance, external);
 
         assert_eq!(handle.surface(&thread("c:D1")).await.unwrap(), Surface::Dm);
         assert_eq!(
@@ -240,7 +241,7 @@ mod tests {
             ChannelIdentity::new("bot", "bot"),
             Arc::new(SlackApi::new("token").unwrap()),
         );
-        let stored_thread = ThreadId::new(ID.clone(), handle.instance, "unknown");
+        let stored_thread = ConversationId::new(ID.clone(), handle.instance, "unknown");
         assert!(handle.surface(&stored_thread).await.is_err());
     }
 

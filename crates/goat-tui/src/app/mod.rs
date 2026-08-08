@@ -134,7 +134,7 @@ struct HostActions {
 struct SessionState {
     session_id: Option<u64>,
     client_id: Option<u64>,
-    thread_id: Option<i64>,
+    conversation_id: Option<i64>,
     daemon: Option<Identity>,
     started: std::time::Instant,
     window_count: usize,
@@ -202,7 +202,7 @@ pub struct App {
     pub(crate) should_quit: bool,
     pub(crate) exit_requested: bool,
     pub(crate) dirty: bool,
-    pub(crate) threads: Vec<goat_protocol::ThreadSummary>,
+    pub(crate) conversations: Vec<goat_protocol::ConversationSummary>,
     pub(crate) mode: goat_protocol::Mode,
     pub(crate) plan_path: Option<String>,
     pub(crate) commands: CommandRegistry,
@@ -337,7 +337,7 @@ impl App {
             session: SessionState {
                 session_id: origin.session,
                 client_id: origin.client,
-                thread_id: None,
+                conversation_id: None,
                 daemon: origin.daemon.clone(),
                 started: std::time::Instant::now(),
                 window_count: 1,
@@ -373,7 +373,7 @@ impl App {
             should_quit: false,
             exit_requested: false,
             dirty: true,
-            threads: Vec::new(),
+            conversations: Vec::new(),
             mode: goat_protocol::Mode::Normal,
             plan_path: None,
             commands: CommandRegistry::builtin(),
@@ -1771,8 +1771,8 @@ impl Session for App {
         self.catalog.selected.as_ref()
     }
 
-    fn threads(&self) -> &[goat_protocol::ThreadSummary] {
-        &self.threads
+    fn conversations(&self) -> &[goat_protocol::ConversationSummary] {
+        &self.conversations
     }
 
     fn usage(&self) -> &UsageState {
@@ -1791,7 +1791,7 @@ impl Session for App {
         SessionSnapshot {
             session_id: self.session.session_id,
             client_id: self.session.client_id,
-            thread_id: self.session.thread_id,
+            conversation_id: self.session.conversation_id,
             daemon: self.session.daemon.clone(),
             model: self.catalog.selected.clone(),
             models_loaded: self.catalog.loaded,
@@ -3137,13 +3137,13 @@ mod tests {
 
     #[test]
     fn resume_requests_list_then_opens_picker() {
-        use goat_protocol::ThreadSummary;
+        use goat_protocol::ConversationSummary;
         let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.dispatch_slash_command("/resume");
-        assert!(matches!(ops.as_slice(), [Op::ListThreads {}]));
+        assert!(matches!(ops.as_slice(), [Op::ListConversations {}]));
         assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
-        let ops = app.update(AppEvent::Engine(EngineEvent::ThreadsListed {
-            threads: vec![ThreadSummary {
+        let ops = app.update(AppEvent::Engine(EngineEvent::ConversationsListed {
+            conversations: vec![ConversationSummary {
                 id: 7,
                 title: "first chat".to_owned(),
                 model: "openai/gpt".to_owned(),
@@ -3157,12 +3157,12 @@ mod tests {
 
     #[test]
     fn resume_index_resolves_to_resume_op() {
-        use goat_protocol::ThreadSummary;
+        use goat_protocol::ConversationSummary;
         let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.dispatch_slash_command("/resume 1");
-        assert!(matches!(ops.as_slice(), [Op::ListThreads {}]));
-        let ops = app.update(AppEvent::Engine(EngineEvent::ThreadsListed {
-            threads: vec![ThreadSummary {
+        assert!(matches!(ops.as_slice(), [Op::ListConversations {}]));
+        let ops = app.update(AppEvent::Engine(EngineEvent::ConversationsListed {
+            conversations: vec![ConversationSummary {
                 id: 42,
                 title: "chat".to_owned(),
                 model: "openai/gpt".to_owned(),
@@ -3170,7 +3170,12 @@ mod tests {
                 live: false,
             }],
         }));
-        assert!(matches!(ops.as_slice(), [Op::Resume { thread_id: 42 }]));
+        assert!(matches!(
+            ops.as_slice(),
+            [Op::Resume {
+                conversation_id: 42
+            }]
+        ));
         assert!(matches!(app.screens.active, PendingScreen::None));
     }
 

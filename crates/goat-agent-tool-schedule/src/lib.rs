@@ -91,7 +91,7 @@ impl ToolHandler for ScheduleOnceTool {
             agent: ctx.agent,
             instruction: args.task.clone(),
             tools: args.tools,
-            origin_conv: ctx.thread,
+            origin_conv: ctx.conversation,
             schedule: ScheduleKind::Once(due_at),
             timezone: Some(timezone_name.clone()),
             created_by_msg_id: None,
@@ -194,7 +194,7 @@ impl ToolHandler for ScheduleCronTool {
             agent: ctx.agent,
             instruction: args.task.clone(),
             tools: args.tools,
-            origin_conv: ctx.thread,
+            origin_conv: ctx.conversation,
             schedule: ScheduleKind::Cron(args.cron.clone()),
             timezone: Some(timezone_name.clone()),
             created_by_msg_id: None,
@@ -427,7 +427,7 @@ mod tests {
     use goat_agent_tool::{ToolCall, ToolCaller, ToolReadState};
     use goat_loop::scheduler::SchedulerHandle;
     use goat_store::SqliteStore;
-    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
+    use goat_types::{AgentId, ChannelId, ConversationId, InstanceId};
     use std::path::PathBuf;
 
     async fn setup() -> (Arc<dyn Store>, ToolCaller, AgentId) {
@@ -437,11 +437,11 @@ mod tests {
         let store = Arc::new(SqliteStore::open(&path).await.unwrap()) as Arc<dyn Store>;
         let agent = AgentId::new();
         store.ensure_agent(agent, "dev", "dev").await.unwrap();
-        let conv = ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1");
+        let conv = ConversationId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1");
         store.ensure_thread(&conv, agent).await.unwrap();
         let ctx = ToolCaller {
             agent,
-            thread: conv,
+            conversation: conv,
             goat_root: PathBuf::from("/tmp"),
             read_state: ToolReadState::default(),
         };

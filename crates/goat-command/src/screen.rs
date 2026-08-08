@@ -4,8 +4,8 @@ use crossterm::event::Event as InputEvent;
 use goat_client::Identity;
 use goat_github::PrInfo;
 use goat_protocol::{
-    AccountEntry, Event, Mode, ModelEntry, ModelTarget, NotifyKind, RateLimitSnapshot, TaskId,
-    ThreadSummary, Usage,
+    AccountEntry, ConversationSummary, Event, Mode, ModelEntry, ModelTarget, NotifyKind,
+    RateLimitSnapshot, TaskId, Usage,
 };
 use goat_worktree::Workspace;
 use ratatui::{Frame, layout::Rect};
@@ -69,7 +69,7 @@ pub struct UsageState {
 pub struct SessionSnapshot {
     pub session_id: Option<u64>,
     pub client_id: Option<u64>,
-    pub thread_id: Option<i64>,
+    pub conversation_id: Option<i64>,
     pub daemon: Option<Identity>,
     pub model: Option<ModelTarget>,
     pub models_loaded: bool,
@@ -141,7 +141,7 @@ pub trait Viewport {
 pub trait Session {
     fn models(&self) -> &[ModelEntry];
     fn current_model(&self) -> Option<&ModelTarget>;
-    fn threads(&self) -> &[ThreadSummary];
+    fn conversations(&self) -> &[ConversationSummary];
     fn usage(&self) -> &UsageState;
     fn mode(&self) -> Mode;
     fn accounts(&self) -> &[AccountEntry];

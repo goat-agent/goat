@@ -18,13 +18,13 @@ mod tests {
 
     use crate::{edit, glob, grep, read};
     use goat_agent_tool::{ToolCall, ToolCaller, ToolHandler, ToolName, ToolOutput};
-    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
+    use goat_types::{AgentId, ChannelId, ConversationId, InstanceId};
     use serde_json::json;
 
     fn ctx(root: PathBuf) -> ToolCaller {
         ToolCaller {
             agent: AgentId::from_slug("dev"),
-            thread: ThreadId::new(ChannelId::new("test"), InstanceId::new(), "x"),
+            conversation: ConversationId::new(ChannelId::new("test"), InstanceId::new(), "x"),
             goat_root: root,
             read_state: std::sync::Arc::default(),
         }

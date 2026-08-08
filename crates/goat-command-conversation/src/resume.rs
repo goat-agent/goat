@@ -42,7 +42,9 @@ impl Command for Resume {
                 }
             }
         } else {
-            CommandEffect::Show(Box::new(ResumeScreen::new(session.threads().to_vec())))
+            CommandEffect::Show(Box::new(ResumeScreen::new(
+                session.conversations().to_vec(),
+            )))
         }
     }
 }

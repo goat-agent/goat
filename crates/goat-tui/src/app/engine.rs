@@ -37,8 +37,8 @@ impl App {
                 ));
                 self.dirty = true;
             }
-            EngineEvent::ThreadsListed { threads } => {
-                self.threads = threads;
+            EngineEvent::ConversationsListed { conversations } => {
+                self.conversations = conversations;
             }
             EngineEvent::RewindPointsListed { .. } => {
                 self.arming.rewind = None;
@@ -138,8 +138,8 @@ impl App {
             EngineEvent::LoginProviders { .. }
             | EngineEvent::LoginStatus { .. }
             | EngineEvent::AskDismissed { .. } => {}
-            EngineEvent::ThreadBound { thread_id } => {
-                self.session.thread_id = Some(thread_id);
+            EngineEvent::ConversationBound { conversation_id } => {
+                self.session.conversation_id = Some(conversation_id);
             }
             EngineEvent::ProcessListChanged { processes } => {
                 self.reconcile_processes(&processes);

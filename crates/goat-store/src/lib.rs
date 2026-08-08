@@ -4,7 +4,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use goat_types::{
-    AgentId, Attachment, ChannelId, IncomingMessage, InstanceId, MessageId, ThreadId, UserHandle,
+    AgentId, Attachment, ChannelId, ConversationId, IncomingMessage, InstanceId, MessageId,
+    UserHandle,
 };
 use sqlx::ConnectOptions;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
@@ -49,7 +50,7 @@ pub enum MessageSender {
 }
 
 #[derive(Clone, Debug)]
-pub struct ThreadSummary {
+pub struct ConversationSummary {
     pub summary: String,
     pub summarized_count: usize,
 }
@@ -63,7 +64,7 @@ pub enum Direction {
 #[derive(Clone, Debug)]
 pub struct ToolInvocationRecord {
     pub agent: AgentId,
-    pub thread: ThreadId,
+    pub conversation: ConversationId,
     pub call_id: String,
     pub tool_name: String,
     pub args_json: serde_json::Value,
@@ -172,7 +173,7 @@ pub struct NewSchedule {
     pub agent: AgentId,
     pub instruction: String,
     pub tools: Vec<String>,
-    pub origin_conv: ThreadId,
+    pub origin_conv: ConversationId,
     pub schedule: ScheduleKind,
     pub timezone: Option<String>,
     pub created_by_msg_id: Option<MessageId>,
@@ -184,7 +185,7 @@ pub struct Schedule {
     pub agent: AgentId,
     pub instruction: String,
     pub tools: Vec<String>,
-    pub origin_conv: ThreadId,
+    pub origin_conv: ConversationId,
     pub schedule: ScheduleKind,
     pub timezone: Option<String>,
     pub status: ScheduleStatus,
@@ -275,7 +276,7 @@ pub struct NewGoal {
     pub parent: Option<i64>,
     pub priority: i64,
     pub origin: GoalOrigin,
-    pub origin_conv: Option<ThreadId>,
+    pub origin_conv: Option<ConversationId>,
     pub next_review_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -289,7 +290,7 @@ pub struct GoalRecord {
     pub status: GoalStatus,
     pub priority: i64,
     pub origin: GoalOrigin,
-    pub origin_conv: Option<ThreadId>,
+    pub origin_conv: Option<ConversationId>,
     pub next_review_at: Option<chrono::DateTime<chrono::Utc>>,
     pub last_reviewed_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -300,23 +301,27 @@ pub struct GoalRecord {
 pub trait Store: Send + Sync + 'static {
     async fn ensure_agent(&self, id: AgentId, slug: &str, display: &str) -> StoreResult<()>;
 
-    async fn ensure_thread(&self, conv: &ThreadId, agent: AgentId) -> StoreResult<()>;
+    async fn ensure_thread(&self, conv: &ConversationId, agent: AgentId) -> StoreResult<()>;
 
     async fn append_incoming(&self, msg: &IncomingMessage) -> StoreResult<()>;
 
     async fn append_incoming_text(
         &self,
         agent: AgentId,
-        thread: &ThreadId,
+        conversation: &ConversationId,
         text: &str,
     ) -> StoreResult<()>;
 
-    async fn has_agent_activity(&self, agent: AgentId, thread: &ThreadId) -> StoreResult<bool>;
+    async fn has_agent_activity(
+        &self,
+        agent: AgentId,
+        conversation: &ConversationId,
+    ) -> StoreResult<bool>;
 
     async fn append_outgoing_text(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         text: &str,
         reply_to: Option<&MessageId>,
     ) -> StoreResult<()>;
@@ -324,7 +329,7 @@ pub trait Store: Send + Sync + 'static {
     async fn upsert_outgoing_text(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         id: &str,
         text: &str,
         reply_to: Option<&MessageId>,
@@ -341,16 +346,16 @@ pub trait Store: Send + Sync + 'static {
     async fn recent(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         limit: usize,
     ) -> StoreResult<Vec<HistoryRow>>;
 
-    async fn message_count(&self, agent: AgentId, conv: &ThreadId) -> StoreResult<usize>;
+    async fn message_count(&self, agent: AgentId, conv: &ConversationId) -> StoreResult<usize>;
 
     async fn messages_from(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         offset: usize,
         limit: usize,
     ) -> StoreResult<Vec<HistoryRow>>;
@@ -358,13 +363,13 @@ pub trait Store: Send + Sync + 'static {
     async fn get_thread_summary(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
-    ) -> StoreResult<Option<ThreadSummary>>;
+        conv: &ConversationId,
+    ) -> StoreResult<Option<ConversationSummary>>;
 
     async fn upsert_thread_summary(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         summary: &str,
         summarized_count: usize,
     ) -> StoreResult<()>;
@@ -417,7 +422,7 @@ pub trait Store: Send + Sync + 'static {
 
     async fn all_pending_runs(&self) -> StoreResult<Vec<(i64, i64, DateTime<Utc>)>>;
 
-    async fn latest_thread(&self, agent: AgentId) -> StoreResult<Option<ThreadId>>;
+    async fn latest_thread(&self, agent: AgentId) -> StoreResult<Option<ConversationId>>;
 
     async fn create_goal(&self, new: NewGoal) -> StoreResult<i64>;
 
@@ -594,7 +599,7 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    async fn ensure_thread(&self, conv: &ThreadId, agent: AgentId) -> StoreResult<()> {
+    async fn ensure_thread(&self, conv: &ConversationId, agent: AgentId) -> StoreResult<()> {
         sqlx::query(
             r"INSERT INTO threads (id, agent_id, channel, instance, external, created_at)
                VALUES (?, ?, ?, ?, ?, ?)
@@ -611,11 +616,11 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    async fn latest_thread(&self, agent: AgentId) -> StoreResult<Option<ThreadId>> {
+    async fn latest_thread(&self, agent: AgentId) -> StoreResult<Option<ConversationId>> {
         let row: Option<(String, String, String)> = sqlx::query_as(
             r"SELECT c.channel, c.instance, c.external
                FROM threads c
-               JOIN messages m ON m.thread_id = c.id
+               JOIN messages m ON m.conversation_id = c.id
                WHERE c.agent_id = ?
                GROUP BY c.id
                ORDER BY MAX(m.ts) DESC
@@ -629,7 +634,7 @@ impl Store for SqliteStore {
             None => Ok(None),
             Some((channel, instance, external)) => {
                 let instance = InstanceId(Uuid::parse_str(&instance).map_err(StoreError::Uuid)?);
-                Ok(Some(ThreadId::new(
+                Ok(Some(ConversationId::new(
                     ChannelId::new(channel),
                     instance,
                     external,
@@ -639,16 +644,16 @@ impl Store for SqliteStore {
     }
 
     async fn append_incoming(&self, msg: &IncomingMessage) -> StoreResult<()> {
-        self.ensure_thread(&msg.thread, msg.agent).await?;
+        self.ensure_thread(&msg.conversation, msg.agent).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, agent_id, direction, sender_kind, sender_key, sender_display,
+               (id, conversation_id, agent_id, direction, sender_kind, sender_key, sender_display,
                 body_kind, text, attachment_ref, attachments, reply_to, ts, raw)
                VALUES (?, ?, ?, 'in', 'user', ?, ?, 'text', ?, NULL, ?, ?, ?, ?)
                ON CONFLICT(id) DO NOTHING",
         )
         .bind(&msg.id.0)
-        .bind(msg.thread.to_key())
+        .bind(msg.conversation.to_key())
         .bind(msg.agent.to_string())
         .bind(&msg.from.external)
         .bind(&msg.from.display)
@@ -665,18 +670,18 @@ impl Store for SqliteStore {
     async fn append_incoming_text(
         &self,
         agent: AgentId,
-        thread: &ThreadId,
+        conversation: &ConversationId,
         text: &str,
     ) -> StoreResult<()> {
-        self.ensure_thread(thread, agent).await?;
+        self.ensure_thread(conversation, agent).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, agent_id, direction, sender_kind, sender_key,
+               (id, conversation_id, agent_id, direction, sender_kind, sender_key,
                 body_kind, text, attachment_ref, reply_to, ts, raw)
                VALUES (?, ?, ?, 'in', 'agent', ?, 'text', ?, NULL, NULL, ?, NULL)",
         )
         .bind(Uuid::new_v4().to_string())
-        .bind(thread.to_key())
+        .bind(conversation.to_key())
         .bind(agent.to_string())
         .bind(agent.to_string())
         .bind(text)
@@ -686,16 +691,20 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    async fn has_agent_activity(&self, agent: AgentId, thread: &ThreadId) -> StoreResult<bool> {
+    async fn has_agent_activity(
+        &self,
+        agent: AgentId,
+        conversation: &ConversationId,
+    ) -> StoreResult<bool> {
         let row: (bool,) = sqlx::query_as(
             r"SELECT EXISTS(
                 SELECT 1 FROM messages
-                WHERE agent_id = ? AND thread_id = ? AND direction = 'out'
+                WHERE agent_id = ? AND conversation_id = ? AND direction = 'out'
                 LIMIT 1
             )",
         )
         .bind(agent.to_string())
-        .bind(thread.to_key())
+        .bind(conversation.to_key())
         .fetch_one(&*self.pool)
         .await?;
         Ok(row.0)
@@ -704,14 +713,14 @@ impl Store for SqliteStore {
     async fn append_outgoing_text(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         text: &str,
         reply_to: Option<&MessageId>,
     ) -> StoreResult<()> {
         self.ensure_thread(conv, agent).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, agent_id, direction, sender_kind, sender_key,
+               (id, conversation_id, agent_id, direction, sender_kind, sender_key,
                 body_kind, text, attachment_ref, reply_to, ts, raw)
                VALUES (?, ?, ?, 'out', 'agent', ?, 'text', ?, NULL, ?, ?, NULL)",
         )
@@ -730,7 +739,7 @@ impl Store for SqliteStore {
     async fn upsert_outgoing_text(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         id: &str,
         text: &str,
         reply_to: Option<&MessageId>,
@@ -738,7 +747,7 @@ impl Store for SqliteStore {
         self.ensure_thread(conv, agent).await?;
         sqlx::query(
             r"INSERT INTO messages
-               (id, thread_id, agent_id, direction, sender_kind, sender_key,
+               (id, conversation_id, agent_id, direction, sender_kind, sender_key,
                 body_kind, text, attachment_ref, reply_to, ts, raw)
                VALUES (?, ?, ?, 'out', 'agent', ?, 'text', ?, NULL, ?, ?, NULL)
                ON CONFLICT(id) DO UPDATE SET text = excluded.text, ts = excluded.ts",
@@ -756,15 +765,16 @@ impl Store for SqliteStore {
     }
 
     async fn append_tool_invocation(&self, record: ToolInvocationRecord) -> StoreResult<()> {
-        self.ensure_thread(&record.thread, record.agent).await?;
+        self.ensure_thread(&record.conversation, record.agent)
+            .await?;
         sqlx::query(
             r"INSERT INTO tool_invocations
-               (id, thread_id, agent_id, call_id, tool_name, args_json, status,
+               (id, conversation_id, agent_id, call_id, tool_name, args_json, status,
                 output_preview, error, started_at, finished_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
-        .bind(record.thread.to_key())
+        .bind(record.conversation.to_key())
         .bind(record.agent.to_string())
         .bind(record.call_id)
         .bind(record.tool_name)
@@ -826,7 +836,7 @@ impl Store for SqliteStore {
     async fn recent(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         limit: usize,
     ) -> StoreResult<Vec<HistoryRow>> {
         let limit = i64::try_from(limit.max(1)).unwrap_or(i64::MAX);
@@ -834,7 +844,7 @@ impl Store for SqliteStore {
             r"SELECT direction, text, attachments, reply_to, ts,
                       sender_kind, sender_key, sender_display
                FROM messages
-               WHERE agent_id = ? AND thread_id = ? AND text IS NOT NULL
+               WHERE agent_id = ? AND conversation_id = ? AND text IS NOT NULL
                ORDER BY ts DESC
                LIMIT ?",
         )
@@ -852,10 +862,10 @@ impl Store for SqliteStore {
         Ok(history)
     }
 
-    async fn message_count(&self, agent: AgentId, conv: &ThreadId) -> StoreResult<usize> {
+    async fn message_count(&self, agent: AgentId, conv: &ConversationId) -> StoreResult<usize> {
         let row: (i64,) = sqlx::query_as(
             r"SELECT COUNT(*) FROM messages
-               WHERE agent_id = ? AND thread_id = ? AND text IS NOT NULL",
+               WHERE agent_id = ? AND conversation_id = ? AND text IS NOT NULL",
         )
         .bind(agent.to_string())
         .bind(conv.to_key())
@@ -867,7 +877,7 @@ impl Store for SqliteStore {
     async fn messages_from(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         offset: usize,
         limit: usize,
     ) -> StoreResult<Vec<HistoryRow>> {
@@ -878,7 +888,7 @@ impl Store for SqliteStore {
             r"SELECT direction, text, attachments, reply_to, ts,
                       sender_kind, sender_key, sender_display
                FROM messages
-               WHERE agent_id = ? AND thread_id = ? AND text IS NOT NULL
+               WHERE agent_id = ? AND conversation_id = ? AND text IS NOT NULL
                ORDER BY ts ASC, id ASC
                LIMIT ? OFFSET ?",
         )
@@ -894,17 +904,17 @@ impl Store for SqliteStore {
     async fn get_thread_summary(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
-    ) -> StoreResult<Option<ThreadSummary>> {
+        conv: &ConversationId,
+    ) -> StoreResult<Option<ConversationSummary>> {
         let row: Option<(String, i64)> = sqlx::query_as(
             r"SELECT summary, summarized_count FROM thread_summary
-               WHERE agent_id = ? AND thread_id = ?",
+               WHERE agent_id = ? AND conversation_id = ?",
         )
         .bind(agent.to_string())
         .bind(conv.to_key())
         .fetch_optional(&*self.pool)
         .await?;
-        Ok(row.map(|(summary, count)| ThreadSummary {
+        Ok(row.map(|(summary, count)| ConversationSummary {
             summary,
             summarized_count: count.max(0) as usize,
         }))
@@ -913,16 +923,16 @@ impl Store for SqliteStore {
     async fn upsert_thread_summary(
         &self,
         agent: AgentId,
-        conv: &ThreadId,
+        conv: &ConversationId,
         summary: &str,
         summarized_count: usize,
     ) -> StoreResult<()> {
         self.ensure_thread(conv, agent).await?;
         sqlx::query(
             r"INSERT INTO thread_summary
-               (thread_id, agent_id, summary, summarized_count, updated_at)
+               (conversation_id, agent_id, summary, summarized_count, updated_at)
                VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(thread_id) DO UPDATE SET
+               ON CONFLICT(conversation_id) DO UPDATE SET
                  summary = excluded.summary,
                  summarized_count = excluded.summarized_count,
                  updated_at = excluded.updated_at",
@@ -1255,7 +1265,11 @@ impl Store for SqliteStore {
         .bind(new.parent)
         .bind(new.priority)
         .bind(new.origin.as_str())
-        .bind(new.origin_conv.as_ref().map(goat_types::ThreadId::to_key))
+        .bind(
+            new.origin_conv
+                .as_ref()
+                .map(goat_types::ConversationId::to_key),
+        )
         .bind(new.next_review_at.map(|d| d.to_rfc3339()))
         .bind(&now)
         .bind(&now)
@@ -1501,7 +1515,7 @@ async fn load_schedule(pool: &SqlitePool, id: i64) -> StoreResult<Schedule> {
     let tools: Vec<String> = serde_json::from_str(&row.3)?;
     let agent = AgentId(Uuid::parse_str(&row.1)?);
     let instance = InstanceId(Uuid::parse_str(&row.13)?);
-    let origin_conv = ThreadId::new(ChannelId::new(row.12.clone()), instance, row.14.clone());
+    let origin_conv = ConversationId::new(ChannelId::new(row.12.clone()), instance, row.14.clone());
     let schedule = match row.5.as_str() {
         "once" => {
             let at = row.6.as_deref().ok_or(StoreError::InvalidEnum {
@@ -1618,7 +1632,7 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
 
     let agent = AgentId(Uuid::parse_str(&row.1)?);
     let origin_conv = match (&row.12, &row.13, &row.14) {
-        (Some(channel), Some(instance), Some(external)) => Some(ThreadId::new(
+        (Some(channel), Some(instance), Some(external)) => Some(ConversationId::new(
             ChannelId::new(channel.clone()),
             InstanceId(Uuid::parse_str(instance)?),
             external.clone(),
@@ -1658,8 +1672,8 @@ mod tests {
         SqliteStore::open(&path).await.unwrap()
     }
 
-    fn fixture_conv() -> ThreadId {
-        ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1")
+    fn fixture_conv() -> ConversationId {
+        ConversationId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1")
     }
 
     async fn fixture_agent(store: &SqliteStore) -> AgentId {
@@ -1676,7 +1690,7 @@ mod tests {
         let msg = IncomingMessage {
             id: MessageId("m1".into()),
             agent: p,
-            thread: conv.clone(),
+            conversation: conv.clone(),
             from: UserHandle {
                 external: "u".into(),
                 display: None,
@@ -1735,7 +1749,7 @@ mod tests {
         let msg = IncomingMessage {
             id: MessageId("stable-external-id".into()),
             agent: p,
-            thread: conv.clone(),
+            conversation: conv.clone(),
             from: UserHandle {
                 external: "user-42".into(),
                 display: Some("Mutable Name".into()),
@@ -1803,7 +1817,7 @@ mod tests {
             let msg = IncomingMessage {
                 id: MessageId(format!("m{i}")),
                 agent: p,
-                thread: conv.clone(),
+                conversation: conv.clone(),
                 from: UserHandle {
                     external: "u".into(),
                     display: None,
@@ -2068,8 +2082,10 @@ mod tests {
 
         assert!(s.latest_thread(p).await.unwrap().is_none());
 
-        let conv_old = ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:old");
-        let conv_new = ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:new");
+        let conv_old =
+            ConversationId::new(ChannelId::new("discord"), InstanceId::new(), "chat:old");
+        let conv_new =
+            ConversationId::new(ChannelId::new("discord"), InstanceId::new(), "chat:new");
 
         let earlier = Utc::now() - Duration::seconds(60);
         let later = Utc::now();
@@ -2077,7 +2093,7 @@ mod tests {
         s.append_incoming(&IncomingMessage {
             id: MessageId("m-old".into()),
             agent: p,
-            thread: conv_old.clone(),
+            conversation: conv_old.clone(),
             from: UserHandle {
                 external: "u".into(),
                 display: None,
@@ -2097,7 +2113,7 @@ mod tests {
         s.append_incoming(&IncomingMessage {
             id: MessageId("m-new".into()),
             agent: p,
-            thread: conv_new.clone(),
+            conversation: conv_new.clone(),
             from: UserHandle {
                 external: "u".into(),
                 display: None,
@@ -2167,7 +2183,9 @@ mod tests {
         assert_eq!(g.priority, 3);
         assert_eq!(g.origin, GoalOrigin::SelfFormed);
         assert_eq!(
-            g.origin_conv.as_ref().map(goat_types::ThreadId::to_key),
+            g.origin_conv
+                .as_ref()
+                .map(goat_types::ConversationId::to_key),
             Some(conv.to_key())
         );
 

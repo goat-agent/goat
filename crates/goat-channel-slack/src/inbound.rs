@@ -6,8 +6,8 @@ use chrono::Utc;
 use futures::{SinkExt, StreamExt};
 use goat_agent_command::CommandSpec;
 use goat_types::{
-    AgentId, CommandCall, CommandName, IncomingMessage, InstanceId, MessageId, Surface, ThreadId,
-    UserHandle,
+    AgentId, CommandCall, CommandName, ConversationId, IncomingMessage, InstanceId, MessageId,
+    Surface, UserHandle,
 };
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -258,7 +258,7 @@ fn to_incoming(
     Some(IncomingMessage {
         id: MessageId(event.ts.clone()),
         agent,
-        thread: ThreadId::new(ID.clone(), instance, external),
+        conversation: ConversationId::new(ID.clone(), instance, external),
         from: UserHandle {
             external: user,
             display,
@@ -492,7 +492,7 @@ mod tests {
         event.thread_ts = Some("1712345600.000100".to_string());
         let converted = convert(&event);
         assert_eq!(converted.surface, Surface::Thread);
-        assert_eq!(converted.thread.external, "c:C1:t:1712345600.000100");
+        assert_eq!(converted.conversation.external, "c:C1:t:1712345600.000100");
         assert_eq!(converted.parent.as_deref(), Some("c:C1"));
     }
 
@@ -502,7 +502,7 @@ mod tests {
         event.thread_ts = Some(event.ts.clone());
         let converted = convert(&event);
         assert_eq!(converted.surface, Surface::Channel);
-        assert_eq!(converted.thread.external, "c:C1");
+        assert_eq!(converted.conversation.external, "c:C1");
         assert!(converted.parent.is_none());
     }
 

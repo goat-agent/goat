@@ -26,6 +26,7 @@ mod bash_tools;
 mod checkpoint;
 mod compaction;
 mod conversation;
+mod conversations;
 mod delegate;
 mod instructions;
 mod mcp_tools;
@@ -37,7 +38,6 @@ mod retry;
 mod rounds;
 mod shell;
 mod subagent;
-mod threads;
 mod tool_recovery;
 mod tools_exec;
 mod turn;
@@ -191,7 +191,7 @@ pub(crate) struct SessionState {
     pub(crate) plan_path: Option<PathBuf>,
     pub(crate) conversation: conversation::Conversation,
     pub(crate) tracker: compaction::ContextTracker,
-    pub(crate) thread_id: Option<i64>,
+    pub(crate) conversation_id: Option<i64>,
 }
 
 impl SessionState {
@@ -307,7 +307,7 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
         plan_path: None,
         conversation: conversation::Conversation::new(),
         tracker: compaction::ContextTracker::new(),
-        thread_id: None,
+        conversation_id: None,
     };
 
     if state.target.is_none() {
@@ -516,30 +516,33 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
                 accounts::handle_remove_account(&ctx, provider, name).await;
                 accounts::clear_account_registries(&ctx.account_registries);
             }
-            Op::ListThreads {} => {
-                threads::handle_list_threads(&ctx.store, &ctx.cwd, &ctx.events).await;
+            Op::ListConversations {} => {
+                conversations::handle_list_threads(&ctx.store, &ctx.cwd, &ctx.events).await;
             }
             Op::ListRewindPoints {} => {
-                threads::handle_list_rewind_points(&ctx, state.thread_id).await;
+                conversations::handle_list_rewind_points(&ctx, state.conversation_id).await;
             }
             Op::Rewind {
                 checkpoint_id,
                 scope,
             } => {
-                threads::handle_rewind(&ctx, checkpoint_id, scope, &mut state).await;
+                conversations::handle_rewind(&ctx, checkpoint_id, scope, &mut state).await;
             }
-            Op::Resume { thread_id: tid } => {
+            Op::Resume {
+                conversation_id: tid,
+            } => {
                 ctx.checkpoints.clear();
-                threads::handle_resume(&ctx, tid, &mut state).await;
+                conversations::handle_resume(&ctx, tid, &mut state).await;
                 accounts::refresh_model_list(&ctx).await;
             }
             Op::ResumeLatest {} => {
                 ctx.checkpoints.clear();
-                threads::handle_resume_latest(&ctx, &mut state).await;
+                conversations::handle_resume_latest(&ctx, &mut state).await;
                 accounts::refresh_model_list(&ctx).await;
             }
-            Op::RenameThread { title } => {
-                threads::handle_rename(&ctx.store, state.thread_id, title, &ctx.events).await;
+            Op::RenameConversation { title } => {
+                conversations::handle_rename(&ctx.store, state.conversation_id, title, &ctx.events)
+                    .await;
             }
             Op::Shutdown {} => break,
         }
@@ -1195,7 +1198,7 @@ mod tests {
         .await;
         let session2 = Session::spawn(agent2);
         let (ops2, mut events2, _handle2) = session2.into_parts();
-        ops2.send(Op::Resume { thread_id: 1 }).await.unwrap();
+        ops2.send(Op::Resume { conversation_id: 1 }).await.unwrap();
 
         let mut saw_marker = false;
         while let Some(event) = events2.recv().await {
@@ -1659,7 +1662,7 @@ mod tests {
                 | Event::SkillsChanged { .. }
                 | Event::TextDone { .. }
                 | Event::Usage { .. }
-                | Event::ThreadBound { .. }
+                | Event::ConversationBound { .. }
                 | Event::RateLimits { .. } => {}
                 Event::TaskStarted { .. } => started = true,
                 Event::UserMessage { id, text, .. } => user_echo = Some((id, text)),
@@ -1934,7 +1937,7 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, "shell");
 
-        ops.send(Op::Resume { thread_id: 1 }).await.unwrap();
+        ops.send(Op::Resume { conversation_id: 1 }).await.unwrap();
         let mut restored = false;
         let mut refreshed = false;
         while let Some(event) = events.recv().await {

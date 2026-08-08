@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     Flow, Run, SessionContext, SessionState,
     accounts::provider_for,
+    conversations::resolve_thread_cwd,
     persist::{
         effort_string, ensure_thread, finalize_turn, init_db_turn, now_ms, persist_shell_message,
         thread_title,
@@ -16,7 +17,6 @@ use crate::{
     prompt::build_system_prompt,
     rounds::{LoopOutcome, core_loop},
     shell,
-    threads::resolve_thread_cwd,
     tools_exec::{ToolAvailability, build_tool_defs},
 };
 
@@ -123,7 +123,7 @@ pub(crate) async fn emit_task_error(
 pub(crate) async fn handle_idle_op(op: Op, ctx: &SessionContext, state: &mut SessionState) {
     let store = &ctx.store;
     let events = &ctx.events;
-    let thread_id = state.thread_id;
+    let conversation_id = state.conversation_id;
     match op {
         Op::ProcessKill { process } => {
             let _ = ctx.background.kill(process, None).await;
@@ -132,7 +132,7 @@ pub(crate) async fn handle_idle_op(op: Op, ctx: &SessionContext, state: &mut Ses
             let _ = ctx.background.set_watch(process, on).await;
         }
         Op::SelectModel { target: chosen } => {
-            if let Some(tid) = thread_id
+            if let Some(tid) = conversation_id
                 && let Err(err) = store
                     .update_thread_model(
                         tid,
@@ -152,11 +152,11 @@ pub(crate) async fn handle_idle_op(op: Op, ctx: &SessionContext, state: &mut Ses
         Op::SetMode { mode } => {
             apply_mode(ctx, state, mode).await;
         }
-        Op::RenameThread { title } => {
-            crate::threads::handle_rename(store, thread_id, title, events).await;
+        Op::RenameConversation { title } => {
+            crate::conversations::handle_rename(store, conversation_id, title, events).await;
         }
-        Op::ListThreads {} => {
-            crate::threads::handle_list_threads(store, &ctx.cwd, events).await;
+        Op::ListConversations {} => {
+            crate::conversations::handle_list_threads(store, &ctx.cwd, events).await;
         }
         Op::Login { .. }
         | Op::AddAccount { .. }
@@ -180,13 +180,13 @@ pub(crate) async fn handle_idle_op(op: Op, ctx: &SessionContext, state: &mut Ses
 async fn bind_plan_path(
     ctx: &SessionContext,
     state: &mut SessionState,
-    thread_id: Option<i64>,
+    conversation_id: Option<i64>,
     seed: &str,
 ) {
     if !state.mode.is_plan() || state.plan_path.is_some() {
         return;
     }
-    let Some(tid) = thread_id else { return };
+    let Some(tid) = conversation_id else { return };
     let Some(dir) = goat_config::plans_dir() else {
         return;
     };
@@ -517,7 +517,7 @@ pub(crate) async fn handle_shell(
             ensure_thread(
                 &ctx.store,
                 &ctx.cwd,
-                &mut state.thread_id,
+                &mut state.conversation_id,
                 resolved,
                 thread_title(&format!("! {command}")),
             )
@@ -652,7 +652,7 @@ pub(crate) async fn handle_compact(
     if ctx.events.send(Event::TaskStarted { id }).await.is_err() {
         return Flow::Shutdown;
     }
-    let cwd = resolve_thread_cwd(ctx, state.thread_id).await;
+    let cwd = resolve_thread_cwd(ctx, state.conversation_id).await;
     let tool_defs = top_regime(
         ctx,
         provider.as_ref(),
@@ -663,7 +663,7 @@ pub(crate) async fn handle_compact(
         },
     );
     let ids = crate::TurnIds {
-        stored_thread: state.thread_id,
+        stored_thread: state.conversation_id,
         turn_db_id: None,
         user_message_db_id: None,
     };
@@ -815,7 +815,7 @@ async fn run_one_turn(
         &draft,
         &attachments,
         &resolved,
-        &mut state.thread_id,
+        &mut state.conversation_id,
         checkpoint,
     )
     .await;

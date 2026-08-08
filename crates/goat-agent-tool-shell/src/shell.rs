@@ -205,12 +205,12 @@ fn fence_for(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
+    use goat_types::{AgentId, ChannelId, ConversationId, InstanceId};
 
     fn ctx(root: PathBuf) -> ToolCaller {
         ToolCaller {
             agent: AgentId::new(),
-            thread: ThreadId::new(ChannelId::new("test"), InstanceId::new(), "x"),
+            conversation: ConversationId::new(ChannelId::new("test"), InstanceId::new(), "x"),
             goat_root: root,
             read_state: Arc::default(),
         }

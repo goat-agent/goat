@@ -127,7 +127,7 @@ pub enum ClientFrame {
         op: Op,
     },
     ListSessions {},
-    ListThreads {
+    ListConversations {
         cwd: String,
     },
     ListDirectory {
@@ -156,7 +156,7 @@ pub enum ClientFrame {
 pub enum ResumeMode {
     New {},
     Latest {},
-    Thread { thread_id: i64 },
+    Conversation { conversation_id: i64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -206,8 +206,8 @@ pub enum ServerFrame {
     Sessions {
         sessions: Vec<SessionInfo>,
     },
-    Threads {
-        threads: Vec<ThreadInfo>,
+    Conversations {
+        conversations: Vec<ConversationInfo>,
     },
     Directory {
         path: String,
@@ -308,8 +308,8 @@ pub struct SessionInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct ThreadInfo {
-    pub thread_id: i64,
+pub struct ConversationInfo {
+    pub conversation_id: i64,
     pub cwd: String,
     pub title: Option<String>,
     pub model: String,

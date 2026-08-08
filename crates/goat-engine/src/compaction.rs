@@ -502,7 +502,7 @@ async fn compact_inner(
         if let Err(err) = ctx
             .store
             .create_compaction(goat_code_store::NewCompaction {
-                thread_id: thread,
+                conversation_id: thread,
                 summary: summary.clone(),
                 after_message_id,
                 tail_from_message_id,

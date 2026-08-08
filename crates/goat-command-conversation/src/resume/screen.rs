@@ -1,4 +1,4 @@
-use goat_protocol::ThreadSummary;
+use goat_protocol::ConversationSummary;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -15,13 +15,13 @@ use goat_command::{
     symbols,
 };
 
-enum ThreadOutcome {
+enum ConversationOutcome {
     NoOp,
     Selected(i64),
 }
 
 pub struct ResumeScreen {
-    threads: Vec<ThreadSummary>,
+    conversations: Vec<ConversationSummary>,
     cursor: usize,
     scroll: usize,
     index: Option<usize>,
@@ -31,9 +31,9 @@ pub struct ResumeScreen {
 }
 
 impl ResumeScreen {
-    pub fn new(threads: Vec<ThreadSummary>) -> Self {
+    pub fn new(conversations: Vec<ConversationSummary>) -> Self {
         Self {
-            threads,
+            conversations,
             cursor: 0,
             scroll: 0,
             index: None,
@@ -50,12 +50,12 @@ impl ResumeScreen {
     }
 
     fn cap(&self) -> usize {
-        self.threads.len().min(LIST_MAX)
+        self.conversations.len().min(LIST_MAX)
     }
 
     fn visible_items(&self) -> usize {
         let cap = self.cap();
-        if self.threads.len() > LIST_MAX {
+        if self.conversations.len() > LIST_MAX {
             cap.saturating_sub(2)
         } else {
             cap
@@ -73,7 +73,7 @@ impl ResumeScreen {
     }
 
     pub fn move_down(&mut self) {
-        if self.cursor + 1 >= self.threads.len() {
+        if self.cursor + 1 >= self.conversations.len() {
             return;
         }
         self.cursor += 1;
@@ -83,11 +83,11 @@ impl ResumeScreen {
         }
     }
 
-    fn choose(&self) -> ThreadOutcome {
-        self.threads
+    fn choose(&self) -> ConversationOutcome {
+        self.conversations
             .get(self.cursor)
-            .map_or(ThreadOutcome::NoOp, |thread| {
-                ThreadOutcome::Selected(thread.id)
+            .map_or(ConversationOutcome::NoOp, |thread| {
+                ConversationOutcome::Selected(thread.id)
             })
     }
 
@@ -106,7 +106,7 @@ impl ResumeScreen {
         let rows = usize::from(list_area.height).max(1);
         let scroll = self.scroll.min(self.cursor);
         let mut lines: Vec<Line> = Vec::new();
-        if self.threads.is_empty() {
+        if self.conversations.is_empty() {
             let message = if self.loading {
                 format!(" loading conversations {}", symbols::ui::ELLIPSIS)
             } else {
@@ -116,7 +116,7 @@ impl ResumeScreen {
         } else {
             let above_rows = usize::from(scroll > 0);
             let budget = rows.saturating_sub(above_rows);
-            let remaining = self.threads.len().saturating_sub(scroll);
+            let remaining = self.conversations.len().saturating_sub(scroll);
             let has_below = remaining > budget;
             let take = if has_below {
                 budget.saturating_sub(1)
@@ -130,7 +130,13 @@ impl ResumeScreen {
                     theme.muted(),
                 )));
             }
-            for (idx, thread) in self.threads.iter().enumerate().skip(scroll).take(take) {
+            for (idx, thread) in self
+                .conversations
+                .iter()
+                .enumerate()
+                .skip(scroll)
+                .take(take)
+            {
                 let selected = idx == self.cursor;
                 let title_style = if selected { theme.key() } else { theme.base() };
                 let mut left = vec![Span::styled(format!("{}. ", idx + 1), theme.muted())];
@@ -145,7 +151,7 @@ impl ResumeScreen {
                 lines.push(selection_row(theme, selected, width, left, right));
             }
             if has_below {
-                let hidden = self.threads.len() - scroll - take;
+                let hidden = self.conversations.len() - scroll - take;
                 lines.push(Line::from(Span::styled(
                     format!(" {} {} more", symbols::ui::MORE_BELOW, hidden),
                     theme.muted(),
@@ -214,11 +220,11 @@ impl goat_command::Screen for ResumeScreen {
                 ScreenOutcome::Continue
             }
             KeyCode::Enter => match self.choose() {
-                ThreadOutcome::NoOp => ScreenOutcome::Continue,
-                ThreadOutcome::Selected(thread_id) => {
+                ConversationOutcome::NoOp => ScreenOutcome::Continue,
+                ConversationOutcome::Selected(conversation_id) => {
                     self.done = true;
                     ScreenOutcome::Effect(CommandEffect::Dispatch(vec![
-                        goat_protocol::Op::Resume { thread_id },
+                        goat_protocol::Op::Resume { conversation_id },
                     ]))
                 }
             },
@@ -232,16 +238,16 @@ impl goat_command::Screen for ResumeScreen {
         event: &goat_protocol::Event,
         session: &mut dyn goat_command::Session,
     ) -> goat_command::ScreenOutcome {
-        let goat_protocol::Event::ThreadsListed { threads } = event else {
+        let goat_protocol::Event::ConversationsListed { conversations } = event else {
             return goat_command::ScreenOutcome::Continue;
         };
         self.loading = false;
         if let Some(index) = self.index {
             self.done = true;
-            return if let Some(thread) = threads.get(index) {
+            return if let Some(thread) = conversations.get(index) {
                 goat_command::ScreenOutcome::Effect(goat_command::CommandEffect::Dispatch(vec![
                     goat_protocol::Op::Resume {
-                        thread_id: thread.id,
+                        conversation_id: thread.id,
                     },
                 ]))
             } else {
@@ -252,7 +258,7 @@ impl goat_command::Screen for ResumeScreen {
                 goat_command::ScreenOutcome::Close
             };
         }
-        self.threads.clone_from(threads);
+        self.conversations.clone_from(conversations);
         self.cursor = 0;
         self.scroll = 0;
         goat_command::ScreenOutcome::Continue
@@ -267,7 +273,7 @@ impl goat_command::Screen for ResumeScreen {
         } else {
             self.started = true;
             goat_command::ScreenOutcome::Effect(goat_command::CommandEffect::Dispatch(vec![
-                goat_protocol::Op::ListThreads {},
+                goat_protocol::Op::ListConversations {},
             ]))
         }
     }

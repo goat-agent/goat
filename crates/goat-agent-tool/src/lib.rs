@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use goat_types::{AgentId, ThreadId};
+use goat_types::{AgentId, ConversationId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -180,7 +180,7 @@ impl ToolOutput {
 #[derive(Clone, Debug)]
 pub struct ToolCaller {
     pub agent: AgentId,
-    pub thread: ThreadId,
+    pub conversation: ConversationId,
     pub goat_root: PathBuf,
     pub read_state: ToolReadState,
 }

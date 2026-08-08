@@ -120,22 +120,22 @@ pub fn rejected_input(feedback: &str) -> String {
     }
 }
 
-pub fn resolve_path(dir: &Path, thread_id: i64, seed: &str) -> PathBuf {
-    if let Some(found) = existing_for_thread(dir, thread_id) {
+pub fn resolve_path(dir: &Path, conversation_id: i64, seed: &str) -> PathBuf {
+    if let Some(found) = existing_for_thread(dir, conversation_id) {
         return found;
     }
     let slug = slugify(seed);
     if slug.is_empty() {
-        dir.join(format!("{thread_id}.md"))
+        dir.join(format!("{conversation_id}.md"))
     } else {
-        dir.join(format!("{thread_id}-{slug}.md"))
+        dir.join(format!("{conversation_id}-{slug}.md"))
     }
 }
 
-fn existing_for_thread(dir: &Path, thread_id: i64) -> Option<PathBuf> {
+fn existing_for_thread(dir: &Path, conversation_id: i64) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
-    let exact = format!("{thread_id}.md");
-    let prefix = format!("{thread_id}-");
+    let exact = format!("{conversation_id}.md");
+    let prefix = format!("{conversation_id}-");
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();

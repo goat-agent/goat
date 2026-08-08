@@ -48,7 +48,7 @@ pub struct NewThread {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewTurn {
-    pub thread_id: i64,
+    pub conversation_id: i64,
     pub task_id: i64,
     pub provider: String,
     pub model: String,
@@ -60,7 +60,7 @@ pub struct NewTurn {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewMessage {
-    pub thread_id: i64,
+    pub conversation_id: i64,
     pub turn_id: Option<i64>,
     pub role: String,
     pub body: String,
@@ -85,7 +85,7 @@ pub struct CreatedMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewCodeCheckpoint {
-    pub thread_id: i64,
+    pub conversation_id: i64,
     pub prompt_message_id: i64,
     pub parent_message_id: Option<i64>,
     pub draft: String,
@@ -126,7 +126,7 @@ pub struct NewCheckpointFile {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewCompaction {
-    pub thread_id: i64,
+    pub conversation_id: i64,
     pub summary: String,
     pub after_message_id: i64,
     pub tail_from_message_id: Option<i64>,
@@ -139,7 +139,7 @@ pub struct NewCompaction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Compaction {
     pub id: i64,
-    pub thread_id: i64,
+    pub conversation_id: i64,
     pub summary: String,
     pub after_message_id: i64,
     pub tail_from_message_id: Option<i64>,
@@ -159,7 +159,7 @@ pub struct OpenPrompt {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewToolCall {
-    pub thread_id: i64,
+    pub conversation_id: i64,
     pub turn_id: i64,
     pub call_id: String,
     pub name: String,
@@ -275,19 +275,19 @@ impl CodeStore {
         Ok(Self { writer, readers })
     }
 
-    pub async fn create_thread(&self, thread: NewThread) -> CodeResult<i64> {
+    pub async fn create_thread(&self, conversation: NewThread) -> CodeResult<i64> {
         let id = sqlx::query(
             "INSERT INTO code_threads (cwd, title, provider, model, account, effort, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(thread.cwd)
-        .bind(thread.title)
-        .bind(thread.provider)
-        .bind(thread.model)
-        .bind(thread.account)
-        .bind(thread.effort)
-        .bind(thread.created_at)
-        .bind(thread.updated_at)
+        .bind(conversation.cwd)
+        .bind(conversation.title)
+        .bind(conversation.provider)
+        .bind(conversation.model)
+        .bind(conversation.account)
+        .bind(conversation.effort)
+        .bind(conversation.created_at)
+        .bind(conversation.updated_at)
         .execute(&self.writer)
         .await?
         .last_insert_rowid();
@@ -317,7 +317,7 @@ impl CodeStore {
     }
 
     pub async fn list_threads_in(&self, cwd: String, limit: i64) -> CodeResult<Vec<Thread>> {
-        let threads = sqlx::query_as::<_, Thread>(
+        let conversations = sqlx::query_as::<_, Thread>(
             "SELECT id, cwd, title, provider, model, account, effort, created_at, updated_at
              FROM code_threads WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT ?",
         )
@@ -325,14 +325,14 @@ impl CodeStore {
         .bind(limit)
         .fetch_all(&self.readers)
         .await?;
-        Ok(threads)
+        Ok(conversations)
     }
 
-    pub async fn last_turn_interrupted(&self, thread_id: i64) -> CodeResult<bool> {
+    pub async fn last_turn_interrupted(&self, conversation_id: i64) -> CodeResult<bool> {
         let status: Option<String> = sqlx::query_scalar(
-            "SELECT status FROM code_turns WHERE thread_id = ? ORDER BY id DESC LIMIT 1",
+            "SELECT status FROM code_turns WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
         )
-        .bind(thread_id)
+        .bind(conversation_id)
         .fetch_optional(&self.readers)
         .await?;
         Ok(matches!(status.as_deref(), Some("interrupted")))
@@ -340,7 +340,7 @@ impl CodeStore {
 
     pub async fn record_open_prompt(
         &self,
-        thread_id: i64,
+        conversation_id: i64,
         call_id: String,
         kind: String,
         payload: String,
@@ -350,10 +350,10 @@ impl CodeStore {
         let task_id = i64::try_from(task_id).unwrap_or(i64::MAX);
         sqlx::query(
             "INSERT OR REPLACE INTO code_open_prompts
-             (thread_id, call_id, kind, payload, task_id, created_at)
+             (conversation_id, call_id, kind, payload, task_id, created_at)
              VALUES (?, ?, ?, ?, ?, ?)",
         )
-        .bind(thread_id)
+        .bind(conversation_id)
         .bind(call_id)
         .bind(kind)
         .bind(payload)
@@ -364,21 +364,21 @@ impl CodeStore {
         Ok(())
     }
 
-    pub async fn clear_open_prompt(&self, thread_id: i64, call_id: String) -> CodeResult<()> {
-        sqlx::query("DELETE FROM code_open_prompts WHERE thread_id = ? AND call_id = ?")
-            .bind(thread_id)
+    pub async fn clear_open_prompt(&self, conversation_id: i64, call_id: String) -> CodeResult<()> {
+        sqlx::query("DELETE FROM code_open_prompts WHERE conversation_id = ? AND call_id = ?")
+            .bind(conversation_id)
             .bind(call_id)
             .execute(&self.writer)
             .await?;
         Ok(())
     }
 
-    pub async fn open_prompts(&self, thread_id: i64) -> CodeResult<Vec<OpenPrompt>> {
+    pub async fn open_prompts(&self, conversation_id: i64) -> CodeResult<Vec<OpenPrompt>> {
         let rows = sqlx::query(
             "SELECT call_id, kind, payload, task_id FROM code_open_prompts
-             WHERE thread_id = ? ORDER BY created_at ASC",
+             WHERE conversation_id = ? ORDER BY created_at ASC",
         )
-        .bind(thread_id)
+        .bind(conversation_id)
         .fetch_all(&self.readers)
         .await?;
         let out = rows
@@ -396,7 +396,7 @@ impl CodeStore {
         Ok(out)
     }
 
-    pub async fn get_messages(&self, thread_id: i64) -> CodeResult<Vec<StoredMessage>> {
+    pub async fn get_messages(&self, conversation_id: i64) -> CodeResult<Vec<StoredMessage>> {
         let messages = sqlx::query_as::<_, StoredMessage>(
             "WITH RECURSIVE active(id, parent_message_id, turn_id, role, body, created_at) AS (
                  SELECT m.id, m.parent_message_id, m.turn_id, m.role, m.body, m.created_at
@@ -411,7 +411,7 @@ impl CodeStore {
              SELECT id, parent_message_id, turn_id, role, body, created_at
              FROM active ORDER BY id ASC",
         )
-        .bind(thread_id)
+        .bind(conversation_id)
         .fetch_all(&self.readers)
         .await?;
         Ok(messages)
@@ -452,10 +452,10 @@ impl CodeStore {
 
     pub async fn create_turn(&self, turn: NewTurn) -> CodeResult<i64> {
         let id = sqlx::query(
-            "INSERT INTO code_turns (thread_id, task_id, provider, model, account, effort, status, started_at)
+            "INSERT INTO code_turns (conversation_id, task_id, provider, model, account, effort, status, started_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(turn.thread_id)
+        .bind(turn.conversation_id)
         .bind(turn.task_id)
         .bind(turn.provider)
         .bind(turn.model)
@@ -542,15 +542,15 @@ impl CodeStore {
         let mut tx = self.writer.begin().await?;
         let parent_message_id: Option<i64> =
             sqlx::query_scalar("SELECT head_message_id FROM code_threads WHERE id = ?")
-                .bind(message.thread_id)
+                .bind(message.conversation_id)
                 .fetch_one(&mut *tx)
                 .await?;
         let id = sqlx::query(
             "INSERT INTO code_messages
-             (thread_id, parent_message_id, turn_id, role, body, created_at)
+             (conversation_id, parent_message_id, turn_id, role, body, created_at)
              VALUES (?, ?, ?, ?, ?, ?)",
         )
-        .bind(message.thread_id)
+        .bind(message.conversation_id)
         .bind(parent_message_id)
         .bind(message.turn_id)
         .bind(message.role)
@@ -562,7 +562,7 @@ impl CodeStore {
         sqlx::query("UPDATE code_threads SET head_message_id = ?, updated_at = ? WHERE id = ?")
             .bind(id)
             .bind(message.created_at)
-            .bind(message.thread_id)
+            .bind(message.conversation_id)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -576,10 +576,10 @@ impl CodeStore {
         let mut tx = self.writer.begin().await?;
         let id = sqlx::query(
             "INSERT INTO code_checkpoints
-             (thread_id, prompt_message_id, parent_message_id, draft, attachments, created_at)
+             (conversation_id, prompt_message_id, parent_message_id, draft, attachments, created_at)
              VALUES (?, ?, ?, ?, ?, ?)",
         )
-        .bind(checkpoint.thread_id)
+        .bind(checkpoint.conversation_id)
         .bind(checkpoint.prompt_message_id)
         .bind(checkpoint.parent_message_id)
         .bind(checkpoint.draft)
@@ -590,23 +590,23 @@ impl CodeStore {
         .last_insert_rowid();
         sqlx::query(
             "UPDATE code_checkpoints SET files_available = 0
-             WHERE thread_id = ? AND id NOT IN (
+             WHERE conversation_id = ? AND id NOT IN (
                  SELECT id FROM code_checkpoints
-                 WHERE thread_id = ? ORDER BY id DESC LIMIT 100
+                 WHERE conversation_id = ? ORDER BY id DESC LIMIT 100
              )",
         )
-        .bind(checkpoint.thread_id)
-        .bind(checkpoint.thread_id)
+        .bind(checkpoint.conversation_id)
+        .bind(checkpoint.conversation_id)
         .execute(&mut *tx)
         .await?;
         sqlx::query(
             "DELETE FROM code_checkpoint_files
              WHERE checkpoint_id IN (
                  SELECT id FROM code_checkpoints
-                 WHERE thread_id = ? AND files_available = 0
+                 WHERE conversation_id = ? AND files_available = 0
              )",
         )
-        .bind(checkpoint.thread_id)
+        .bind(checkpoint.conversation_id)
         .execute(&mut *tx)
         .await?;
         sqlx::query(
@@ -622,7 +622,10 @@ impl CodeStore {
         Ok(id)
     }
 
-    pub async fn active_code_checkpoints(&self, thread_id: i64) -> CodeResult<Vec<CodeCheckpoint>> {
+    pub async fn active_code_checkpoints(
+        &self,
+        conversation_id: i64,
+    ) -> CodeResult<Vec<CodeCheckpoint>> {
         let rows = sqlx::query(
             "WITH RECURSIVE active_messages(id, parent_message_id) AS (
                  SELECT m.id, m.parent_message_id
@@ -642,11 +645,11 @@ impl CodeStore {
                     ) AS touched
              FROM code_checkpoints c
              JOIN active_messages a ON a.id = c.prompt_message_id
-             WHERE c.thread_id = ?
+             WHERE c.conversation_id = ?
              ORDER BY c.id DESC",
         )
-        .bind(thread_id)
-        .bind(thread_id)
+        .bind(conversation_id)
+        .bind(conversation_id)
         .fetch_all(&self.readers)
         .await?;
         Ok(rows
@@ -664,15 +667,15 @@ impl CodeStore {
             .collect())
     }
 
-    pub async fn tracked_checkpoint_paths(&self, thread_id: i64) -> CodeResult<Vec<String>> {
+    pub async fn tracked_checkpoint_paths(&self, conversation_id: i64) -> CodeResult<Vec<String>> {
         let paths = sqlx::query_scalar(
             "SELECT DISTINCT f.path
              FROM code_checkpoint_files f
              JOIN code_checkpoints c ON c.id = f.checkpoint_id
-             WHERE c.thread_id = ? AND c.files_available = 1
+             WHERE c.conversation_id = ? AND c.files_available = 1
              ORDER BY f.path",
         )
-        .bind(thread_id)
+        .bind(conversation_id)
         .fetch_all(&self.readers)
         .await?;
         Ok(paths)
@@ -722,7 +725,7 @@ impl CodeStore {
 
     pub async fn active_checkpoint_file_versions(
         &self,
-        thread_id: i64,
+        conversation_id: i64,
     ) -> CodeResult<Vec<CheckpointFileVersion>> {
         let rows = sqlx::query(
             "WITH RECURSIVE active_messages(id, parent_message_id) AS (
@@ -740,11 +743,11 @@ impl CodeStore {
              JOIN code_checkpoints c ON c.id = f.checkpoint_id
              JOIN active_messages a ON a.id = c.prompt_message_id
              LEFT JOIN code_checkpoint_blobs b ON b.hash = f.blob_hash
-             WHERE c.thread_id = ? AND c.files_available = 1
+             WHERE c.conversation_id = ? AND c.files_available = 1
              ORDER BY f.checkpoint_id ASC, f.path ASC",
         )
-        .bind(thread_id)
-        .bind(thread_id)
+        .bind(conversation_id)
+        .bind(conversation_id)
         .fetch_all(&self.readers)
         .await?;
         Ok(rows
@@ -767,14 +770,14 @@ impl CodeStore {
 
     pub async fn set_thread_head(
         &self,
-        thread_id: i64,
+        conversation_id: i64,
         head_message_id: Option<i64>,
         updated_at: i64,
     ) -> CodeResult<()> {
         sqlx::query("UPDATE code_threads SET head_message_id = ?, updated_at = ? WHERE id = ?")
             .bind(head_message_id)
             .bind(updated_at)
-            .bind(thread_id)
+            .bind(conversation_id)
             .execute(&self.writer)
             .await?;
         Ok(())
@@ -782,10 +785,10 @@ impl CodeStore {
 
     pub async fn create_tool_call(&self, call: NewToolCall) -> CodeResult<i64> {
         let id = sqlx::query(
-            "INSERT INTO code_tool_calls (thread_id, turn_id, call_id, name, input, status, started_at)
+            "INSERT INTO code_tool_calls (conversation_id, turn_id, call_id, name, input, status, started_at)
              VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(call.thread_id)
+        .bind(call.conversation_id)
         .bind(call.turn_id)
         .bind(call.call_id)
         .bind(call.name)
@@ -821,10 +824,10 @@ impl CodeStore {
         let preserved = serde_json::to_string(&compaction.preserved_message_ids)
             .unwrap_or_else(|_| "[]".to_owned());
         let id = sqlx::query(
-            "INSERT INTO code_compactions (thread_id, summary, after_message_id, tail_from_message_id, preserved_message_ids, tokens_before, tokens_after, created_at)
+            "INSERT INTO code_compactions (conversation_id, summary, after_message_id, tail_from_message_id, preserved_message_ids, tokens_before, tokens_after, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(compaction.thread_id)
+        .bind(compaction.conversation_id)
         .bind(compaction.summary)
         .bind(compaction.after_message_id)
         .bind(compaction.tail_from_message_id)
@@ -840,24 +843,27 @@ impl CodeStore {
 
     pub async fn tool_call_summaries_for_thread(
         &self,
-        thread_id: i64,
+        conversation_id: i64,
     ) -> CodeResult<Vec<StoredToolCallSummary>> {
         let rows = sqlx::query_as::<_, StoredToolCallSummary>(
             "SELECT turn_id, call_id, summary FROM code_tool_calls
-             WHERE thread_id = ? AND summary IS NOT NULL",
+             WHERE conversation_id = ? AND summary IS NOT NULL",
         )
-        .bind(thread_id)
+        .bind(conversation_id)
         .fetch_all(&self.readers)
         .await?;
         Ok(rows)
     }
 
-    pub async fn compactions_for_thread(&self, thread_id: i64) -> CodeResult<Vec<Compaction>> {
+    pub async fn compactions_for_thread(
+        &self,
+        conversation_id: i64,
+    ) -> CodeResult<Vec<Compaction>> {
         let rows = sqlx::query(
-            "SELECT id, thread_id, summary, after_message_id, tail_from_message_id, preserved_message_ids, tokens_before, tokens_after, created_at
-             FROM code_compactions WHERE thread_id = ? ORDER BY id ASC",
+            "SELECT id, conversation_id, summary, after_message_id, tail_from_message_id, preserved_message_ids, tokens_before, tokens_after, created_at
+             FROM code_compactions WHERE conversation_id = ? ORDER BY id ASC",
         )
-        .bind(thread_id)
+        .bind(conversation_id)
         .fetch_all(&self.readers)
         .await?;
         let out = rows
@@ -866,7 +872,7 @@ impl CodeStore {
                 let preserved_raw: String = row.get("preserved_message_ids");
                 Compaction {
                     id: row.get("id"),
-                    thread_id: row.get("thread_id"),
+                    conversation_id: row.get("conversation_id"),
                     summary: row.get("summary"),
                     after_message_id: row.get("after_message_id"),
                     tail_from_message_id: row.get("tail_from_message_id"),
@@ -937,10 +943,10 @@ mod tests {
     #[tokio::test]
     async fn persists_turn_message_tool_call_and_compaction() {
         let store = CodeStore::open_in_memory().await.unwrap();
-        let thread_id = store.create_thread(sample_thread()).await.unwrap();
+        let conversation_id = store.create_thread(sample_thread()).await.unwrap();
         let turn_id = store
             .create_turn(NewTurn {
-                thread_id,
+                conversation_id,
                 task_id: 1,
                 provider: "openai".into(),
                 model: "gpt-x".into(),
@@ -953,7 +959,7 @@ mod tests {
             .unwrap();
         let m1 = store
             .create_message(NewMessage {
-                thread_id,
+                conversation_id,
                 turn_id: None,
                 role: "user".into(),
                 body: "hello".into(),
@@ -964,7 +970,7 @@ mod tests {
         assert_eq!(m1.id, 1, "message ids start at 1 and are stable");
         store
             .create_tool_call(NewToolCall {
-                thread_id,
+                conversation_id,
                 turn_id,
                 call_id: "call-1".into(),
                 name: "Read".into(),
@@ -980,7 +986,7 @@ mod tests {
             .unwrap();
         let comp = store
             .create_compaction(NewCompaction {
-                thread_id,
+                conversation_id,
                 summary: "s".into(),
                 after_message_id: 0,
                 tail_from_message_id: None,
@@ -992,7 +998,7 @@ mod tests {
             .await
             .unwrap();
         assert!(comp > 0);
-        let comps = store.compactions_for_thread(thread_id).await.unwrap();
+        let comps = store.compactions_for_thread(conversation_id).await.unwrap();
         assert_eq!(comps[0].preserved_message_ids, vec![1, 2, 3]);
         assert_eq!(comps[0].after_message_id, 0);
     }
@@ -1000,10 +1006,10 @@ mod tests {
     #[tokio::test]
     async fn tool_call_summaries_for_thread_returns_only_summarized_calls() {
         let store = CodeStore::open_in_memory().await.unwrap();
-        let thread_id = store.create_thread(sample_thread()).await.unwrap();
+        let conversation_id = store.create_thread(sample_thread()).await.unwrap();
         let turn_id = store
             .create_turn(NewTurn {
-                thread_id,
+                conversation_id,
                 task_id: 1,
                 provider: "openai".into(),
                 model: "gpt-x".into(),
@@ -1016,7 +1022,7 @@ mod tests {
             .unwrap();
         let summarized = store
             .create_tool_call(NewToolCall {
-                thread_id,
+                conversation_id,
                 turn_id,
                 call_id: "call-ask".into(),
                 name: "Ask".into(),
@@ -1028,7 +1034,7 @@ mod tests {
             .unwrap();
         store
             .create_tool_call(NewToolCall {
-                thread_id,
+                conversation_id,
                 turn_id,
                 call_id: "call-read".into(),
                 name: "Read".into(),
@@ -1048,7 +1054,7 @@ mod tests {
             .await
             .unwrap();
         let summaries = store
-            .tool_call_summaries_for_thread(thread_id)
+            .tool_call_summaries_for_thread(conversation_id)
             .await
             .unwrap();
         assert_eq!(
@@ -1064,10 +1070,10 @@ mod tests {
     #[tokio::test]
     async fn message_head_selects_one_conversation_branch() {
         let store = CodeStore::open_in_memory().await.unwrap();
-        let thread_id = store.create_thread(sample_thread()).await.unwrap();
+        let conversation_id = store.create_thread(sample_thread()).await.unwrap();
         let first = store
             .create_message(NewMessage {
-                thread_id,
+                conversation_id,
                 turn_id: None,
                 role: "user".into(),
                 body: "first".into(),
@@ -1077,7 +1083,7 @@ mod tests {
             .unwrap();
         let abandoned = store
             .create_message(NewMessage {
-                thread_id,
+                conversation_id,
                 turn_id: None,
                 role: "assistant".into(),
                 body: "old branch".into(),
@@ -1086,12 +1092,12 @@ mod tests {
             .await
             .unwrap();
         store
-            .set_thread_head(thread_id, Some(first.id), 103)
+            .set_thread_head(conversation_id, Some(first.id), 103)
             .await
             .unwrap();
         let replacement = store
             .create_message(NewMessage {
-                thread_id,
+                conversation_id,
                 turn_id: None,
                 role: "assistant".into(),
                 body: "new branch".into(),
@@ -1100,7 +1106,7 @@ mod tests {
             .await
             .unwrap();
 
-        let messages = store.get_messages(thread_id).await.unwrap();
+        let messages = store.get_messages(conversation_id).await.unwrap();
         let ids: Vec<_> = messages.iter().map(|message| message.id).collect();
         assert_eq!(ids, vec![first.id, replacement.id]);
         assert_eq!(replacement.parent_message_id, Some(first.id));
@@ -1110,10 +1116,10 @@ mod tests {
     #[tokio::test]
     async fn checkpoints_follow_the_active_conversation_branch() {
         let store = CodeStore::open_in_memory().await.unwrap();
-        let thread_id = store.create_thread(sample_thread()).await.unwrap();
+        let conversation_id = store.create_thread(sample_thread()).await.unwrap();
         let first = store
             .create_message(NewMessage {
-                thread_id,
+                conversation_id,
                 turn_id: None,
                 role: "user".into(),
                 body: "first".into(),
@@ -1123,7 +1129,7 @@ mod tests {
             .unwrap();
         let first_checkpoint = store
             .create_code_checkpoint(NewCodeCheckpoint {
-                thread_id,
+                conversation_id,
                 prompt_message_id: first.id,
                 parent_message_id: first.parent_message_id,
                 draft: "first".into(),
@@ -1134,7 +1140,7 @@ mod tests {
             .unwrap();
         let second = store
             .create_message(NewMessage {
-                thread_id,
+                conversation_id,
                 turn_id: None,
                 role: "user".into(),
                 body: "second".into(),
@@ -1144,7 +1150,7 @@ mod tests {
             .unwrap();
         store
             .create_code_checkpoint(NewCodeCheckpoint {
-                thread_id,
+                conversation_id,
                 prompt_message_id: second.id,
                 parent_message_id: second.parent_message_id,
                 draft: "second".into(),
@@ -1154,11 +1160,14 @@ mod tests {
             .await
             .unwrap();
         store
-            .set_thread_head(thread_id, Some(first.id), 103)
+            .set_thread_head(conversation_id, Some(first.id), 103)
             .await
             .unwrap();
 
-        let checkpoints = store.active_code_checkpoints(thread_id).await.unwrap();
+        let checkpoints = store
+            .active_code_checkpoints(conversation_id)
+            .await
+            .unwrap();
         assert_eq!(checkpoints.len(), 1);
         assert_eq!(checkpoints[0].id, first_checkpoint);
     }

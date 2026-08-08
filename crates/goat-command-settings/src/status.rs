@@ -41,7 +41,7 @@ fn status_rows(
     rows.push(StatusRow {
         label: "thread",
         value: snapshot
-            .thread_id
+            .conversation_id
             .map_or_else(|| "—".to_owned(), |id| id.to_string()),
     });
     if let Some(daemon) = &snapshot.daemon {
@@ -137,7 +137,7 @@ fn status_rows(
         label: "uptime",
         value: uptime(snapshot.started),
     });
-    if let Some(thread) = snapshot.thread_id {
+    if let Some(thread) = snapshot.conversation_id {
         rows.push(StatusRow {
             label: "resume",
             value: format!("goat code --resume {thread}"),
@@ -212,7 +212,7 @@ mod tests {
         SessionSnapshot {
             session_id: None,
             client_id: None,
-            thread_id: None,
+            conversation_id: None,
             daemon: None,
             model: None,
             models_loaded: false,
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn thread_rows_include_resume_command() {
         let mut snapshot = snapshot();
-        snapshot.thread_id = Some(87);
+        snapshot.conversation_id = Some(87);
         let rows = status_rows(&snapshot, &[]);
         assert_eq!(
             rows.iter().find(|row| row.label == "thread").unwrap().value,

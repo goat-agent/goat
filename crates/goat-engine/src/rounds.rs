@@ -77,7 +77,7 @@ async fn drain_steering(ctx: &SessionContext, run: &Run<'_>, conversation: &mut 
             None => None,
         };
         if input.checkpoint
-            && let (Some(created), Some(thread_id)) = (
+            && let (Some(created), Some(conversation_id)) = (
                 created.as_ref(),
                 run.ids().and_then(|ids| ids.stored_thread),
             )
@@ -85,7 +85,13 @@ async fn drain_steering(ctx: &SessionContext, run: &Run<'_>, conversation: &mut 
             let draft = input.display.as_deref().unwrap_or(&input.text).to_owned();
             if let Err(err) = ctx
                 .checkpoints
-                .begin(thread_id, created, draft, &input.attachments, &ctx.cwd)
+                .begin(
+                    conversation_id,
+                    created,
+                    draft,
+                    &input.attachments,
+                    &ctx.cwd,
+                )
                 .await
             {
                 tracing::warn!(%err, "failed to create steering checkpoint");

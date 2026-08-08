@@ -199,13 +199,13 @@ async fn dispatch(
                         )
                         .await
                 }
-                goat_protocol::Op::Resume { thread_id } => {
+                goat_protocol::Op::Resume { conversation_id } => {
                     manager
                         .rebind(
                             client_id,
                             session,
                             out_tx,
-                            goat_wire::ResumeMode::Thread { thread_id },
+                            goat_wire::ResumeMode::Conversation { conversation_id },
                             disconnect.clone(),
                         )
                         .await
@@ -228,9 +228,11 @@ async fn dispatch(
             let _ = out_tx.send(ServerFrame::Sessions { sessions }).await;
             Disposition::Continue
         }
-        ClientFrame::ListThreads { cwd } => {
-            let threads = manager.list_threads(&cwd).await;
-            let _ = out_tx.send(ServerFrame::Threads { threads }).await;
+        ClientFrame::ListConversations { cwd } => {
+            let conversations = manager.list_threads(&cwd).await;
+            let _ = out_tx
+                .send(ServerFrame::Conversations { conversations })
+                .await;
             Disposition::Continue
         }
         ClientFrame::ListDirectory { path, recursive } => {

@@ -1,5 +1,5 @@
 use goat_protocol::{
-    AccountEntry, Mode, ModelEntry, ModelTarget, NotifyKind, TaskId, ThreadSummary,
+    AccountEntry, ConversationSummary, Mode, ModelEntry, ModelTarget, NotifyKind, TaskId,
 };
 
 use crate::{Composer, Session, SessionSnapshot, Settings, Theme, UsageState, Viewport};
@@ -7,7 +7,7 @@ use crate::{Composer, Session, SessionSnapshot, Settings, Theme, UsageState, Vie
 pub struct EmptySession {
     pub models: Vec<ModelEntry>,
     pub current_model: Option<ModelTarget>,
-    pub threads: Vec<ThreadSummary>,
+    pub conversations: Vec<ConversationSummary>,
     pub usage: UsageState,
     pub mode: Mode,
     pub accounts: Vec<AccountEntry>,
@@ -27,7 +27,7 @@ impl Default for EmptySession {
         Self {
             models: Vec::new(),
             current_model: None,
-            threads: Vec::new(),
+            conversations: Vec::new(),
             usage: UsageState::default(),
             mode: Mode::default(),
             accounts: Vec::new(),
@@ -205,8 +205,8 @@ impl Session for EmptySession {
         self.current_model.as_ref()
     }
 
-    fn threads(&self) -> &[ThreadSummary] {
-        &self.threads
+    fn conversations(&self) -> &[ConversationSummary] {
+        &self.conversations
     }
 
     fn usage(&self) -> &UsageState {
@@ -225,7 +225,7 @@ impl Session for EmptySession {
         SessionSnapshot {
             session_id: None,
             client_id: None,
-            thread_id: None,
+            conversation_id: None,
             daemon: None,
             model: self.current_model.clone(),
             models_loaded: !self.models.is_empty(),

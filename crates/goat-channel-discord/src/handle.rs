@@ -7,7 +7,8 @@ use goat_channel::{
     SentRef, TypingGuard, spawn_typing,
 };
 use goat_types::{
-    AgentId, ChannelId, IncomingMessage, InstanceId, MessageId, OutgoingBody, Surface, ThreadId,
+    AgentId, ChannelId, ConversationId, IncomingMessage, InstanceId, MessageId, OutgoingBody,
+    Surface,
 };
 use twilight_http::Client as HttpClient;
 use twilight_model::id::Id;
@@ -119,7 +120,7 @@ impl ChannelHandle for DiscordHandle {
         CAPABILITIES
     }
 
-    async fn surface(&self, stored_thread: &ThreadId) -> ChannelResult<Surface> {
+    async fn surface(&self, stored_thread: &ConversationId) -> ChannelResult<Surface> {
         let channel_id = parse_channel_id(&stored_thread.external)?;
         if stored_thread.external.starts_with("dm:") {
             return Ok(Surface::Dm);
@@ -141,7 +142,7 @@ impl ChannelHandle for DiscordHandle {
 
     async fn send(
         &self,
-        conv: &ThreadId,
+        conv: &ConversationId,
         body: OutgoingBody,
         reply_to: Option<MessageId>,
     ) -> ChannelResult<SentRef> {
@@ -190,7 +191,7 @@ impl ChannelHandle for DiscordHandle {
         }
     }
 
-    async fn typing(&self, conv: &ThreadId) -> ChannelResult<TypingGuard> {
+    async fn typing(&self, conv: &ConversationId) -> ChannelResult<TypingGuard> {
         let channel_id = parse_channel_id(&conv.external)?;
         let http = self.http.clone();
         let refresh = CAPABILITIES
@@ -213,7 +214,7 @@ impl ChannelHandle for DiscordHandle {
         }
         Ok(ChannelTurn {
             reply_to: Some(msg.id.clone()),
-            typing: self.typing(&msg.thread).await?,
+            typing: self.typing(&msg.conversation).await?,
         })
     }
 
@@ -223,10 +224,10 @@ impl ChannelHandle for DiscordHandle {
 
     async fn open_thread(
         &self,
-        parent: &ThreadId,
+        parent: &ConversationId,
         anchor: Option<&MessageId>,
         title: &str,
-    ) -> ChannelResult<ThreadId> {
+    ) -> ChannelResult<ConversationId> {
         if parent.external.starts_with("dm:") {
             return Err(ChannelError::Unsupported("threads require a channel"));
         }
@@ -252,7 +253,7 @@ impl ChannelHandle for DiscordHandle {
             .await
             .map_err(|e| ChannelError::Provider(e.to_string()))?;
         let external = format!("g:{}:c:{}", guild, channel.id);
-        Ok(ThreadId::new(ID.clone(), self.instance, external))
+        Ok(ConversationId::new(ID.clone(), self.instance, external))
     }
 }
 
@@ -338,7 +339,7 @@ fn interaction_sent_ref(channel_id: Id<ChannelMarker>, message_id: Id<MessageMar
 mod tests {
     use super::*;
     use chrono::Utc;
-    use goat_types::{ThreadId, UserHandle};
+    use goat_types::{ConversationId, UserHandle};
 
     fn handle(interactions: Arc<InteractionState>) -> DiscordHandle {
         DiscordHandle::new(
@@ -354,7 +355,7 @@ mod tests {
         IncomingMessage {
             id: MessageId(id.to_string()),
             agent: AgentId::from_slug("dev"),
-            thread: ThreadId::new(ID.clone(), instance, "dm:456"),
+            conversation: ConversationId::new(ID.clone(), instance, "dm:456"),
             from: UserHandle {
                 external: "u".into(),
                 display: None,
@@ -440,7 +441,7 @@ mod tests {
             Arc::new(http),
             Arc::new(InteractionState::default()),
         );
-        let stored_thread = ThreadId::new(ID.clone(), handle.instance, "g:123:c:456");
+        let stored_thread = ConversationId::new(ID.clone(), handle.instance, "g:123:c:456");
         let surface = handle.surface(&stored_thread).await.unwrap();
         server.await.unwrap();
         surface
@@ -449,7 +450,7 @@ mod tests {
     #[tokio::test]
     async fn surface_of_external_classifies_dm_and_channel() {
         let handle = handle(Arc::new(InteractionState::default()));
-        let dm = ThreadId::new(ID.clone(), handle.instance, "dm:456");
+        let dm = ConversationId::new(ID.clone(), handle.instance, "dm:456");
         assert_eq!(handle.surface(&dm).await.unwrap(), Surface::Dm);
         assert_eq!(guild_surface(0).await, Surface::Channel);
         assert_eq!(guild_surface(11).await, Surface::Thread);
@@ -458,7 +459,7 @@ mod tests {
     #[tokio::test]
     async fn malformed_stored_thread_surface_is_an_error() {
         let handle = handle(Arc::new(InteractionState::default()));
-        let stored_thread = ThreadId::new(ID.clone(), handle.instance, "unknown");
+        let stored_thread = ConversationId::new(ID.clone(), handle.instance, "unknown");
         assert!(handle.surface(&stored_thread).await.is_err());
     }
 

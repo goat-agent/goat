@@ -47,7 +47,7 @@ pub enum Op {
         provider: String,
         name: String,
     },
-    ListThreads {},
+    ListConversations {},
     ListRewindPoints {},
     Rewind {
         checkpoint_id: i64,
@@ -55,10 +55,10 @@ pub enum Op {
     },
     ListFiles {},
     Resume {
-        thread_id: i64,
+        conversation_id: i64,
     },
     ResumeLatest {},
-    RenameThread {
+    RenameConversation {
         title: String,
     },
     Answer {

@@ -92,8 +92,8 @@ mod tests {
             r#"{"type":"Clear"}"#
         );
         assert_eq!(
-            serde_json::to_string(&Op::ListThreads {}).unwrap(),
-            r#"{"type":"ListThreads"}"#
+            serde_json::to_string(&Op::ListConversations {}).unwrap(),
+            r#"{"type":"ListConversations"}"#
         );
         assert_eq!(
             serde_json::to_string(&Op::ResumeLatest {}).unwrap(),

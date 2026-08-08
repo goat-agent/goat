@@ -97,7 +97,7 @@ inventory::submit! {
 mod tests {
     use super::*;
     use goat_agent_tool::{ToolCall, ToolCaller};
-    use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
+    use goat_types::{AgentId, ChannelId, ConversationId, InstanceId};
 
     fn temp_root(name: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -115,7 +115,7 @@ mod tests {
     fn ctx(root: std::path::PathBuf) -> ToolCaller {
         ToolCaller {
             agent: AgentId::from_slug("dev"),
-            thread: ThreadId {
+            conversation: ConversationId {
                 channel: ChannelId::from_static("test"),
                 instance: InstanceId::new(),
                 external: "c1".into(),
