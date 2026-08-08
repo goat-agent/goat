@@ -95,7 +95,7 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
     `goat-search-providers::metadata` stays a hardcoded list.
   - code tools: `ToolRegistry::builtin()` aggregates fs, shell, search, skill, and web.
     `goat-tool-browser` and `goat-tool-computer` bypass it and are wired directly into
-    `GoatAgent::new` behind `config.browser_enabled` / `config.computer_use_enabled`.
+    `CodingEngine::new` behind `config.browser_enabled` / `config.computer_use_enabled`.
 - **A channel owes no tools.** It is a presence, not a reach: it holds a resident connection under a
   bot identity and turns inbound traffic into `IncomingMessage`. Workspace-wide search and posting
   where the bot is not a member belong to the matching integration. `slack` is deliberately both —
@@ -180,7 +180,7 @@ Placements that contradict the naming:
   `goat-memory` defines its own `Embedder` trait and does not depend on it.
 - `goat-command-*` is the **TUI** slash-command family. Channel slash commands are
   `goat-agent-command-*`.
-- `Manager` lives in `goat-daemon`, not in an engine crate.
+- `CodeSessionHub` lives in `goat-daemon`, not in an engine crate.
 
 ## Filesystem
 
@@ -277,13 +277,13 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
 - Sessions are keyed by `SessionId`, with a secondary index by `thread_id`. There is no cwd map:
   `goat code` defaults to a **new** session, and only `-c` resolves cwd to the latest thread through
   a database query. Several live sessions can share a cwd.
-- `goat daemon serve` takes `~/.goat/daemon.lock` first, builds one `Manager`, **binds the socket
+- `goat daemon serve` takes `~/.goat/daemon.lock` first, builds one `CodeSessionHub`, **binds the socket
   and starts accepting**, and only then opens `ProxyStore`, spawns a `Recorder` with two `Meter`s
-  (one code, one agent), boots the agent runtime via `Goat::boot_with_code_metered`, backfills
+  (one code, one agent), boots the agent runtime via `AgentRuntime::boot_with_code_metered`, backfills
   `rate_limits.json` and serves the proxy dashboard — all under one shutdown token. Binding before
   the boot is deliberate: nothing that touches the network may come before the socket, or every
   client wait budget is a lie. `Welcome.ready` is false until the agent runtime is up; code sessions
-  never wait on it. The `code_task` tool drives that same `Manager` in-process, no wire hop.
+  never wait on it. The `code_task` tool drives that same `CodeSessionHub` in-process, no wire hop.
 - **The daemon greets first and never judges a client.** On accept it sends `ServerFrame::Welcome`
   carrying the wire fingerprint, the exe identity, and a `Busy` snapshot; there is no `Hello` and no
   version gate. The client decides (`goat_client::decide`): a different wire means they cannot talk,
@@ -339,7 +339,7 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   (`goat setup`, `goat provider login`, `goat search login`) and the `/search` slash command
   (`goat-command-settings`) write the *client's* files directly; and `/config`'s browser and
   computer-use toggles write the client's `config.json` while the consumer is
-  `goat-engine`'s `GoatAgent::new`. Locally these coincide by accident. Against a remote daemon
+  `goat-engine`'s `CodingEngine::new`. Locally these coincide by accident. Against a remote daemon
   they do not, and the toggles are already ineffective locally until the daemon restarts.
   Collapsing the first two doors into the third is the intended direction; do not add a fourth.
 

@@ -26,7 +26,7 @@ use tracing::{info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-pub struct Goat {
+pub struct AgentRuntime {
     join_handles: Vec<tokio::task::JoinHandle<()>>,
     cancel: CancellationToken,
     _pty_manager: Arc<goat_agent_tool_pty::PtyManager>,
@@ -53,17 +53,17 @@ fn init_logging(logs_dir: &Path) -> WorkerGuard {
     guard
 }
 
-impl Goat {
+impl AgentRuntime {
     pub async fn boot() -> Result<Self> {
         Self::boot_with_code(None).await
     }
 
-    pub async fn boot_with_code(code: Option<goat_daemon::Manager>) -> Result<Self> {
+    pub async fn boot_with_code(code: Option<goat_daemon::CodeSessionHub>) -> Result<Self> {
         Self::boot_with_code_metered(code, None).await
     }
 
     pub async fn boot_with_code_metered(
-        code: Option<goat_daemon::Manager>,
+        code: Option<goat_daemon::CodeSessionHub>,
         meter: Option<goat_proxy::Meter>,
     ) -> Result<Self> {
         let paths = GoatPaths::default_layout().context("resolving ~/.goat layout")?;
@@ -75,7 +75,7 @@ impl Goat {
 
     async fn boot_inner(
         cfg: LoadedConfig,
-        code: Option<goat_daemon::Manager>,
+        code: Option<goat_daemon::CodeSessionHub>,
         meter: Option<goat_proxy::Meter>,
         log_guard: Option<WorkerGuard>,
     ) -> Result<Self> {
@@ -677,7 +677,7 @@ struct RuntimeBase {
     memory_engine: Arc<goat_memory::MemoryEngine>,
     pty_manager: Arc<goat_agent_tool_pty::PtyManager>,
     scheduler_handle: goat_loop::scheduler::SchedulerHandle,
-    code: Option<goat_daemon::Manager>,
+    code: Option<goat_daemon::CodeSessionHub>,
     bus: EventBus,
     renderer: Arc<dyn StreamRenderer>,
     agent_turns: Arc<std::sync::atomic::AtomicUsize>,
@@ -1354,7 +1354,9 @@ mod tests {
             paths: paths_in(dir.path()),
             agents: vec![],
         };
-        let goat = Goat::boot_inner(cfg, None, None, None).await.expect("boot");
+        let goat = AgentRuntime::boot_inner(cfg, None, None, None)
+            .await
+            .expect("boot");
         assert_eq!(
             goat.join_handles.len(),
             3,
@@ -1369,7 +1371,9 @@ mod tests {
             paths: paths_in(dir.path()),
             agents: vec![agent("alice", "openai/gpt-5.1")],
         };
-        let goat = Goat::boot_inner(cfg, None, None, None).await.expect("boot");
+        let goat = AgentRuntime::boot_inner(cfg, None, None, None)
+            .await
+            .expect("boot");
         assert_eq!(goat.join_handles.len(), 3);
     }
 
@@ -1390,7 +1394,9 @@ mod tests {
             paths: paths_in(dir.path()),
             agents: vec![p],
         };
-        let goat = Goat::boot_inner(cfg, None, None, None).await.expect("boot");
+        let goat = AgentRuntime::boot_inner(cfg, None, None, None)
+            .await
+            .expect("boot");
         assert_eq!(goat.join_handles.len(), 3);
     }
 }

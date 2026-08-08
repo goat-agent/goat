@@ -5,18 +5,18 @@ use async_trait::async_trait;
 use goat_agent_tool::{
     ToolCall, ToolCaller, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
 };
-use goat_daemon::Manager;
+use goat_daemon::CodeSessionHub;
 use serde::Deserialize;
 use serde_json::json;
 
 pub const CODE_TASK: ToolName = ToolName::from_static("code_task");
 
-pub fn register(registry: &mut ToolRegistry, manager: Manager) {
+pub fn register(registry: &mut ToolRegistry, manager: CodeSessionHub) {
     registry.insert_handler(spec(), Arc::new(CodeTool { manager }), true);
 }
 
 struct CodeTool {
-    manager: Manager,
+    manager: CodeSessionHub,
 }
 
 #[derive(Debug, Deserialize)]

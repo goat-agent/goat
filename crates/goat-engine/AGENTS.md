@@ -1,7 +1,7 @@
 # AGENTS.md — goat-engine
 
-`GoatAgent` is the production `Engine`. The crate is split by responsibility; `lib.rs` is the
-shared-types hub (`GoatAgent`, `run()` op loop, `SessionServices`/`SessionContext`, `SessionState`,
+`CodingEngine` is the production `Engine`. The crate is split by responsibility; `lib.rs` is the
+shared-types hub (`CodingEngine`, `run()` op loop, `SessionServices`/`SessionContext`, `SessionState`,
 `Run`/`Report`/`TurnIds`, `LoopEnv`, `Flow`) and every module imports from it.
 
 `SessionContext` is a newtype over `Arc<SessionServices>` that derefs to it, and `LoopEnv` owns its provider, target,

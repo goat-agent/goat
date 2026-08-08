@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use goat_auth::CredentialStore;
 use goat_code_store::CodeStore as Store;
 use goat_core::Session;
-use goat_engine::GoatAgent;
+use goat_engine::CodingEngine;
 use goat_protocol::Op;
 use goat_wire::{ClientId, ResumeMode, ServerFrame, SessionId, SessionInfo};
 use tokio::sync::Mutex;
@@ -18,7 +18,7 @@ const WALK_CAP: usize = 4000;
 use crate::session::{LiveSession, SessionInner, SessionTable};
 
 #[derive(Clone)]
-pub struct Manager {
+pub struct CodeSessionHub {
     inner: Arc<ManagerInner>,
 }
 
@@ -51,7 +51,7 @@ struct RemoteControls {
     advertised: Vec<String>,
 }
 
-impl Manager {
+impl CodeSessionHub {
     pub fn new(
         auth_path: PathBuf,
         user_providers: goat_config::UserProviders,
@@ -295,7 +295,7 @@ impl Manager {
             goat_providers::DEFAULT_ACCOUNT,
             self.inner.meter.get().cloned(),
         );
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store,
             credentials,
@@ -833,7 +833,7 @@ fn broadcast_presence(inner: &mut SessionInner, clients: Vec<ClientId>) {
 }
 
 fn spawn_pump(
-    manager: Manager,
+    manager: CodeSessionHub,
     session: SessionId,
     inner: Arc<Mutex<SessionInner>>,
     mut events: mpsc::Receiver<goat_protocol::Event>,
@@ -848,7 +848,7 @@ fn spawn_pump(
                 guard.record_and_fanout(event)
             };
             if let Some(persist) = persist {
-                let now = Manager::now_ms();
+                let now = CodeSessionHub::now_ms();
                 match persist.prompt {
                     Some(crate::session::PromptAction::Open {
                         call_id,
@@ -958,7 +958,7 @@ fn thread_unregister_owner(threads: &mut HashMap<i64, SessionId>, session: Sessi
 #[cfg(test)]
 mod tests {
     use super::{
-        HashMap, Manager, SessionId, spawn_subscriber_bridge, thread_register,
+        CodeSessionHub, HashMap, SessionId, spawn_subscriber_bridge, thread_register,
         thread_unregister_owner,
     };
     use goat_wire::ServerFrame;
@@ -984,14 +984,16 @@ mod tests {
     #[test]
     fn a_flat_listing_stays_one_level_deep() {
         let dir = tree();
-        let listed = Manager::list_directory(&dir.path().display().to_string(), false).unwrap();
+        let listed =
+            CodeSessionHub::list_directory(&dir.path().display().to_string(), false).unwrap();
         assert_eq!(names(&listed), vec![".git", "README.md", "src", "target"]);
     }
 
     #[test]
     fn a_recursive_listing_walks_and_skips_noise() {
         let dir = tree();
-        let listed = Manager::list_directory(&dir.path().display().to_string(), true).unwrap();
+        let listed =
+            CodeSessionHub::list_directory(&dir.path().display().to_string(), true).unwrap();
         assert_eq!(
             names(&listed),
             vec![
@@ -1006,7 +1008,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_root_is_an_error() {
-        assert!(Manager::list_directory("/definitely/not/here", true).is_err());
+        assert!(CodeSessionHub::list_directory("/definitely/not/here", true).is_err());
     }
 
     #[test]

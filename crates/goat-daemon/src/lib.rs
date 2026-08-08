@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use goat_wire::transport;
 use tokio_util::sync::CancellationToken;
 
-pub use crate::manager::{Manager, ReloadRequest};
+pub use crate::manager::{CodeSessionHub, ReloadRequest};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
@@ -77,7 +77,7 @@ pub struct RemoteSettings {
 }
 
 pub async fn serve(config: DaemonConfig) -> Result<(), DaemonError> {
-    let manager = Manager::new(
+    let manager = CodeSessionHub::new(
         config.auth_path.clone(),
         goat_config::UserProviders::at(config.config_json.clone()),
         config.db_path.clone(),
@@ -108,7 +108,7 @@ pub fn bind_daemon(config: DaemonConfig, _lock: &DaemonLock) -> Result<Bound, Da
 
 pub async fn serve_with(
     config: DaemonConfig,
-    manager: Manager,
+    manager: CodeSessionHub,
     shutdown: CancellationToken,
     lock: &DaemonLock,
 ) -> Result<(), DaemonError> {
@@ -117,7 +117,7 @@ pub async fn serve_with(
 
 pub async fn serve_bound(
     bound: Bound,
-    manager: Manager,
+    manager: CodeSessionHub,
     shutdown: CancellationToken,
 ) -> Result<(), DaemonError> {
     let Bound { listener, config } = bound;
@@ -176,7 +176,7 @@ async fn shutdown_signal() {
 }
 
 fn spawn_remote(
-    manager: &Manager,
+    manager: &CodeSessionHub,
     shutdown: &tokio_util::sync::CancellationToken,
     settings: RemoteSettings,
 ) -> Result<(), DaemonError> {

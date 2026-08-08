@@ -57,7 +57,7 @@ const CHILD_ID_BASE: u64 = 1 << 32;
 const PLAN_ID_BASE: u64 = 1 << 40;
 const WAKE_ID_BASE: u64 = 1 << 48;
 
-pub struct GoatAgent {
+pub struct CodingEngine {
     registry: Registry,
     tools: Vec<Box<dyn Tool>>,
     store: Store,
@@ -69,7 +69,7 @@ pub struct GoatAgent {
     meter: Option<goat_proxy::Meter>,
 }
 
-impl GoatAgent {
+impl CodingEngine {
     pub async fn new(
         registry: Registry,
         store: Store,
@@ -122,7 +122,7 @@ impl GoatAgent {
     }
 }
 
-impl Engine for GoatAgent {
+impl Engine for CodingEngine {
     fn spawn(self, ops: mpsc::Receiver<Op>, events: mpsc::Sender<Event>) -> JoinHandle<()> {
         tokio::spawn(run(self, ops, events))
     }
@@ -289,8 +289,8 @@ pub(crate) struct LoopEnv {
 }
 
 #[allow(clippy::too_many_lines)]
-async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender<Event>) {
-    let GoatAgent {
+async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender<Event>) {
+    let CodingEngine {
         registry,
         tools,
         store,
@@ -556,7 +556,7 @@ mod tests {
     use goat_providers::Registry;
     use tokio::{sync::mpsc, task::JoinHandle};
 
-    use super::GoatAgent;
+    use super::CodingEngine;
 
     struct MockProvider {
         id: String,
@@ -781,7 +781,7 @@ mod tests {
         }
     }
 
-    async fn seq_agent(delay_ms: u64) -> (GoatAgent, Arc<std::sync::atomic::AtomicUsize>) {
+    async fn seq_agent(delay_ms: u64) -> (CodingEngine, Arc<std::sync::atomic::AtomicUsize>) {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let provider = SeqTextProvider {
             calls: calls.clone(),
@@ -792,7 +792,7 @@ mod tests {
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-steering.json"));
         (
-            GoatAgent::new(
+            CodingEngine::new(
                 registry,
                 store,
                 credentials,
@@ -1051,7 +1051,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-overflow.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store.clone(),
             credentials,
@@ -1143,7 +1143,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-resume-compact.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store.clone(),
             credentials.clone(),
@@ -1176,7 +1176,7 @@ mod tests {
             delay_ms: 0,
         };
         let registry2 = Registry::from_providers(vec![Arc::new(provider2)]);
-        let agent2 = GoatAgent::new(
+        let agent2 = CodingEngine::new(
             registry2,
             store.clone(),
             credentials,
@@ -1255,7 +1255,7 @@ mod tests {
     async fn failing_agent(
         failures: usize,
         error: StreamError,
-    ) -> (GoatAgent, Arc<std::sync::atomic::AtomicUsize>) {
+    ) -> (CodingEngine, Arc<std::sync::atomic::AtomicUsize>) {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let provider = FailingProvider {
             calls: calls.clone(),
@@ -1266,7 +1266,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-retry.json"));
         (
-            GoatAgent::new(
+            CodingEngine::new(
                 registry,
                 store,
                 credentials,
@@ -1414,7 +1414,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-delegate.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store,
             credentials,
@@ -1468,7 +1468,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-parallel-delegate.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store,
             credentials,
@@ -1542,7 +1542,7 @@ mod tests {
         let registry = Registry::from_providers(vec![Arc::new(provider)]);
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-anchor.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store,
             credentials,
@@ -1604,7 +1604,7 @@ mod tests {
         }
     }
 
-    async fn agent_with(reply: &str, delay_ms: u64) -> GoatAgent {
+    async fn agent_with(reply: &str, delay_ms: u64) -> CodingEngine {
         let provider = MockProvider {
             id: "mock".to_owned(),
             reply: reply.to_owned(),
@@ -1613,7 +1613,7 @@ mod tests {
         let registry = Registry::from_providers(vec![Arc::new(provider)]);
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-test.json"));
-        GoatAgent::new(
+        CodingEngine::new(
             registry,
             store,
             credentials,
@@ -1712,7 +1712,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-slow-open.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store,
             credentials,
@@ -1800,7 +1800,7 @@ mod tests {
         let registry = Registry::from_providers(vec![]);
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-ghost.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store,
             credentials,
@@ -1900,7 +1900,7 @@ mod tests {
         let registry = Registry::from_providers(vec![Arc::new(provider)]);
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-shell.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store.clone(),
             credentials,
@@ -1962,7 +1962,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-resume-latest.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store.clone(),
             credentials,
@@ -2009,7 +2009,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-resume-latest-empty.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store.clone(),
             credentials,
@@ -2059,7 +2059,7 @@ mod tests {
         let registry = Registry::from_providers(vec![Arc::new(provider)]);
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-clear.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store.clone(),
             credentials,
