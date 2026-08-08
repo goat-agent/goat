@@ -84,7 +84,7 @@ sleep jobs distil the day into notes, extract facts, decay unrecalled ones, and 
 
 The agent delegates multi-step coding to the code engine in-process — same daemon, no wire hop.
 Delegated work runs in any project directory and streams progress, questions, and results back to
-the chat, while the full transcript stays in the code thread.
+the chat, while the full transcript stays in the code conversation.
 
 ## Release
 

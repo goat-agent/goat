@@ -6,14 +6,14 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::{
+use goat_command::{
+    Theme,
     layout::{LIST_MAX, OVERLAY_CHROME, OVERLAY_W},
     overlay::{centered_rect, clamp_u16, hint_line, overlay_frame, overlay_layout, selection_row},
     symbols,
-    theme::Theme,
 };
 
-pub enum RewindOutcome {
+enum RewindOutcome {
     NoOp,
     Close,
     Selected {
@@ -50,18 +50,24 @@ impl Action {
     }
 }
 
-pub struct RewindPicker {
+pub struct RewindScreen {
     points: Vec<RewindPoint>,
     cursor: usize,
     actions: Option<(i64, Vec<Action>)>,
+    loading: bool,
+    started: bool,
+    done: bool,
 }
 
-impl RewindPicker {
+impl RewindScreen {
     pub fn new(points: Vec<RewindPoint>) -> Self {
         Self {
             points,
             cursor: 0,
             actions: None,
+            loading: true,
+            started: false,
+            done: false,
         }
     }
 
@@ -81,7 +87,7 @@ impl RewindPicker {
         }
     }
 
-    pub fn enter(&mut self) -> RewindOutcome {
+    fn enter(&mut self) -> RewindOutcome {
         if let Some((checkpoint_id, actions)) = &self.actions {
             let Some(action) = actions.get(self.cursor).copied() else {
                 return RewindOutcome::NoOp;
@@ -110,7 +116,7 @@ impl RewindPicker {
         RewindOutcome::NoOp
     }
 
-    pub fn escape(&mut self) -> RewindOutcome {
+    fn escape(&mut self) -> RewindOutcome {
         if self.actions.take().is_some() {
             self.cursor = 0;
             RewindOutcome::NoOp
@@ -164,10 +170,12 @@ impl RewindPicker {
                 })
                 .collect()
         } else if self.points.is_empty() {
-            vec![Line::from(Span::styled(
-                " no prompts to rewind",
-                theme.muted(),
-            ))]
+            let message = if self.loading {
+                format!(" loading rewind points {}", symbols::ui::ELLIPSIS)
+            } else {
+                " no prompts to rewind".to_owned()
+            };
+            vec![Line::from(Span::styled(message, theme.muted()))]
         } else {
             let start = self.cursor.saturating_add(1).saturating_sub(LIST_MAX);
             self.points
@@ -214,5 +222,94 @@ impl RewindPicker {
             )),
             hint_area,
         );
+    }
+}
+
+impl goat_command::Screen for RewindScreen {
+    fn placement(&self) -> goat_command::Placement {
+        goat_command::Placement::Overlay
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        RewindScreen::render(self, frame, area, *theme);
+    }
+
+    fn handle_input(
+        &mut self,
+        event: &crossterm::event::Event,
+        _session: &mut dyn goat_command::Session,
+    ) -> goat_command::InputOutcome {
+        use crossterm::event::{Event as InputEvent, KeyCode};
+        use goat_command::{CommandEffect, InputOutcome, ScreenOutcome};
+        let InputEvent::Key(key) = event else {
+            return InputOutcome::Ignored;
+        };
+        if goat_command::keymap::ctrl_key(key).is_some() {
+            return InputOutcome::Handled(if goat_command::keymap::ctrl_key(key) == Some('c') {
+                ScreenOutcome::Close
+            } else {
+                ScreenOutcome::Continue
+            });
+        }
+        let outcome = match key.code {
+            KeyCode::Esc => match self.escape() {
+                RewindOutcome::Close => ScreenOutcome::Close,
+                RewindOutcome::NoOp | RewindOutcome::Selected { .. } => ScreenOutcome::Continue,
+            },
+            KeyCode::Up => {
+                self.move_up();
+                ScreenOutcome::Continue
+            }
+            KeyCode::Down => {
+                self.move_down();
+                ScreenOutcome::Continue
+            }
+            KeyCode::Enter => match self.enter() {
+                RewindOutcome::NoOp => ScreenOutcome::Continue,
+                RewindOutcome::Close => ScreenOutcome::Close,
+                RewindOutcome::Selected {
+                    checkpoint_id,
+                    scope,
+                } => {
+                    self.done = true;
+                    ScreenOutcome::Effect(CommandEffect::Dispatch(vec![
+                        goat_protocol::Op::Rewind {
+                            checkpoint_id,
+                            scope,
+                        },
+                    ]))
+                }
+            },
+            _ => ScreenOutcome::Continue,
+        };
+        InputOutcome::Handled(outcome)
+    }
+
+    fn on_event(
+        &mut self,
+        event: &goat_protocol::Event,
+        _session: &mut dyn goat_command::Session,
+    ) -> goat_command::ScreenOutcome {
+        if let goat_protocol::Event::RewindPointsListed { points } = event {
+            self.points.clone_from(points);
+            self.cursor = 0;
+            self.actions = None;
+            self.loading = false;
+        }
+        goat_command::ScreenOutcome::Continue
+    }
+
+    fn tick(&mut self) -> goat_command::ScreenOutcome {
+        if self.done {
+            return goat_command::ScreenOutcome::Close;
+        }
+        if self.started {
+            goat_command::ScreenOutcome::Continue
+        } else {
+            self.started = true;
+            goat_command::ScreenOutcome::Effect(goat_command::CommandEffect::Dispatch(vec![
+                goat_protocol::Op::ListRewindPoints {},
+            ]))
+        }
     }
 }

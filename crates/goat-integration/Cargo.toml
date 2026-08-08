@@ -22,6 +22,7 @@ serde       = { workspace = true }
 tempfile    = { workspace = true, optional = true }
 async-trait = { workspace = true }
 inventory   = { workspace = true }
+rand        = { workspace = true }
 serde_json  = { workspace = true }
 thiserror   = { workspace = true }
 tokio       = { workspace = true }
@@ -31,6 +32,7 @@ tracing     = { workspace = true }
 [dev-dependencies]
 goat-integration = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

@@ -117,14 +117,16 @@ async fn submit_message_flows_back_as_events() {
 }
 
 #[tokio::test]
-async fn same_thread_id_returns_same_session() {
+async fn same_conversation_id_returns_same_session() {
     let dir = tempfile::tempdir().unwrap();
     let socket = start_daemon(dir.path()).await;
 
     let mut a = connect(&socket).await;
     a.send(&ClientFrame::OpenSession {
         cwd: dir.path().display().to_string(),
-        resume: ResumeMode::Thread { thread_id: 99 },
+        resume: ResumeMode::Conversation {
+            conversation_id: 99,
+        },
     })
     .await
     .unwrap();
@@ -136,7 +138,9 @@ async fn same_thread_id_returns_same_session() {
     let mut b = connect(&socket).await;
     b.send(&ClientFrame::OpenSession {
         cwd: dir.path().display().to_string(),
-        resume: ResumeMode::Thread { thread_id: 99 },
+        resume: ResumeMode::Conversation {
+            conversation_id: 99,
+        },
     })
     .await
     .unwrap();
@@ -147,19 +151,19 @@ async fn same_thread_id_returns_same_session() {
 
     assert_eq!(
         first, second,
-        "opening the same thread must converge on the one live session"
+        "opening the same conversation must converge on the one live session"
     );
 }
 
 #[tokio::test]
-async fn distinct_thread_ids_get_distinct_sessions() {
+async fn distinct_conversation_ids_get_distinct_sessions() {
     let dir = tempfile::tempdir().unwrap();
     let socket = start_daemon(dir.path()).await;
 
     let mut a = connect(&socket).await;
     a.send(&ClientFrame::OpenSession {
         cwd: dir.path().display().to_string(),
-        resume: ResumeMode::Thread { thread_id: 1 },
+        resume: ResumeMode::Conversation { conversation_id: 1 },
     })
     .await
     .unwrap();
@@ -171,7 +175,7 @@ async fn distinct_thread_ids_get_distinct_sessions() {
     let mut b = connect(&socket).await;
     b.send(&ClientFrame::OpenSession {
         cwd: dir.path().display().to_string(),
-        resume: ResumeMode::Thread { thread_id: 2 },
+        resume: ResumeMode::Conversation { conversation_id: 2 },
     })
     .await
     .unwrap();
@@ -182,7 +186,7 @@ async fn distinct_thread_ids_get_distinct_sessions() {
 
     assert_ne!(
         first, second,
-        "different threads must run as independent sessions"
+        "different conversations must run as independent sessions"
     );
 }
 
@@ -226,7 +230,7 @@ async fn rebind_moves_one_window_leaving_others() {
     let mut a = connect(&socket).await;
     a.send(&ClientFrame::OpenSession {
         cwd: dir.path().display().to_string(),
-        resume: ResumeMode::Thread { thread_id: 1 },
+        resume: ResumeMode::Conversation { conversation_id: 1 },
     })
     .await
     .unwrap();
@@ -238,7 +242,7 @@ async fn rebind_moves_one_window_leaving_others() {
     let mut b = connect(&socket).await;
     b.send(&ClientFrame::OpenSession {
         cwd: dir.path().display().to_string(),
-        resume: ResumeMode::Thread { thread_id: 1 },
+        resume: ResumeMode::Conversation { conversation_id: 1 },
     })
     .await
     .unwrap();
@@ -248,13 +252,13 @@ async fn rebind_moves_one_window_leaving_others() {
     };
     assert_eq!(
         first, shared,
-        "both windows share the live session for thread 1"
+        "both windows share the live session for conversation 1"
     );
 
     b.send(&ClientFrame::Submit {
         session: shared,
         correlation: 1,
-        op: goat_protocol::Op::Resume { thread_id: 2 },
+        op: goat_protocol::Op::Resume { conversation_id: 2 },
     })
     .await
     .unwrap();
@@ -281,21 +285,24 @@ async fn rebind_moves_one_window_leaving_others() {
 }
 
 #[tokio::test]
-async fn list_threads_returns_a_frame() {
+async fn list_conversations_returns_a_frame() {
     let dir = tempfile::tempdir().unwrap();
     let socket = start_daemon(dir.path()).await;
     let mut conn = connect(&socket).await;
 
-    conn.send(&ClientFrame::ListThreads {
+    conn.send(&ClientFrame::ListConversations {
         cwd: dir.path().display().to_string(),
     })
     .await
     .unwrap();
     match conn.recv().await.unwrap() {
-        ServerFrame::Threads { threads } => {
-            assert!(threads.is_empty(), "no threads exist yet in a fresh cwd");
+        ServerFrame::Conversations { conversations } => {
+            assert!(
+                conversations.is_empty(),
+                "no conversations exist yet in a fresh cwd"
+            );
         }
-        other => panic!("expected Threads, got {other:?}"),
+        other => panic!("expected Conversations, got {other:?}"),
     }
 }
 
@@ -307,7 +314,7 @@ async fn daemon_intercepts_clear_as_rebind() {
 
     conn.send(&ClientFrame::OpenSession {
         cwd: dir.path().display().to_string(),
-        resume: ResumeMode::Thread { thread_id: 1 },
+        resume: ResumeMode::Conversation { conversation_id: 1 },
     })
     .await
     .unwrap();

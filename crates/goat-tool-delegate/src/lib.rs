@@ -5,8 +5,8 @@ use goat_protocol::{
     TranscriptEntry,
 };
 use goat_tool::{
-    Tool, ToolBatchCall, ToolBatchFuture, ToolBatchInvocation, ToolContext, ToolDefinitionContext,
-    ToolError, ToolFuture, ToolHistoryGroup, ToolInvocation, ToolOutput, ToolSpec,
+    Tool, ToolBatchCall, ToolBatchFuture, ToolBatchInvocation, ToolDefinitionContext, ToolError,
+    ToolFuture, ToolHistoryGroup, ToolInvocation, ToolOutput, ToolSandbox, ToolSpec,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -89,14 +89,14 @@ impl Tool for DelegateTool {
         delegate_parameters(&self.agents)
     }
 
-    fn run<'a>(&'a self, _input: &'a str, _ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, _input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async { Err(ToolError::execution("delegation invocation is unavailable")) })
     }
 
     fn invoke<'a>(
         &'a self,
         input: &'a str,
-        _ctx: &'a ToolContext,
+        _ctx: &'a ToolSandbox,
         invocation: ToolInvocation<'a>,
     ) -> ToolFuture<'a> {
         Box::pin(async move {
@@ -219,7 +219,7 @@ impl Tool for KillDelegateTool {
         })
     }
 
-    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async move {
             let request: KillRequest = serde_json::from_str(input).map_err(ToolError::from)?;
             self.service

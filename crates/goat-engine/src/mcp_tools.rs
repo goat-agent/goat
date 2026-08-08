@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use goat_mcp::{McpManager, McpSession, McpTool, McpToolResult, sanitize_component};
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolContext, ToolError, ToolFuture, ToolImage, ToolOutput};
+use goat_tool::{Tool, ToolError, ToolFuture, ToolImage, ToolOutput, ToolSandbox};
 use serde_json::Value;
 
 pub fn adapt(manager: &McpManager) -> Vec<Box<dyn Tool>> {
@@ -94,7 +94,7 @@ impl Tool for McpToolAdapter {
         self.parameters.clone()
     }
 
-    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async move {
             let arguments = arguments_from(input)?;
             let result = self

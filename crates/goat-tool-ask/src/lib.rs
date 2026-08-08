@@ -2,7 +2,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use goat_protocol::{AskQuestion, TaskId, ToolCallId, ToolDisplay};
 use goat_tool::{
-    Tool, ToolContext, ToolDefinitionContext, ToolError, ToolFuture, ToolInvocation, ToolOutput,
+    Tool, ToolDefinitionContext, ToolError, ToolFuture, ToolInvocation, ToolOutput, ToolSandbox,
     ToolSummaryKind, display,
 };
 use tokio_util::sync::CancellationToken;
@@ -111,7 +111,7 @@ impl Tool for AskTool {
         ToolSummaryKind::Body
     }
 
-    fn run<'a>(&'a self, _input: &'a str, _ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, _input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async {
             Err(ToolError::execution(
                 "question invocation context is unavailable",
@@ -122,7 +122,7 @@ impl Tool for AskTool {
     fn invoke<'a>(
         &'a self,
         input: &'a str,
-        _ctx: &'a ToolContext,
+        _ctx: &'a ToolSandbox,
         invocation: ToolInvocation<'a>,
     ) -> ToolFuture<'a> {
         Box::pin(async move {

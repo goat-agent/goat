@@ -330,7 +330,7 @@ enum CollectFail {
 }
 
 async fn collect_with_retry(
-    ctx: &crate::Ctx,
+    ctx: &crate::SessionContext,
     run: &crate::Run<'_>,
     provider: &dyn goat_provider::Provider,
     request: &goat_provider::Request,
@@ -379,7 +379,7 @@ async fn collect_with_retry(
 }
 
 pub(crate) async fn compact(
-    ctx: &crate::Ctx,
+    ctx: &crate::SessionContext,
     run: &crate::Run<'_>,
     env: &crate::LoopEnv,
     conversation: &mut crate::conversation::Conversation,
@@ -411,7 +411,7 @@ pub(crate) async fn compact(
 }
 
 async fn compact_inner(
-    ctx: &crate::Ctx,
+    ctx: &crate::SessionContext,
     run: &crate::Run<'_>,
     env: &crate::LoopEnv,
     conversation: &mut crate::conversation::Conversation,
@@ -489,7 +489,7 @@ async fn compact_inner(
     let tokens_after =
         estimate_messages(&new_messages).saturating_add(estimate_tool_defs(&env.tool_defs));
     if let Some(ids) = run.ids()
-        && let Some(thread) = ids.stored_thread
+        && let Some(conversation) = ids.stored_conversation
     {
         let after_message_id = db_ids.iter().flatten().copied().max().unwrap_or(0);
         let tail_from_message_id = (tail_start < messages.len())
@@ -502,7 +502,7 @@ async fn compact_inner(
         if let Err(err) = ctx
             .store
             .create_compaction(goat_code_store::NewCompaction {
-                thread_id: thread,
+                conversation_id: conversation,
                 summary: summary.clone(),
                 after_message_id,
                 tail_from_message_id,
@@ -639,7 +639,7 @@ mod compact_tests {
             },
             Message {
                 role: MessageRole::User,
-                content: vec![ContentBlock::text_result(id, "r".repeat(size), false)],
+                content: vec![ContentBlock::text_result(id, "r".repeat(size))],
             },
         ]
     }

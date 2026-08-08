@@ -283,13 +283,13 @@ async fn spawn_and_wait(link: &Link) -> Result<(Conn, Identity, u64), ClientErro
 
 enum Outbound {
     Op(Op),
-    ListThreads,
+    ListConversations,
     ListFiles,
 }
 
 struct Shared {
     current: Mutex<SessionId>,
-    current_thread: Mutex<Option<i64>>,
+    current_conversation: Mutex<Option<i64>>,
     idmap: Mutex<IdMap>,
     cwd: String,
 }
@@ -310,7 +310,7 @@ fn spawn_pumps(
     let opened_cwd = cwd.clone();
     let shared = Arc::new(Shared {
         current: Mutex::new(session),
-        current_thread: Mutex::new(None),
+        current_conversation: Mutex::new(None),
         idmap: Mutex::new(IdMap::new()),
         cwd,
     });
@@ -319,7 +319,7 @@ fn spawn_pumps(
     tokio::spawn(async move {
         while let Some(op) = ops_rx.recv().await {
             let cmd = match op {
-                Op::ListThreads {} => Outbound::ListThreads,
+                Op::ListConversations {} => Outbound::ListConversations,
                 Op::ListFiles {} => Outbound::ListFiles,
                 other => Outbound::Op(other),
             };
@@ -373,8 +373,8 @@ async fn reconnect(
             report_incompatible(events_tx).await;
             return None;
         }
-        let resume = match *shared.current_thread.lock().await {
-            Some(thread_id) => ResumeMode::Thread { thread_id },
+        let resume = match *shared.current_conversation.lock().await {
+            Some(conversation_id) => ResumeMode::Conversation { conversation_id },
             None => ResumeMode::New {},
         };
         if conn
@@ -424,7 +424,7 @@ async fn run_connection(
             cmd = cmd_rx.recv() => {
                 let Some(cmd) = cmd else { return false };
                 let frame = match cmd {
-                    Outbound::ListThreads => ClientFrame::ListThreads {
+                    Outbound::ListConversations => ClientFrame::ListConversations {
                         cwd: shared.cwd.clone(),
                     },
                     Outbound::ListFiles => ClientFrame::ListDirectory {
@@ -468,7 +468,7 @@ async fn run_connection(
                 match &frame {
                     ServerFrame::SessionOpened { session: new, .. } => {
                         *shared.current.lock().await = *new;
-                        *shared.current_thread.lock().await = None;
+                        *shared.current_conversation.lock().await = None;
                         continue;
                     }
                     ServerFrame::Detached { .. } => {
@@ -500,11 +500,11 @@ async fn run_connection(
                     Delivery::Forward => {}
                 }
                 if let ServerFrame::Event {
-                    event: Event::ThreadBound { thread_id },
+                    event: Event::ConversationBound { conversation_id },
                     ..
                 } = &frame
                 {
-                    *shared.current_thread.lock().await = Some(*thread_id);
+                    *shared.current_conversation.lock().await = Some(*conversation_id);
                 }
                 for mut event in frame_to_events(frame) {
                     shared.idmap.lock().await.translate_inbound(&mut event);
@@ -645,11 +645,11 @@ fn frame_to_events(frame: ServerFrame) -> Vec<Event> {
             }
             events
         }
-        ServerFrame::Threads { threads } => vec![Event::ThreadsListed {
-            threads: threads
+        ServerFrame::Conversations { conversations } => vec![Event::ConversationsListed {
+            conversations: conversations
                 .into_iter()
-                .map(|t| goat_protocol::ThreadSummary {
-                    id: t.thread_id,
+                .map(|t| goat_protocol::ConversationSummary {
+                    id: t.conversation_id,
                     title: t.title.unwrap_or_default(),
                     model: t.model,
                     updated_at: t.updated_at,
@@ -684,15 +684,15 @@ pub async fn status(link: &Link) -> Result<Vec<goat_wire::SessionInfo>, ClientEr
     }
 }
 
-pub async fn list_threads(
+pub async fn list_conversations(
     link: &Link,
     cwd: &Path,
-) -> Result<Vec<goat_wire::ThreadInfo>, ClientError> {
-    let frame = ClientFrame::ListThreads {
+) -> Result<Vec<goat_wire::ConversationInfo>, ClientError> {
+    let frame = ClientFrame::ListConversations {
         cwd: cwd.display().to_string(),
     };
     match ask(link, frame).await? {
-        ServerFrame::Threads { threads } => Ok(threads),
+        ServerFrame::Conversations { conversations } => Ok(conversations),
         other => Err(refusal(other)),
     }
 }
@@ -1072,8 +1072,8 @@ mod tests {
             sequenced_delivery(
                 &mut expected,
                 &mut replaying,
-                &ServerFrame::Threads {
-                    threads: Vec::new()
+                &ServerFrame::Conversations {
+                    conversations: Vec::new()
                 },
             ),
             Delivery::Forward

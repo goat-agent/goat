@@ -1,23 +1,11 @@
+use goat_protocol::Op;
+
+use crate::Screen;
+
 pub enum CommandEffect {
-    OpenModelPicker,
-    SelectModelNamed(String),
-    OpenEffortPicker,
-    SelectEffort(String),
-    OpenThreadPicker,
-    ResumeIndex(usize),
-    OpenRewind,
-    OpenConfig,
-    ShowHelp,
-    ClearConversation,
-    CompactConversation(Option<String>),
-    TogglePlanMode,
-    RenameConversation(String),
-    Submit(String),
-    SubmitCommand { display: String, prompt: String },
-    Notice(String),
-    Error(String),
-    OpenUsage,
-    OpenStatus,
+    Show(Box<dyn Screen>),
+    Dispatch(Vec<Op>),
+    Submit { display: String, prompt: String },
     Noop,
     Quit,
 }

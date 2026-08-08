@@ -15,7 +15,11 @@ impl Command for Exit {
         "quit goat-code"
     }
 
-    fn run(&self, _invocation: CommandInvocation) -> CommandEffect {
+    fn run(
+        &self,
+        _invocation: CommandInvocation,
+        _session: &mut dyn goat_command::Session,
+    ) -> CommandEffect {
         CommandEffect::Quit
     }
 }

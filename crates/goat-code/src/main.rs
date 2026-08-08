@@ -419,7 +419,7 @@ async fn run_unified_daemon(
     };
 
     let db_path = paths.state_db.clone();
-    let manager = goat_daemon::Manager::new(
+    let manager = goat_daemon::CodeSessionHub::new(
         paths.credentials_json.clone(),
         goat_config::UserProviders::at(paths.config_json.clone()),
         db_path.clone(),
@@ -472,8 +472,11 @@ async fn run_unified_daemon(
         }
     }
 
-    let goat = match goat_runtime::Goat::boot_with_code_metered(Some(manager.clone()), agent_meter)
-        .await
+    let goat = match goat_runtime::AgentRuntime::boot_with_code_metered(
+        Some(manager.clone()),
+        agent_meter,
+    )
+    .await
     {
         Ok(goat) => goat,
         Err(err) => {

@@ -26,6 +26,7 @@ mod bash_tools;
 mod checkpoint;
 mod compaction;
 mod conversation;
+mod conversations;
 mod delegate;
 mod instructions;
 mod mcp_tools;
@@ -37,7 +38,6 @@ mod retry;
 mod rounds;
 mod shell;
 mod subagent;
-mod threads;
 mod tool_recovery;
 mod tools_exec;
 mod turn;
@@ -57,7 +57,7 @@ const CHILD_ID_BASE: u64 = 1 << 32;
 const PLAN_ID_BASE: u64 = 1 << 40;
 const WAKE_ID_BASE: u64 = 1 << 48;
 
-pub struct GoatAgent {
+pub struct CodingEngine {
     registry: Registry,
     tools: Vec<Box<dyn Tool>>,
     store: Store,
@@ -69,7 +69,7 @@ pub struct GoatAgent {
     meter: Option<goat_proxy::Meter>,
 }
 
-impl GoatAgent {
+impl CodingEngine {
     pub async fn new(
         registry: Registry,
         store: Store,
@@ -122,13 +122,13 @@ impl GoatAgent {
     }
 }
 
-impl Engine for GoatAgent {
+impl Engine for CodingEngine {
     fn spawn(self, ops: mpsc::Receiver<Op>, events: mpsc::Sender<Event>) -> JoinHandle<()> {
         tokio::spawn(run(self, ops, events))
     }
 }
 
-pub(crate) struct Shared {
+pub(crate) struct SessionServices {
     registry: std::sync::Mutex<Arc<Registry>>,
     pub(crate) account_registries: std::sync::Mutex<HashMap<String, Arc<Registry>>>,
     pub(crate) credentials: CredentialStore,
@@ -153,7 +153,7 @@ pub(crate) struct Shared {
     pub(crate) date: String,
 }
 
-impl Shared {
+impl SessionServices {
     pub(crate) fn registry(&self) -> Arc<Registry> {
         self.registry
             .lock()
@@ -170,10 +170,10 @@ impl Shared {
 }
 
 #[derive(Clone)]
-pub(crate) struct Ctx(Arc<Shared>);
+pub(crate) struct SessionContext(Arc<SessionServices>);
 
-impl std::ops::Deref for Ctx {
-    type Target = Shared;
+impl std::ops::Deref for SessionContext {
+    type Target = SessionServices;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -191,7 +191,7 @@ pub(crate) struct SessionState {
     pub(crate) plan_path: Option<PathBuf>,
     pub(crate) conversation: conversation::Conversation,
     pub(crate) tracker: compaction::ContextTracker,
-    pub(crate) thread_id: Option<i64>,
+    pub(crate) conversation_id: Option<i64>,
 }
 
 impl SessionState {
@@ -205,7 +205,7 @@ impl SessionState {
 }
 
 pub(crate) struct TurnIds {
-    pub(crate) stored_thread: Option<i64>,
+    pub(crate) stored_conversation: Option<i64>,
     pub(crate) turn_db_id: Option<i64>,
     pub(crate) user_message_db_id: Option<i64>,
 }
@@ -289,8 +289,8 @@ pub(crate) struct LoopEnv {
 }
 
 #[allow(clippy::too_many_lines)]
-async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender<Event>) {
-    let GoatAgent {
+async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender<Event>) {
+    let CodingEngine {
         registry,
         tools,
         store,
@@ -307,7 +307,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
         plan_path: None,
         conversation: conversation::Conversation::new(),
         tracker: compaction::ContextTracker::new(),
-        thread_id: None,
+        conversation_id: None,
     };
 
     if state.target.is_none() {
@@ -392,7 +392,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
     let account_registries: std::sync::Mutex<HashMap<String, Arc<Registry>>> =
         std::sync::Mutex::new(HashMap::new());
 
-    let ctx = Ctx(Arc::new(Shared {
+    let ctx = SessionContext(Arc::new(SessionServices {
         registry: std::sync::Mutex::new(Arc::new(registry)),
         account_registries,
         credentials,
@@ -492,7 +492,7 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                     provider,
                     DEFAULT_ACCOUNT.to_owned(),
                     credential,
-                    false,
+                    accounts::AccountCollisionPolicy::Replace,
                 )
                 .await;
                 accounts::clear_account_registries(&ctx.account_registries);
@@ -502,37 +502,47 @@ async fn run(agent: GoatAgent, mut ops: mpsc::Receiver<Op>, events: mpsc::Sender
                 name,
                 credential,
             } => {
-                accounts::handle_login(&ctx, provider, name, credential, true).await;
+                accounts::handle_login(
+                    &ctx,
+                    provider,
+                    name,
+                    credential,
+                    accounts::AccountCollisionPolicy::Reject,
+                )
+                .await;
                 accounts::clear_account_registries(&ctx.account_registries);
             }
             Op::RemoveAccount { provider, name } => {
                 accounts::handle_remove_account(&ctx, provider, name).await;
                 accounts::clear_account_registries(&ctx.account_registries);
             }
-            Op::ListThreads {} => {
-                threads::handle_list_threads(&ctx.store, &ctx.cwd, &ctx.events).await;
+            Op::ListConversations {} => {
+                conversations::handle_list_conversations(&ctx.store, &ctx.cwd, &ctx.events).await;
             }
             Op::ListRewindPoints {} => {
-                threads::handle_list_rewind_points(&ctx, state.thread_id).await;
+                conversations::handle_list_rewind_points(&ctx, state.conversation_id).await;
             }
             Op::Rewind {
                 checkpoint_id,
                 scope,
             } => {
-                threads::handle_rewind(&ctx, checkpoint_id, scope, &mut state).await;
+                conversations::handle_rewind(&ctx, checkpoint_id, scope, &mut state).await;
             }
-            Op::Resume { thread_id: tid } => {
+            Op::Resume {
+                conversation_id: tid,
+            } => {
                 ctx.checkpoints.clear();
-                threads::handle_resume(&ctx, tid, &mut state).await;
+                conversations::handle_resume(&ctx, tid, &mut state).await;
                 accounts::refresh_model_list(&ctx).await;
             }
             Op::ResumeLatest {} => {
                 ctx.checkpoints.clear();
-                threads::handle_resume_latest(&ctx, &mut state).await;
+                conversations::handle_resume_latest(&ctx, &mut state).await;
                 accounts::refresh_model_list(&ctx).await;
             }
-            Op::RenameThread { title } => {
-                threads::handle_rename(&ctx.store, state.thread_id, title, &ctx.events).await;
+            Op::RenameConversation { title } => {
+                conversations::handle_rename(&ctx.store, state.conversation_id, title, &ctx.events)
+                    .await;
             }
             Op::Shutdown {} => break,
         }
@@ -556,7 +566,7 @@ mod tests {
     use goat_providers::Registry;
     use tokio::{sync::mpsc, task::JoinHandle};
 
-    use super::GoatAgent;
+    use super::CodingEngine;
 
     struct MockProvider {
         id: String,
@@ -781,7 +791,7 @@ mod tests {
         }
     }
 
-    async fn seq_agent(delay_ms: u64) -> (GoatAgent, Arc<std::sync::atomic::AtomicUsize>) {
+    async fn seq_agent(delay_ms: u64) -> (CodingEngine, Arc<std::sync::atomic::AtomicUsize>) {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let provider = SeqTextProvider {
             calls: calls.clone(),
@@ -792,7 +802,7 @@ mod tests {
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-steering.json"));
         (
-            GoatAgent::new(
+            CodingEngine::new(
                 registry,
                 store,
                 credentials,
@@ -1051,7 +1061,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-overflow.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store.clone(),
             credentials,
@@ -1126,7 +1136,7 @@ mod tests {
             "the in-flight user prompt must survive verbatim"
         );
 
-        let compactions = store.compactions_for_thread(1).await.unwrap();
+        let compactions = store.compactions_for_conversation(1).await.unwrap();
         assert_eq!(compactions.len(), 1, "compaction must be persisted");
         assert!(compactions[0].summary.contains("## Task"));
     }
@@ -1143,7 +1153,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-resume-compact.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store.clone(),
             credentials.clone(),
@@ -1176,7 +1186,7 @@ mod tests {
             delay_ms: 0,
         };
         let registry2 = Registry::from_providers(vec![Arc::new(provider2)]);
-        let agent2 = GoatAgent::new(
+        let agent2 = CodingEngine::new(
             registry2,
             store.clone(),
             credentials,
@@ -1188,7 +1198,7 @@ mod tests {
         .await;
         let session2 = Session::spawn(agent2);
         let (ops2, mut events2, _handle2) = session2.into_parts();
-        ops2.send(Op::Resume { thread_id: 1 }).await.unwrap();
+        ops2.send(Op::Resume { conversation_id: 1 }).await.unwrap();
 
         let mut saw_marker = false;
         while let Some(event) = events2.recv().await {
@@ -1255,7 +1265,7 @@ mod tests {
     async fn failing_agent(
         failures: usize,
         error: StreamError,
-    ) -> (GoatAgent, Arc<std::sync::atomic::AtomicUsize>) {
+    ) -> (CodingEngine, Arc<std::sync::atomic::AtomicUsize>) {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let provider = FailingProvider {
             calls: calls.clone(),
@@ -1266,7 +1276,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-retry.json"));
         (
-            GoatAgent::new(
+            CodingEngine::new(
                 registry,
                 store,
                 credentials,
@@ -1414,7 +1424,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-delegate.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store,
             credentials,
@@ -1468,7 +1478,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-parallel-delegate.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store,
             credentials,
@@ -1542,7 +1552,7 @@ mod tests {
         let registry = Registry::from_providers(vec![Arc::new(provider)]);
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-anchor.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store,
             credentials,
@@ -1604,7 +1614,7 @@ mod tests {
         }
     }
 
-    async fn agent_with(reply: &str, delay_ms: u64) -> GoatAgent {
+    async fn agent_with(reply: &str, delay_ms: u64) -> CodingEngine {
         let provider = MockProvider {
             id: "mock".to_owned(),
             reply: reply.to_owned(),
@@ -1613,7 +1623,7 @@ mod tests {
         let registry = Registry::from_providers(vec![Arc::new(provider)]);
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-test.json"));
-        GoatAgent::new(
+        CodingEngine::new(
             registry,
             store,
             credentials,
@@ -1652,7 +1662,7 @@ mod tests {
                 | Event::SkillsChanged { .. }
                 | Event::TextDone { .. }
                 | Event::Usage { .. }
-                | Event::ThreadBound { .. }
+                | Event::ConversationBound { .. }
                 | Event::RateLimits { .. } => {}
                 Event::TaskStarted { .. } => started = true,
                 Event::UserMessage { id, text, .. } => user_echo = Some((id, text)),
@@ -1712,7 +1722,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-slow-open.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store,
             credentials,
@@ -1800,7 +1810,7 @@ mod tests {
         let registry = Registry::from_providers(vec![]);
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-ghost.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store,
             credentials,
@@ -1900,7 +1910,7 @@ mod tests {
         let registry = Registry::from_providers(vec![Arc::new(provider)]);
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-shell.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store.clone(),
             credentials,
@@ -1921,13 +1931,17 @@ mod tests {
         .unwrap();
         drain_until_task_done(&mut events).await;
 
-        let thread = store.get_thread(1).await.unwrap().expect("thread created");
-        assert_eq!(thread.title.as_deref(), Some("! echo persisted"));
+        let conversation = store
+            .get_conversation(1)
+            .await
+            .unwrap()
+            .expect("conversation created");
+        assert_eq!(conversation.title.as_deref(), Some("! echo persisted"));
         let messages = store.get_messages(1).await.unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, "shell");
 
-        ops.send(Op::Resume { thread_id: 1 }).await.unwrap();
+        ops.send(Op::Resume { conversation_id: 1 }).await.unwrap();
         let mut restored = false;
         let mut refreshed = false;
         while let Some(event) = events.recv().await {
@@ -1952,7 +1966,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_latest_restores_most_recent_thread() {
+    async fn resume_latest_restores_most_recent_conversation() {
         let provider = MockProvider {
             id: "mock".to_owned(),
             reply: "ok".to_owned(),
@@ -1962,7 +1976,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-resume-latest.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store.clone(),
             credentials,
@@ -2009,7 +2023,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-resume-latest-empty.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store.clone(),
             credentials,
@@ -2059,7 +2073,7 @@ mod tests {
         let registry = Registry::from_providers(vec![Arc::new(provider)]);
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-clear.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store.clone(),
             credentials,
@@ -2094,6 +2108,6 @@ mod tests {
         .unwrap();
         drain_until_task_done(&mut events).await;
 
-        assert!(store.get_thread(1).await.unwrap().is_some());
+        assert!(store.get_conversation(1).await.unwrap().is_some());
     }
 }

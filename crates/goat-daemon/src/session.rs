@@ -36,7 +36,7 @@ pub(crate) struct SessionInner {
     pub(crate) tokens: u64,
     pub(crate) open_asks: usize,
     pub(crate) live_processes: usize,
-    pub(crate) thread_id: Option<i64>,
+    pub(crate) conversation_id: Option<i64>,
     pub(crate) awaits_restore: bool,
     pub(crate) ready: Arc<tokio::sync::Notify>,
     pub(crate) resurrected: std::collections::HashSet<u64>,
@@ -89,7 +89,7 @@ pub(crate) struct LiveSession {
 }
 
 pub(crate) struct PersistEvent {
-    pub(crate) thread_id: i64,
+    pub(crate) conversation_id: i64,
     pub(crate) prompt: Option<PromptAction>,
 }
 
@@ -426,7 +426,9 @@ impl SessionInner {
                     .saturating_add(u64::from(usage.input_tokens))
                     .saturating_add(u64::from(usage.output_tokens));
             }
-            Event::ThreadBound { thread_id } => self.thread_id = Some(*thread_id),
+            Event::ConversationBound { conversation_id } => {
+                self.conversation_id = Some(*conversation_id);
+            }
             _ => {}
         }
         self.cache_state_event(&event);
@@ -449,7 +451,7 @@ impl SessionInner {
             self.log.pop_front();
         }
         let prompt = prompt_action(&event);
-        let thread_id = self.thread_id;
+        let conversation_id = self.conversation_id;
         let frame = ServerFrame::Event {
             session: self.id,
             seq,
@@ -457,7 +459,10 @@ impl SessionInner {
         };
         self.log.push_back((seq, event));
         self.fanout(&frame);
-        thread_id.map(|thread_id| PersistEvent { thread_id, prompt })
+        conversation_id.map(|conversation_id| PersistEvent {
+            conversation_id,
+            prompt,
+        })
     }
 
     pub(crate) fn presence(&self) -> Vec<ClientId> {
@@ -513,8 +518,8 @@ impl SessionInner {
             resets_at: retry.resets_at,
         });
         let mut pending = Vec::new();
-        if let Some(thread_id) = self.thread_id {
-            pending.push(Event::ThreadBound { thread_id });
+        if let Some(conversation_id) = self.conversation_id {
+            pending.push(Event::ConversationBound { conversation_id });
         }
         pending.extend(self.transcript.pending_events());
         let mut subagents: Vec<_> = self.subagents.iter().collect();
@@ -648,7 +653,7 @@ mod tests {
             tokens: 0,
             open_asks: 0,
             live_processes: 0,
-            thread_id: None,
+            conversation_id: None,
             awaits_restore: false,
             ready: std::sync::Arc::new(tokio::sync::Notify::new()),
             resurrected: std::collections::HashSet::new(),
@@ -733,7 +738,7 @@ mod tests {
     #[test]
     fn restored_watermark_skips_its_own_event() {
         let mut inner = blank_inner();
-        inner.thread_id = Some(1);
+        inner.conversation_id = Some(1);
         let event = Event::ConversationRestored {
             target: goat_protocol::ModelTarget {
                 provider: "p".to_owned(),

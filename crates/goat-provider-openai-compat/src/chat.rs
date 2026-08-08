@@ -890,7 +890,7 @@ mod tests {
     fn tool_result_becomes_tool_role_message() {
         let messages = vec![Message {
             role: MessageRole::User,
-            content: vec![ContentBlock::text_result("call_1", "file body", false)],
+            content: vec![ContentBlock::text_result("call_1", "file body")],
         }];
         let out = to_chat_messages(&messages);
         assert_eq!(out[0]["role"], "tool");

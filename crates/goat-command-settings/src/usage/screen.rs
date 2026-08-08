@@ -12,11 +12,11 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::{
+use goat_command::{
+    Theme,
     layout::{OVERLAY_CHROME_PLAIN, OVERLAY_W, format_tokens},
     overlay::{self, centered_rect, clamp_u16, overlay_frame, overlay_layout_plain},
     symbols,
-    theme::Theme,
 };
 
 const BAR_WIDTH: usize = 12;
@@ -307,15 +307,17 @@ impl<'a> UsageView<'a> {
             let key = (model.provider.clone(), model.account.clone());
             if let Some(usage) = self.usage_last.get(&key) {
                 lines.push(Line::default());
-                let this_thread = "  this thread";
+                let this_conversation = "  this conversation";
                 let ctx_label_pad = w.saturating_sub(
-                    1 + UnicodeWidthStr::width("context") + UnicodeWidthStr::width(this_thread) + 3,
+                    1 + UnicodeWidthStr::width("context")
+                        + UnicodeWidthStr::width(this_conversation)
+                        + 3,
                 );
                 lines.push(Line::from(vec![
                     Span::raw(" "),
                     Span::styled("context", theme.accent()),
                     Span::raw(" ".repeat(ctx_label_pad)),
-                    Span::styled(this_thread, theme.muted()),
+                    Span::styled(this_conversation, theme.muted()),
                 ]));
                 let ctx_used = u64::from(usage.input_tokens) + u64::from(usage.output_tokens);
                 let pct = percent(ctx_used, window);
@@ -350,5 +352,66 @@ impl<'a> UsageView<'a> {
         }
         frame.render_widget(Paragraph::new(visible), body_area);
         let _ = hint_area;
+    }
+}
+
+pub struct UsageScreen {
+    accounts: Vec<AccountEntry>,
+    usage: goat_command::UsageState,
+    context_window: Option<u32>,
+    model: Option<ModelTarget>,
+}
+
+impl UsageScreen {
+    pub fn new(
+        accounts: Vec<AccountEntry>,
+        usage: goat_command::UsageState,
+        context_window: Option<u32>,
+        model: Option<ModelTarget>,
+    ) -> Self {
+        Self {
+            accounts,
+            usage,
+            context_window,
+            model,
+        }
+    }
+}
+
+impl goat_command::Screen for UsageScreen {
+    fn placement(&self) -> goat_command::Placement {
+        goat_command::Placement::Overlay
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        UsageView::new(
+            &self.accounts,
+            &self.usage.last,
+            &self.usage.total,
+            &self.usage.rate_limits,
+            self.context_window,
+            self.model.as_ref(),
+            self.usage.scroll,
+        )
+        .render(frame, area, *theme);
+    }
+
+    fn handle_input(
+        &mut self,
+        event: &crossterm::event::Event,
+        _session: &mut dyn goat_command::Session,
+    ) -> goat_command::InputOutcome {
+        use crossterm::event::{Event as InputEvent, KeyCode};
+        use goat_command::{InputOutcome, ScreenOutcome};
+        let InputEvent::Key(key) = event else {
+            return InputOutcome::Ignored;
+        };
+        let outcome =
+            if key.code == KeyCode::Esc || goat_command::keymap::ctrl_key(key) == Some('c') {
+                ScreenOutcome::Close
+            } else {
+                ScreenOutcome::Continue
+            };
+        InputOutcome::Handled(outcome)
     }
 }

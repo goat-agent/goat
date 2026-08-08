@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use globset::Glob;
 use goat_agent_tool::{
-    ToolCall, ToolContext, ToolFactory, ToolHandler, ToolName, ToolOutput, ToolSpec,
+    ToolCall, ToolCaller, ToolFactory, ToolHandler, ToolName, ToolOutput, ToolSpec,
 };
 use regex::RegexBuilder;
 use serde::Deserialize;
@@ -36,7 +36,7 @@ struct GrepArgs {
 
 #[async_trait]
 impl ToolHandler for GrepTool {
-    async fn call(&self, ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let args = match serde_json::from_value::<GrepArgs>(call.arguments) {
             Ok(args) => args,
             Err(e) => return common::error(format!("invalid grep input: {e}")),

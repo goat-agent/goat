@@ -1,5 +1,5 @@
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolContext, ToolFuture, ToolOutput, display};
+use goat_tool::{Tool, ToolFuture, ToolOutput, ToolSandbox, display};
 use serde::Deserialize;
 
 use crate::{error::FsError, tools::relative_display};
@@ -48,7 +48,7 @@ impl Tool for WriteTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async move {
             let args: Input = serde_json::from_str(input)?;
             let resolved = ctx.resolve(&args.path)?;
@@ -81,10 +81,10 @@ impl Tool for WriteTool {
 #[cfg(test)]
 mod tests {
     use super::WriteTool;
-    use goat_tool::{Tool, ToolContext, ToolErrorClass};
+    use goat_tool::{Tool, ToolErrorClass, ToolSandbox};
 
-    fn ctx(dir: &std::path::Path) -> ToolContext {
-        ToolContext::new(dir).unwrap()
+    fn ctx(dir: &std::path::Path) -> ToolSandbox {
+        ToolSandbox::new(dir).unwrap()
     }
 
     #[tokio::test]
@@ -150,7 +150,7 @@ mod tests {
         let cwd = tempfile::tempdir().unwrap();
         let plandir = tempfile::tempdir().unwrap();
         let plan = plandir.path().canonicalize().unwrap().join("p.md");
-        let mut ctx = ToolContext::new(cwd.path()).unwrap();
+        let mut ctx = ToolSandbox::new(cwd.path()).unwrap();
         ctx.extra_path = Some(plan.clone());
         ctx.write_allow = Some(plan.clone());
         let input =

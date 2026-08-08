@@ -945,7 +945,7 @@ mod tests {
         };
         let result = Message {
             role: MessageRole::User,
-            content: vec![ContentBlock::text_result("call_1", "file body", false)],
+            content: vec![ContentBlock::text_result("call_1", "file body")],
         };
         let body = build_body(
             "gpt-5.5",

@@ -1,12 +1,12 @@
 use std::path::Path;
 
-use goat_tool::{Tool, ToolContext};
+use goat_tool::{Tool, ToolSandbox};
 
 #[tokio::test]
 #[ignore = "requires a real Chrome install and drives the persistent profile"]
 async fn navigates_clicks_debug_evals_and_closes() {
     let tool = goat_tool_browser::browser_tool();
-    let ctx = ToolContext::new(Path::new(".")).unwrap();
+    let ctx = ToolSandbox::new(Path::new(".")).unwrap();
 
     let nav = r#"{"action":"navigate","url":"data:text/html,<button onclick='window.__c=1'>Go</button>"}"#;
     let snapshot = tool.run(nav, &ctx).await.unwrap();
@@ -34,7 +34,7 @@ async fn navigates_clicks_debug_evals_and_closes() {
 #[ignore = "requires a real Chrome install and drives the persistent profile"]
 async fn snapshot_pierces_shadow_dom() {
     let tool = goat_tool_browser::browser_tool();
-    let ctx = ToolContext::new(Path::new(".")).unwrap();
+    let ctx = ToolSandbox::new(Path::new(".")).unwrap();
 
     let nav = r#"{"action":"navigate","url":"data:text/html,<my-el></my-el><script>customElements.define('my-el',class extends HTMLElement{connectedCallback(){this.attachShadow({mode:'open'}).innerHTML='<button>Shadow</button>'}})</script>"}"#;
     let snapshot = tool.run(nav, &ctx).await.unwrap();
@@ -51,7 +51,7 @@ async fn snapshot_pierces_shadow_dom() {
 #[ignore = "requires a real Chrome install and drives the persistent profile"]
 async fn click_reports_covering_element() {
     let tool = goat_tool_browser::browser_tool();
-    let ctx = ToolContext::new(Path::new(".")).unwrap();
+    let ctx = ToolSandbox::new(Path::new(".")).unwrap();
 
     let nav = r#"{"action":"navigate","url":"data:text/html,<button>Real</button><div style='position:fixed;inset:0;z-index:9999;background:red'>Cover</div>"}"#;
     tool.run(nav, &ctx).await.unwrap();
@@ -72,7 +72,7 @@ async fn click_reports_covering_element() {
 #[ignore = "requires a real Chrome install and drives the persistent profile"]
 async fn dialog_guard_prevents_hang() {
     let tool = goat_tool_browser::browser_tool();
-    let ctx = ToolContext::new(Path::new(".")).unwrap();
+    let ctx = ToolSandbox::new(Path::new(".")).unwrap();
 
     let nav = r#"{"action":"navigate","url":"data:text/html,<button onclick=\"alert('boom')\">Go</button>"}"#;
     tool.run(nav, &ctx).await.unwrap();
@@ -93,7 +93,7 @@ async fn dialog_guard_prevents_hang() {
 #[ignore = "requires a real Chrome install and drives the persistent profile"]
 async fn read_and_storage_actions_smoke() {
     let tool = goat_tool_browser::browser_tool();
-    let ctx = ToolContext::new(Path::new(".")).unwrap();
+    let ctx = ToolSandbox::new(Path::new(".")).unwrap();
 
     let nav = r#"{"action":"navigate","url":"data:text/html,<main><h1>Title</h1><p>Body text here.</p></main>"}"#;
     tool.run(nav, &ctx).await.unwrap();

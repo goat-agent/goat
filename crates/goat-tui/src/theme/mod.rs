@@ -1,3 +1,1 @@
-mod palette;
-
-pub use palette::{CodePalette, Theme};
+pub use goat_command::{CodePalette, Theme};

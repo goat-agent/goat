@@ -2,8 +2,8 @@ use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
 use goat_protocol::{ProcessState, RunId, ToolDisplay};
 use goat_tool::{
-    SandboxPolicy, Tool, ToolContext, ToolDefinitionContext, ToolError, ToolFuture, ToolInvocation,
-    ToolOutput, ToolSpec, display,
+    SandboxPolicy, Tool, ToolDefinitionContext, ToolError, ToolFuture, ToolInvocation, ToolOutput,
+    ToolSandbox, ToolSpec, display,
 };
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -124,14 +124,14 @@ impl Tool for BackgroundBashTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, context: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, input: &'a str, context: &'a ToolSandbox) -> ToolFuture<'a> {
         BashTool.run(input, context)
     }
 
     fn invoke<'a>(
         &'a self,
         input: &'a str,
-        context: &'a ToolContext,
+        context: &'a ToolSandbox,
         invocation: ToolInvocation<'a>,
     ) -> ToolFuture<'a> {
         Box::pin(async move {
@@ -251,7 +251,7 @@ impl Tool for BackgroundProcessTool {
         }
     }
 
-    fn run<'a>(&'a self, _input: &'a str, _context: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, _input: &'a str, _context: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async {
             Err(ToolError::execution(
                 "background invocation context is unavailable",
@@ -262,7 +262,7 @@ impl Tool for BackgroundProcessTool {
     fn invoke<'a>(
         &'a self,
         input: &'a str,
-        _context: &'a ToolContext,
+        _context: &'a ToolSandbox,
         invocation: ToolInvocation<'a>,
     ) -> ToolFuture<'a> {
         Box::pin(async move {

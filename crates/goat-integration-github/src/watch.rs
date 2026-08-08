@@ -10,10 +10,12 @@ use crate::{DEFAULT_LIMIT, MISSING_GH, VOCABULARY};
 pub fn defaults() -> Vec<WatchSpec> {
     vec![
         WatchSpec {
+            state_key: "review".to_owned(),
             stream: "review".to_owned(),
             query: "is:open is:pr review-requested:@me".to_owned(),
         },
         WatchSpec {
+            state_key: "assigned".to_owned(),
             stream: "assigned".to_owned(),
             query: "is:open assignee:@me".to_owned(),
         },

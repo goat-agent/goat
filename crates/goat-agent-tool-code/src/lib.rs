@@ -3,20 +3,20 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use goat_agent_tool::{
-    ToolCall, ToolContext, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
+    ToolCall, ToolCaller, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
 };
-use goat_daemon::Manager;
+use goat_daemon::CodeSessionHub;
 use serde::Deserialize;
 use serde_json::json;
 
 pub const CODE_TASK: ToolName = ToolName::from_static("code_task");
 
-pub fn register(registry: &mut ToolRegistry, manager: Manager) {
+pub fn register(registry: &mut ToolRegistry, manager: CodeSessionHub) {
     registry.insert_handler(spec(), Arc::new(CodeTool { manager }), true);
 }
 
 struct CodeTool {
-    manager: Manager,
+    manager: CodeSessionHub,
 }
 
 #[derive(Debug, Deserialize)]
@@ -27,7 +27,7 @@ struct CodeArgs {
 
 #[async_trait]
 impl ToolHandler for CodeTool {
-    async fn call(&self, _ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, _ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let args: CodeArgs = match serde_json::from_value(call.arguments) {
             Ok(a) => a,
             Err(e) => return ToolOutput::error(format!("invalid code_task input: {e}")),

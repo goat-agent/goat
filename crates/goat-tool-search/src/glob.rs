@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 
 use goat_tool::{
-    Tool, ToolContext, ToolError, ToolFuture, ToolOutput,
+    Tool, ToolError, ToolFuture, ToolOutput, ToolSandbox,
     path::{blocked_path, relative_display},
 };
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
@@ -49,7 +49,7 @@ impl Tool for GlobTool {
         goat_protocol::ToolDisplay::primary(sig)
     }
 
-    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async move {
             let args: Input = serde_json::from_str(input)?;
             let root = match &args.path {
@@ -120,10 +120,10 @@ fn walk(
 #[cfg(test)]
 mod tests {
     use super::GlobTool;
-    use goat_tool::{Tool, ToolContext};
+    use goat_tool::{Tool, ToolSandbox};
 
-    fn ctx(dir: &std::path::Path) -> ToolContext {
-        ToolContext::new(dir).unwrap()
+    fn ctx(dir: &std::path::Path) -> ToolSandbox {
+        ToolSandbox::new(dir).unwrap()
     }
 
     #[tokio::test]

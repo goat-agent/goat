@@ -21,11 +21,13 @@ const PATIENCE: Duration = Duration::from_secs(5);
 
 pub async fn runtime_in(dir: &Path) -> IntegrationRuntime {
     let store = SqliteStore::open(&dir.join("goat.db")).await.unwrap();
-    IntegrationRuntime {
-        credentials: CredentialStore::new(dir.join("credentials.json")),
-        store: Arc::new(store),
-        bus: EventBus::new(),
-    }
+    let mut runtime = IntegrationRuntime::new(
+        CredentialStore::new(dir.join("credentials.json")),
+        Arc::new(store),
+        EventBus::new(),
+    );
+    runtime.poll_budget = crate::watch::PollBudget::new(Duration::ZERO);
+    runtime
 }
 
 pub async fn agent_in(runtime: &IntegrationRuntime) -> AgentId {
@@ -114,6 +116,7 @@ impl WatchContract {
         WorkflowSource {
             integration: self.integration.clone(),
             account: "default".to_owned(),
+            state_key: self.stream.clone(),
             stream: self.stream.clone(),
             compiled: CompiledWatch {
                 kind: self.kind,
@@ -322,6 +325,7 @@ async fn unreadable_state_starts_cold_instead_of_replaying(contract: &WatchContr
         &contract.integration,
         "default",
         &contract.stream,
+        &contract.stream,
     )
     .await
     .unwrap();
@@ -340,6 +344,7 @@ fn bundle_source(name: &'static str, diff: DiffOps, source: ScriptedSource) -> W
     WorkflowSource {
         integration: IntegrationId::from_static(name),
         account: "default".to_owned(),
+        state_key: "inbox".to_owned(),
         stream: "inbox".to_owned(),
         compiled: CompiledWatch {
             kind: IntegrationUpdateKind::Assigned,

@@ -2789,37 +2789,61 @@ dependencies = [
 [[package]]
 name = "goat-command"
 version = "0.1.0"
+dependencies = [
+ "crossterm 0.29.0",
+ "goat-client",
+ "goat-github",
+ "goat-protocol",
+ "goat-worktree",
+ "ratatui",
+ "unicode-width 0.2.2",
+]
 
 [[package]]
 name = "goat-command-app"
 version = "0.1.0"
 dependencies = [
+ "crossterm 0.29.0",
  "goat-command",
+ "goat-protocol",
+ "ratatui",
 ]
 
 [[package]]
 name = "goat-command-conversation"
 version = "0.1.0"
 dependencies = [
+ "crossterm 0.29.0",
  "goat-command",
+ "goat-protocol",
+ "ratatui",
 ]
 
 [[package]]
 name = "goat-command-help"
 version = "0.1.0"
 dependencies = [
+ "crossterm 0.29.0",
  "goat-command",
+ "ratatui",
 ]
 
 [[package]]
 name = "goat-command-settings"
 version = "0.1.0"
 dependencies = [
+ "crossterm 0.29.0",
  "goat-auth",
+ "goat-client",
  "goat-command",
  "goat-config",
+ "goat-github",
+ "goat-protocol",
  "goat-search-provider",
  "goat-search-providers",
+ "goat-worktree",
+ "ratatui",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -2981,6 +3005,7 @@ dependencies = [
  "goat-store",
  "goat-types",
  "inventory",
+ "rand 0.10.2",
  "serde",
  "serde_json",
  "tempfile",
@@ -3829,6 +3854,7 @@ dependencies = [
  "crossterm 0.29.0",
  "futures",
  "goat-client",
+ "goat-command",
  "goat-commands",
  "goat-config",
  "goat-git",

@@ -6,7 +6,7 @@ use rand::RngExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Ctx, LoopEnv, Run,
+    LoopEnv, Run, SessionContext,
     rounds::{RoundEnd, RoundResult, run_round},
 };
 
@@ -116,7 +116,7 @@ pub(crate) fn exhausted_message(message: &str, attempts: u32, started: Instant) 
 }
 
 pub(crate) async fn run_round_with_retry(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     run: &Run<'_>,
     env: &LoopEnv,
     messages: &[goat_provider::Message],

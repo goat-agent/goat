@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{error::ToolError, path::resolve_with_policy, policy::SandboxPolicy};
 
-pub struct ToolContext {
+pub struct ToolSandbox {
     pub cwd: PathBuf,
     pub max_output_bytes: usize,
     pub extra_path: Option<PathBuf>,
@@ -11,7 +11,7 @@ pub struct ToolContext {
     pub exec_policy: SandboxPolicy,
 }
 
-impl ToolContext {
+impl ToolSandbox {
     pub fn new(cwd: &Path) -> Result<Self, ToolError> {
         let cwd = cwd.canonicalize().map_err(|source| {
             ToolError::io(format!("could not resolve working directory: {source}"))

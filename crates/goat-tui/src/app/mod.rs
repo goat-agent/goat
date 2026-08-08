@@ -6,35 +6,30 @@ use std::{collections::HashMap, path::Path, time::Duration};
 use crossterm::event::{Event as CtEvent, EventStream, KeyEventKind, MouseEventKind};
 use futures::StreamExt;
 use goat_client::Identity;
+use goat_command::{
+    InputOutcome, Screen, ScreenOutcome, Session, SessionSnapshot, Settings, UsageState, Viewport,
+};
 use goat_commands::{CommandEffect, CommandRegistry};
 use goat_protocol::{
-    AccountEntry, Effort, Event as EngineEvent, ModelEntry, ModelTarget, NotifyKind, Op,
-    RateLimitSnapshot, TaskId, ToolCallId, Usage,
+    AccountEntry, Effort, Event as EngineEvent, ModelEntry, ModelTarget, NotifyKind, Op, TaskId,
+    ToolCallId,
 };
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::{
-    account::AccountMenu,
-    ask::AskPicker,
     command::{CommandMenu, CommandMenuContext, RuntimeChoice, RuntimeChoiceGroup},
     composer::Composer,
-    config::{Config, ConfigOutcome},
     files::FileMenu,
     highlight::SyntectHighlighter,
-    picker::{EffortPicker, Picker, RewindPicker, ThreadPicker},
+    native_screen::{
+        CommandMenuScreen, FileMenuScreen, ImageZoomScreen, RunRow, RunScreen, RunScreenState,
+    },
     symbols,
     theme::Theme,
     transcript::Transcript,
-    tui,
-    usage::UsageView,
-    view,
+    tui, view,
 };
-
-pub(crate) enum ResumeIntent {
-    Picker,
-    Index(usize),
-}
 
 pub(crate) struct SubagentRunView {
     pub(crate) subagent_type: String,
@@ -65,38 +60,9 @@ pub(crate) enum MainView {
     Process(goat_protocol::RunId),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RunTarget {
-    Subagent(TaskId),
-    Process(goat_protocol::RunId),
-}
-
-impl RunTarget {
-    fn view(self) -> MainView {
-        match self {
-            RunTarget::Subagent(id) => MainView::Subagent(id),
-            RunTarget::Process(id) => MainView::Process(id),
-        }
-    }
-}
-
-pub(crate) enum Overlay {
+pub(crate) enum PendingScreen {
     None,
-    Model(Picker),
-    Account(AccountMenu),
-    Effort(EffortPicker),
-    Thread(ThreadPicker),
-    Rewind(RewindPicker),
-    Config(Config),
-    Commands(CommandMenu),
-    Files(FileMenu),
-    Runs(usize),
-    Ask(AskPicker, ToolCallId),
-    Plan(Box<crate::plan::PlanSheet>),
-    Usage,
-    Status,
-    Help,
-    ImageZoom(Box<goat_protocol::ToolImageData>),
+    Screen(Box<dyn Screen>),
 }
 
 const TICK: Duration = Duration::from_millis(120);
@@ -128,28 +94,105 @@ struct PrLookup {
     branch: String,
 }
 
+struct GitChrome {
+    workspace: Option<goat_worktree::Workspace>,
+    pull_request: Option<goat_github::PrInfo>,
+    pull_request_branch: Option<String>,
+    pull_request_inflight: bool,
+    pull_request_poll: u16,
+    pull_request_enabled: bool,
+    branch_poll: u16,
+}
+
+pub(crate) struct TranscriptViewport {
+    pub(crate) transcript: Transcript,
+    pub(crate) scroll: usize,
+    pub(crate) follow: bool,
+    pub(crate) rows: u16,
+    pub(crate) area: ratatui::layout::Rect,
+    pub(crate) selection: Option<crate::select::Selection>,
+    pub(crate) selection_version: u64,
+    pub(crate) last_click: Option<(std::time::Instant, usize, u16)>,
+    run_cursor: Option<usize>,
+    run_count: usize,
+    action: Option<ViewportAction>,
+    dirty: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ViewportAction {
+    MoveRunCursor(usize),
+    OpenRun(usize),
+    CloseRunSelector,
+}
+
+struct HostActions {
+    pending_copy: Option<String>,
+    pending_open: Option<String>,
+}
+
+struct SessionState {
+    session_id: Option<u64>,
+    client_id: Option<u64>,
+    conversation_id: Option<i64>,
+    daemon: Option<Identity>,
+    started: std::time::Instant,
+    window_count: usize,
+}
+
+struct ModelCatalog {
+    models: Vec<ModelEntry>,
+    loaded: bool,
+    selected: Option<ModelTarget>,
+    accounts: Vec<AccountEntry>,
+}
+
+struct SettingsState {
+    theme: Theme,
+    terminal_bg: Option<ratatui::style::Color>,
+    mouse_capture: bool,
+    computer_use: bool,
+    browser: bool,
+    theme_changed: bool,
+    save_failed: bool,
+}
+
+#[derive(Default)]
+struct ArmingTimers {
+    quit: Option<u16>,
+    clear: Option<u16>,
+    rewind: Option<u16>,
+}
+
+#[derive(Default)]
+struct ScreenHandles {
+    command_menu: std::sync::Weak<std::sync::Mutex<CommandMenu>>,
+    file_menu: std::sync::Weak<std::sync::Mutex<FileMenu>>,
+    run_screen: std::sync::Weak<std::sync::Mutex<RunScreenState>>,
+}
+
+struct ScreenState {
+    active: PendingScreen,
+    waiting: Option<Box<dyn Screen>>,
+    handles: ScreenHandles,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
-    pub(crate) theme: Theme,
-    pub(crate) terminal_bg: Option<ratatui::style::Color>,
-    pub(crate) transcript: Transcript,
+    settings: SettingsState,
+    pub(crate) viewport: TranscriptViewport,
+    host_actions: HostActions,
+    session: SessionState,
+    catalog: ModelCatalog,
+    git: GitChrome,
+    arming: ArmingTimers,
+    screens: ScreenState,
     pub(crate) composer: Composer,
     pub(crate) highlighter: SyntectHighlighter,
     pub(crate) cwd: String,
     pub(crate) remote: Option<String>,
-    git_workspace: Option<goat_worktree::Workspace>,
-    pr: Option<goat_github::PrInfo>,
-    pr_branch: Option<String>,
-    pr_inflight: bool,
-    pr_poll: u16,
-    pr_enabled: bool,
     pub(crate) next_task: u64,
-    pub(crate) window_count: usize,
     pub(crate) spinner: usize,
-    pub(crate) quit_arm: Option<u16>,
-    pub(crate) clear_arm: Option<u16>,
-    pub(crate) rewind_arm: Option<u16>,
-    branch_poll: u16,
     pub(crate) queued: Vec<(
         TaskId,
         String,
@@ -159,26 +202,9 @@ pub struct App {
     pub(crate) should_quit: bool,
     pub(crate) exit_requested: bool,
     pub(crate) dirty: bool,
-    pub(crate) scroll: usize,
-    pub(crate) follow: bool,
-    pub(crate) viewport_rows: u16,
-    pub(crate) selection: Option<crate::select::Selection>,
-    pub(crate) selection_version: u64,
-    pub(crate) transcript_area: ratatui::layout::Rect,
-    pub(crate) pending_copy: Option<String>,
-    pub(crate) pending_open: Option<String>,
-    pub(crate) last_click: Option<(std::time::Instant, usize, u16)>,
-    pub(crate) models: Vec<ModelEntry>,
-    pub(crate) models_loaded: bool,
-    pub(crate) model: Option<ModelTarget>,
+    pub(crate) conversations: Vec<goat_protocol::ConversationSummary>,
     pub(crate) mode: goat_protocol::Mode,
     pub(crate) plan_path: Option<String>,
-    pub(crate) overlay: Overlay,
-    pub(crate) pending: PendingState,
-    pub(crate) account_entries: Vec<AccountEntry>,
-    pub(crate) mouse_capture: bool,
-    pub(crate) computer_use: bool,
-    pub(crate) browser: bool,
     pub(crate) commands: CommandRegistry,
     pub(crate) toasts: Vec<crate::toast::Toast>,
     pub(crate) subagent_runs: Vec<SubagentRunView>,
@@ -190,31 +216,11 @@ pub struct App {
     pub(crate) compaction_threshold: Option<u32>,
     pub(crate) focused: bool,
     pub(crate) notification_pending: Option<crate::notification::Notification>,
-    pub(crate) picker: Option<ratatui_image::picker::Picker>,
+    pub(crate) picker: Option<std::sync::Arc<ratatui_image::picker::Picker>>,
     pub(crate) processes: Vec<goat_protocol::ProcessInfo>,
     pub(crate) files: Vec<String>,
     pub(crate) files_loaded: bool,
     pub(crate) outbox: Vec<Op>,
-    pub(crate) session_id: Option<u64>,
-    pub(crate) client_id: Option<u64>,
-    pub(crate) thread_id: Option<i64>,
-    pub(crate) daemon: Option<Identity>,
-    pub(crate) started: std::time::Instant,
-}
-
-#[derive(Default)]
-pub(crate) struct UsageState {
-    pub(crate) last: HashMap<(String, String), Usage>,
-    pub(crate) total: HashMap<(String, String), (u64, u64)>,
-    pub(crate) rate_limits: HashMap<(String, String), (RateLimitSnapshot, i64)>,
-    pub(crate) scroll: usize,
-    pub(crate) turn_tokens: u64,
-}
-
-#[derive(Default)]
-pub(crate) struct PendingState {
-    pub(crate) ask: Option<(AskPicker, ToolCallId)>,
-    pub(crate) resume: Option<ResumeIntent>,
 }
 
 #[derive(Default)]
@@ -274,11 +280,17 @@ pub(crate) struct RetryState {
     pub(crate) until: std::time::Instant,
 }
 
+#[derive(Clone, Copy)]
+enum BoundsPolicy {
+    Reject,
+    Clamp,
+}
+
 impl App {
     pub(crate) fn set_terminal_bg(&mut self, bg: Option<ratatui::style::Color>) {
-        self.terminal_bg = bg;
-        self.theme = self.theme.with_base(bg);
-        self.transcript.invalidate();
+        self.settings.terminal_bg = bg;
+        self.settings.theme = self.settings.theme.with_base(bg);
+        self.viewport.transcript.invalidate();
         for run in &mut self.subagent_runs {
             run.transcript.invalidate();
         }
@@ -295,50 +307,75 @@ impl App {
             .flatten();
         let cfg = goat_config::Config::load();
         Self {
-            theme,
-            terminal_bg: None,
-            transcript: Transcript::default(),
+            settings: SettingsState {
+                theme,
+                terminal_bg: None,
+                mouse_capture: cfg.mouse_capture_enabled,
+                computer_use: cfg.computer_use_enabled,
+                browser: cfg.browser_enabled,
+                theme_changed: false,
+                save_failed: false,
+            },
+            viewport: TranscriptViewport {
+                transcript: Transcript::default(),
+                scroll: 0,
+                follow: true,
+                rows: 0,
+                area: ratatui::layout::Rect::default(),
+                selection: None,
+                selection_version: 0,
+                last_click: None,
+                run_cursor: None,
+                run_count: 1,
+                action: None,
+                dirty: false,
+            },
+            host_actions: HostActions {
+                pending_copy: None,
+                pending_open: None,
+            },
+            session: SessionState {
+                session_id: origin.session,
+                client_id: origin.client,
+                conversation_id: None,
+                daemon: origin.daemon.clone(),
+                started: std::time::Instant::now(),
+                window_count: 1,
+            },
+            catalog: ModelCatalog {
+                models: Vec::new(),
+                loaded: false,
+                selected: None,
+                accounts: Vec::new(),
+            },
+            git: GitChrome {
+                workspace: git_workspace,
+                pull_request: None,
+                pull_request_branch: None,
+                pull_request_inflight: false,
+                pull_request_poll: 0,
+                pull_request_enabled: !remote && goat_github::gh_available(),
+                branch_poll: BRANCH_POLL_TICKS,
+            },
+            arming: ArmingTimers::default(),
+            screens: ScreenState {
+                active: PendingScreen::None,
+                waiting: None,
+                handles: ScreenHandles::default(),
+            },
             composer: Composer::default(),
             highlighter: SyntectHighlighter::new(),
             cwd,
             remote: origin.remote.clone(),
-            git_workspace,
-            pr: None,
-            pr_branch: None,
-            pr_inflight: false,
-            pr_poll: 0,
-            pr_enabled: !remote && goat_github::gh_available(),
             next_task: 1,
-            window_count: 1,
             spinner: 0,
-            quit_arm: None,
-            clear_arm: None,
-            rewind_arm: None,
-            branch_poll: BRANCH_POLL_TICKS,
             queued: Vec::new(),
             should_quit: false,
             exit_requested: false,
             dirty: true,
-            scroll: 0,
-            follow: true,
-            viewport_rows: 0,
-            selection: None,
-            selection_version: 0,
-            transcript_area: ratatui::layout::Rect::default(),
-            pending_copy: None,
-            pending_open: None,
-            last_click: None,
-            models: Vec::new(),
-            models_loaded: false,
-            model: None,
+            conversations: Vec::new(),
             mode: goat_protocol::Mode::Normal,
             plan_path: None,
-            overlay: Overlay::None,
-            pending: PendingState::default(),
-            account_entries: Vec::new(),
-            mouse_capture: cfg.mouse_capture_enabled,
-            computer_use: cfg.computer_use_enabled,
-            browser: cfg.browser_enabled,
             commands: CommandRegistry::builtin(),
             toasts: Vec::new(),
             subagent_runs: Vec::new(),
@@ -355,11 +392,6 @@ impl App {
             files: Vec::new(),
             files_loaded: false,
             outbox: Vec::new(),
-            session_id: origin.session,
-            client_id: origin.client,
-            thread_id: None,
-            daemon: origin.daemon.clone(),
-            started: std::time::Instant::now(),
         }
     }
 
@@ -372,92 +404,74 @@ impl App {
     fn reduce(&mut self, event: AppEvent) -> Vec<Op> {
         match event {
             AppEvent::Tick => {
+                let screen_ops = self.tick_screen();
                 if self.turn.active.is_some() {
                     self.spinner = self.spinner.wrapping_add(1);
                     self.dirty = true;
                 }
-                if let Some(ticks) = &mut self.quit_arm {
+                if let Some(ticks) = &mut self.arming.quit {
                     *ticks = ticks.saturating_sub(1);
                     if *ticks == 0 {
-                        self.quit_arm = None;
+                        self.arming.quit = None;
                         self.dirty = true;
                     }
                 }
-                if let Some(ticks) = &mut self.clear_arm {
+                if let Some(ticks) = &mut self.arming.clear {
                     *ticks = ticks.saturating_sub(1);
                     if *ticks == 0 {
-                        self.clear_arm = None;
+                        self.arming.clear = None;
                         self.dirty = true;
                     }
                 }
-                if let Some(ticks) = &mut self.rewind_arm {
+                if let Some(ticks) = &mut self.arming.rewind {
                     *ticks = ticks.saturating_sub(1);
                     if *ticks == 0 {
-                        self.rewind_arm = None;
+                        self.arming.rewind = None;
                         self.dirty = true;
                     }
                 }
                 if crate::toast::tick(&mut self.toasts) {
                     self.dirty = true;
                 }
-                self.branch_poll = self.branch_poll.saturating_sub(1);
-                if self.branch_poll == 0 {
-                    self.branch_poll = BRANCH_POLL_TICKS;
+                self.git.branch_poll = self.git.branch_poll.saturating_sub(1);
+                if self.git.branch_poll == 0 {
+                    self.git.branch_poll = BRANCH_POLL_TICKS;
                     self.refresh_git_branch();
                 }
-                self.pr_poll = self.pr_poll.saturating_sub(1);
-                Vec::new()
+                self.git.pull_request_poll = self.git.pull_request_poll.saturating_sub(1);
+                screen_ops
             }
             AppEvent::PrStatus { branch, pr } => {
-                self.pr_inflight = false;
-                if self.git_workspace.as_ref().map(|w| w.git_branch.as_str())
+                self.git.pull_request_inflight = false;
+                if self.git.workspace.as_ref().map(|w| w.git_branch.as_str())
                     == Some(branch.as_str())
                 {
-                    self.pr = pr;
-                    self.pr_branch = Some(branch);
+                    self.git.pull_request = pr;
+                    self.git.pull_request_branch = Some(branch);
                     self.dirty = true;
                 }
                 Vec::new()
             }
             AppEvent::Input(CtEvent::Key(key)) if key.kind == KeyEventKind::Press => {
                 let ops = self.on_key(key);
-                self.promote_pending_ask();
+                self.promote_waiting_screen();
                 ops
             }
             AppEvent::Input(CtEvent::Paste(text)) => {
-                match &mut self.overlay {
-                    Overlay::Model(picker) => {
-                        for ch in text.chars() {
-                            picker.on_char(ch);
-                        }
-                    }
-                    Overlay::Config(config) => {
-                        for ch in text.chars() {
-                            config.on_char(ch);
-                        }
-                    }
-                    Overlay::Ask(picker, _) => {
-                        picker.insert_str(&text);
-                    }
-                    Overlay::Plan(sheet) if sheet.rejecting() => {
-                        for ch in text.chars() {
-                            sheet.push_feedback(ch);
-                        }
-                    }
-                    _ => {
-                        match crate::attachment::attachments_from_paste(&text) {
-                            Ok(attachments) => self.composer.push_attachments(attachments),
-                            Err(
-                                crate::attachment::AttachError::NotImages
-                                | crate::attachment::AttachError::Empty,
-                            ) => {
-                                self.composer.insert_str(&text);
-                            }
-                            Err(err) => self.push_toast(NotifyKind::Error, err.to_string()),
-                        }
-                        self.update_command_menu();
-                    }
+                if let Some(ops) = self.handle_screen_input(&CtEvent::Paste(text.clone())) {
+                    return ops;
                 }
+                match crate::attachment::attachments_from_paste(&text) {
+                    Ok(attachments) => self.composer.push_attachments(attachments),
+                    Err(
+                        crate::attachment::AttachError::NotImages
+                        | crate::attachment::AttachError::Empty,
+                    ) => {
+                        self.composer.insert_str(&text);
+                    }
+                    Err(err) => self.push_toast(NotifyKind::Error, err.to_string()),
+                }
+                self.update_command_menu();
                 self.dirty = true;
                 Vec::new()
             }
@@ -466,6 +480,9 @@ impl App {
                 Vec::new()
             }
             AppEvent::Input(CtEvent::Mouse(mouse)) => {
+                if let Some(ops) = self.handle_screen_input(&CtEvent::Mouse(mouse)) {
+                    return ops;
+                }
                 self.on_mouse(mouse);
                 Vec::new()
             }
@@ -479,8 +496,9 @@ impl App {
             }
             AppEvent::Input(_) => Vec::new(),
             AppEvent::Engine(event) => {
-                let ops = self.on_engine(event);
-                self.promote_pending_ask();
+                let mut ops = self.notify_screen(&event);
+                ops.extend(self.on_engine(event));
+                self.promote_waiting_screen();
                 self.dirty = true;
                 ops
             }
@@ -512,8 +530,8 @@ impl App {
                 Vec::new()
             }
             AppEvent::Presence(count) => {
-                if self.window_count != count {
-                    self.window_count = count;
+                if self.session.window_count != count {
+                    self.session.window_count = count;
                     self.dirty = true;
                 }
                 Vec::new()
@@ -522,119 +540,38 @@ impl App {
     }
 
     pub(crate) fn dispatch_slash_command(&mut self, raw: &str) -> Vec<Op> {
-        let effect = self.commands.resolve_line(raw);
+        let commands = std::mem::take(&mut self.commands);
+        let effect = commands.resolve_line(raw, self);
+        self.commands = commands;
+        self.apply_collaborator_changes();
         self.apply_command_effect(effect)
     }
 
     pub(crate) fn apply_command_effect(&mut self, effect: CommandEffect) -> Vec<Op> {
         self.dirty = true;
         match effect {
-            CommandEffect::OpenModelPicker => {
-                self.overlay = Overlay::Model(Picker::new(
-                    self.models.clone(),
-                    self.model.clone(),
-                    self.models.is_empty() && !self.models_loaded,
-                ));
-                Vec::new()
+            CommandEffect::Show(mut screen) => {
+                let outcome = screen.tick();
+                self.apply_screen_outcome(screen, outcome)
             }
-            CommandEffect::SelectModelNamed(query) => self.select_model_named(&query),
-            CommandEffect::TogglePlanMode => {
-                let mode = self.mode.toggled();
-                self.mode = mode;
-                self.dirty = true;
-                vec![Op::SetMode { mode }]
-            }
-            CommandEffect::OpenEffortPicker => {
-                let efforts = self.current_efforts();
-                let label = self.model.as_ref().map_or_else(
-                    || "no model selected".to_owned(),
-                    |m| format!("{}/{}", m.provider, m.model),
-                );
-                let current = self.model.as_ref().and_then(|m| m.effort);
-                self.overlay = Overlay::Effort(EffortPicker::new(label, efforts, current));
-                Vec::new()
-            }
-            CommandEffect::SelectEffort(level) => {
-                let Some(effort) = Effort::parse(&level) else {
-                    self.push_toast(NotifyKind::Error, format!("unknown effort: {level}"));
-                    return Vec::new();
-                };
-                if !self.current_efforts().contains(&effort) {
-                    self.push_toast(
-                        NotifyKind::Error,
-                        format!("current model does not support effort: {level}"),
-                    );
-                    return Vec::new();
+            CommandEffect::Dispatch(ops) => {
+                for op in &ops {
+                    match op {
+                        Op::SetMode { mode } => self.mode = *mode,
+                        Op::Clear {} => {
+                            self.viewport.transcript.clear();
+                            self.reset_subagents();
+                            self.turn = TurnStatus::default();
+                            self.clear_ctx_indicator();
+                            self.viewport.scroll = 0;
+                            self.viewport.follow = true;
+                        }
+                        _ => {}
+                    }
                 }
-                self.apply_effort(effort)
+                ops
             }
-            CommandEffect::OpenThreadPicker => {
-                self.pending.resume = Some(ResumeIntent::Picker);
-                vec![Op::ListThreads {}]
-            }
-            CommandEffect::ResumeIndex(index) => {
-                self.pending.resume = Some(ResumeIntent::Index(index));
-                vec![Op::ListThreads {}]
-            }
-            CommandEffect::OpenRewind => self.request_rewind(),
-            CommandEffect::OpenConfig => {
-                self.overlay = Overlay::Config(Config::new(
-                    self.account_entries.clone(),
-                    self.theme.is_dark(),
-                    self.mouse_capture,
-                    self.computer_use,
-                    self.browser,
-                ));
-                Vec::new()
-            }
-            CommandEffect::ShowHelp => {
-                self.overlay = Overlay::Help;
-                Vec::new()
-            }
-            CommandEffect::RenameConversation(title) => vec![Op::RenameThread { title }],
-            CommandEffect::ClearConversation => {
-                self.transcript.clear();
-                self.reset_subagents();
-                self.turn = TurnStatus::default();
-                self.clear_ctx_indicator();
-                self.scroll = 0;
-                self.follow = true;
-                vec![Op::Clear {}]
-            }
-            CommandEffect::CompactConversation(instructions) => {
-                let id = TaskId(self.next_task);
-                self.next_task += 1;
-                if self.turn.active.is_some() {
-                    self.push_toast(
-                        NotifyKind::Info,
-                        "will compact after the current task".to_owned(),
-                    );
-                }
-                vec![Op::Compact { id, instructions }]
-            }
-            CommandEffect::Submit(text) => self.submit_text(text),
-            CommandEffect::SubmitCommand { display, prompt } => {
-                self.submit_command(display, prompt)
-            }
-            CommandEffect::Notice(message) => {
-                self.push_toast(NotifyKind::Info, message);
-                Vec::new()
-            }
-            CommandEffect::Error(message) => {
-                self.push_toast(NotifyKind::Error, message);
-                Vec::new()
-            }
-            CommandEffect::OpenUsage => {
-                self.overlay = Overlay::Usage;
-                self.usage.scroll = 0;
-                self.dirty = true;
-                Vec::new()
-            }
-            CommandEffect::OpenStatus => {
-                self.overlay = Overlay::Status;
-                self.dirty = true;
-                Vec::new()
-            }
+            CommandEffect::Submit { display, prompt } => self.submit_command(display, prompt),
             CommandEffect::Noop => Vec::new(),
             CommandEffect::Quit => {
                 self.exit_requested = true;
@@ -644,8 +581,102 @@ impl App {
         }
     }
 
+    fn apply_screen_outcome(
+        &mut self,
+        mut screen: Box<dyn Screen>,
+        mut outcome: ScreenOutcome,
+    ) -> Vec<Op> {
+        let mut ops = Vec::new();
+        loop {
+            match outcome {
+                ScreenOutcome::Continue => {
+                    if matches!(self.screens.active, PendingScreen::None) {
+                        self.screens.active = PendingScreen::Screen(screen);
+                    }
+                    return ops;
+                }
+                ScreenOutcome::Close => return ops,
+                ScreenOutcome::Effect(effect) => {
+                    ops.extend(self.apply_command_effect(effect));
+                    if !matches!(self.screens.active, PendingScreen::None) {
+                        return ops;
+                    }
+                    outcome = screen.tick();
+                }
+            }
+        }
+    }
+
+    fn handle_screen_input(&mut self, event: &CtEvent) -> Option<Vec<Op>> {
+        let mut screen = match std::mem::replace(&mut self.screens.active, PendingScreen::None) {
+            PendingScreen::Screen(screen) => screen,
+            overlay @ PendingScreen::None => {
+                self.screens.active = overlay;
+                return None;
+            }
+        };
+        self.viewport.run_cursor = self.run_selector();
+        self.viewport.run_count = self.run_row_count();
+        let input = screen.handle_input(event, self);
+        self.apply_collaborator_changes();
+        match input {
+            InputOutcome::Ignored => {
+                self.screens.active = PendingScreen::Screen(screen);
+                None
+            }
+            InputOutcome::Handled(outcome) => {
+                let ops = self.apply_screen_outcome(screen, outcome);
+                if self.screens.handles.command_menu.upgrade().is_some() {
+                    self.update_command_menu();
+                }
+                Some(ops)
+            }
+        }
+    }
+
+    fn tick_screen(&mut self) -> Vec<Op> {
+        let mut screen = match std::mem::replace(&mut self.screens.active, PendingScreen::None) {
+            PendingScreen::Screen(screen) => screen,
+            overlay @ PendingScreen::None => {
+                self.screens.active = overlay;
+                return Vec::new();
+            }
+        };
+        let outcome = screen.tick();
+        self.apply_screen_outcome(screen, outcome)
+    }
+
+    fn notify_screen(&mut self, event: &EngineEvent) -> Vec<Op> {
+        let mut ops = Vec::new();
+        if let PendingScreen::Screen(mut screen) =
+            std::mem::replace(&mut self.screens.active, PendingScreen::None)
+        {
+            let outcome = screen.on_event(event, self);
+            self.apply_collaborator_changes();
+            ops.extend(self.apply_screen_outcome(screen, outcome));
+        }
+        if let Some(mut screen) = self.screens.waiting.take() {
+            let mut outcome = screen.on_event(event, self);
+            self.apply_collaborator_changes();
+            loop {
+                match outcome {
+                    ScreenOutcome::Continue => {
+                        self.screens.waiting = Some(screen);
+                        break;
+                    }
+                    ScreenOutcome::Close => break,
+                    ScreenOutcome::Effect(effect) => {
+                        ops.extend(self.apply_command_effect(effect));
+                        outcome = screen.tick();
+                    }
+                }
+            }
+        }
+        ops
+    }
+
     pub(crate) fn request_rewind(&mut self) -> Vec<Op> {
-        self.rewind_arm = None;
+        self.arming.rewind = None;
         if self.turn.active.is_some() || !self.queued.is_empty() {
             self.push_toast(
                 NotifyKind::Info,
@@ -653,68 +684,9 @@ impl App {
             );
             Vec::new()
         } else {
-            vec![Op::ListRewindPoints {}]
-        }
-    }
-
-    pub(crate) fn apply_config_outcome(&mut self, outcome: ConfigOutcome) -> Vec<Op> {
-        match outcome {
-            ConfigOutcome::Pending => Vec::new(),
-            ConfigOutcome::AddAccount {
-                provider,
-                name,
-                credential,
-            } => {
-                vec![Op::AddAccount {
-                    provider,
-                    name,
-                    credential,
-                }]
-            }
-            ConfigOutcome::RemoveAccount { provider, name } => {
-                vec![Op::RemoveAccount { provider, name }]
-            }
-            ConfigOutcome::SetTheme { dark } => {
-                let chosen = if dark { Theme::dark() } else { Theme::light() };
-                self.theme = chosen.with_base(self.terminal_bg);
-                self.transcript.invalidate();
-                for run in &mut self.subagent_runs {
-                    run.transcript.invalidate();
-                }
-                if let Overlay::Config(config) = &mut self.overlay {
-                    config.set_providers(self.account_entries.clone());
-                }
-                let mut cfg = goat_config::Config::load();
-                cfg.theme = if dark {
-                    goat_config::ThemeChoice::Dark
-                } else {
-                    goat_config::ThemeChoice::Light
-                };
-                self.persist_config(&cfg);
-                Vec::new()
-            }
-            ConfigOutcome::SetMouseCapture { enabled } => {
-                self.mouse_capture = enabled;
-                tui::set_mouse_capture(enabled);
-                let mut cfg = goat_config::Config::load();
-                cfg.mouse_capture_enabled = enabled;
-                self.persist_config(&cfg);
-                Vec::new()
-            }
-            ConfigOutcome::SetComputerUse { enabled } => {
-                self.computer_use = enabled;
-                let mut cfg = goat_config::Config::load();
-                cfg.computer_use_enabled = enabled;
-                self.persist_config(&cfg);
-                Vec::new()
-            }
-            ConfigOutcome::SetBrowser { enabled } => {
-                self.browser = enabled;
-                let mut cfg = goat_config::Config::load();
-                cfg.browser_enabled = enabled;
-                self.persist_config(&cfg);
-                Vec::new()
-            }
+            self.apply_command_effect(CommandEffect::Show(Box::new(
+                goat_commands::RewindScreen::new(Vec::new()),
+            )))
         }
     }
 
@@ -768,13 +740,9 @@ impl App {
         self.next_task += 1;
         self.turn.active = Some(id);
         self.turn.active_shell = true;
-        self.transcript.push_shell(id, command.clone());
-        self.follow = true;
+        self.viewport.transcript.push_shell(id, command.clone());
+        self.viewport.follow = true;
         vec![Op::SubmitShell { id, command }]
-    }
-
-    pub(crate) fn submit_text(&mut self, text: String) -> Vec<Op> {
-        self.submit_text_with_attachments(text, Vec::new())
     }
 
     pub(crate) fn submit_text_with_attachments(
@@ -784,7 +752,7 @@ impl App {
     ) -> Vec<Op> {
         let id = TaskId(self.next_task);
         self.next_task += 1;
-        self.follow = true;
+        self.viewport.follow = true;
         self.dirty = true;
         if self.turn.active.is_none() {
             self.turn.active = Some(id);
@@ -803,7 +771,7 @@ impl App {
     pub(crate) fn submit_command(&mut self, display: String, prompt: String) -> Vec<Op> {
         let id = TaskId(self.next_task);
         self.next_task += 1;
-        self.follow = true;
+        self.viewport.follow = true;
         self.dirty = true;
         if self.turn.active.is_none() {
             self.turn.active = Some(id);
@@ -871,20 +839,22 @@ impl App {
     }
 
     pub(crate) fn current_model_supports_images(&self) -> bool {
-        let Some(model) = &self.model else {
+        let Some(model) = &self.catalog.selected else {
             return false;
         };
-        self.models
+        self.catalog
+            .models
             .iter()
             .find(|entry| entry.provider == model.provider && entry.model == model.model)
             .is_some_and(|entry| entry.supports_images)
     }
 
     pub(crate) fn current_efforts(&self) -> Vec<Effort> {
-        let Some(model) = &self.model else {
+        let Some(model) = &self.catalog.selected else {
             return Vec::new();
         };
-        self.models
+        self.catalog
+            .models
             .iter()
             .find(|entry| entry.provider == model.provider && entry.model == model.model)
             .map(|entry| entry.efforts.clone())
@@ -906,7 +876,8 @@ impl App {
     }
 
     fn model_choice_options(&self) -> Vec<RuntimeChoice> {
-        self.models
+        self.catalog
+            .models
             .iter()
             .map(|entry| {
                 let name = format!("{}/{}", entry.provider, entry.model);
@@ -927,76 +898,34 @@ impl App {
             .collect()
     }
 
-    pub(crate) fn apply_effort(&mut self, effort: Effort) -> Vec<Op> {
-        let Some(current) = &self.model else {
-            self.push_toast(NotifyKind::Error, "select a model first".to_owned());
-            return Vec::new();
-        };
-        let mut target = current.clone();
-        target.effort = Some(effort);
-        vec![Op::SelectModel { target }]
-    }
-
-    pub(crate) fn select_model_named(&mut self, query: &str) -> Vec<Op> {
-        let needle = query.trim().to_lowercase();
-        let exact: Vec<&ModelEntry> = self
-            .models
-            .iter()
-            .filter(|entry| {
-                entry.model.to_lowercase() == needle
-                    || format!("{}/{}", entry.provider, entry.model).to_lowercase() == needle
-            })
-            .collect();
-        if let [entry] = exact.as_slice() {
-            match entry.accounts.as_slice() {
-                [account] => {
-                    return vec![Op::SelectModel {
-                        target: account.target.clone(),
-                    }];
-                }
-                [] => {}
-                accounts => {
-                    self.overlay = Overlay::Account(AccountMenu::new(accounts.to_vec()));
-                    return Vec::new();
-                }
-            }
-        }
-        let mut picker = Picker::new(
-            self.models.clone(),
-            self.model.clone(),
-            self.models.is_empty() && !self.models_loaded,
-        );
-        for ch in query.trim().chars() {
-            picker.on_char(ch);
-        }
-        self.overlay = Overlay::Model(picker);
-        Vec::new()
-    }
-
     pub(crate) fn update_command_menu(&mut self) {
         if self.composer.shell() {
-            if matches!(self.overlay, Overlay::Commands(_) | Overlay::Files(_)) {
-                self.overlay = Overlay::None;
+            if self.screens.handles.command_menu.upgrade().is_some()
+                || self.screens.handles.file_menu.upgrade().is_some()
+            {
+                self.screens.active = PendingScreen::None;
             }
             return;
         }
         if let Some(query) = self.composer.at_query() {
-            if let Overlay::Files(menu) = &mut self.overlay {
-                menu.update(&query);
+            if let Some(menu) = self.screens.handles.file_menu.upgrade() {
+                menu.lock().unwrap().update(&query);
             } else {
                 if !self.files_loaded {
                     self.outbox.push(Op::ListFiles {});
                 }
-                self.overlay = Overlay::Files(FileMenu::new(
+                let (screen, handle) = FileMenuScreen::new(FileMenu::new(
                     self.files.clone(),
                     !self.files_loaded,
                     &query,
                 ));
+                self.screens.handles.file_menu = handle;
+                self.screens.active = PendingScreen::Screen(Box::new(screen));
             }
             return;
         }
-        if matches!(self.overlay, Overlay::Files(_)) {
-            self.overlay = Overlay::None;
+        if self.screens.handles.file_menu.upgrade().is_some() {
+            self.screens.active = PendingScreen::None;
         }
         let text = self.composer.text();
         let trimmed = text.trim_start();
@@ -1007,7 +936,7 @@ impl App {
                 command: "effort",
                 parameter: "level",
                 options: &effort_options,
-                empty_hint: if self.model.is_some() {
+                empty_hint: if self.catalog.selected.is_some() {
                     "this model does not support reasoning effort"
                 } else {
                     "select a model first"
@@ -1020,82 +949,89 @@ impl App {
                 empty_hint: "no models yet — run /config to connect a provider",
             },
         ];
-        let cmd_ctx = CommandMenuContext { choices: &groups };
+        let context = CommandMenuContext { choices: &groups };
         if trimmed.starts_with('/')
             && slash_command_name(trimmed).is_none_or(|name| !name.contains('/'))
         {
-            match &mut self.overlay {
-                Overlay::Commands(menu) => menu.update(&self.commands, trimmed, &cmd_ctx),
-                _ => {
-                    self.overlay =
-                        Overlay::Commands(CommandMenu::new(&self.commands, trimmed, &cmd_ctx));
-                }
+            if let Some(menu) = self.screens.handles.command_menu.upgrade() {
+                menu.lock()
+                    .unwrap()
+                    .update(&self.commands, trimmed, &context);
+            } else {
+                let (screen, handle) =
+                    CommandMenuScreen::new(CommandMenu::new(&self.commands, trimmed, &context));
+                self.screens.handles.command_menu = handle;
+                self.screens.active = PendingScreen::Screen(Box::new(screen));
             }
-        } else if matches!(self.overlay, Overlay::Commands(_)) {
-            self.overlay = Overlay::None;
+        } else if self.screens.handles.command_menu.upgrade().is_some() {
+            self.screens.active = PendingScreen::None;
         }
     }
 
     pub(crate) fn clamp_scroll(&mut self, viewport_height: u16, content_width: u16) {
-        self.viewport_rows = viewport_height;
+        self.viewport.rows = viewport_height;
         let max = self
             .content_height(content_width)
             .saturating_sub(usize::from(viewport_height));
-        if self.follow {
-            self.scroll = max;
+        if self.viewport.follow {
+            self.viewport.scroll = max;
         } else {
-            if self.scroll > max {
-                self.scroll = max;
+            if self.viewport.scroll > max {
+                self.viewport.scroll = max;
             }
-            self.follow = self.scroll >= max;
+            self.viewport.follow = self.viewport.scroll >= max;
         }
     }
 
     pub(crate) fn page_rows(&self) -> usize {
-        usize::from(self.viewport_rows.saturating_sub(1)).max(1)
+        usize::from(self.viewport.rows.saturating_sub(1)).max(1)
     }
 
     fn wheel_step(&self) -> usize {
-        (usize::from(self.viewport_rows) / 4).max(3)
+        (usize::from(self.viewport.rows) / 4).max(3)
     }
 
     pub(crate) fn wheel_scroll_allowed(&self) -> bool {
-        matches!(
-            self.overlay,
-            Overlay::None | Overlay::Commands(_) | Overlay::Files(_) | Overlay::Runs(_)
-        )
+        matches!(self.screens.active, PendingScreen::None)
+            || self.screens.handles.run_screen.upgrade().is_some()
+            || self.screens.handles.command_menu.upgrade().is_some()
+            || self.screens.handles.file_menu.upgrade().is_some()
     }
 
     pub(crate) fn overlay_captures_text(&self) -> bool {
-        match &self.overlay {
-            Overlay::Model(_) | Overlay::Account(_) | Overlay::Config(_) | Overlay::Ask(_, _) => {
-                true
-            }
-            Overlay::Plan(sheet) => sheet.rejecting(),
-            _ => false,
+        match &self.screens.active {
+            PendingScreen::Screen(screen) => screen.captures_text(),
+            PendingScreen::None => false,
         }
     }
 
     pub(crate) fn selection_allowed(&self) -> bool {
-        matches!(self.overlay, Overlay::None | Overlay::Runs(_))
+        matches!(self.screens.active, PendingScreen::None)
+            || self.screens.handles.run_screen.upgrade().is_some()
     }
 
-    fn screen_to_cache(&self, col: u16, row: u16, clamp: bool) -> Option<(usize, u16)> {
-        let area = self.transcript_area;
+    fn screen_to_cache(
+        &self,
+        col: u16,
+        row: u16,
+        bounds_policy: BoundsPolicy,
+    ) -> Option<(usize, u16)> {
+        let clamp = matches!(bounds_policy, BoundsPolicy::Clamp);
+        let area = self.viewport.area;
         let selectable_len = self.active_transcript().selectable_len();
         if area.height == 0 || selectable_len == 0 {
             return None;
         }
-        let bottom = (self.scroll + usize::from(area.height))
+        let bottom = (self.viewport.scroll + usize::from(area.height))
             .min(selectable_len)
             .saturating_sub(1);
         let line = if row < area.y {
             if !clamp {
                 return None;
             }
-            self.scroll
+            self.viewport.scroll
         } else {
-            let candidate = self.scroll + usize::from(row - area.y);
+            let candidate = self.viewport.scroll + usize::from(row - area.y);
             if candidate > bottom {
                 if !clamp {
                     return None;
@@ -1118,8 +1054,9 @@ impl App {
     }
 
     fn valid_selection(&self) -> Option<crate::select::Selection> {
-        self.selection
-            .filter(|_| self.active_transcript().version() == self.selection_version)
+        self.viewport
+            .selection
+            .filter(|_| self.active_transcript().version() == self.viewport.selection_version)
     }
 
     fn copy_selection(&mut self) {
@@ -1132,7 +1069,7 @@ impl App {
         if text.is_empty() {
             return;
         }
-        self.pending_copy = Some(text);
+        self.host_actions.pending_copy = Some(text);
         self.toasts.push(crate::toast::Toast::new(
             goat_protocol::NotifyKind::Info,
             "copied".to_owned(),
@@ -1141,55 +1078,60 @@ impl App {
     }
 
     pub(crate) fn take_pending_copy(&mut self) -> Option<String> {
-        self.pending_copy.take()
+        self.host_actions.pending_copy.take()
     }
 
     pub(crate) fn take_pending_open(&mut self) -> Option<String> {
-        self.pending_open.take()
+        self.host_actions.pending_open.take()
     }
 
     fn on_left_click(&mut self, col: u16, row: u16) {
         if !self.selection_allowed() {
             return;
         }
-        let Some((line, content_col)) = self.screen_to_cache(col, row, false) else {
+        let Some((line, content_col)) = self.screen_to_cache(col, row, BoundsPolicy::Reject) else {
             return;
         };
         if let Some(url) = self.active_transcript().url_at(line, content_col) {
-            self.pending_open = Some(url);
+            self.host_actions.pending_open = Some(url);
         } else if let Some(img) = self.active_transcript().image_at(line) {
-            self.overlay = Overlay::ImageZoom(Box::new(img));
+            self.screens.active = PendingScreen::Screen(Box::new(ImageZoomScreen::new(
+                Box::new(img),
+                self.picker.clone(),
+            )));
         }
     }
 
     fn on_left_down(&mut self, col: u16, row: u16) {
-        let on_content = self.screen_to_cache(col, row, false).is_some();
-        let Some(pos) = self.screen_to_cache(col, row, true) else {
-            self.selection = None;
-            self.last_click = None;
+        let on_content = self
+            .screen_to_cache(col, row, BoundsPolicy::Reject)
+            .is_some();
+        let Some(pos) = self.screen_to_cache(col, row, BoundsPolicy::Clamp) else {
+            self.viewport.selection = None;
+            self.viewport.last_click = None;
             self.dirty = true;
             return;
         };
-        self.selection_version = self.active_transcript().version();
+        self.viewport.selection_version = self.active_transcript().version();
         let now = std::time::Instant::now();
         let double = on_content
-            && self.last_click.is_some_and(|(t, l, c)| {
+            && self.viewport.last_click.is_some_and(|(t, l, c)| {
                 l == pos.0
                     && c.abs_diff(pos.1) <= 1
                     && now.duration_since(t) < std::time::Duration::from_millis(400)
             });
         if double && let Some((lo, hi)) = self.active_transcript().word_bounds_at(pos.0, pos.1) {
-            self.selection = Some(crate::select::Selection {
+            self.viewport.selection = Some(crate::select::Selection {
                 anchor: (pos.0, lo),
                 focus: (pos.0, hi),
                 dragging: false,
             });
-            self.last_click = None;
+            self.viewport.last_click = None;
             self.dirty = true;
             return;
         }
-        self.selection = Some(crate::select::Selection::new(pos));
-        self.last_click = if on_content {
+        self.viewport.selection = Some(crate::select::Selection::new(pos));
+        self.viewport.last_click = if on_content {
             Some((now, pos.0, pos.1))
         } else {
             None
@@ -1201,26 +1143,21 @@ impl App {
         use crossterm::event::MouseButton;
         match mouse.kind {
             MouseEventKind::ScrollUp if self.wheel_scroll_allowed() => {
-                self.scroll = self.scroll.saturating_sub(self.wheel_step());
-                self.follow = false;
+                self.viewport.scroll = self.viewport.scroll.saturating_sub(self.wheel_step());
+                self.viewport.follow = false;
                 self.dirty = true;
             }
             MouseEventKind::ScrollDown if self.wheel_scroll_allowed() => {
-                self.scroll = self.scroll.saturating_add(self.wheel_step());
-                self.dirty = true;
-            }
-            MouseEventKind::Down(MouseButton::Left)
-                if matches!(self.overlay, Overlay::ImageZoom(_)) =>
-            {
-                self.overlay = Overlay::None;
+                self.viewport.scroll = self.viewport.scroll.saturating_add(self.wheel_step());
                 self.dirty = true;
             }
             MouseEventKind::Down(MouseButton::Left) if self.selection_allowed() => {
                 self.on_left_down(mouse.column, mouse.row);
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                if let Some(pos) = self.screen_to_cache(mouse.column, mouse.row, true)
-                    && let Some(sel) = self.selection.as_mut()
+                if let Some(pos) =
+                    self.screen_to_cache(mouse.column, mouse.row, BoundsPolicy::Clamp)
+                    && let Some(sel) = self.viewport.selection.as_mut()
                     && sel.dragging
                 {
                     sel.focus = pos;
@@ -1228,11 +1165,11 @@ impl App {
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                if let Some(sel) = self.selection {
+                if let Some(sel) = self.viewport.selection {
                     if sel.is_empty() {
-                        self.selection = None;
+                        self.viewport.selection = None;
                         self.on_left_click(mouse.column, mouse.row);
-                    } else if let Some(active) = self.selection.as_mut() {
+                    } else if let Some(active) = self.viewport.selection.as_mut() {
                         active.dragging = false;
                     }
                     self.dirty = true;
@@ -1247,7 +1184,7 @@ impl App {
     }
 
     pub(crate) fn theme(&self) -> Theme {
-        self.theme
+        self.settings.theme
     }
     pub(crate) fn transcript(&self) -> &Transcript {
         self.active_transcript()
@@ -1273,22 +1210,26 @@ impl App {
         self.turn.retry = None;
         self.turn.compacting = false;
     }
-    pub(crate) fn promote_pending_ask(&mut self) {
-        if matches!(self.overlay, Overlay::None | Overlay::Commands(_))
-            && let Some((picker, call)) = self.pending.ask.take()
+    pub(crate) fn promote_waiting_screen(&mut self) {
+        if (matches!(self.screens.active, PendingScreen::None)
+            || self.screens.handles.command_menu.upgrade().is_some())
+            && let Some(screen) = self.screens.waiting.take()
         {
-            self.overlay = Overlay::Ask(picker, call);
+            self.screens.active = PendingScreen::Screen(screen);
             self.dirty = true;
         }
     }
     pub(crate) fn cwd(&self) -> &str {
         &self.cwd
     }
+    pub(crate) fn window_count(&self) -> usize {
+        self.session.window_count
+    }
     pub(crate) fn workspace_snapshot(&self) -> Option<&goat_worktree::Workspace> {
-        self.git_workspace.as_ref()
+        self.git.workspace.as_ref()
     }
     fn refresh_git_branch(&mut self) {
-        let Some(ws) = self.git_workspace.as_ref() else {
+        let Some(ws) = self.git.workspace.as_ref() else {
             return;
         };
         let Some(branch) = ws.head_branch() else {
@@ -1297,56 +1238,56 @@ impl App {
         if branch == ws.git_branch {
             return;
         }
-        if let Some(ws) = self.git_workspace.as_mut() {
+        if let Some(ws) = self.git.workspace.as_mut() {
             ws.git_branch = branch;
         }
-        self.pr = None;
-        self.pr_branch = None;
-        self.pr_poll = 0;
+        self.git.pull_request = None;
+        self.git.pull_request_branch = None;
+        self.git.pull_request_poll = 0;
         self.dirty = true;
     }
     pub(crate) fn forget_pull_request(&mut self) {
-        self.pr = None;
-        self.pr_branch = None;
-        self.pr_poll = 0;
+        self.git.pull_request = None;
+        self.git.pull_request_branch = None;
+        self.git.pull_request_poll = 0;
         self.dirty = true;
     }
     pub(crate) fn current_pr(&self) -> Option<&goat_github::PrInfo> {
-        let ws = self.git_workspace.as_ref()?;
-        if self.pr_branch.as_deref() == Some(ws.git_branch.as_str()) {
-            self.pr.as_ref()
+        let ws = self.git.workspace.as_ref()?;
+        if self.git.pull_request_branch.as_deref() == Some(ws.git_branch.as_str()) {
+            self.git.pull_request.as_ref()
         } else {
             None
         }
     }
     fn take_pending_pr_lookup(&mut self) -> Option<PrLookup> {
-        if !self.pr_enabled || self.pr_inflight {
+        if !self.git.pull_request_enabled || self.git.pull_request_inflight {
             return None;
         }
-        let ws = self.git_workspace.as_ref()?;
+        let ws = self.git.workspace.as_ref()?;
         if ws.git_branch.is_empty() {
             return None;
         }
-        let stale = self.pr_branch.as_deref() != Some(ws.git_branch.as_str());
-        if !stale && self.pr_poll > 0 {
+        let stale = self.git.pull_request_branch.as_deref() != Some(ws.git_branch.as_str());
+        if !stale && self.git.pull_request_poll > 0 {
             return None;
         }
-        self.pr_inflight = true;
-        self.pr_poll = PR_POLL_TICKS;
+        self.git.pull_request_inflight = true;
+        self.git.pull_request_poll = PR_POLL_TICKS;
         Some(PrLookup {
             repo_root: ws.repo_root.clone(),
             branch: ws.git_branch.clone(),
         })
     }
     pub(crate) fn quit_armed(&self) -> bool {
-        self.quit_arm.is_some()
+        self.arming.quit.is_some()
     }
     pub(crate) fn clear_armed(&self) -> bool {
-        self.clear_arm.is_some()
+        self.arming.clear.is_some()
     }
 
     pub(crate) fn rewind_armed(&self) -> bool {
-        self.rewind_arm.is_some()
+        self.arming.rewind.is_some()
     }
 
     pub(crate) fn push_toast(&mut self, kind: NotifyKind, message: String) {
@@ -1354,9 +1295,22 @@ impl App {
         self.dirty = true;
     }
 
-    fn persist_config(&mut self, cfg: &goat_config::Config) {
-        if let Err(err) = cfg.save() {
-            tracing::warn!(error = %err, "failed to save config");
+    fn apply_collaborator_changes(&mut self) {
+        if let Some(action) = self.viewport.action.take() {
+            match action {
+                ViewportAction::MoveRunCursor(cursor) => self.move_run_cursor(cursor),
+                ViewportAction::OpenRun(cursor) => self.open_run(cursor),
+                ViewportAction::CloseRunSelector => self.close_run_selector(),
+            }
+        }
+        self.dirty |= std::mem::take(&mut self.viewport.dirty);
+        if std::mem::take(&mut self.settings.theme_changed) {
+            self.viewport.transcript.invalidate();
+            for run in &mut self.subagent_runs {
+                run.transcript.invalidate();
+            }
+        }
+        if std::mem::take(&mut self.settings.save_failed) {
             self.push_toast(
                 NotifyKind::Error,
                 "could not save settings; change may not persist".to_owned(),
@@ -1365,7 +1319,7 @@ impl App {
     }
 
     pub(crate) fn clear_ctx_indicator(&mut self) {
-        if let Some(model) = &self.model {
+        if let Some(model) = &self.catalog.selected {
             let key = (model.provider.clone(), model.account.clone());
             self.usage.last.remove(&key);
         }
@@ -1381,7 +1335,7 @@ impl App {
         if !self.is_busy() {
             return None;
         }
-        let grouped_agents = self.transcript.has_running_subagent_group();
+        let grouped_agents = self.viewport.transcript.has_running_subagent_group();
         let label = self
             .retry_status()
             .or_else(|| self.compacting_status())
@@ -1404,7 +1358,7 @@ impl App {
     }
 
     fn transcript_has_running_activity(&self) -> bool {
-        self.transcript.items.iter().any(|item| {
+        self.viewport.transcript.items.iter().any(|item| {
             matches!(
                 item,
                 crate::transcript::Item::Tool {
@@ -1451,7 +1405,7 @@ impl App {
     pub(crate) fn content_height(&self, width: u16) -> usize {
         self.active_transcript().content_height(
             width,
-            self.theme,
+            self.settings.theme,
             &self.highlighter,
             &self.cwd,
             self.working_state().as_ref(),
@@ -1459,26 +1413,27 @@ impl App {
         )
     }
     pub(crate) fn scroll(&self) -> usize {
-        self.scroll
+        self.viewport.scroll
     }
-    pub(crate) fn overlay(&self) -> &Overlay {
-        &self.overlay
+    pub(crate) fn overlay(&self) -> &PendingScreen {
+        &self.screens.active
     }
-    pub(crate) fn overlay_mut(&mut self) -> &mut Overlay {
-        &mut self.overlay
+    pub(crate) fn overlay_mut(&mut self) -> &mut PendingScreen {
+        &mut self.screens.active
     }
     pub(crate) fn plan_mode(&self) -> bool {
         self.mode.is_plan()
     }
     pub(crate) fn follow(&self) -> bool {
-        self.follow
+        self.viewport.follow
     }
     pub(crate) fn current_model(&self) -> Option<&ModelTarget> {
-        self.model.as_ref()
+        self.catalog.selected.as_ref()
     }
 
     pub(crate) fn provider_has_multiple_accounts(&self, provider: &str) -> bool {
-        self.account_entries
+        self.catalog
+            .accounts
             .iter()
             .find(|e| e.provider == provider)
             .is_some_and(|e| e.accounts.len() > 1)
@@ -1502,86 +1457,121 @@ impl App {
 
     fn set_main_view(&mut self, view: MainView) {
         if self.main_view != view {
-            self.selection = None;
-            self.last_click = None;
+            self.viewport.selection = None;
+            self.viewport.last_click = None;
         }
         self.main_view = view;
     }
 
     pub(crate) fn active_transcript(&self) -> &Transcript {
         match self.main_view {
-            MainView::Live => &self.transcript,
+            MainView::Live => &self.viewport.transcript,
             MainView::Subagent(id) => self
                 .subagent_runs
                 .iter()
                 .find(|run| run.id == id)
-                .map_or(&self.transcript, |run| &run.transcript),
+                .map_or(&self.viewport.transcript, |run| &run.transcript),
             MainView::Process(id) => self
                 .process_runs
                 .iter()
                 .find(|run| run.id == id)
-                .map_or(&self.transcript, |run| &run.transcript),
+                .map_or(&self.viewport.transcript, |run| &run.transcript),
         }
     }
 
-    pub(crate) fn run_targets(&self) -> Vec<RunTarget> {
-        let mut targets: Vec<RunTarget> = self
+    pub(crate) fn run_targets(&self) -> Vec<MainView> {
+        let mut targets: Vec<MainView> = self
             .subagent_runs
             .iter()
-            .map(|r| RunTarget::Subagent(r.id))
+            .map(|r| MainView::Subagent(r.id))
             .collect();
-        targets.extend(self.process_runs.iter().map(|r| RunTarget::Process(r.id)));
+        targets.extend(self.process_runs.iter().map(|r| MainView::Process(r.id)));
         targets
     }
 
+    pub(crate) fn run_row_count(&self) -> usize {
+        self.run_targets().len() + 1
+    }
+
     pub(crate) fn move_run_cursor(&mut self, cursor: usize) {
-        if cursor < self.run_targets().len() {
-            self.overlay = Overlay::Runs(cursor);
-            self.dirty = true;
+        if cursor >= self.run_row_count() {
+            return;
         }
+        if let Some(state) = self.screens.handles.run_screen.upgrade() {
+            state.lock().unwrap().cursor = cursor;
+        } else {
+            let (screen, handle) = RunScreen::new(self.run_rows(), cursor);
+            self.screens.handles.run_screen = handle;
+            self.screens.active = PendingScreen::Screen(Box::new(screen));
+        }
+        self.dirty = true;
     }
 
     pub(crate) fn open_run(&mut self, cursor: usize) {
-        let targets = self.run_targets();
-        if let Some(target) = targets.get(cursor).copied() {
-            self.overlay = Overlay::None;
-            self.set_main_view(target.view());
-            self.follow = true;
+        let view = if cursor == 0 {
+            Some(MainView::Live)
+        } else {
+            self.run_targets().get(cursor - 1).copied()
+        };
+        if let Some(view) = view {
+            self.set_main_view(view);
+            self.viewport.follow = true;
             self.dirty = true;
         }
     }
 
     fn sync_run_selector(&mut self) {
-        let Some(cursor) = self.run_selector() else {
+        let Some(state) = self.screens.handles.run_screen.upgrade() else {
             return;
         };
-        let len = self.run_targets().len();
-        if len == 0 {
+        if self.run_targets().is_empty() {
             self.close_run_selector();
-        } else if cursor >= len {
-            self.overlay = Overlay::Runs(len - 1);
-            self.dirty = true;
+            return;
         }
-    }
-
-    pub(crate) fn close_run_selector(&mut self) {
-        self.overlay = Overlay::None;
-        self.set_main_view(MainView::Live);
-        self.follow = true;
+        let rows = self.run_rows();
+        let mut state = state.lock().unwrap();
+        state.cursor = state.cursor.min(rows.len().saturating_sub(1));
+        state.rows = rows;
         self.dirty = true;
     }
 
-    pub(crate) fn subagent_runs(&self) -> &[SubagentRunView] {
-        &self.subagent_runs
+    fn run_rows(&self) -> Vec<RunRow> {
+        let mut rows = vec![RunRow::Main {
+            viewing: matches!(self.main_view, MainView::Live),
+        }];
+        rows.extend(self.subagent_runs.iter().map(|run| RunRow::Subagent {
+            done: run.done,
+            kind: run.subagent_type.clone(),
+            label: run.label.clone(),
+            tools: run.tools,
+            tokens: run.tokens,
+            started_at: run.started_at,
+            finished_at: run.finished_at,
+            viewing: self.main_view == MainView::Subagent(run.id),
+        }));
+        rows.extend(self.process_runs.iter().map(|run| RunRow::Process {
+            id: run.id,
+            command: run.command.clone(),
+            state: run.state,
+            exit_code: run.exit_code,
+            viewing: self.main_view == MainView::Process(run.id),
+        }));
+        rows
     }
-    pub(crate) fn process_runs(&self) -> &[ProcessRunView] {
-        &self.process_runs
+
+    pub(crate) fn close_run_selector(&mut self) {
+        self.screens.active = PendingScreen::None;
+        self.set_main_view(MainView::Live);
+        self.viewport.follow = true;
+        self.dirty = true;
     }
+
     pub(crate) fn run_selector(&self) -> Option<usize> {
-        match self.overlay {
-            Overlay::Runs(cursor) => Some(cursor),
-            _ => None,
-        }
+        self.screens
+            .handles
+            .run_screen
+            .upgrade()
+            .map(|state| state.lock().unwrap().cursor)
     }
     pub(crate) fn subagent_status(&self) -> Option<String> {
         let mut counts: Vec<(&str, usize)> = Vec::new();
@@ -1636,144 +1626,14 @@ impl App {
     }
 
     pub(crate) fn current_context_window(&self) -> Option<u32> {
-        let model = self.model.as_ref()?;
+        let model = self.catalog.selected.as_ref()?;
         self.context_window
             .get(&(model.provider.clone(), model.account.clone()))
             .copied()
     }
 
-    pub(crate) fn build_usage_view(&self) -> UsageView<'_> {
-        UsageView::new(
-            &self.account_entries,
-            &self.usage.last,
-            &self.usage.total,
-            &self.usage.rate_limits,
-            self.current_context_window(),
-            self.model.as_ref(),
-            self.usage.scroll,
-        )
-    }
-
-    pub(crate) fn status_rows(&self) -> Vec<crate::status::StatusRow> {
-        use crate::status::{StatusRow, daemon_label, uptime};
-        let mut rows = Vec::new();
-        rows.push(StatusRow {
-            label: "session",
-            value: match (self.session_id, self.client_id) {
-                (Some(session), Some(client)) => format!("#{session} · client {client}"),
-                (Some(session), None) => format!("#{session}"),
-                _ => "—".to_owned(),
-            },
-        });
-        rows.push(StatusRow {
-            label: "thread",
-            value: self
-                .thread_id
-                .map_or_else(|| "—".to_owned(), |id| id.to_string()),
-        });
-        if let Some(daemon) = &self.daemon {
-            rows.push(StatusRow {
-                label: "daemon",
-                value: daemon_label(daemon),
-            });
-        }
-        rows.push(StatusRow {
-            label: "model",
-            value: self.model.as_ref().map_or_else(
-                || "—".to_owned(),
-                |model| {
-                    let multiple = self.provider_has_multiple_accounts(&model.provider);
-                    crate::view::model_status_label(model, multiple)
-                },
-            ),
-        });
-        if self.mode.is_plan() {
-            rows.push(StatusRow {
-                label: "mode",
-                value: self
-                    .plan_path
-                    .as_deref()
-                    .map_or_else(|| "plan".to_owned(), |path| format!("plan · {path}")),
-            });
-        }
-        rows.push(StatusRow {
-            label: "cwd",
-            value: self.cwd.clone(),
-        });
-        rows.push(StatusRow {
-            label: "target",
-            value: self
-                .remote
-                .as_ref()
-                .map_or_else(|| "local".to_owned(), |name| format!("remote: {name}")),
-        });
-        if let Some(workspace) = self.workspace_snapshot() {
-            rows.push(StatusRow {
-                label: "worktree",
-                value: crate::view::location_line_full(workspace),
-            });
-        }
-        if let Some(pr) = self.current_pr() {
-            rows.push(StatusRow {
-                label: "pr",
-                value: format!("#{} {}", pr.number, pr_state_label(pr.state)),
-            });
-        }
-        rows.push(StatusRow {
-            label: "windows",
-            value: self.window_count.to_string(),
-        });
-        rows.push(StatusRow {
-            label: "queued",
-            value: format!(
-                "{} · processes {} · skills {}",
-                self.queued.len(),
-                self.processes.len(),
-                self.commands.specs().len()
-            ),
-        });
-        rows.push(StatusRow {
-            label: "transcript",
-            value: format!("{} entries", self.transcript.entry_count()),
-        });
-        rows.push(StatusRow {
-            label: "toggles",
-            value: format!(
-                "mouse {} · computer {} · browser {}",
-                toggle_label(self.mouse_capture),
-                toggle_label(self.computer_use),
-                toggle_label(self.browser)
-            ),
-        });
-        rows.push(StatusRow {
-            label: "theme",
-            value: if self.theme.is_dark() {
-                "dark".to_owned()
-            } else {
-                "light".to_owned()
-            },
-        });
-        if let Some(log_dir) = goat_config::log_dir() {
-            rows.push(StatusRow {
-                label: "log",
-                value: format!("{}/goat.log", log_dir.display()),
-            });
-        }
-        rows.push(StatusRow {
-            label: "uptime",
-            value: uptime(self.started),
-        });
-        if let Some(thread) = self.thread_id {
-            rows.push(StatusRow {
-                label: "resume",
-                value: format!("goat code --resume {thread}"),
-            });
-        }
-        rows
-    }
-
     pub(crate) fn ctx_indicator(&self) -> Option<(f32, u64, u32)> {
-        let model = self.model.as_ref()?;
+        let model = self.catalog.selected.as_ref()?;
         let window = self.current_context_window()?;
         let key = (model.provider.clone(), model.account.clone());
         let usage = self.usage.last.get(&key)?;
@@ -1784,7 +1644,7 @@ impl App {
     }
 
     pub(crate) fn rate_limit_indicator(&self) -> Option<Vec<(String, f32)>> {
-        let model = self.model.as_ref()?;
+        let model = self.catalog.selected.as_ref()?;
         let key = (model.provider.clone(), model.account.clone());
         let (snapshot, _) = self.usage.rate_limits.get(&key)?;
         (!snapshot.windows.is_empty()).then(|| {
@@ -1794,6 +1654,195 @@ impl App {
                 .map(|window| (window.label.clone(), window.used_percent))
                 .collect()
         })
+    }
+}
+
+impl SettingsState {
+    fn persist_config(&mut self, cfg: &goat_config::Config) {
+        if let Err(err) = cfg.save() {
+            tracing::warn!(error = %err, "failed to save config");
+            self.save_failed = true;
+        }
+    }
+}
+
+impl Settings for SettingsState {
+    fn theme(&self) -> Theme {
+        self.theme
+    }
+
+    fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme.with_base(self.terminal_bg);
+        self.theme_changed = true;
+        let mut cfg = goat_config::Config::load();
+        cfg.theme = if theme.is_dark() {
+            goat_config::ThemeChoice::Dark
+        } else {
+            goat_config::ThemeChoice::Light
+        };
+        self.persist_config(&cfg);
+    }
+
+    fn mouse_capture(&self) -> bool {
+        self.mouse_capture
+    }
+
+    fn set_mouse_capture(&mut self, enabled: bool) {
+        self.mouse_capture = enabled;
+        tui::set_mouse_capture(enabled);
+        let mut cfg = goat_config::Config::load();
+        cfg.mouse_capture_enabled = enabled;
+        self.persist_config(&cfg);
+    }
+
+    fn computer_use(&self) -> bool {
+        self.computer_use
+    }
+
+    fn set_computer_use(&mut self, enabled: bool) {
+        self.computer_use = enabled;
+        let mut cfg = goat_config::Config::load();
+        cfg.computer_use_enabled = enabled;
+        self.persist_config(&cfg);
+    }
+
+    fn browser(&self) -> bool {
+        self.browser
+    }
+
+    fn set_browser(&mut self, enabled: bool) {
+        self.browser = enabled;
+        let mut cfg = goat_config::Config::load();
+        cfg.browser_enabled = enabled;
+        self.persist_config(&cfg);
+    }
+}
+
+impl Viewport for TranscriptViewport {
+    fn scroll(&self) -> usize {
+        self.scroll
+    }
+
+    fn set_scroll(&mut self, scroll: usize) {
+        self.scroll = scroll;
+        self.dirty = true;
+    }
+
+    fn follow(&self) -> bool {
+        self.follow
+    }
+
+    fn set_follow(&mut self, follow: bool) {
+        self.follow = follow;
+        self.dirty = true;
+    }
+
+    fn page_rows(&self) -> usize {
+        usize::from(self.rows.saturating_sub(1)).max(1)
+    }
+
+    fn run_cursor(&self) -> Option<usize> {
+        self.run_cursor
+    }
+
+    fn run_count(&self) -> usize {
+        self.run_count
+    }
+
+    fn move_run_cursor(&mut self, cursor: usize) {
+        self.action = Some(ViewportAction::MoveRunCursor(cursor));
+    }
+
+    fn open_run(&mut self, cursor: usize) {
+        self.action = Some(ViewportAction::OpenRun(cursor));
+    }
+
+    fn close_run_selector(&mut self) {
+        self.action = Some(ViewportAction::CloseRunSelector);
+    }
+}
+
+impl Session for App {
+    fn models(&self) -> &[ModelEntry] {
+        &self.catalog.models
+    }
+
+    fn current_model(&self) -> Option<&ModelTarget> {
+        self.catalog.selected.as_ref()
+    }
+
+    fn conversations(&self) -> &[goat_protocol::ConversationSummary] {
+        &self.conversations
+    }
+
+    fn usage(&self) -> &UsageState {
+        &self.usage
+    }
+
+    fn mode(&self) -> goat_protocol::Mode {
+        self.mode
+    }
+
+    fn accounts(&self) -> &[AccountEntry] {
+        &self.catalog.accounts
+    }
+
+    fn snapshot(&self) -> SessionSnapshot {
+        SessionSnapshot {
+            session_id: self.session.session_id,
+            client_id: self.session.client_id,
+            conversation_id: self.session.conversation_id,
+            daemon: self.session.daemon.clone(),
+            model: self.catalog.selected.clone(),
+            models_loaded: self.catalog.loaded,
+            mode: self.mode,
+            plan_path: self.plan_path.clone(),
+            cwd: self.cwd.clone(),
+            remote: self.remote.clone(),
+            workspace: self.git.workspace.clone(),
+            pull_request: self.current_pr().cloned(),
+            window_count: self.session.window_count,
+            queued_count: self.queued.len(),
+            process_count: self.processes.len(),
+            skill_count: self.commands.specs().len(),
+            transcript_entries: self.viewport.transcript.entry_count(),
+            mouse_capture: self.settings.mouse_capture,
+            computer_use: self.settings.computer_use,
+            browser: self.settings.browser,
+            dark_theme: self.settings.theme.is_dark(),
+            log_path: goat_config::log_dir().map(|dir| format!("{}/goat.log", dir.display())),
+            started: self.session.started,
+        }
+    }
+
+    fn is_busy(&self) -> bool {
+        self.turn.active.is_some()
+    }
+
+    fn queued_len(&self) -> usize {
+        self.queued.len()
+    }
+
+    fn settings(&mut self) -> &mut dyn Settings {
+        &mut self.settings
+    }
+
+    fn composer(&mut self) -> &mut dyn goat_command::Composer {
+        &mut self.composer
+    }
+
+    fn viewport(&mut self) -> &mut dyn Viewport {
+        &mut self.viewport
+    }
+
+    fn notify(&mut self, kind: NotifyKind, message: String) {
+        self.push_toast(kind, message);
+    }
+
+    fn allocate_task(&mut self) -> TaskId {
+        let id = TaskId(self.next_task);
+        self.next_task += 1;
+        id
     }
 }
 
@@ -1829,8 +1878,8 @@ pub async fn run(
     initial_ops: Vec<Op>,
 ) -> color_eyre::Result<ExitReason> {
     let mut app = App::new(theme, &origin);
-    let (mut terminal, picker, background) = tui::init(app.mouse_capture)?;
-    app.picker = picker;
+    let (mut terminal, picker, background) = tui::init(app.settings.mouse_capture)?;
+    app.picker = picker.map(std::sync::Arc::new);
     app.set_terminal_bg(background);
     let result = event_loop(
         &mut terminal,
@@ -2005,18 +2054,6 @@ fn prepare_input_event(
     }
 }
 
-fn toggle_label(enabled: bool) -> &'static str {
-    if enabled { "✓" } else { "✗" }
-}
-
-fn pr_state_label(state: goat_github::PrState) -> &'static str {
-    match state {
-        goat_github::PrState::Open => "open",
-        goat_github::PrState::Merged => "merged",
-        goat_github::PrState::Closed => "closed",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
@@ -2025,7 +2062,7 @@ mod tests {
         RateWindow, RewindDraft, RewindPoint, RewindScope, TaskId, Usage,
     };
 
-    use super::{App, Origin, Overlay};
+    use super::{App, AppEvent, Origin, PendingScreen};
     use crate::theme::Theme;
 
     fn test_origin() -> Origin {
@@ -2043,45 +2080,8 @@ mod tests {
             &Origin::remote("/srv/work".to_owned(), "box".to_owned()),
         );
         assert_eq!(app.cwd(), "box:/srv/work");
-        assert!(!app.pr_enabled);
-        assert!(app.git_workspace.is_none());
-    }
-
-    #[test]
-    fn thread_bound_event_updates_status_thread() {
-        let mut app = App::new(Theme::dark(), &test_origin());
-        assert!(app.thread_id.is_none());
-        app.on_engine(EngineEvent::ThreadBound { thread_id: 87 });
-        assert_eq!(app.thread_id, Some(87));
-        let rows = app.status_rows();
-        let thread = rows.iter().find(|row| row.label == "thread").unwrap();
-        assert_eq!(thread.value, "87");
-        let resume = rows.iter().find(|row| row.label == "resume").unwrap();
-        assert_eq!(resume.value, "goat code --resume 87");
-    }
-
-    #[test]
-    fn status_command_opens_status_overlay() {
-        let mut app = App::new(Theme::dark(), &test_origin());
-        assert!(matches!(app.overlay(), Overlay::None));
-        app.dispatch_slash_command("/status");
-        assert!(matches!(app.overlay(), Overlay::Status));
-    }
-
-    #[test]
-    fn status_rows_report_origin_session_and_client() {
-        let origin = Origin::local("/tmp/work".to_owned());
-        let origin = Origin {
-            session: Some(12),
-            client: Some(7),
-            ..origin
-        };
-        let app = App::new(Theme::dark(), &origin);
-        let rows = app.status_rows();
-        let session = rows.iter().find(|row| row.label == "session").unwrap();
-        assert_eq!(session.value, "#12 · client 7");
-        let target = rows.iter().find(|row| row.label == "target").unwrap();
-        assert_eq!(target.value, "local");
+        assert!(!app.git.pull_request_enabled);
+        assert!(app.git.workspace.is_none());
     }
 
     #[test]
@@ -2164,7 +2164,7 @@ mod tests {
     fn plan_proposed_opens_the_sheet_and_approve_resolves_it() {
         let mut app = App::new(Theme::dark(), &test_origin());
         proposed(&mut app);
-        assert!(matches!(app.overlay, Overlay::Plan(_)));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
         let ops = app.on_key(press(KeyCode::Char('a'), KeyModifiers::NONE));
         assert!(matches!(
             ops.as_slice(),
@@ -2173,7 +2173,7 @@ mod tests {
                 ..
             }]
         ));
-        assert!(matches!(app.overlay, Overlay::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -2198,7 +2198,7 @@ mod tests {
             ] => assert_eq!(feedback, "too big"),
             other => panic!("expected a reject with feedback, got {other:?}"),
         }
-        assert!(matches!(app.overlay, Overlay::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -2235,18 +2235,18 @@ mod tests {
         proposed(&mut app);
         let ops = app.on_key(press(KeyCode::Esc, KeyModifiers::NONE));
         assert!(ops.is_empty(), "esc must not send a decision");
-        assert!(matches!(app.overlay, Overlay::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
     fn leaving_plan_mode_closes_a_stale_sheet() {
         let mut app = App::new(Theme::dark(), &test_origin());
         proposed(&mut app);
-        app.on_engine(EngineEvent::ModeChanged {
+        app.update(AppEvent::Engine(EngineEvent::ModeChanged {
             mode: goat_protocol::Mode::Normal,
             plan_path: None,
-        });
-        assert!(matches!(app.overlay, Overlay::None));
+        }));
+        assert!(matches!(app.screens.active, PendingScreen::None));
         assert!(!app.plan_mode());
     }
 
@@ -2261,7 +2261,8 @@ mod tests {
     }
 
     fn user_lines(app: &App) -> usize {
-        app.transcript
+        app.viewport
+            .transcript
             .items
             .iter()
             .filter(|item| matches!(item, crate::transcript::Item::User(_)))
@@ -2278,7 +2279,7 @@ mod tests {
     #[test]
     fn sender_first_message_renders_once_on_echo() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        let ops = app.submit_text("hello".to_owned());
+        let ops = app.submit_text_with_attachments("hello".to_owned(), Vec::new());
         let id = submit_id(&ops);
         assert_eq!(user_lines(&app), 0, "no optimistic render");
         assert_eq!(app.turn.active, Some(id));
@@ -2307,14 +2308,14 @@ mod tests {
             attachments: Vec::new(),
         });
         assert_eq!(user_lines(&app), 1);
-        assert!(app.follow);
+        assert!(app.viewport.follow);
     }
 
     #[test]
     fn steering_echo_does_not_reset_agents() {
         let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::TaskStarted { id: TaskId(1) });
-        app.follow = false;
+        app.viewport.follow = false;
         app.on_engine(EngineEvent::UserMessage {
             id: TaskId(2),
             text: "mid turn".to_owned(),
@@ -2322,13 +2323,13 @@ mod tests {
             attachments: Vec::new(),
         });
         assert_eq!(user_lines(&app), 1);
-        assert!(!app.follow, "mid-turn echo does not force follow");
+        assert!(!app.viewport.follow, "mid-turn echo does not force follow");
     }
 
     #[test]
     fn in_flight_first_message_excluded_from_queued_labels() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        let ops = app.submit_text("hello".to_owned());
+        let ops = app.submit_text_with_attachments("hello".to_owned(), Vec::new());
         let _ = submit_id(&ops);
         assert!(app.queued_labels().is_empty());
     }
@@ -2337,14 +2338,14 @@ mod tests {
     fn queued_steering_message_shows_label() {
         let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::TaskStarted { id: TaskId(100) });
-        let _ = app.submit_text("next up".to_owned());
+        let _ = app.submit_text_with_attachments("next up".to_owned(), Vec::new());
         assert_eq!(app.queued_labels(), vec!["next up".to_owned()]);
     }
 
     #[test]
     fn first_message_then_immediate_interrupt_does_not_double_render() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        let ops = app.submit_text("hello".to_owned());
+        let ops = app.submit_text_with_attachments("hello".to_owned(), Vec::new());
         let id = submit_id(&ops);
         app.on_engine(EngineEvent::UserMessage {
             id,
@@ -2490,7 +2491,7 @@ mod tests {
         assert!(app.turn.active.is_some());
         assert!(app.turn.active_shell);
         assert!(matches!(
-            app.transcript.items.last(),
+            app.viewport.transcript.items.last(),
             Some(crate::transcript::Item::Shell { .. })
         ));
     }
@@ -2500,7 +2501,7 @@ mod tests {
         let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('!'), KeyModifiers::NONE));
         app.on_key(press(KeyCode::Char('/'), KeyModifiers::NONE));
-        assert!(!matches!(app.overlay, Overlay::Commands(_)));
+        assert!(matches!(app.screens.active, PendingScreen::None));
         app.composer.insert_str("usr/bin/true");
         let ops = app.submit();
         assert!(
@@ -2561,7 +2562,7 @@ mod tests {
         assert!(app.turn.active.is_none());
         assert!(!app.turn.active_shell);
         assert!(matches!(
-            app.transcript.items.last(),
+            app.viewport.transcript.items.last(),
             Some(crate::transcript::Item::Shell {
                 status: crate::transcript::ShellStatus::Done(output),
                 ..
@@ -2629,15 +2630,17 @@ mod tests {
     #[test]
     fn rewind_picker_selects_code_and_conversation() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        app.on_engine(EngineEvent::RewindPointsListed {
+        let listed = app.dispatch_slash_command("/rewind");
+        assert_eq!(listed, vec![Op::ListRewindPoints {}]);
+        app.update(AppEvent::Engine(EngineEvent::RewindPointsListed {
             points: vec![RewindPoint {
                 checkpoint_id: 7,
                 prompt: "change it".into(),
                 created_at: 1,
                 code_changes: true,
             }],
-        });
-        assert!(matches!(app.overlay, Overlay::Rewind(_)));
+        }));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
 
         let choose_point = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
         assert!(choose_point.is_empty());
@@ -2649,7 +2652,7 @@ mod tests {
                 scope: RewindScope::CodeAndConversation,
             }]
         );
-        assert!(matches!(app.overlay, Overlay::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -2695,16 +2698,16 @@ mod tests {
     #[test]
     fn scroll_follow_resets_on_submit() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        app.follow = false;
+        app.viewport.follow = false;
         app.composer.insert_str("hello");
         app.submit();
-        assert!(app.follow);
+        assert!(app.viewport.follow);
     }
 
     fn filled_app() -> App {
         let mut app = App::new(Theme::dark(), &test_origin());
         for i in 0..30 {
-            app.transcript.push_user(format!("message {i}"));
+            app.viewport.transcript.push_user(format!("message {i}"));
         }
         app.clamp_scroll(10, 80);
         app
@@ -2724,8 +2727,8 @@ mod tests {
     #[test]
     fn clamp_scroll_materializes_bottom_when_following() {
         let app = filled_app();
-        assert!(app.follow);
-        assert_eq!(app.scroll, app.content_height(80) - 10);
+        assert!(app.viewport.follow);
+        assert_eq!(app.viewport.scroll, app.content_height(80) - 10);
     }
 
     #[test]
@@ -2733,14 +2736,14 @@ mod tests {
         use crossterm::event::MouseEventKind;
         let mut app = filled_app();
         app.update(mouse(MouseEventKind::ScrollUp));
-        assert!(!app.follow);
+        assert!(!app.viewport.follow);
         app.clamp_scroll(10, 80);
-        assert!(!app.follow);
+        assert!(!app.viewport.follow);
         for _ in 0..40 {
             app.update(mouse(MouseEventKind::ScrollDown));
         }
         app.clamp_scroll(10, 80);
-        assert!(app.follow);
+        assert!(app.viewport.follow);
     }
 
     #[test]
@@ -2749,57 +2752,57 @@ mod tests {
         let mut app = filled_app();
         app.update(mouse(MouseEventKind::ScrollUp));
         app.clamp_scroll(10, 80);
-        let before = app.scroll;
+        let before = app.viewport.scroll;
         app.dispatch_slash_command("/model");
         app.update(mouse(MouseEventKind::ScrollUp));
-        assert_eq!(app.scroll, before);
+        assert_eq!(app.viewport.scroll, before);
     }
 
     #[test]
     fn home_and_end_jump_transcript_when_composer_empty() {
         let mut app = filled_app();
         app.on_key(press(KeyCode::Home, KeyModifiers::NONE));
-        assert_eq!(app.scroll, 0);
-        assert!(!app.follow);
+        assert_eq!(app.viewport.scroll, 0);
+        assert!(!app.viewport.follow);
         app.clamp_scroll(10, 80);
-        assert_eq!(app.scroll, 0);
+        assert_eq!(app.viewport.scroll, 0);
         app.on_key(press(KeyCode::End, KeyModifiers::NONE));
         app.clamp_scroll(10, 80);
-        assert!(app.follow);
-        assert_eq!(app.scroll, app.content_height(80) - 10);
+        assert!(app.viewport.follow);
+        assert_eq!(app.viewport.scroll, app.content_height(80) - 10);
     }
 
     #[test]
     fn page_up_scrolls_by_viewport_and_unfollows() {
         let mut app = filled_app();
-        let bottom = app.scroll;
+        let bottom = app.viewport.scroll;
         app.on_key(press(KeyCode::PageUp, KeyModifiers::NONE));
-        assert!(!app.follow);
-        assert_eq!(app.scroll, bottom - 9);
+        assert!(!app.viewport.follow);
+        assert_eq!(app.viewport.scroll, bottom - 9);
     }
 
     #[test]
     fn clear_command_empties_transcript_and_emits_clear() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        app.transcript.push_user("earlier message");
-        app.scroll = 9;
-        app.follow = false;
+        app.viewport.transcript.push_user("earlier message");
+        app.viewport.scroll = 9;
+        app.viewport.follow = false;
         app.composer.insert_str("/clear");
         let ops = app.submit();
         assert!(matches!(ops.as_slice(), [Op::Clear {}]));
-        assert!(app.transcript.items.is_empty());
-        assert_eq!(app.scroll, 0);
-        assert!(app.follow);
+        assert!(app.viewport.transcript.items.is_empty());
+        assert_eq!(app.viewport.scroll, 0);
+        assert!(app.viewport.follow);
     }
 
     #[test]
     fn clear_command_rebinds_even_while_active() {
         let mut app = App::new(Theme::dark(), &test_origin());
         app.turn.active = Some(TaskId(1));
-        app.transcript.push_user("in flight");
+        app.viewport.transcript.push_user("in flight");
         let ops = app.dispatch_slash_command("/clear");
         assert_eq!(ops, vec![Op::Clear {}]);
-        assert!(app.transcript.items.is_empty());
+        assert!(app.viewport.transcript.items.is_empty());
         assert!(app.turn.active.is_none());
     }
 
@@ -2809,7 +2812,7 @@ mod tests {
         app.composer.insert_str("/model");
         let ops = app.submit();
         assert!(ops.is_empty());
-        assert!(matches!(app.overlay, Overlay::Model(_)));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
     }
 
     #[test]
@@ -2818,7 +2821,7 @@ mod tests {
         app.composer.insert_str("/model");
         app.submit();
         app.on_key(press(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(matches!(app.overlay, Overlay::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -2831,7 +2834,7 @@ mod tests {
         app.submit();
         let ops = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(ops.as_slice(), [Op::SelectModel { .. }]));
-        assert!(matches!(app.overlay, Overlay::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -2861,7 +2864,7 @@ mod tests {
         app.submit();
         let ops = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
         assert!(ops.is_empty());
-        assert!(matches!(app.overlay, Overlay::Model(_)));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
     }
 
     #[test]
@@ -2893,8 +2896,11 @@ mod tests {
         let ops = app.submit();
         assert!(ops.is_empty());
         assert!(app.turn.active.is_none());
-        assert!(matches!(app.overlay, Overlay::Help));
-        assert!(app.transcript.items.is_empty());
+        assert!(matches!(
+            &app.screens.active,
+            PendingScreen::Screen(screen) if matches!(screen.placement(), goat_command::Placement::Overlay)
+        ));
+        assert!(app.viewport.transcript.items.is_empty());
     }
 
     #[test]
@@ -2949,10 +2955,7 @@ mod tests {
         let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.dispatch_slash_command("/effort");
         assert!(ops.is_empty());
-        match &app.overlay {
-            Overlay::Effort(p) => assert!(p.is_empty()),
-            _ => panic!("expected effort overlay"),
-        }
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
         assert!(app.toasts.is_empty());
     }
 
@@ -2970,13 +2973,13 @@ mod tests {
         select_model(&mut app, "openai", "gpt");
         let ops = app.dispatch_slash_command("/effort");
         assert!(ops.is_empty());
-        assert!(matches!(app.overlay, Overlay::Effort(_)));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
         app.on_key(press(KeyCode::Down, KeyModifiers::NONE));
         let ops = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
         assert!(
             matches!(ops.as_slice(), [Op::SelectModel { target }] if target.effort == Some(Effort::High))
         );
-        assert!(!matches!(app.overlay, Overlay::Effort(_)));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -3007,7 +3010,7 @@ mod tests {
         select_model(&mut app, "openai", "gpt");
         let ops = app.dispatch_slash_command("/effort max");
         assert!(ops.is_empty());
-        assert!(app.transcript.items.is_empty());
+        assert!(app.viewport.transcript.items.is_empty());
         assert_eq!(app.toasts.len(), 1);
     }
 
@@ -3022,7 +3025,7 @@ mod tests {
         });
         let ops = app.dispatch_slash_command("/model claude");
         assert!(matches!(ops.as_slice(), [Op::SelectModel { target }] if target.model == "claude"));
-        assert!(!matches!(app.overlay, Overlay::Model(_)));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -3045,7 +3048,7 @@ mod tests {
             matches!(ops.as_slice(), [Op::SelectModel { target }] if target.effort == Some(Effort::High)),
             "expected direct SelectModel, got {ops:?}"
         );
-        assert!(!matches!(app.overlay, Overlay::Effort(_)));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -3065,7 +3068,7 @@ mod tests {
             matches!(ops.as_slice(), [Op::SelectModel { target }] if target.provider == "anthropic" && target.model == "claude"),
             "expected direct SelectModel, got {ops:?}"
         );
-        assert!(matches!(app.overlay, Overlay::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
@@ -3080,7 +3083,7 @@ mod tests {
         let ops = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
         assert!(ops.is_empty(), "account choice defers selection");
         assert!(
-            matches!(app.overlay, Overlay::Account(_)),
+            matches!(app.screens.active, PendingScreen::Screen(_)),
             "expected light account panel, not a heavy picker"
         );
         app.on_key(press(KeyCode::Down, KeyModifiers::NONE));
@@ -3089,7 +3092,7 @@ mod tests {
             matches!(ops.as_slice(), [Op::SelectModel { target }] if target.account == "personal"),
             "expected the second account, got {ops:?}"
         );
-        assert!(matches!(app.overlay, Overlay::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     fn multi_account_entry(provider: &str, model: &str, accounts: &[&str]) -> ModelEntry {
@@ -3129,52 +3132,58 @@ mod tests {
             matches!(ops.as_slice(), [Op::SelectModel { target }] if target.model == "anthropic/claude"),
             "expected direct SelectModel, got {ops:?}"
         );
-        assert!(matches!(app.overlay, Overlay::None));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
     fn resume_requests_list_then_opens_picker() {
-        use goat_protocol::ThreadSummary;
+        use goat_protocol::ConversationSummary;
         let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.dispatch_slash_command("/resume");
-        assert!(matches!(ops.as_slice(), [Op::ListThreads {}]));
-        let ops = app.on_engine(EngineEvent::ThreadsListed {
-            threads: vec![ThreadSummary {
+        assert!(matches!(ops.as_slice(), [Op::ListConversations {}]));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
+        let ops = app.update(AppEvent::Engine(EngineEvent::ConversationsListed {
+            conversations: vec![ConversationSummary {
                 id: 7,
                 title: "first chat".to_owned(),
                 model: "openai/gpt".to_owned(),
                 updated_at: 1,
                 live: false,
             }],
-        });
+        }));
         assert!(ops.is_empty());
-        assert!(matches!(app.overlay, Overlay::Thread(_)));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
     }
 
     #[test]
     fn resume_index_resolves_to_resume_op() {
-        use goat_protocol::ThreadSummary;
+        use goat_protocol::ConversationSummary;
         let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.dispatch_slash_command("/resume 1");
-        assert!(matches!(ops.as_slice(), [Op::ListThreads {}]));
-        let ops = app.on_engine(EngineEvent::ThreadsListed {
-            threads: vec![ThreadSummary {
+        assert!(matches!(ops.as_slice(), [Op::ListConversations {}]));
+        let ops = app.update(AppEvent::Engine(EngineEvent::ConversationsListed {
+            conversations: vec![ConversationSummary {
                 id: 42,
                 title: "chat".to_owned(),
                 model: "openai/gpt".to_owned(),
                 updated_at: 1,
                 live: false,
             }],
-        });
-        assert!(matches!(ops.as_slice(), [Op::Resume { thread_id: 42 }]));
-        assert!(!matches!(app.overlay, Overlay::Thread(_)));
+        }));
+        assert!(matches!(
+            ops.as_slice(),
+            [Op::Resume {
+                conversation_id: 42
+            }]
+        ));
+        assert!(matches!(app.screens.active, PendingScreen::None));
     }
 
     #[test]
     fn conversation_restored_rebuilds_transcript() {
         use goat_protocol::{ToolCall, ToolCallId, ToolOutcome, TranscriptEntry};
         let mut app = App::new(Theme::dark(), &test_origin());
-        app.transcript.push_user("stale");
+        app.viewport.transcript.push_user("stale");
         app.on_engine(EngineEvent::ConversationRestored {
             target: ModelTarget {
                 provider: "anthropic".to_owned(),
@@ -3208,13 +3217,13 @@ mod tests {
                 },
             ],
         });
-        assert_eq!(app.transcript.items.len(), 3);
+        assert_eq!(app.viewport.transcript.items.len(), 3);
         assert!(matches!(
-            &app.transcript.items[0],
+            &app.viewport.transcript.items[0],
             crate::transcript::Item::User(_)
         ));
         assert!(matches!(
-            &app.transcript.items[2],
+            &app.viewport.transcript.items[2],
             crate::transcript::Item::Tool { .. }
         ));
         assert_eq!(
@@ -3252,7 +3261,7 @@ mod tests {
             subagent_type: "explore".to_owned(),
             label: "look into it".to_owned(),
         });
-        assert_eq!(app.subagent_runs().len(), 1);
+        assert_eq!(app.subagent_runs.as_slice().len(), 1);
         app.on_engine(EngineEvent::ToolStarted {
             id: child,
             call: ToolCall {
@@ -3273,7 +3282,7 @@ mod tests {
             },
         });
 
-        assert_eq!(app.transcript.items.len(), 2);
+        assert_eq!(app.viewport.transcript.items.len(), 2);
         assert_eq!(app.subagent_runs[0].transcript.items.len(), 1);
         assert!(app.subagent_status().is_some_and(|s| s.contains("explore")));
 
@@ -3285,7 +3294,7 @@ mod tests {
         assert!(app.subagent_status().is_none());
 
         assert_eq!(app.transcript().items.len(), 2);
-        app.open_run(0);
+        app.open_run(1);
         assert!(matches!(app.main_view, super::MainView::Subagent(_)));
         assert_eq!(app.transcript().items.len(), 1);
         app.close_run_selector();
@@ -3328,7 +3337,7 @@ mod tests {
                 },
             });
         }
-        assert_eq!(app.transcript.items.len(), 1);
+        assert_eq!(app.viewport.transcript.items.len(), 1);
         assert!(app.working_state().is_none());
 
         let child = TaskId(8);
@@ -3382,7 +3391,8 @@ mod tests {
             },
         });
 
-        let crate::transcript::Item::SubagentGroup(group) = &app.transcript.items[0] else {
+        let crate::transcript::Item::SubagentGroup(group) = &app.viewport.transcript.items[0]
+        else {
             panic!("expected agent group")
         };
         assert_eq!(group.members[0].tools, 1);
@@ -3418,7 +3428,7 @@ mod tests {
     fn ask_defers_while_modal_open_then_promotes_on_close() {
         use goat_protocol::{AskQuestion, ToolCallId};
         let mut app = App::new(Theme::dark(), &test_origin());
-        app.overlay = Overlay::Help;
+        app.dispatch_slash_command("/help");
         app.on_engine(EngineEvent::AskStarted {
             id: TaskId(1),
             call: ToolCallId(9),
@@ -3428,19 +3438,43 @@ mod tests {
                 multiple: false,
             }],
         });
-        assert!(matches!(app.overlay, Overlay::Help));
-        assert!(app.pending.ask.is_some());
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
+        assert!(app.screens.waiting.is_some());
 
-        app.overlay = Overlay::None;
-        app.promote_pending_ask();
-        assert!(matches!(app.overlay, Overlay::Ask(..)));
-        assert!(app.pending.ask.is_none());
+        app.screens.active = PendingScreen::None;
+        app.promote_waiting_screen();
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
+        assert!(app.screens.waiting.is_none());
+    }
+
+    #[test]
+    fn dismissed_waiting_ask_is_removed_before_promotion() {
+        use goat_protocol::{AskQuestion, ToolCallId};
+        let mut app = App::new(Theme::dark(), &test_origin());
+        app.dispatch_slash_command("/help");
+        app.update(AppEvent::Engine(EngineEvent::AskStarted {
+            id: TaskId(1),
+            call: ToolCallId(9),
+            questions: vec![AskQuestion {
+                question: "ok?".to_owned(),
+                options: Vec::new(),
+                multiple: false,
+            }],
+        }));
+        assert!(app.screens.waiting.is_some());
+
+        app.update(AppEvent::Engine(EngineEvent::AskDismissed {
+            id: TaskId(1),
+            call: ToolCallId(9),
+        }));
+        assert!(app.screens.waiting.is_none());
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
     }
 
     #[test]
     fn ctx_and_rate_limit_indicators_use_active_model() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        app.model = Some(ModelTarget {
+        app.catalog.selected = Some(ModelTarget {
             provider: "anthropic".to_owned(),
             model: "sonnet".to_owned(),
             account: "default".to_owned(),
@@ -3495,7 +3529,7 @@ mod tests {
     #[test]
     fn usage_attributes_to_event_model_not_current() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        app.model = Some(ModelTarget {
+        app.catalog.selected = Some(ModelTarget {
             provider: "anthropic".to_owned(),
             model: "sonnet".to_owned(),
             account: "default".to_owned(),
@@ -3538,11 +3572,11 @@ mod tests {
     fn presence_updates_window_count_and_marks_dirty() {
         let mut app = App::new(Theme::dark(), &test_origin());
         app.take_dirty();
-        assert_eq!(app.window_count, 1);
+        assert_eq!(app.session.window_count, 1);
 
         let ops = app.update(super::AppEvent::Presence(3));
         assert!(ops.is_empty());
-        assert_eq!(app.window_count, 3);
+        assert_eq!(app.session.window_count, 3);
         assert!(app.take_dirty());
     }
 
@@ -3599,12 +3633,12 @@ mod tests {
     fn process_output_is_captured_into_a_process_run() {
         let mut app = App::new(Theme::dark(), &test_origin());
         process_started(&mut app, 1, "pnpm dev");
-        assert_eq!(app.process_runs().len(), 1);
+        assert_eq!(app.process_runs.as_slice().len(), 1);
         app.on_engine(EngineEvent::ProcessOutput {
             process: goat_protocol::RunId(1),
             chunk: "listening on :3000".to_owned(),
         });
-        let item = app.process_runs()[0]
+        let item = app.process_runs.as_slice()[0]
             .transcript
             .items
             .first()
@@ -3623,8 +3657,8 @@ mod tests {
             process: goat_protocol::RunId(7),
             chunk: "early line".to_owned(),
         });
-        assert_eq!(app.process_runs().len(), 1);
-        assert_eq!(app.process_runs()[0].id, goat_protocol::RunId(7));
+        assert_eq!(app.process_runs.as_slice().len(), 1);
+        assert_eq!(app.process_runs.as_slice()[0].id, goat_protocol::RunId(7));
     }
 
     #[test]
@@ -3640,15 +3674,15 @@ mod tests {
         process_started(&mut app, 1, "pnpm dev");
         let targets = app.run_targets();
         assert_eq!(targets.len(), 2);
-        assert!(matches!(targets[0], super::RunTarget::Subagent(_)));
-        assert!(matches!(targets[1], super::RunTarget::Process(_)));
+        assert!(matches!(targets[0], super::MainView::Subagent(_)));
+        assert!(matches!(targets[1], super::MainView::Process(_)));
     }
 
     #[test]
     fn selecting_a_process_swaps_the_main_view() {
         let mut app = App::new(Theme::dark(), &test_origin());
         process_started(&mut app, 1, "pnpm dev");
-        app.open_run(0);
+        app.open_run(1);
         assert!(matches!(app.main_view, super::MainView::Process(_)));
         app.close_run_selector();
         assert!(matches!(app.main_view, super::MainView::Live));
@@ -3658,9 +3692,9 @@ mod tests {
     fn reset_agents_keeps_process_runs_and_view() {
         let mut app = App::new(Theme::dark(), &test_origin());
         process_started(&mut app, 1, "pnpm dev");
-        app.open_run(0);
+        app.open_run(1);
         app.reset_subagents();
-        assert_eq!(app.process_runs().len(), 1);
+        assert_eq!(app.process_runs.as_slice().len(), 1);
         assert!(matches!(app.main_view, super::MainView::Process(_)));
     }
 
@@ -3673,9 +3707,9 @@ mod tests {
             code: Some(1),
             reason: goat_protocol::ProcessExitReason::Natural,
         });
-        assert_eq!(app.process_runs().len(), 1);
+        assert_eq!(app.process_runs.as_slice().len(), 1);
         assert_eq!(
-            app.process_runs()[0].state,
+            app.process_runs.as_slice()[0].state,
             goat_protocol::ProcessState::Exited
         );
         app.on_engine(EngineEvent::ProcessListChanged {
@@ -3687,7 +3721,7 @@ mod tests {
                 exit_code: Some(1),
             }],
         });
-        assert_eq!(app.process_runs().len(), 1);
+        assert_eq!(app.process_runs.as_slice().len(), 1);
     }
 
     #[test]
@@ -3695,16 +3729,16 @@ mod tests {
         let mut app = App::new(Theme::dark(), &test_origin());
         process_started(&mut app, 1, "pnpm dev");
         app.on_engine(EngineEvent::ProcessListChanged { processes: vec![] });
-        assert!(app.process_runs().is_empty());
+        assert!(app.process_runs.as_slice().is_empty());
     }
 
     #[test]
     fn reconcile_retains_viewed_run_even_if_absent() {
         let mut app = App::new(Theme::dark(), &test_origin());
         process_started(&mut app, 1, "pnpm dev");
-        app.open_run(0);
+        app.open_run(1);
         app.on_engine(EngineEvent::ProcessListChanged { processes: vec![] });
-        assert_eq!(app.process_runs().len(), 1);
+        assert_eq!(app.process_runs.as_slice().len(), 1);
         assert!(matches!(app.main_view, super::MainView::Process(_)));
     }
 
@@ -3733,16 +3767,48 @@ mod tests {
             "opening the selector must not commit to a run"
         );
 
-        app.move_run_cursor(1);
-        assert_eq!(app.run_selector(), Some(1));
+        app.move_run_cursor(2);
+        assert_eq!(app.run_selector(), Some(2));
         assert!(
             matches!(app.main_view, super::MainView::Live),
             "browsing must not swap the body under the user"
         );
 
-        app.open_run(1);
+        app.open_run(2);
         assert!(matches!(app.main_view, super::MainView::Process(_)));
-        assert_eq!(app.run_selector(), None, "opening closes the list");
+        assert_eq!(
+            app.run_selector(),
+            Some(2),
+            "selecting keeps the list open on the chosen row"
+        );
+    }
+
+    #[test]
+    fn selecting_main_row_restores_the_live_view() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        subagent_started(&mut app, 1, "explore");
+        app.move_run_cursor(1);
+        app.open_run(1);
+        assert!(matches!(app.main_view, super::MainView::Subagent(_)));
+
+        app.move_run_cursor(0);
+        app.open_run(0);
+        assert!(matches!(app.main_view, super::MainView::Live));
+        assert_eq!(app.run_selector(), Some(0));
+    }
+
+    #[test]
+    fn down_past_the_last_row_closes_the_selector() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::new(Theme::dark(), &test_origin());
+        subagent_started(&mut app, 1, "explore");
+        app.move_run_cursor(1);
+        assert_eq!(app.run_selector(), Some(1));
+
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.run_selector(), None);
+        assert!(matches!(app.main_view, super::MainView::Live));
     }
 
     #[test]
@@ -3757,7 +3823,12 @@ mod tests {
 
         app.reset_subagents();
 
-        let ids: Vec<TaskId> = app.subagent_runs().iter().map(|run| run.id).collect();
+        let ids: Vec<TaskId> = app
+            .subagent_runs
+            .as_slice()
+            .iter()
+            .map(|run| run.id)
+            .collect();
         assert_eq!(
             ids,
             vec![running],
@@ -3773,12 +3844,12 @@ mod tests {
             id: finished,
             ok: true,
         });
-        app.open_run(0);
+        app.open_run(1);
         assert!(matches!(app.main_view, super::MainView::Subagent(_)));
 
         app.reset_subagents();
 
-        assert!(app.subagent_runs().is_empty());
+        assert!(app.subagent_runs.as_slice().is_empty());
         assert!(matches!(app.main_view, super::MainView::Live));
     }
 

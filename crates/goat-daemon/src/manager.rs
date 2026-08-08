@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use goat_auth::CredentialStore;
 use goat_code_store::CodeStore as Store;
 use goat_core::Session;
-use goat_engine::GoatAgent;
+use goat_engine::CodingEngine;
 use goat_protocol::Op;
 use goat_wire::{ClientId, ResumeMode, ServerFrame, SessionId, SessionInfo};
 use tokio::sync::Mutex;
@@ -18,7 +18,7 @@ const WALK_CAP: usize = 4000;
 use crate::session::{LiveSession, SessionInner, SessionTable};
 
 #[derive(Clone)]
-pub struct Manager {
+pub struct CodeSessionHub {
     inner: Arc<ManagerInner>,
 }
 
@@ -27,7 +27,7 @@ struct ManagerInner {
     user_providers: goat_config::UserProviders,
     db_path: PathBuf,
     sessions: Mutex<SessionTable>,
-    threads: Mutex<HashMap<i64, SessionId>>,
+    conversations: Mutex<HashMap<i64, SessionId>>,
     next_session: AtomicU64,
     next_client: AtomicU64,
     remote: Mutex<Option<RemoteControls>>,
@@ -51,7 +51,7 @@ struct RemoteControls {
     advertised: Vec<String>,
 }
 
-impl Manager {
+impl CodeSessionHub {
     pub fn new(
         auth_path: PathBuf,
         user_providers: goat_config::UserProviders,
@@ -63,7 +63,7 @@ impl Manager {
                 user_providers,
                 db_path,
                 sessions: Mutex::new(HashMap::new()),
-                threads: Mutex::new(HashMap::new()),
+                conversations: Mutex::new(HashMap::new()),
                 next_session: AtomicU64::new(1),
                 next_client: AtomicU64::new(1),
                 remote: Mutex::new(None),
@@ -219,14 +219,14 @@ impl Manager {
             .to_string()
     }
 
-    async fn register_thread(&self, thread_id: i64, session: SessionId) {
-        let mut threads = self.inner.threads.lock().await;
-        thread_register(&mut threads, thread_id, session);
+    async fn register_conversation(&self, conversation_id: i64, session: SessionId) {
+        let mut conversations = self.inner.conversations.lock().await;
+        conversation_register(&mut conversations, conversation_id, session);
     }
 
-    async fn unregister_thread_if_owner(&self, session: SessionId) {
-        let mut threads = self.inner.threads.lock().await;
-        thread_unregister_owner(&mut threads, session);
+    async fn unregister_conversation_if_owner(&self, session: SessionId) {
+        let mut conversations = self.inner.conversations.lock().await;
+        conversation_unregister_owner(&mut conversations, session);
     }
 
     pub(crate) async fn open_or_attach(
@@ -235,18 +235,18 @@ impl Manager {
         resume: ResumeMode,
     ) -> Result<(SessionId, String), String> {
         let normalized = Self::normalize_cwd(&cwd);
-        let thread_id = self.resolve_thread_id(&normalized, resume).await;
-        if let Some(tid) = thread_id {
+        let conversation_id = self.resolve_conversation_id(&normalized, resume).await;
+        if let Some(tid) = conversation_id {
             let existing = {
-                let threads = self.inner.threads.lock().await;
-                threads.get(&tid).copied()
+                let conversations = self.inner.conversations.lock().await;
+                conversations.get(&tid).copied()
             };
             if let Some(existing) = existing {
                 return Ok((existing, self.live_cwd(existing, &normalized).await));
             }
         }
         let id = self
-            .open_session(cwd, normalized.clone(), thread_id)
+            .open_session(cwd, normalized.clone(), conversation_id)
             .await?;
         Ok((id, self.live_cwd(id, &normalized).await))
     }
@@ -262,14 +262,14 @@ impl Manager {
         }
     }
 
-    async fn resolve_thread_id(&self, normalized: &str, resume: ResumeMode) -> Option<i64> {
+    async fn resolve_conversation_id(&self, normalized: &str, resume: ResumeMode) -> Option<i64> {
         match resume {
             ResumeMode::New {} => None,
-            ResumeMode::Thread { thread_id } => Some(thread_id),
+            ResumeMode::Conversation { conversation_id } => Some(conversation_id),
             ResumeMode::Latest {} => {
                 let store = Store::open(&self.inner.db_path).await.ok()?;
                 store
-                    .latest_thread_in(normalized.to_owned())
+                    .latest_conversation_in(normalized.to_owned())
                     .await
                     .ok()
                     .flatten()
@@ -282,7 +282,7 @@ impl Manager {
         &self,
         cwd: PathBuf,
         normalized: String,
-        thread_id: Option<i64>,
+        conversation_id: Option<i64>,
     ) -> Result<SessionId, String> {
         let credentials = CredentialStore::new(self.inner.auth_path.clone());
         let store = Store::open(&self.inner.db_path)
@@ -295,7 +295,7 @@ impl Manager {
             goat_providers::DEFAULT_ACCOUNT,
             self.inner.meter.get().cloned(),
         );
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store,
             credentials,
@@ -327,8 +327,8 @@ impl Manager {
             tokens: 0,
             open_asks: 0,
             live_processes: 0,
-            thread_id,
-            awaits_restore: thread_id.is_some(),
+            conversation_id,
+            awaits_restore: conversation_id.is_some(),
             ready,
             resurrected: std::collections::HashSet::new(),
             pending_attaches: 0,
@@ -351,13 +351,13 @@ impl Manager {
 
         let id = {
             let mut table = self.inner.sessions.lock().await;
-            if let Some(tid) = thread_id {
-                let mut threads = self.inner.threads.lock().await;
-                if let Some(existing) = threads.get(&tid).copied() {
+            if let Some(tid) = conversation_id {
+                let mut conversations = self.inner.conversations.lock().await;
+                if let Some(existing) = conversations.get(&tid).copied() {
                     let _ = ops.send(Op::Shutdown {}).await;
                     return Ok(existing);
                 }
-                threads.insert(tid, id);
+                conversations.insert(tid, id);
             }
             table.insert(
                 id,
@@ -370,8 +370,8 @@ impl Manager {
 
         spawn_pump(self.clone(), id, inner, events, handle, store_for_pump);
 
-        if let Some(thread_id) = thread_id {
-            let _ = ops.send(Op::Resume { thread_id }).await;
+        if let Some(conversation_id) = conversation_id {
+            let _ = ops.send(Op::Resume { conversation_id }).await;
         }
         Ok(id)
     }
@@ -484,7 +484,7 @@ impl Manager {
             table.remove(&session);
             ops
         };
-        self.unregister_thread_if_owner(session).await;
+        self.unregister_conversation_if_owner(session).await;
         let _ = ops.send(Op::Shutdown {}).await;
         tracing::info!(session = session.0, "evicted idle session with no windows");
     }
@@ -638,13 +638,13 @@ impl Manager {
             table.get(&session).cloned()
         };
         let live = live.ok_or("unknown session")?;
-        let (ops, thread_id, rewritten) = {
+        let (ops, conversation_id, rewritten) = {
             let mut inner = live.inner.lock().await;
             let rewritten = rewrite_resurrected_answer(&mut inner, &op);
-            (inner.ops.clone(), inner.thread_id, rewritten)
+            (inner.ops.clone(), inner.conversation_id, rewritten)
         };
         if let Some((call, message)) = rewritten {
-            if let Some(tid) = thread_id {
+            if let Some(tid) = conversation_id {
                 let store = Store::open(&self.inner.db_path)
                     .await
                     .map_err(|e| format!("store: {e}"))?;
@@ -715,11 +715,11 @@ impl Manager {
         name.starts_with('.') || name == "target" || name == "node_modules"
     }
 
-    pub(crate) async fn list_threads(&self, cwd: &str) -> Vec<goat_wire::ThreadInfo> {
+    pub(crate) async fn list_conversations(&self, cwd: &str) -> Vec<goat_wire::ConversationInfo> {
         let normalized = Self::normalize_cwd(std::path::Path::new(cwd));
         let live: HashMap<i64, SessionId> = {
-            let threads = self.inner.threads.lock().await;
-            threads.clone()
+            let conversations = self.inner.conversations.lock().await;
+            conversations.clone()
         };
         let mut states: HashMap<SessionId, goat_wire::SessionLiveState> = HashMap::new();
         {
@@ -734,12 +734,12 @@ impl Manager {
         let Ok(store) = Store::open(&self.inner.db_path).await else {
             return Vec::new();
         };
-        let Ok(threads) = store.list_threads_in(normalized, 100).await else {
+        let Ok(conversations) = store.list_conversations_in(normalized, 100).await else {
             return Vec::new();
         };
-        threads
+        conversations
             .into_iter()
-            .map(|t| thread_info(t, &live, &states))
+            .map(|t| conversation_info(t, &live, &states))
             .collect()
     }
 
@@ -770,7 +770,7 @@ impl Manager {
             table.remove(&session)
         };
         let live = live.ok_or("unknown session")?;
-        self.unregister_thread_if_owner(session).await;
+        self.unregister_conversation_if_owner(session).await;
         let ops = {
             let inner = live.inner.lock().await;
             inner.ops.clone()
@@ -784,7 +784,7 @@ impl Manager {
             let mut table = self.inner.sessions.lock().await;
             table.remove(&session);
         }
-        self.unregister_thread_if_owner(session).await;
+        self.unregister_conversation_if_owner(session).await;
     }
 }
 
@@ -833,7 +833,7 @@ fn broadcast_presence(inner: &mut SessionInner, clients: Vec<ClientId>) {
 }
 
 fn spawn_pump(
-    manager: Manager,
+    manager: CodeSessionHub,
     session: SessionId,
     inner: Arc<Mutex<SessionInner>>,
     mut events: mpsc::Receiver<goat_protocol::Event>,
@@ -842,13 +842,13 @@ fn spawn_pump(
 ) {
     tokio::spawn(async move {
         while let Some(event) = events.recv().await {
-            let bound = matches!(event, goat_protocol::Event::ThreadBound { .. });
+            let bound = matches!(event, goat_protocol::Event::ConversationBound { .. });
             let persist = {
                 let mut guard = inner.lock().await;
                 guard.record_and_fanout(event)
             };
             if let Some(persist) = persist {
-                let now = Manager::now_ms();
+                let now = CodeSessionHub::now_ms();
                 match persist.prompt {
                     Some(crate::session::PromptAction::Open {
                         call_id,
@@ -858,7 +858,7 @@ fn spawn_pump(
                     }) => {
                         let _ = store
                             .record_open_prompt(
-                                persist.thread_id,
+                                persist.conversation_id,
                                 call_id,
                                 kind,
                                 payload,
@@ -868,13 +868,17 @@ fn spawn_pump(
                             .await;
                     }
                     Some(crate::session::PromptAction::Close { call_id }) => {
-                        let _ = store.clear_open_prompt(persist.thread_id, call_id).await;
+                        let _ = store
+                            .clear_open_prompt(persist.conversation_id, call_id)
+                            .await;
                     }
                     None => {}
                 }
                 if bound {
-                    manager.register_thread(persist.thread_id, session).await;
-                    resurrect_open_prompts(&inner, &store, persist.thread_id).await;
+                    manager
+                        .register_conversation(persist.conversation_id, session)
+                        .await;
+                    resurrect_open_prompts(&inner, &store, persist.conversation_id).await;
                 }
             }
             if inner.lock().await.evictable() {
@@ -893,7 +897,11 @@ fn spawn_pump(
     });
 }
 
-async fn resurrect_open_prompts(inner: &Arc<Mutex<SessionInner>>, store: &Store, thread_id: i64) {
+async fn resurrect_open_prompts(
+    inner: &Arc<Mutex<SessionInner>>,
+    store: &Store,
+    conversation_id: i64,
+) {
     let already_live = {
         let guard = inner.lock().await;
         guard.open_asks > 0
@@ -901,7 +909,7 @@ async fn resurrect_open_prompts(inner: &Arc<Mutex<SessionInner>>, store: &Store,
     if already_live {
         return;
     }
-    let Ok(prompts) = store.open_prompts(thread_id).await else {
+    let Ok(prompts) = store.open_prompts(conversation_id).await else {
         return;
     };
     for prompt in prompts {
@@ -929,15 +937,15 @@ async fn resurrect_open_prompts(inner: &Arc<Mutex<SessionInner>>, store: &Store,
     }
 }
 
-fn thread_info(
-    t: goat_code_store::Thread,
+fn conversation_info(
+    t: goat_code_store::Conversation,
     live: &HashMap<i64, SessionId>,
     states: &HashMap<SessionId, goat_wire::SessionLiveState>,
-) -> goat_wire::ThreadInfo {
+) -> goat_wire::ConversationInfo {
     let live_session = live.get(&t.id).copied();
     let state = live_session.and_then(|s| states.get(&s).copied());
-    goat_wire::ThreadInfo {
-        thread_id: t.id,
+    goat_wire::ConversationInfo {
+        conversation_id: t.id,
         cwd: t.cwd,
         title: t.title,
         model: t.model,
@@ -947,19 +955,23 @@ fn thread_info(
     }
 }
 
-fn thread_register(threads: &mut HashMap<i64, SessionId>, thread_id: i64, session: SessionId) {
-    threads.entry(thread_id).or_insert(session);
+fn conversation_register(
+    conversations: &mut HashMap<i64, SessionId>,
+    conversation_id: i64,
+    session: SessionId,
+) {
+    conversations.entry(conversation_id).or_insert(session);
 }
 
-fn thread_unregister_owner(threads: &mut HashMap<i64, SessionId>, session: SessionId) {
-    threads.retain(|_, owner| *owner != session);
+fn conversation_unregister_owner(conversations: &mut HashMap<i64, SessionId>, session: SessionId) {
+    conversations.retain(|_, owner| *owner != session);
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        HashMap, Manager, SessionId, spawn_subscriber_bridge, thread_register,
-        thread_unregister_owner,
+        CodeSessionHub, HashMap, SessionId, conversation_register, conversation_unregister_owner,
+        spawn_subscriber_bridge,
     };
     use goat_wire::ServerFrame;
     use tokio::sync::mpsc;
@@ -984,14 +996,16 @@ mod tests {
     #[test]
     fn a_flat_listing_stays_one_level_deep() {
         let dir = tree();
-        let listed = Manager::list_directory(&dir.path().display().to_string(), false).unwrap();
+        let listed =
+            CodeSessionHub::list_directory(&dir.path().display().to_string(), false).unwrap();
         assert_eq!(names(&listed), vec![".git", "README.md", "src", "target"]);
     }
 
     #[test]
     fn a_recursive_listing_walks_and_skips_noise() {
         let dir = tree();
-        let listed = Manager::list_directory(&dir.path().display().to_string(), true).unwrap();
+        let listed =
+            CodeSessionHub::list_directory(&dir.path().display().to_string(), true).unwrap();
         assert_eq!(
             names(&listed),
             vec![
@@ -1006,37 +1020,37 @@ mod tests {
 
     #[test]
     fn an_unreadable_root_is_an_error() {
-        assert!(Manager::list_directory("/definitely/not/here", true).is_err());
+        assert!(CodeSessionHub::list_directory("/definitely/not/here", true).is_err());
     }
 
     #[test]
     fn register_is_first_writer_wins() {
-        let mut threads: HashMap<i64, SessionId> = HashMap::new();
-        thread_register(&mut threads, 42, SessionId(1));
-        thread_register(&mut threads, 42, SessionId(2));
-        assert_eq!(threads.get(&42), Some(&SessionId(1)));
+        let mut conversations: HashMap<i64, SessionId> = HashMap::new();
+        conversation_register(&mut conversations, 42, SessionId(1));
+        conversation_register(&mut conversations, 42, SessionId(2));
+        assert_eq!(conversations.get(&42), Some(&SessionId(1)));
     }
 
     #[test]
     fn unregister_only_removes_owned_entries() {
-        let mut threads: HashMap<i64, SessionId> = HashMap::new();
-        threads.insert(7, SessionId(1));
-        threads.insert(8, SessionId(2));
-        thread_unregister_owner(&mut threads, SessionId(1));
-        assert_eq!(threads.get(&7), None);
-        assert_eq!(threads.get(&8), Some(&SessionId(2)));
+        let mut conversations: HashMap<i64, SessionId> = HashMap::new();
+        conversations.insert(7, SessionId(1));
+        conversations.insert(8, SessionId(2));
+        conversation_unregister_owner(&mut conversations, SessionId(1));
+        assert_eq!(conversations.get(&7), None);
+        assert_eq!(conversations.get(&8), Some(&SessionId(2)));
     }
 
     #[test]
     fn unregister_keeps_entry_reassigned_to_other_session() {
-        let mut threads: HashMap<i64, SessionId> = HashMap::new();
-        threads.insert(7, SessionId(2));
-        thread_unregister_owner(&mut threads, SessionId(1));
-        assert_eq!(threads.get(&7), Some(&SessionId(2)));
+        let mut conversations: HashMap<i64, SessionId> = HashMap::new();
+        conversations.insert(7, SessionId(2));
+        conversation_unregister_owner(&mut conversations, SessionId(1));
+        assert_eq!(conversations.get(&7), Some(&SessionId(2)));
     }
 
-    fn sample_thread(id: i64) -> goat_code_store::Thread {
-        goat_code_store::Thread {
+    fn sample_conversation(id: i64) -> goat_code_store::Conversation {
+        goat_code_store::Conversation {
             id,
             cwd: "/tmp".to_owned(),
             title: Some("t".to_owned()),
@@ -1050,26 +1064,26 @@ mod tests {
     }
 
     #[test]
-    fn thread_info_marks_live_threads() {
+    fn conversation_info_marks_live_conversations() {
         let mut live: HashMap<i64, SessionId> = HashMap::new();
         live.insert(5, SessionId(9));
         let mut states: HashMap<SessionId, goat_wire::SessionLiveState> = HashMap::new();
         states.insert(SessionId(9), goat_wire::SessionLiveState::Active {});
 
-        let info = super::thread_info(sample_thread(5), &live, &states);
+        let info = super::conversation_info(sample_conversation(5), &live, &states);
         assert_eq!(info.live, Some(SessionId(9)));
         assert_eq!(info.state, Some(goat_wire::SessionLiveState::Active {}));
     }
 
     #[test]
-    fn thread_info_marks_dead_threads_with_no_live_session() {
+    fn conversation_info_marks_dead_conversations_with_no_live_session() {
         let live: HashMap<i64, SessionId> = HashMap::new();
         let states: HashMap<SessionId, goat_wire::SessionLiveState> = HashMap::new();
 
-        let info = super::thread_info(sample_thread(5), &live, &states);
+        let info = super::conversation_info(sample_conversation(5), &live, &states);
         assert_eq!(info.live, None);
         assert_eq!(info.state, None);
-        assert_eq!(info.thread_id, 5);
+        assert_eq!(info.conversation_id, 5);
     }
     #[tokio::test]
     async fn subscriber_bridge_sends_backlog_before_live() {

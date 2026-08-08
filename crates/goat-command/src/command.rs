@@ -1,4 +1,4 @@
-use crate::{CommandEffect, CommandInvocation, CommandShape, CommandSpec};
+use crate::{CommandEffect, CommandInvocation, CommandShape, CommandSpec, Session};
 
 pub trait Command: Send + Sync {
     fn name(&self) -> &'static str;
@@ -9,7 +9,7 @@ pub trait Command: Send + Sync {
     fn shape(&self) -> CommandShape {
         CommandShape::Empty
     }
-    fn run(&self, invocation: CommandInvocation) -> CommandEffect;
+    fn run(&self, invocation: CommandInvocation, session: &mut dyn Session) -> CommandEffect;
     fn spec(&self) -> CommandSpec {
         CommandSpec {
             name: self.name().to_owned(),

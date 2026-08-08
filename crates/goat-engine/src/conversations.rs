@@ -1,14 +1,14 @@
 use goat_code_store::CodeStore as Store;
 use goat_protocol::{
-    Effort, Event, ModelTarget, NotifyKind, RewindDraft, RewindPoint, RewindScope, SkillInfo,
-    ThreadSummary, ToolCall, ToolCallId, ToolOutcome, TranscriptEntry,
+    ConversationSummary, Effort, Event, ModelTarget, NotifyKind, RewindDraft, RewindPoint,
+    RewindScope, SkillInfo, ToolCall, ToolCallId, ToolOutcome, TranscriptEntry,
 };
 use goat_provider::{ContentBlock, Message, MessageRole};
 use goat_tool::{ToolBatchCall, ToolHistoryGroup};
 use tokio::sync::mpsc;
 
 use crate::{
-    Ctx,
+    SessionContext,
     prompt::build_system_prompt,
     tools_exec::{call_display, summarize_line},
 };
@@ -31,62 +31,64 @@ pub(crate) fn parse_content_blocks(body: &str) -> Vec<ContentBlock> {
     })
 }
 
-pub(crate) async fn resolve_thread_cwd(
-    ctx: &Ctx,
-    stored_thread: Option<i64>,
+pub(crate) async fn resolve_conversation_cwd(
+    ctx: &SessionContext,
+    stored_conversation: Option<i64>,
 ) -> std::path::PathBuf {
-    match stored_thread {
+    match stored_conversation {
         Some(tid) => ctx
             .store
-            .get_thread(tid)
+            .get_conversation(tid)
             .await
             .ok()
             .flatten()
-            .map(|thread| thread.cwd)
+            .map(|conversation| conversation.cwd)
             .filter(|cwd| !cwd.is_empty())
             .map_or_else(|| ctx.cwd.clone(), std::path::PathBuf::from),
         None => ctx.cwd.clone(),
     }
 }
 
-pub(crate) async fn handle_list_threads(
+pub(crate) async fn handle_list_conversations(
     store: &Store,
     cwd: &std::path::Path,
     events: &mpsc::Sender<Event>,
 ) {
     let cwd = cwd.display().to_string();
-    let threads = match store.list_threads_in(cwd, 50).await {
-        Ok(threads) => threads,
+    let conversations = match store.list_conversations_in(cwd, 50).await {
+        Ok(conversations) => conversations,
         Err(err) => {
-            tracing::warn!(error = %err, "failed to list threads for picker");
+            tracing::warn!(error = %err, "failed to list conversations for picker");
             Vec::new()
         }
     };
-    let summaries = threads
+    let summaries = conversations
         .into_iter()
-        .map(|thread| ThreadSummary {
-            model: format!("{}/{}", thread.provider, thread.model),
-            title: thread
+        .map(|conversation| ConversationSummary {
+            model: format!("{}/{}", conversation.provider, conversation.model),
+            title: conversation
                 .title
                 .filter(|title| !title.is_empty())
-                .unwrap_or_else(|| format!("{}/{}", thread.provider, thread.model)),
-            id: thread.id,
-            updated_at: thread.updated_at,
+                .unwrap_or_else(|| format!("{}/{}", conversation.provider, conversation.model)),
+            id: conversation.id,
+            updated_at: conversation.updated_at,
             live: false,
         })
         .collect();
     let _ = events
-        .send(Event::ThreadsListed { threads: summaries })
+        .send(Event::ConversationsListed {
+            conversations: summaries,
+        })
         .await;
 }
 
 pub(crate) async fn handle_rename(
     store: &Store,
-    thread_id: Option<i64>,
+    conversation_id: Option<i64>,
     title: String,
     events: &mpsc::Sender<Event>,
 ) {
-    let Some(tid) = thread_id else {
+    let Some(tid) = conversation_id else {
         let _ = events
             .send(Event::Notify {
                 kind: NotifyKind::Error,
@@ -95,7 +97,7 @@ pub(crate) async fn handle_rename(
             .await;
         return;
     };
-    match store.update_thread_title(tid, title.clone()).await {
+    match store.update_conversation_title(tid, title.clone()).await {
         Ok(()) => {
             let _ = events
                 .send(Event::Notify {
@@ -105,7 +107,7 @@ pub(crate) async fn handle_rename(
                 .await;
         }
         Err(err) => {
-            tracing::warn!(%err, "failed to rename thread");
+            tracing::warn!(%err, "failed to rename conversation");
             let _ = events
                 .send(Event::Notify {
                     kind: NotifyKind::Error,
@@ -116,15 +118,15 @@ pub(crate) async fn handle_rename(
     }
 }
 
-pub(crate) async fn handle_list_rewind_points(ctx: &Ctx, thread_id: Option<i64>) {
+pub(crate) async fn handle_list_rewind_points(ctx: &SessionContext, conversation_id: Option<i64>) {
     let events = &ctx.events;
-    let Some(thread_id) = thread_id else {
+    let Some(conversation_id) = conversation_id else {
         let _ = events
             .send(Event::RewindPointsListed { points: Vec::new() })
             .await;
         return;
     };
-    let stored = match ctx.checkpoints.points(thread_id).await {
+    let stored = match ctx.checkpoints.points(conversation_id).await {
         Ok(points) => points,
         Err(err) => {
             tracing::warn!(%err, "failed to list rewind checkpoints");
@@ -154,17 +156,17 @@ pub(crate) async fn handle_list_rewind_points(ctx: &Ctx, thread_id: Option<i64>)
 }
 
 pub(crate) async fn handle_rewind(
-    ctx: &Ctx,
+    ctx: &SessionContext,
     checkpoint_id: i64,
     scope: RewindScope,
     state: &mut crate::SessionState,
 ) {
     let events = &ctx.events;
-    let Some(thread_id) = state.thread_id else {
+    let Some(conversation_id) = state.conversation_id else {
         rewind_error(events, "no active conversation to rewind").await;
         return;
     };
-    let points = match ctx.checkpoints.points(thread_id).await {
+    let points = match ctx.checkpoints.points(conversation_id).await {
         Ok(points) => points,
         Err(err) => {
             tracing::warn!(%err, "failed to read rewind checkpoint");
@@ -191,13 +193,23 @@ pub(crate) async fn handle_rewind(
     );
     let mut report = None;
     if restore_code {
-        let Some(thread) = ctx.store.get_thread(thread_id).await.ok().flatten() else {
+        let Some(conversation) = ctx
+            .store
+            .get_conversation(conversation_id)
+            .await
+            .ok()
+            .flatten()
+        else {
             rewind_error(events, "could not resolve the checkpoint workspace").await;
             return;
         };
         match ctx
             .checkpoints
-            .restore(thread_id, checkpoint_id, std::path::Path::new(&thread.cwd))
+            .restore(
+                conversation_id,
+                checkpoint_id,
+                std::path::Path::new(&conversation.cwd),
+            )
             .await
         {
             Ok(restored) => report = Some(restored),
@@ -211,8 +223,8 @@ pub(crate) async fn handle_rewind(
     if restore_conversation {
         if let Err(err) = ctx
             .store
-            .set_thread_head(
-                thread_id,
+            .set_conversation_head(
+                conversation_id,
                 checkpoint.parent_message_id,
                 crate::persist::now_ms(),
             )
@@ -223,7 +235,7 @@ pub(crate) async fn handle_rewind(
             return;
         }
         ctx.checkpoints.clear();
-        handle_resume(ctx, thread_id, state).await;
+        handle_resume(ctx, conversation_id, state).await;
         let _ = events
             .send(Event::ConversationRewound {
                 draft: RewindDraft {
@@ -472,17 +484,24 @@ fn rebuild_entries(
     (entries, parsed)
 }
 
-pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate::SessionState) {
+pub(crate) async fn handle_resume(
+    ctx: &crate::SessionContext,
+    tid: i64,
+    state: &mut crate::SessionState,
+) {
     let store = &ctx.store;
     let skills: &[SkillInfo] = &ctx.skills;
     let tools = &ctx.tools;
     let instructions = ctx.instructions.as_deref();
     let date = ctx.date.as_str();
     let events = &ctx.events;
-    let thread = match store.get_thread(tid).await {
-        Ok(Some(thread)) => thread,
+    let conversation = match store.get_conversation(tid).await {
+        Ok(Some(conversation)) => conversation,
         Ok(None) => {
-            tracing::warn!(thread_id = tid, "resume requested for unknown thread");
+            tracing::warn!(
+                conversation_id = tid,
+                "resume requested for unknown conversation"
+            );
             let _ = events
                 .send(Event::Notify {
                     kind: NotifyKind::Error,
@@ -492,7 +511,7 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
             return;
         }
         Err(err) => {
-            tracing::warn!(thread_id = tid, error = %err, "failed to read thread for resume");
+            tracing::warn!(conversation_id = tid, error = %err, "failed to read conversation for resume");
             let _ = events
                 .send(Event::Notify {
                     kind: NotifyKind::Error,
@@ -503,15 +522,15 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
         }
     };
     let new_target = ModelTarget {
-        provider: thread.provider.clone(),
-        model: thread.model.clone(),
-        account: thread.account.clone(),
-        effort: thread.effort.as_deref().and_then(Effort::parse),
+        provider: conversation.provider.clone(),
+        model: conversation.model.clone(),
+        account: conversation.account.clone(),
+        effort: conversation.effort.as_deref().and_then(Effort::parse),
     };
     let messages = match store.get_messages(tid).await {
         Ok(messages) => messages,
         Err(err) => {
-            tracing::warn!(thread_id = tid, error = %err, "failed to read messages for resume");
+            tracing::warn!(conversation_id = tid, error = %err, "failed to read messages for resume");
             let _ = events
                 .send(Event::Notify {
                     kind: NotifyKind::Error,
@@ -521,10 +540,10 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
             return;
         }
     };
-    let compactions = match store.compactions_for_thread(tid).await {
+    let compactions = match store.compactions_for_conversation(tid).await {
         Ok(compactions) => compactions,
         Err(err) => {
-            tracing::warn!(thread_id = tid, error = %err, "failed to read compactions for resume");
+            tracing::warn!(conversation_id = tid, error = %err, "failed to read compactions for resume");
             let _ = events
                 .send(Event::Notify {
                     kind: NotifyKind::Error,
@@ -544,7 +563,7 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
         })
         .collect();
     let tool_summaries: std::collections::HashMap<(i64, String), String> = match store
-        .tool_call_summaries_for_thread(tid)
+        .tool_call_summaries_for_conversation(tid)
         .await
     {
         Ok(rows) => rows
@@ -552,7 +571,7 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
             .map(|row| ((row.turn_id, row.call_id), row.summary))
             .collect(),
         Err(err) => {
-            tracing::warn!(thread_id = tid, error = %err, "failed to read tool summaries for resume");
+            tracing::warn!(conversation_id = tid, error = %err, "failed to read tool summaries for resume");
             std::collections::HashMap::new()
         }
     };
@@ -561,7 +580,7 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
         Message::text(
             MessageRole::System,
             build_system_prompt(
-                std::path::Path::new(&thread.cwd),
+                std::path::Path::new(&conversation.cwd),
                 skills,
                 instructions,
                 date,
@@ -590,9 +609,13 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
     state.conversation.replace(new_history);
     state.tracker.invalidate();
     let context_tokens = Some(state.tracker.estimate(state.conversation.messages(), &[]));
-    state.thread_id = Some(tid);
+    state.conversation_id = Some(tid);
     state.target = Some(new_target.clone());
-    let _ = events.send(Event::ThreadBound { thread_id: tid }).await;
+    let _ = events
+        .send(Event::ConversationBound {
+            conversation_id: tid,
+        })
+        .await;
     let _ = events
         .send(Event::ConversationRestored {
             target: new_target,
@@ -612,13 +635,16 @@ pub(crate) async fn handle_resume(ctx: &crate::Ctx, tid: i64, state: &mut crate:
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn handle_resume_latest(ctx: &crate::Ctx, state: &mut crate::SessionState) {
+pub(crate) async fn handle_resume_latest(
+    ctx: &crate::SessionContext,
+    state: &mut crate::SessionState,
+) {
     let store = &ctx.store;
     let events = &ctx.events;
     let cwd_key = ctx.cwd.display().to_string();
-    match store.latest_thread_in(cwd_key).await {
-        Ok(Some(thread)) => {
-            handle_resume(ctx, thread.id, state).await;
+    match store.latest_conversation_in(cwd_key).await {
+        Ok(Some(conversation)) => {
+            handle_resume(ctx, conversation.id, state).await;
         }
         Ok(None) => {
             let _ = events
@@ -629,7 +655,7 @@ pub(crate) async fn handle_resume_latest(ctx: &crate::Ctx, state: &mut crate::Se
                 .await;
         }
         Err(err) => {
-            tracing::warn!(error = %err, "failed to look up latest thread for resume");
+            tracing::warn!(error = %err, "failed to look up latest conversation for resume");
             let _ = events
                 .send(Event::Notify {
                     kind: NotifyKind::Info,

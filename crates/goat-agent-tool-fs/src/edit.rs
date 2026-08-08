@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use goat_agent_tool::{
-    ToolCall, ToolContext, ToolFactory, ToolHandler, ToolName, ToolOutput, ToolSpec,
+    ToolCall, ToolCaller, ToolFactory, ToolHandler, ToolName, ToolOutput, ToolSpec,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -26,7 +26,7 @@ struct EditArgs {
 
 #[async_trait]
 impl ToolHandler for EditTool {
-    async fn call(&self, ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let args = match serde_json::from_value::<EditArgs>(call.arguments) {
             Ok(args) => args,
             Err(e) => return common::error(format!("invalid edit input: {e}")),

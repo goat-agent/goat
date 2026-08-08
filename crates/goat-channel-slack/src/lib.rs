@@ -1,11 +1,11 @@
 mod api;
 mod channel;
 mod config;
+mod conversation;
 mod handle;
 mod inbound;
 mod mrkdwn;
 mod socket;
-mod thread;
 
 use std::sync::Arc;
 use std::time::Duration;

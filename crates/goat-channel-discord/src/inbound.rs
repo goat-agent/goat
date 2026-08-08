@@ -5,8 +5,8 @@ use std::time::Duration;
 use chrono::Utc;
 use goat_agent_command::{CommandArgs, CommandSpec};
 use goat_types::{
-    AgentId, Attachment, AttachmentSource, CommandCall, CommandName, IncomingMessage, InstanceId,
-    MessageId, Surface, ThreadId, UserHandle,
+    AgentId, Attachment, AttachmentSource, CommandCall, CommandName, ConversationId,
+    IncomingMessage, InstanceId, MessageId, Surface, UserHandle,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -80,7 +80,7 @@ pub(crate) async fn gateway_loop(
                         Some(g) => format!("g:{}:c:{}", g, mc.channel_id),
                         None => format!("dm:{}", mc.channel_id),
                     };
-                    let conv = ThreadId::new(ID.clone(), instance, external);
+                    let conv = ConversationId::new(ID.clone(), instance, external);
                     let (surface, parent) =
                         classify_surface(&http, &mut channel_cache, mc.guild_id, mc.channel_id)
                             .await;
@@ -104,7 +104,7 @@ pub(crate) async fn gateway_loop(
                     let msg = IncomingMessage {
                         id: MessageId(mc.id.to_string()),
                         agent,
-                        thread: conv,
+                        conversation: conv,
                         from: UserHandle {
                             external: mc.author.id.to_string(),
                             display: Some(mc.author.name.clone()),
@@ -267,7 +267,7 @@ async fn interaction_to_incoming(
         IncomingMessage {
             id: MessageId(interaction.id.to_string()),
             agent,
-            thread: ThreadId::new(ID.clone(), instance, external),
+            conversation: ConversationId::new(ID.clone(), instance, external),
             from: UserHandle {
                 external: author.id.to_string(),
                 display: Some(author.name.clone()),

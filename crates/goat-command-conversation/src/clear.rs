@@ -11,7 +11,11 @@ impl Command for Clear {
         "start a new conversation"
     }
 
-    fn run(&self, _invocation: CommandInvocation) -> CommandEffect {
-        CommandEffect::ClearConversation
+    fn run(
+        &self,
+        _invocation: CommandInvocation,
+        _session: &mut dyn goat_command::Session,
+    ) -> CommandEffect {
+        CommandEffect::Dispatch(vec![goat_protocol::Op::Clear {}])
     }
 }

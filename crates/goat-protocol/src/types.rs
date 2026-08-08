@@ -373,7 +373,7 @@ pub struct ModelEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct ThreadSummary {
+pub struct ConversationSummary {
     pub id: i64,
     pub title: String,
     pub model: String,

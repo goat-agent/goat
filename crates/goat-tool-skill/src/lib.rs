@@ -1,4 +1,4 @@
-use goat_tool::{Tool, ToolContext, ToolError, ToolErrorClass, ToolFuture, ToolOutput};
+use goat_tool::{Tool, ToolError, ToolErrorClass, ToolFuture, ToolOutput, ToolSandbox};
 use serde::Deserialize;
 
 pub struct SkillTool;
@@ -46,7 +46,7 @@ impl Tool for SkillTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async move {
             let args: Input = serde_json::from_str(input)?;
             let skills = goat_skill::load(&ctx.cwd);
@@ -65,7 +65,7 @@ pub fn all() -> Vec<Box<dyn Tool>> {
 #[cfg(test)]
 mod tests {
     use super::SkillTool;
-    use goat_tool::{Tool, ToolContext, ToolErrorClass};
+    use goat_tool::{Tool, ToolErrorClass, ToolSandbox};
 
     fn write_project_skill(dir: &std::path::Path, name: &str, contents: &str) {
         let skill_dir = dir.join(goat_config::PROJECT_SKILLS_SUBDIR).join(name);
@@ -81,7 +81,7 @@ mod tests {
             "demo",
             "---\ndescription: a demo\n---\nThe full instructions.",
         );
-        let ctx = ToolContext::new(dir.path()).unwrap();
+        let ctx = ToolSandbox::new(dir.path()).unwrap();
         let out = SkillTool.run(r#"{"name":"demo"}"#, &ctx).await.unwrap();
         assert_eq!(out.as_text().unwrap(), "The full instructions.");
     }
@@ -89,7 +89,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_skill_errors() {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = ToolContext::new(dir.path()).unwrap();
+        let ctx = ToolSandbox::new(dir.path()).unwrap();
         let result = SkillTool.run(r#"{"name":"missing"}"#, &ctx).await;
         assert!(matches!(
             result,
