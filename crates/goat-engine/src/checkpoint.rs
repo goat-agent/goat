@@ -8,7 +8,7 @@ use goat_code_store::{
     CheckpointFileVersion, CodeCheckpoint, CodeStore as Store, CreatedMessage, NewCheckpointFile,
     NewCodeCheckpoint,
 };
-use goat_tool::ToolContext;
+use goat_tool::ToolSandbox;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FileImage {
@@ -84,7 +84,7 @@ impl CheckpointTracker {
     pub(crate) async fn capture_path(
         &self,
         raw: &str,
-        tool_ctx: &ToolContext,
+        tool_ctx: &ToolSandbox,
     ) -> Result<(), String> {
         let checkpoint_id = self.active.load(Ordering::Acquire);
         if checkpoint_id == 0 {
@@ -303,7 +303,7 @@ async fn set_file_mode(_path: &Path, _mode: Option<u32>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use goat_code_store::{CodeStore, NewMessage, NewThread};
-    use goat_tool::ToolContext;
+    use goat_tool::ToolSandbox;
 
     use super::CheckpointTracker;
 
@@ -349,7 +349,7 @@ mod tests {
             .begin(thread_id, &message, "change files".into(), &[], &root)
             .await
             .unwrap();
-        let context = ToolContext::new(&root).unwrap();
+        let context = ToolSandbox::new(&root).unwrap();
         tracker
             .capture_path("existing.txt", &context)
             .await
@@ -386,7 +386,7 @@ mod tests {
             .begin(thread_id, &message, "change mode".into(), &[], &root)
             .await
             .unwrap();
-        let context = ToolContext::new(&root).unwrap();
+        let context = ToolSandbox::new(&root).unwrap();
         tracker.capture_path("script", &context).await.unwrap();
         tokio::fs::write(&path, b"after").await.unwrap();
         tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
@@ -421,7 +421,7 @@ mod tests {
             .begin(thread_id, &message, "change link".into(), &[], &root)
             .await
             .unwrap();
-        let context = ToolContext::new(&root).unwrap();
+        let context = ToolSandbox::new(&root).unwrap();
         tracker.capture_path("linked", &context).await.unwrap();
         tokio::fs::write(&path, b"after").await.unwrap();
 

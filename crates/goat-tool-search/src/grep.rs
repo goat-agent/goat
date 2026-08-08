@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 use std::io::BufRead as _;
 
 use goat_tool::{
-    Tool, ToolContext, ToolError, ToolFuture, ToolOutput,
+    Tool, ToolError, ToolFuture, ToolOutput, ToolSandbox,
     path::{blocked_path, relative_display},
 };
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
@@ -59,7 +59,7 @@ impl Tool for GrepTool {
         goat_protocol::ToolDisplay::primary(goat_tool::display::call_sig("Grep", &refs))
     }
 
-    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async move {
             let args: Input = serde_json::from_str(input)?;
             let root = match &args.path {
@@ -222,10 +222,10 @@ fn normalize_line(line: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::GrepTool;
-    use goat_tool::{Tool, ToolContext};
+    use goat_tool::{Tool, ToolSandbox};
 
-    fn ctx(dir: &std::path::Path) -> ToolContext {
-        ToolContext::new(dir).unwrap()
+    fn ctx(dir: &std::path::Path) -> ToolSandbox {
+        ToolSandbox::new(dir).unwrap()
     }
 
     #[tokio::test]

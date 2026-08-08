@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use goat_search_provider::{
     SearchProvider, SearchRequest, SearchResult, SearchResults, SearchTarget,
 };
-use goat_tool::{Tool, ToolContext, ToolError, ToolFuture, ToolOutput};
+use goat_tool::{Tool, ToolError, ToolFuture, ToolOutput, ToolSandbox};
 use serde::Deserialize;
 
 const DEFAULT_MAX_RESULTS: usize = 8;
@@ -152,7 +152,7 @@ impl Tool for WebSearchTool {
         })
     }
 
-    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async move {
             let args: Input = serde_json::from_str(input)?;
             let max = args

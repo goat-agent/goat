@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use goat_agent_tool::{
-    ToolCall, ToolContext, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
+    ToolCall, ToolCaller, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
 };
 use goat_daemon::Manager;
 use serde::Deserialize;
@@ -27,7 +27,7 @@ struct CodeArgs {
 
 #[async_trait]
 impl ToolHandler for CodeTool {
-    async fn call(&self, _ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, _ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let args: CodeArgs = match serde_json::from_value(call.arguments) {
             Ok(a) => a,
             Err(e) => return ToolOutput::error(format!("invalid code_task input: {e}")),

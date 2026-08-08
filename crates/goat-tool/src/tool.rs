@@ -3,7 +3,7 @@ use std::{any::Any, future::Future, pin::Pin};
 use goat_protocol::{TaskId, ToolCallId, ToolDisplay, ToolOutcome, TranscriptEntry};
 use tokio_util::sync::CancellationToken;
 
-use crate::{context::ToolContext, display, error::ToolError};
+use crate::{context::ToolSandbox, display, error::ToolError};
 
 pub struct ToolImage {
     pub media_type: String,
@@ -130,11 +130,11 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn parameters(&self) -> serde_json::Value;
-    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolContext) -> ToolFuture<'a>;
+    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a>;
     fn invoke<'a>(
         &'a self,
         input: &'a str,
-        ctx: &'a ToolContext,
+        ctx: &'a ToolSandbox,
         _invocation: ToolInvocation<'a>,
     ) -> ToolFuture<'a> {
         self.run(input, ctx)

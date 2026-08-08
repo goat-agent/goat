@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use goat_agent_tool::{
-    ToolCall, ToolContent, ToolContext, ToolHandler, ToolName, ToolOutput, ToolSpec,
+    ToolCall, ToolCaller, ToolContent, ToolHandler, ToolName, ToolOutput, ToolSpec,
 };
 use goat_agent_tool_shell::deny_reason;
 use serde::Deserialize;
@@ -49,7 +49,7 @@ struct PtyArgs {
 
 #[async_trait]
 impl ToolHandler for PtyTool {
-    async fn call(&self, _ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, _ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let args: PtyArgs = match serde_json::from_value(call.arguments) {
             Ok(a) => a,
             Err(e) => return ToolOutput::error(format!("invalid input: {e}")),

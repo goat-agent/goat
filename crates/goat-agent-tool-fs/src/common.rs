@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use goat_agent_tool::{ToolContext, ToolOutput, ToolReadSnapshot};
+use goat_agent_tool::{ToolCaller, ToolOutput, ToolReadSnapshot};
 
 pub const MAX_READ_BYTES: u64 = 2 * 1024 * 1024;
 pub const DEFAULT_READ_LINES: usize = 2_000;
@@ -12,12 +12,12 @@ pub const DEFAULT_LIST_LIMIT: usize = 100;
 pub const MAX_LIST_LIMIT: usize = 1_000;
 pub const MAX_MATCHES: usize = 1_000;
 
-pub fn existing_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf, String> {
+pub fn existing_path(ctx: &ToolCaller, path: &Path) -> Result<PathBuf, String> {
     let resolved = ctx.resolve_path(path).map_err(|e| e.to_string())?;
     fs::canonicalize(&resolved).map_err(|e| format!("invalid path {}: {e}", resolved.display()))
 }
 
-pub fn writable_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf, String> {
+pub fn writable_path(ctx: &ToolCaller, path: &Path) -> Result<PathBuf, String> {
     ctx.resolve_path(path).map_err(|e| e.to_string())
 }
 
@@ -47,7 +47,7 @@ pub fn snapshot(path: &Path, content: &str, complete: bool) -> Result<ToolReadSn
 }
 
 pub fn store_snapshot(
-    ctx: &ToolContext,
+    ctx: &ToolCaller,
     path: PathBuf,
     snap: ToolReadSnapshot,
 ) -> Result<(), String> {
@@ -60,7 +60,7 @@ pub fn store_snapshot(
 }
 
 pub fn require_fresh_complete_read(
-    ctx: &ToolContext,
+    ctx: &ToolCaller,
     path: &Path,
     content: &str,
 ) -> Result<(), String> {
@@ -85,7 +85,7 @@ pub fn require_fresh_complete_read(
 }
 
 pub fn update_complete_snapshot(
-    ctx: &ToolContext,
+    ctx: &ToolCaller,
     path: &Path,
     content: &str,
 ) -> Result<(), String> {

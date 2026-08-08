@@ -7,7 +7,7 @@ use goat_integration::IntegrationBinding;
 use goat_integration_mcp::{CachedTool, DenyRules, McpIntegration, McpService, ToolDisposition};
 use goat_mcp::McpToolResult;
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolContext, ToolError, ToolFuture, ToolImage, ToolOutput};
+use goat_tool::{Tool, ToolSandbox, ToolError, ToolFuture, ToolImage, ToolOutput};
 use serde_json::Value;
 
 pub async fn load(
@@ -141,7 +141,7 @@ impl Tool for IntegrationToolAdapter {
         self.parameters.clone()
     }
 
-    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async move {
             let arguments = arguments_from(input)?;
             let binding = IntegrationBinding::from_config(self.connection.clone());

@@ -325,7 +325,7 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
 - **A remote client never sends its own cwd.** `ServerFrame::SessionOpened` carries the cwd the
   daemon actually normalized, the client records it as that remote's `last_dir`, and the next
   `goat code --remote <name>` reuses it (`--dir` overrides). Sending the local cwd would open a
-  session on a path that does not exist on the daemon host, which `goat-tool`'s `ToolContext`
+  session on a path that does not exist on the daemon host, which `goat-tool`'s `ToolSandbox`
   then fails on for every call. `-w` is refused for remote targets because worktrees are local git.
 - `goat-client` is transport-agnostic: `Link::{Local,Remote}` dials either a unix socket or
   mTLS+WebSocket and hands back the same `Sink<ClientFrame>`/`Stream<ServerFrame>` pair, so nothing

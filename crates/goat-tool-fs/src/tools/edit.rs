@@ -1,5 +1,5 @@
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolContext, ToolFuture, ToolOutput, display};
+use goat_tool::{Tool, ToolFuture, ToolOutput, ToolSandbox, display};
 use serde::Deserialize;
 
 use crate::{error::FsError, tools::relative_display};
@@ -53,7 +53,7 @@ impl Tool for EditTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async move {
             let args: Input = serde_json::from_str(input)?;
             let resolved = ctx.resolve(&args.path)?;
@@ -148,10 +148,10 @@ fn diff_summary(old: &str, new: &str, replaced: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::EditTool;
-    use goat_tool::{Tool, ToolContext, ToolErrorClass};
+    use goat_tool::{Tool, ToolErrorClass, ToolSandbox};
 
-    fn ctx(dir: &std::path::Path) -> ToolContext {
-        ToolContext::new(dir).unwrap()
+    fn ctx(dir: &std::path::Path) -> ToolSandbox {
+        ToolSandbox::new(dir).unwrap()
     }
 
     #[tokio::test]

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use goat_agent_tool::{
-    ToolCall, ToolContent, ToolContext, ToolFactory, ToolHandler, ToolName, ToolOutput, ToolSpec,
+    ToolCall, ToolCaller, ToolContent, ToolFactory, ToolHandler, ToolName, ToolOutput, ToolSpec,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -32,7 +32,7 @@ struct ShellArgs {
 
 #[async_trait]
 impl ToolHandler for ShellTool {
-    async fn call(&self, ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let args = match serde_json::from_value::<ShellArgs>(call.arguments) {
             Ok(args) => args,
             Err(e) => return ToolOutput::error(format!("invalid shell input: {e}")),
@@ -207,8 +207,8 @@ mod tests {
     use super::*;
     use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
 
-    fn ctx(root: PathBuf) -> ToolContext {
-        ToolContext {
+    fn ctx(root: PathBuf) -> ToolCaller {
+        ToolCaller {
             agent: AgentId::new(),
             thread: ThreadId::new(ChannelId::new("test"), InstanceId::new(), "x"),
             goat_root: root,

@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 
 use goat_protocol::{Event, InputAttachment, Op, TaskId};
 use goat_provider::{ContentBlock, Message, MessageRole, Provider, ToolDefinition};
-use goat_tool::{SandboxPolicy, ToolContext, ToolRegistry};
+use goat_tool::{SandboxPolicy, ToolRegistry, ToolSandbox};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -58,7 +58,7 @@ enum ShellEnd {
 }
 
 async fn run_shell_command(tools: &ToolRegistry, command: &str, cwd: &std::path::Path) -> String {
-    let tool_ctx = match ToolContext::new(cwd) {
+    let tool_ctx = match ToolSandbox::new(cwd) {
         Ok(tool_ctx) => tool_ctx,
         Err(err) => return err.to_string(),
     };

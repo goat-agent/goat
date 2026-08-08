@@ -1,8 +1,8 @@
 use goat_protocol::{Event, ToolCall, ToolCallId, ToolDisplay, ToolImageData, ToolOutcome};
 use goat_provider::{ContentBlock, Provider, ToolDefinition};
 use goat_tool::{
-    ToolBatchCall, ToolBatchInvocation, ToolContent, ToolContext, ToolDefinitionContext,
-    ToolInvocation, ToolOutput, ToolRegistry,
+    ToolBatchCall, ToolBatchInvocation, ToolContent, ToolDefinitionContext, ToolInvocation,
+    ToolOutput, ToolRegistry, ToolSandbox,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -89,7 +89,7 @@ struct RegularToolCall<'a> {
     host: &'a (dyn std::any::Any + Send + Sync),
     name: &'a str,
     input_json: &'a str,
-    tool_ctx: &'a ToolContext,
+    tool_ctx: &'a ToolSandbox,
     token: &'a CancellationToken,
 }
 
@@ -149,7 +149,7 @@ async fn execute_tool(
     run: &Run<'_>,
     env: &LoopEnv,
     prep: &Prepared<'_>,
-    tool_ctx: &ToolContext,
+    tool_ctx: &ToolSandbox,
     token: &CancellationToken,
 ) -> ToolExecResult {
     let mutation_path = ctx
@@ -277,7 +277,7 @@ pub(crate) async fn run_tool_batch(
     env: &LoopEnv,
     pending_calls: &[(String, String, String)],
     call_seq: &mut u64,
-    tool_ctx: &ToolContext,
+    tool_ctx: &ToolSandbox,
     token: &CancellationToken,
 ) -> ToolBatchResult {
     let mut prepared: Vec<Prepared> = Vec::with_capacity(pending_calls.len());

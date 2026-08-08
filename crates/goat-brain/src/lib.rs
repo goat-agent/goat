@@ -8,7 +8,7 @@ use futures::{StreamExt, stream};
 use goat_agent_command::{CommandOutput, CommandRegistry};
 use goat_agent_config::AgentCard;
 use goat_agent_tool::{
-    ToolCall, ToolContext, ToolOutput, ToolReadState, ToolRegistry, selector_allows,
+    ToolCall, ToolCaller, ToolOutput, ToolReadState, ToolRegistry, selector_allows,
     validate_tool_selectors,
 };
 use goat_bus::{EventBus, EventFilter};
@@ -1288,7 +1288,7 @@ impl Brain {
                 .await;
             return output;
         }
-        let ctx = ToolContext {
+        let ctx = ToolCaller {
             agent: self.agent,
             thread: conv.clone(),
             goat_root: self.goat_root.clone(),

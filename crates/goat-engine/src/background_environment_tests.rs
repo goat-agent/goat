@@ -2,14 +2,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use goat_protocol::Event;
-use goat_tool::{Tool, ToolContext};
+use goat_tool::{Tool, ToolSandbox};
 use goat_tool_shell::BashTool;
 use tokio::sync::{Notify, mpsc};
 
 #[tokio::test]
 async fn foreground_and_background_bash_receive_the_same_environment() {
     let cwd = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(cwd.path()).unwrap();
+    let context = ToolSandbox::new(cwd.path()).unwrap();
     let foreground = BashTool
         .run(r#"{"command":"env | sort | cksum"}"#, &context)
         .await

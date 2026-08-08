@@ -8,7 +8,7 @@ use std::{
 
 use goat_protocol::{TaskId, ToolCallId, ToolDisplay};
 use goat_tool::{
-    Tool, ToolContext, ToolDefinitionContext, ToolError, ToolFuture, ToolInvocation, ToolOutput,
+    Tool, ToolDefinitionContext, ToolError, ToolFuture, ToolInvocation, ToolOutput, ToolSandbox,
 };
 
 const SLUG_MAX_LEN: usize = 48;
@@ -54,14 +54,14 @@ impl Tool for ProposePlanTool {
         })
     }
 
-    fn run<'a>(&'a self, _input: &'a str, _ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, _input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async { Err(ToolError::execution("plan invocation is unavailable")) })
     }
 
     fn invoke<'a>(
         &'a self,
         _input: &'a str,
-        _ctx: &'a ToolContext,
+        _ctx: &'a ToolSandbox,
         invocation: ToolInvocation<'a>,
     ) -> ToolFuture<'a> {
         Box::pin(async move {

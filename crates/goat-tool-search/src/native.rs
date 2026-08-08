@@ -1,7 +1,7 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolContext, ToolError, ToolFuture, ToolInvocation, ToolOutput};
+use goat_tool::{Tool, ToolError, ToolFuture, ToolInvocation, ToolOutput, ToolSandbox};
 
 pub struct NativeSearchRequest {
     pub query: String,
@@ -49,7 +49,7 @@ impl Tool for NativeWebSearchTool {
         })
     }
 
-    fn run<'a>(&'a self, _input: &'a str, _ctx: &'a ToolContext) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, _input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async {
             Err(ToolError::execution(
                 "native search invocation is unavailable",
@@ -60,7 +60,7 @@ impl Tool for NativeWebSearchTool {
     fn invoke<'a>(
         &'a self,
         input: &'a str,
-        _ctx: &'a ToolContext,
+        _ctx: &'a ToolSandbox,
         invocation: ToolInvocation<'a>,
     ) -> ToolFuture<'a> {
         Box::pin(async move {

@@ -17,12 +17,12 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use crate::{edit, glob, grep, read};
-    use goat_agent_tool::{ToolCall, ToolContext, ToolHandler, ToolName, ToolOutput};
+    use goat_agent_tool::{ToolCall, ToolCaller, ToolHandler, ToolName, ToolOutput};
     use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
     use serde_json::json;
 
-    fn ctx(root: PathBuf) -> ToolContext {
-        ToolContext {
+    fn ctx(root: PathBuf) -> ToolCaller {
+        ToolCaller {
             agent: AgentId::from_slug("dev"),
             thread: ThreadId::new(ChannelId::new("test"), InstanceId::new(), "x"),
             goat_root: root,
@@ -30,7 +30,7 @@ mod tests {
         }
     }
 
-    async fn read_path(ctx: ToolContext, path: &Path) -> ToolOutput {
+    async fn read_path(ctx: ToolCaller, path: &Path) -> ToolOutput {
         read::ReadTool
             .call(
                 ctx,

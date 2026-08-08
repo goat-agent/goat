@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use goat_agent_tool::{
-    ToolCall, ToolContext, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
+    ToolCall, ToolCaller, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
 };
 use goat_store::{ObservationRecord, Store};
 use serde::Deserialize;
@@ -67,7 +67,7 @@ struct ObservationTool {
 
 #[async_trait]
 impl ToolHandler for ObservationTool {
-    async fn call(&self, ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let args: Args = match serde_json::from_value(call.arguments) {
             Ok(args) => args,
             Err(e) => return ToolOutput::error(format!("invalid observation arguments: {e}")),
@@ -153,8 +153,8 @@ mod tests {
         }
     }
 
-    fn ctx(agent: AgentId) -> ToolContext {
-        ToolContext {
+    fn ctx(agent: AgentId) -> ToolCaller {
+        ToolCaller {
             agent,
             thread: ThreadId::new(ChannelId::from_static("test"), InstanceId::default(), "t"),
             goat_root: std::path::PathBuf::from("/tmp/goat-observation-test"),

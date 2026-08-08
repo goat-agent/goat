@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use goat_agent_tool::{
-    ToolCall, ToolContext, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
+    ToolCall, ToolCaller, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
 };
 use goat_memory::facts::FactOrigin;
 use goat_memory::{MemoryEngine, NewFact, Scope};
@@ -187,7 +187,7 @@ impl MemoryTool {
 
 #[async_trait]
 impl ToolHandler for MemoryTool {
-    async fn call(&self, _ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, _ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let cmd: MemoryCmd = match serde_json::from_value(call.arguments) {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(format!("invalid memory command: {e}")),
@@ -209,7 +209,7 @@ struct SearchTool {
 
 #[async_trait]
 impl ToolHandler for SearchTool {
-    async fn call(&self, _ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, _ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let args: SearchArgs = match serde_json::from_value(call.arguments) {
             Ok(a) => a,
             Err(e) => return ToolOutput::error(format!("invalid search input: {e}")),
@@ -279,7 +279,7 @@ fn scope_from_opt(s: Option<&str>) -> Result<Scope, String> {
 
 #[async_trait]
 impl ToolHandler for FactTool {
-    async fn call(&self, _ctx: ToolContext, call: ToolCall) -> ToolOutput {
+    async fn call(&self, _ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let cmd: FactCmd = match serde_json::from_value(call.arguments) {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(format!("invalid fact command: {e}")),
@@ -422,7 +422,7 @@ mod tests {
     use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
     use std::path::PathBuf;
 
-    async fn setup() -> (Arc<MemoryEngine>, ToolContext, tempfile::TempDir) {
+    async fn setup() -> (Arc<MemoryEngine>, ToolCaller, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("goat.db");
         let engine = Arc::new(
@@ -430,7 +430,7 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let ctx = ToolContext {
+        let ctx = ToolCaller {
             agent: AgentId::new(),
             thread: ThreadId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1"),
             goat_root: PathBuf::from("/tmp"),

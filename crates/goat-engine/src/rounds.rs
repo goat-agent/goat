@@ -3,7 +3,7 @@ use goat_protocol::Event;
 use goat_provider::{
     ContentBlock, Message, MessageRole, Provider, Request, StreamChunk, StreamError,
 };
-use goat_tool::ToolContext;
+use goat_tool::ToolSandbox;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -259,7 +259,7 @@ pub(crate) async fn process_round_output(
     tracker: &mut ContextTracker,
     rounds: usize,
     call_seq: &mut u64,
-    tool_ctx: &ToolContext,
+    tool_ctx: &ToolSandbox,
     token: &CancellationToken,
 ) -> RoundOutcome {
     if let Some(usage) = round.usage.clone() {
@@ -441,7 +441,7 @@ pub(crate) async fn core_loop(
     conversation: &mut Conversation,
     tracker: &mut ContextTracker,
 ) -> LoopOutcome {
-    let mut tool_ctx = match ToolContext::new(&env.cwd) {
+    let mut tool_ctx = match ToolSandbox::new(&env.cwd) {
         Ok(tool_ctx) => tool_ctx,
         Err(err) => return LoopOutcome::Failed(err.to_string(), None),
     };
