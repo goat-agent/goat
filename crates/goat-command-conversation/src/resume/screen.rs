@@ -86,8 +86,8 @@ impl ResumeScreen {
     fn choose(&self) -> ConversationOutcome {
         self.conversations
             .get(self.cursor)
-            .map_or(ConversationOutcome::NoOp, |thread| {
-                ConversationOutcome::Selected(thread.id)
+            .map_or(ConversationOutcome::NoOp, |conversation| {
+                ConversationOutcome::Selected(conversation.id)
             })
     }
 
@@ -130,7 +130,7 @@ impl ResumeScreen {
                     theme.muted(),
                 )));
             }
-            for (idx, thread) in self
+            for (idx, conversation) in self
                 .conversations
                 .iter()
                 .enumerate()
@@ -140,14 +140,14 @@ impl ResumeScreen {
                 let selected = idx == self.cursor;
                 let title_style = if selected { theme.key() } else { theme.base() };
                 let mut left = vec![Span::styled(format!("{}. ", idx + 1), theme.muted())];
-                if thread.live {
+                if conversation.live {
                     left.push(Span::styled(
                         format!("{} ", symbols::ui::DOT_FULL),
                         theme.key(),
                     ));
                 }
-                left.push(Span::styled(thread.title.clone(), title_style));
-                let right = Some(Span::styled(thread.model.clone(), theme.muted()));
+                left.push(Span::styled(conversation.title.clone(), title_style));
+                let right = Some(Span::styled(conversation.model.clone(), theme.muted()));
                 lines.push(selection_row(theme, selected, width, left, right));
             }
             if has_below {
@@ -244,10 +244,10 @@ impl goat_command::Screen for ResumeScreen {
         self.loading = false;
         if let Some(index) = self.index {
             self.done = true;
-            return if let Some(thread) = conversations.get(index) {
+            return if let Some(conversation) = conversations.get(index) {
                 goat_command::ScreenOutcome::Effect(goat_command::CommandEffect::Dispatch(vec![
                     goat_protocol::Op::Resume {
-                        conversation_id: thread.id,
+                        conversation_id: conversation.id,
                     },
                 ]))
             } else {

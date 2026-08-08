@@ -14,7 +14,7 @@ impl Command for Status {
     }
 
     fn description(&self) -> &'static str {
-        "show session, thread, and daemon status"
+        "show session, conversation, and daemon status"
     }
 
     fn run(&self, _invocation: CommandInvocation, session: &mut dyn Session) -> CommandEffect {
@@ -39,7 +39,7 @@ fn status_rows(
         },
     }];
     rows.push(StatusRow {
-        label: "thread",
+        label: "conversation",
         value: snapshot
             .conversation_id
             .map_or_else(|| "—".to_owned(), |id| id.to_string()),
@@ -137,10 +137,10 @@ fn status_rows(
         label: "uptime",
         value: uptime(snapshot.started),
     });
-    if let Some(thread) = snapshot.conversation_id {
+    if let Some(conversation) = snapshot.conversation_id {
         rows.push(StatusRow {
             label: "resume",
-            value: format!("goat code --resume {thread}"),
+            value: format!("goat code --resume {conversation}"),
         });
     }
     rows
@@ -237,12 +237,15 @@ mod tests {
     }
 
     #[test]
-    fn thread_rows_include_resume_command() {
+    fn conversation_rows_include_resume_command() {
         let mut snapshot = snapshot();
         snapshot.conversation_id = Some(87);
         let rows = status_rows(&snapshot, &[]);
         assert_eq!(
-            rows.iter().find(|row| row.label == "thread").unwrap().value,
+            rows.iter()
+                .find(|row| row.label == "conversation")
+                .unwrap()
+                .value,
             "87"
         );
         assert_eq!(

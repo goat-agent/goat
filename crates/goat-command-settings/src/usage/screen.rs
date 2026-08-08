@@ -307,15 +307,17 @@ impl<'a> UsageView<'a> {
             let key = (model.provider.clone(), model.account.clone());
             if let Some(usage) = self.usage_last.get(&key) {
                 lines.push(Line::default());
-                let this_thread = "  this thread";
+                let this_conversation = "  this conversation";
                 let ctx_label_pad = w.saturating_sub(
-                    1 + UnicodeWidthStr::width("context") + UnicodeWidthStr::width(this_thread) + 3,
+                    1 + UnicodeWidthStr::width("context")
+                        + UnicodeWidthStr::width(this_conversation)
+                        + 3,
                 );
                 lines.push(Line::from(vec![
                     Span::raw(" "),
                     Span::styled("context", theme.accent()),
                     Span::raw(" ".repeat(ctx_label_pad)),
-                    Span::styled(this_thread, theme.muted()),
+                    Span::styled(this_conversation, theme.muted()),
                 ]));
                 let ctx_used = u64::from(usage.input_tokens) + u64::from(usage.output_tokens);
                 let pct = percent(ctx_used, window);
