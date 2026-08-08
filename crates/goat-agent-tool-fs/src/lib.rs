@@ -25,6 +25,7 @@ mod tests {
         ToolCaller {
             agent: AgentId::from_slug("dev"),
             conversation: ConversationId::new(ChannelId::new("test"), InstanceId::new(), "x"),
+            audience: None,
             goat_root: root,
             read_state: std::sync::Arc::default(),
         }

@@ -249,6 +249,22 @@ async fn run_consolidation(
                 continue;
             }
         };
+        let audience = rows
+            .iter()
+            .rev()
+            .find_map(|row| match row.sender.as_ref() {
+                Some(goat_store::MessageSender::User(user)) => goat_memory::Audience::principal(
+                    serde_json::json!([
+                        conv.channel.as_str(),
+                        conv.instance.to_string(),
+                        user.external
+                    ])
+                    .to_string(),
+                )
+                .ok(),
+                _ => None,
+            })
+            .unwrap_or_else(goat_memory::Audience::global);
         let transcript: Vec<goat_sleep::TranscriptLine> = rows
             .into_iter()
             .map(|r| goat_sleep::TranscriptLine {
@@ -259,8 +275,15 @@ async fn run_consolidation(
                 text: r.text,
             })
             .collect();
-        if let Err(e) =
-            goat_sleep::run_once(engine, &provider, model, &Scope::Owner, &transcript).await
+        if let Err(e) = goat_sleep::run_once(
+            engine,
+            &provider,
+            model,
+            &Scope::Owner,
+            &audience,
+            &transcript,
+        )
+        .await
         {
             warn!(agent = %agent, error = ?e, "sleep: consolidation failed");
         }

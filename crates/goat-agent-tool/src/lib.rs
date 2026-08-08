@@ -177,10 +177,17 @@ impl ToolOutput {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ToolAudience {
+    Principal(String),
+    Shared(String),
+}
+
 #[derive(Clone, Debug)]
 pub struct ToolCaller {
     pub agent: AgentId,
     pub conversation: ConversationId,
+    pub audience: Option<ToolAudience>,
     pub goat_root: PathBuf,
     pub read_state: ToolReadState,
 }

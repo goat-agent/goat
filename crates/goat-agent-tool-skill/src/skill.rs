@@ -120,6 +120,7 @@ mod tests {
                 instance: InstanceId::new(),
                 external: "c1".into(),
             },
+            audience: None,
             goat_root: root,
             read_state: std::sync::Arc::default(),
         }

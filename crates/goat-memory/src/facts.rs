@@ -2,8 +2,9 @@ use chrono::{DateTime, Utc};
 use sqlx::Row;
 use sqlx::sqlite::SqlitePool;
 
-use crate::MemoryResult;
+use crate::audience::Audience;
 use crate::scope::Scope;
+use crate::{MemoryError, MemoryResult};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FactOrigin {
@@ -34,6 +35,7 @@ impl FactOrigin {
 pub struct Fact {
     pub id: i64,
     pub scope: Scope,
+    pub audience: Audience,
     pub subject: Option<String>,
     pub text: String,
     pub origin: FactOrigin,
@@ -50,6 +52,7 @@ pub struct Fact {
 #[derive(Clone, Debug)]
 pub struct NewFact {
     pub scope: Scope,
+    pub audience: Audience,
     pub subject: Option<String>,
     pub text: String,
     pub origin: FactOrigin,
@@ -62,10 +65,12 @@ pub async fn assert_fact(pool: &SqlitePool, new: &NewFact) -> MemoryResult<i64> 
     let now = Utc::now().to_rfc3339();
     let id = sqlx::query(
         "INSERT INTO facts \
-         (scope, subject, text, origin, source_kind, source_ref, stated_at, valid_from, importance, strength) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0)",
+         (scope, audience_kind, audience_ref, subject, text, origin, source_kind, source_ref, stated_at, valid_from, importance, strength) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0)",
     )
     .bind(new.scope.as_key())
+    .bind(new.audience.kind())
+    .bind(new.audience.reference())
     .bind(new.subject.as_deref())
     .bind(&new.text)
     .bind(new.origin.as_str())
@@ -100,35 +105,44 @@ pub async fn invalidate(
 
 pub async fn current_facts(
     pool: &SqlitePool,
+    audience: &Audience,
     scope: &Scope,
     subject: Option<&str>,
     limit: usize,
 ) -> MemoryResult<Vec<Fact>> {
     let rows = if let Some(subj) = subject {
         sqlx::query(
-            "SELECT id, scope, subject, text, origin, source_kind, source_ref, stated_at, \
-             valid_from, invalid_at, superseded_by, importance, strength \
+            "SELECT id, scope, audience_kind, audience_ref, subject, text, origin, source_kind, \
+             source_ref, stated_at, valid_from, invalid_at, superseded_by, importance, strength \
              FROM facts WHERE scope = ? AND subject = ? AND invalid_at IS NULL \
+             AND (scope != 'owner' OR audience_kind = 'global' \
+                  OR (audience_kind = ? AND audience_ref = ?)) \
              ORDER BY importance DESC, id DESC LIMIT ?",
         )
         .bind(scope.as_key())
         .bind(subj)
+        .bind(audience.kind())
+        .bind(audience.reference())
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
         .fetch_all(pool)
         .await?
     } else {
         sqlx::query(
-            "SELECT id, scope, subject, text, origin, source_kind, source_ref, stated_at, \
-             valid_from, invalid_at, superseded_by, importance, strength \
+            "SELECT id, scope, audience_kind, audience_ref, subject, text, origin, source_kind, \
+             source_ref, stated_at, valid_from, invalid_at, superseded_by, importance, strength \
              FROM facts WHERE scope = ? AND invalid_at IS NULL \
+             AND (scope != 'owner' OR audience_kind = 'global' \
+                  OR (audience_kind = ? AND audience_ref = ?)) \
              ORDER BY importance DESC, id DESC LIMIT ?",
         )
         .bind(scope.as_key())
+        .bind(audience.kind())
+        .bind(audience.reference())
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
         .fetch_all(pool)
         .await?
     };
-    Ok(rows.into_iter().map(|r| row_to_fact(&r)).collect())
+    rows.into_iter().map(|r| row_to_fact(&r)).collect()
 }
 
 pub async fn decay_strength(pool: &SqlitePool, scope: &Scope, factor: f32) -> MemoryResult<u64> {
@@ -150,24 +164,29 @@ fn opt_ts(s: Option<&str>) -> Option<DateTime<Utc>> {
     s.map(parse_ts)
 }
 
-fn row_to_fact(r: &sqlx::sqlite::SqliteRow) -> Fact {
+fn row_to_fact(r: &sqlx::sqlite::SqliteRow) -> MemoryResult<Fact> {
     let scope_key: String = r.get(1);
     let scope = scope_key.parse::<Scope>().unwrap_or(Scope::Owner);
-    Fact {
+    let kind: String = r.get(2);
+    let reference: Option<String> = r.get(3);
+    let audience = Audience::from_parts(&kind, reference.clone())
+        .ok_or_else(|| MemoryError::InvalidAudience { kind, reference })?;
+    Ok(Fact {
         id: r.get(0),
         scope,
-        subject: r.get(2),
-        text: r.get(3),
-        origin: FactOrigin::parse(&r.get::<String, _>(4)),
-        source_kind: r.get(5),
-        source_ref: r.get(6),
-        stated_at: parse_ts(&r.get::<String, _>(7)),
-        valid_from: opt_ts(r.get::<Option<String>, _>(8).as_deref()),
-        invalid_at: opt_ts(r.get::<Option<String>, _>(9).as_deref()),
-        superseded_by: r.get(10),
-        importance: r.get::<f64, _>(11) as f32,
-        strength: r.get::<f64, _>(12) as f32,
-    }
+        audience,
+        subject: r.get(4),
+        text: r.get(5),
+        origin: FactOrigin::parse(&r.get::<String, _>(6)),
+        source_kind: r.get(7),
+        source_ref: r.get(8),
+        stated_at: parse_ts(&r.get::<String, _>(9)),
+        valid_from: opt_ts(r.get::<Option<String>, _>(10).as_deref()),
+        invalid_at: opt_ts(r.get::<Option<String>, _>(11).as_deref()),
+        superseded_by: r.get(12),
+        importance: r.get::<f64, _>(13) as f32,
+        strength: r.get::<f64, _>(14) as f32,
+    })
 }
 
 #[cfg(test)]
@@ -187,6 +206,7 @@ mod tests {
     fn nf(text: &str, origin: FactOrigin) -> NewFact {
         NewFact {
             scope: Scope::Owner,
+            audience: Audience::global(),
             subject: Some("wife".into()),
             text: text.into(),
             origin,
@@ -203,7 +223,9 @@ mod tests {
             .await
             .unwrap();
         assert!(id > 0);
-        let cur = current_facts(&p, &Scope::Owner, None, 10).await.unwrap();
+        let cur = current_facts(&p, &Audience::global(), &Scope::Owner, None, 10)
+            .await
+            .unwrap();
         assert_eq!(cur.len(), 1);
         assert_eq!(cur[0].text, "birthday is in March");
         assert!(cur[0].invalid_at.is_none());
@@ -220,7 +242,9 @@ mod tests {
             .unwrap();
         invalidate(&p, old, Some(new)).await.unwrap();
 
-        let cur = current_facts(&p, &Scope::Owner, None, 10).await.unwrap();
+        let cur = current_facts(&p, &Audience::global(), &Scope::Owner, None, 10)
+            .await
+            .unwrap();
         assert_eq!(cur.len(), 1);
         assert_eq!(cur[0].id, new);
         assert_eq!(cur[0].text, "birthday is in April");
@@ -243,17 +267,25 @@ mod tests {
         other.subject = None;
         assert_fact(&p, &other).await.unwrap();
 
-        let owner = current_facts(&p, &Scope::Owner, None, 10).await.unwrap();
-        assert_eq!(owner.len(), 1);
-        let dev = current_facts(&p, &Scope::domain("dev").unwrap(), None, 10)
+        let owner = current_facts(&p, &Audience::global(), &Scope::Owner, None, 10)
             .await
             .unwrap();
+        assert_eq!(owner.len(), 1);
+        let dev = current_facts(
+            &p,
+            &Audience::global(),
+            &Scope::domain("dev").unwrap(),
+            None,
+            10,
+        )
+        .await
+        .unwrap();
         assert_eq!(dev.len(), 1);
-        let by_subj = current_facts(&p, &Scope::Owner, Some("wife"), 10)
+        let by_subj = current_facts(&p, &Audience::global(), &Scope::Owner, Some("wife"), 10)
             .await
             .unwrap();
         assert_eq!(by_subj.len(), 1);
-        let no_subj = current_facts(&p, &Scope::Owner, Some("nobody"), 10)
+        let no_subj = current_facts(&p, &Audience::global(), &Scope::Owner, Some("nobody"), 10)
             .await
             .unwrap();
         assert!(no_subj.is_empty());

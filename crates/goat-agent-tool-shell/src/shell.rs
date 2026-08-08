@@ -211,6 +211,7 @@ mod tests {
         ToolCaller {
             agent: AgentId::new(),
             conversation: ConversationId::new(ChannelId::new("test"), InstanceId::new(), "x"),
+            audience: None,
             goat_root: root,
             read_state: Arc::default(),
         }

@@ -442,6 +442,7 @@ mod tests {
         let ctx = ToolCaller {
             agent,
             conversation: conv,
+            audience: None,
             goat_root: PathBuf::from("/tmp"),
             read_state: ToolReadState::default(),
         };

@@ -4,7 +4,7 @@ use std::time::Duration;
 use chrono::Utc;
 use futures::StreamExt;
 use goat_memory::facts::FactOrigin;
-use goat_memory::{MemoryEngine, NewFact, Scope};
+use goat_memory::{Audience, MemoryEngine, NewFact, Scope};
 use goat_model::Model;
 use goat_provider::{
     ChunkStream, ContentBlock, Message, MessageRole, Provider, Request, StreamChunk, StreamError,
@@ -50,6 +50,7 @@ pub async fn run_once(
     provider: &Arc<dyn Provider>,
     model: &Model,
     scope: &Scope,
+    audience: &Audience,
     transcript: &[TranscriptLine],
 ) -> anyhow::Result<String> {
     let today = Utc::now().format("%Y-%m-%d").to_string();
@@ -81,11 +82,12 @@ pub async fn run_once(
                 if f.text.trim().is_empty() {
                     continue;
                 }
-                if fact_exists(engine, scope, &f.text).await {
+                if fact_exists(engine, audience, scope, &f.text).await {
                     continue;
                 }
                 let nf = NewFact {
                     scope: scope.clone(),
+                    audience: audience.clone(),
                     subject: f.subject,
                     text: f.text.trim().to_string(),
                     origin: FactOrigin::Consolidated,
@@ -147,9 +149,14 @@ async fn extract_facts(
     }
 }
 
-async fn fact_exists(engine: &MemoryEngine, scope: &Scope, text: &str) -> bool {
+async fn fact_exists(
+    engine: &MemoryEngine,
+    audience: &Audience,
+    scope: &Scope,
+    text: &str,
+) -> bool {
     let needle = text.trim().to_lowercase();
-    match engine.current_facts(scope, None, 200).await {
+    match engine.current_facts(audience, scope, None, 200).await {
         Ok(facts) => facts.iter().any(|f| {
             f.text.to_lowercase().contains(&needle) || needle.contains(&f.text.to_lowercase())
         }),
@@ -311,13 +318,23 @@ mod pipeline_tests {
             },
         ];
 
-        let summary = run_once(&eng, &provider, &model, &Scope::Owner, &transcript)
-            .await
-            .unwrap();
+        let summary = run_once(
+            &eng,
+            &provider,
+            &model,
+            &Scope::Owner,
+            &Audience::global(),
+            &transcript,
+        )
+        .await
+        .unwrap();
         assert!(summary.contains("distilled"), "summary: {summary}");
         assert!(summary.contains("fact"), "summary: {summary}");
 
-        let facts = eng.current_facts(&Scope::Owner, None, 10).await.unwrap();
+        let facts = eng
+            .current_facts(&Audience::global(), &Scope::Owner, None, 10)
+            .await
+            .unwrap();
         assert_eq!(facts.len(), 1);
         assert!(facts[0].text.contains("Berlin"));
         assert_eq!(facts[0].origin.as_str(), "consolidated");
@@ -326,10 +343,20 @@ mod pipeline_tests {
         assert!(files.iter().any(|f| f.starts_with("notes/")));
         assert!(files.iter().any(|f| f == "journal.md"));
 
-        let _ = run_once(&eng, &provider, &model, &Scope::Owner, &transcript)
+        let _ = run_once(
+            &eng,
+            &provider,
+            &model,
+            &Scope::Owner,
+            &Audience::global(),
+            &transcript,
+        )
+        .await
+        .unwrap();
+        let facts2 = eng
+            .current_facts(&Audience::global(), &Scope::Owner, None, 10)
             .await
             .unwrap();
-        let facts2 = eng.current_facts(&Scope::Owner, None, 10).await.unwrap();
         assert_eq!(
             facts2.len(),
             1,
@@ -342,9 +369,16 @@ mod pipeline_tests {
         let (_d, eng) = engine().await;
         let provider: Arc<dyn Provider> = Arc::new(MockProvider);
         let model = Model::new(ProviderId::from("mock"), "m");
-        let summary = run_once(&eng, &provider, &model, &Scope::Self_, &[])
-            .await
-            .unwrap();
+        let summary = run_once(
+            &eng,
+            &provider,
+            &model,
+            &Scope::Self_,
+            &Audience::global(),
+            &[],
+        )
+        .await
+        .unwrap();
         assert!(
             summary.contains("nothing") || summary.contains("decay"),
             "{summary}"

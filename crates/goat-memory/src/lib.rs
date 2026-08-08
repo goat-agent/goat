@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+pub mod audience;
 pub mod embed;
 pub mod engine;
 pub mod facts;
@@ -8,6 +9,7 @@ pub mod scope;
 pub mod search;
 pub mod vector;
 
+pub use audience::{Audience, AudienceError};
 pub use embed::Embedder;
 pub use engine::MemoryEngine;
 pub use facts::{Fact, FactOrigin, NewFact};
@@ -25,6 +27,11 @@ pub enum MemoryError {
     Io(#[from] std::io::Error),
     #[error("file: {0}")]
     File(String),
+    #[error("invalid stored audience: kind={kind:?}, reference={reference:?}")]
+    InvalidAudience {
+        kind: String,
+        reference: Option<String>,
+    },
 }
 
 pub type MemoryResult<T> = Result<T, MemoryError>;

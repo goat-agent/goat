@@ -8,6 +8,7 @@ use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use tracing::{info, warn};
 
 use crate::MemoryResult;
+use crate::audience::Audience;
 use crate::embed::Embedder;
 use crate::facts::{self, Fact, NewFact};
 use crate::files::{MemoryFiles, chunk_markdown};
@@ -135,6 +136,7 @@ impl MemoryEngine {
             let embedding = self.embed(&chunk.text).await;
             let ic = IndexChunk {
                 scope: scope.clone(),
+                audience: Audience::global(),
                 kind: kind.to_string(),
                 source_ref: rel.to_string(),
                 chunk_key,
@@ -152,6 +154,7 @@ impl MemoryEngine {
         let embedding = self.embed(&new.text).await;
         let ic = IndexChunk {
             scope: new.scope.clone(),
+            audience: new.audience.clone(),
             kind: "fact".into(),
             source_ref: source_ref.clone(),
             chunk_key: source_ref,
@@ -185,11 +188,12 @@ impl MemoryEngine {
 
     pub async fn current_facts(
         &self,
+        audience: &Audience,
         scope: &Scope,
         subject: Option<&str>,
         limit: usize,
     ) -> MemoryResult<Vec<Fact>> {
-        facts::current_facts(&self.pool, scope, subject, limit).await
+        facts::current_facts(&self.pool, audience, scope, subject, limit).await
     }
 
     pub async fn decay_scope(&self, scope: &Scope, factor: f32) -> MemoryResult<u64> {
@@ -212,6 +216,7 @@ impl MemoryEngine {
 
     pub async fn recall(
         &self,
+        audience: &Audience,
         scopes: &[Scope],
         query_text: &str,
         k: usize,
@@ -219,6 +224,7 @@ impl MemoryEngine {
         let embedding = self.embed(query_text).await;
         let hits = search::recall(
             &self.pool,
+            audience,
             scopes,
             query_text,
             embedding.as_deref(),
@@ -250,17 +256,30 @@ impl MemoryEngine {
             }
         }
 
-        let rows = sqlx::query("SELECT id, scope, text FROM facts WHERE invalid_at IS NULL")
-            .fetch_all(&*self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT id, scope, audience_kind, audience_ref, text \
+             FROM facts WHERE invalid_at IS NULL",
+        )
+        .fetch_all(&*self.pool)
+        .await?;
         for r in rows {
             let id: i64 = r.get(0);
             let scope: Scope = r.get::<String, _>(1).parse().unwrap_or(Scope::Owner);
-            let text: String = r.get(2);
+            let audience_kind: String = r.get(2);
+            let audience_ref: Option<String> = r.get(3);
+            let audience =
+                Audience::from_parts(&audience_kind, audience_ref.clone()).ok_or_else(|| {
+                    crate::MemoryError::InvalidAudience {
+                        kind: audience_kind,
+                        reference: audience_ref,
+                    }
+                })?;
+            let text: String = r.get(4);
             let source_ref = format!("fact:{id}");
             let embedding = self.embed(&text).await;
             let ic = IndexChunk {
                 scope,
+                audience,
                 kind: "fact".into(),
                 source_ref: source_ref.clone(),
                 chunk_key: source_ref,
@@ -380,7 +399,10 @@ mod tests {
             .await
             .unwrap();
         eng.reindex().await.unwrap();
-        let hits = eng.recall(&[Scope::Owner], "budget", 5).await.unwrap();
+        let hits = eng
+            .recall(&Audience::global(), &[Scope::Owner], "budget", 5)
+            .await
+            .unwrap();
         assert!(!hits.is_empty());
         assert!(
             hits[0].text.contains("budget"),
@@ -402,7 +424,10 @@ mod tests {
         eng.reindex_file(&Scope::Owner, "core/profile.md")
             .await
             .unwrap();
-        let hits = eng.recall(&[Scope::Owner], "sailing", 5).await.unwrap();
+        let hits = eng
+            .recall(&Audience::global(), &[Scope::Owner], "sailing", 5)
+            .await
+            .unwrap();
         assert!(!hits.is_empty());
         assert_eq!(hits[0].kind, "core");
     }
@@ -412,6 +437,7 @@ mod tests {
         let (_d, eng) = engine().await;
         let nf = NewFact {
             scope: Scope::Owner,
+            audience: Audience::global(),
             subject: Some("car".into()),
             text: "drives a blue truck".into(),
             origin: FactOrigin::OwnerStated,
@@ -420,15 +446,204 @@ mod tests {
             importance: 0.6,
         };
         let id = eng.assert_fact(&nf).await.unwrap();
-        let hits = eng.recall(&[Scope::Owner], "truck", 5).await.unwrap();
+        let hits = eng
+            .recall(&Audience::global(), &[Scope::Owner], "truck", 5)
+            .await
+            .unwrap();
         assert!(hits.iter().any(|h| h.kind == "fact"));
 
         eng.invalidate_fact(id, None).await.unwrap();
-        let after = eng.recall(&[Scope::Owner], "truck", 5).await.unwrap();
+        let after = eng
+            .recall(&Audience::global(), &[Scope::Owner], "truck", 5)
+            .await
+            .unwrap();
         assert!(
             after.iter().all(|h| h.kind != "fact"),
             "invalidated fact left the index"
         );
+    }
+
+    #[tokio::test]
+    async fn private_fact_is_recalled_only_for_its_principal() {
+        let (_d, eng) = engine().await;
+        let person_a = Audience::principal("person-a").unwrap();
+        let person_b = Audience::principal("person-b").unwrap();
+        let fact = NewFact {
+            scope: Scope::Owner,
+            audience: person_a.clone(),
+            subject: None,
+            text: "the launch phrase is cedar".into(),
+            origin: FactOrigin::OwnerStated,
+            source_kind: "message".into(),
+            source_ref: "message-a".into(),
+            importance: 0.8,
+        };
+        eng.assert_fact(&fact).await.unwrap();
+
+        let visible = eng
+            .recall(&person_a, &[Scope::Owner], "cedar", 5)
+            .await
+            .unwrap();
+        let hidden = eng
+            .recall(&person_b, &[Scope::Owner], "cedar", 5)
+            .await
+            .unwrap();
+
+        assert_eq!(visible.len(), 1);
+        assert!(hidden.is_empty());
+    }
+
+    #[tokio::test]
+    async fn shared_fact_is_recalled_only_in_its_context() {
+        let (_d, eng) = engine().await;
+        let room_a = Audience::shared("room-a").unwrap();
+        let room_b = Audience::shared("room-b").unwrap();
+        let fact = NewFact {
+            scope: Scope::Owner,
+            audience: room_a.clone(),
+            subject: None,
+            text: "the team launch phrase is maple".into(),
+            origin: FactOrigin::OwnerStated,
+            source_kind: "message".into(),
+            source_ref: "message-shared".into(),
+            importance: 0.8,
+        };
+        eng.assert_fact(&fact).await.unwrap();
+
+        let visible = eng
+            .recall(&room_a, &[Scope::Owner], "maple", 5)
+            .await
+            .unwrap();
+        let hidden = eng
+            .recall(&room_b, &[Scope::Owner], "maple", 5)
+            .await
+            .unwrap();
+
+        assert_eq!(visible.len(), 1);
+        assert!(hidden.is_empty());
+    }
+
+    #[tokio::test]
+    async fn populated_database_migrates_existing_rows_as_global() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("goat.db");
+        goat_sqlite_vec::register();
+        let options = format!("sqlite://{}", path.display())
+            .parse::<sqlx::sqlite::SqliteConnectOptions>()
+            .unwrap()
+            .create_if_missing(true)
+            .disable_statement_logging();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE _sqlx_migrations_memory (
+                 version BIGINT PRIMARY KEY,
+                 description TEXT NOT NULL,
+                 installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                 success BOOLEAN NOT NULL,
+                 checksum BLOB NOT NULL,
+                 execution_time BIGINT NOT NULL
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let migrator = sqlx::migrate!("./migrations");
+        let initial = migrator
+            .iter()
+            .find(|migration| migration.version == 11)
+            .unwrap();
+        sqlx::raw_sql(initial.sql.clone())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations_memory
+             (version, description, success, checksum, execution_time)
+             VALUES (?, ?, TRUE, ?, 0)",
+        )
+        .bind(initial.version)
+        .bind(initial.description.as_ref())
+        .bind(initial.checksum.as_ref())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO facts
+             (id, scope, subject, text, origin, source_kind, source_ref, stated_at,
+              valid_from, importance, strength)
+             VALUES (7, 'owner', 'profile', 'legacy fact', 'owner_stated', 'message',
+                     'old-message', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z', 0.7, 1.0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO mem_index
+             (id, scope, kind, source_ref, chunk_key, chunk_no, text, updated_at)
+             VALUES (9, 'owner', 'fact', 'fact:7', 'fact:7', 0, 'legacy fact',
+                     '2026-08-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO mem_fts (rowid, text, scope, index_id)
+             VALUES (9, 'legacy fact', 'owner', 9)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let eng = MemoryEngine::open(&path, dir.path(), None, 180.0)
+            .await
+            .unwrap();
+        let fact_rows: Vec<(i64, String, String, Option<String>)> =
+            sqlx::query_as("SELECT id, text, audience_kind, audience_ref FROM facts ORDER BY id")
+                .fetch_all(&*eng.pool)
+                .await
+                .unwrap();
+        let index_rows: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, text, audience_kind, audience_ref FROM mem_index ORDER BY id",
+        )
+        .fetch_all(&*eng.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            fact_rows,
+            vec![(7, "legacy fact".into(), "global".into(), None)]
+        );
+        assert_eq!(
+            index_rows,
+            vec![(9, "legacy fact".into(), "global".into(), None)]
+        );
+        let visible = eng
+            .current_facts(
+                &Audience::principal("new-person").unwrap(),
+                &Scope::Owner,
+                None,
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, 7);
+        for audience in [
+            Audience::principal("new-person").unwrap(),
+            Audience::shared("new-room").unwrap(),
+        ] {
+            let recalled = eng
+                .recall(&audience, &[Scope::Owner], "legacy fact", 5)
+                .await
+                .unwrap();
+            assert_eq!(recalled.len(), 1);
+            assert_eq!(recalled[0].index_id, 9);
+        }
     }
 
     #[tokio::test]
@@ -457,7 +672,10 @@ mod tests {
             .await
             .unwrap();
         eng.reindex().await.unwrap();
-        let hits = eng.recall(&[Scope::Self_], "release", 5).await.unwrap();
+        let hits = eng
+            .recall(&Audience::global(), &[Scope::Self_], "release", 5)
+            .await
+            .unwrap();
         assert!(!hits.is_empty());
     }
 }

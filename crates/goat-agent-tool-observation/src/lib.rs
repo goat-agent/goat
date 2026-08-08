@@ -161,6 +161,7 @@ mod tests {
                 InstanceId::default(),
                 "t",
             ),
+            audience: None,
             goat_root: std::path::PathBuf::from("/tmp/goat-observation-test"),
             read_state: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }

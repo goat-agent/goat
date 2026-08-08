@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use goat_agent_tool::{
-    ToolCall, ToolCaller, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
+    ToolAudience, ToolCall, ToolCaller, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
 };
 use goat_memory::facts::FactOrigin;
-use goat_memory::{MemoryEngine, NewFact, Scope};
+use goat_memory::{Audience, MemoryEngine, NewFact, Scope};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -14,6 +14,14 @@ pub const MEMORY_SEARCH: ToolName = ToolName::from_static("memory_search");
 pub const FACT: ToolName = ToolName::from_static("fact");
 
 const DEFAULT_RECALL_K: usize = 6;
+
+fn memory_audience(audience: Option<&ToolAudience>) -> Option<Audience> {
+    match audience {
+        Some(ToolAudience::Principal(reference)) => Audience::principal(reference.clone()).ok(),
+        Some(ToolAudience::Shared(reference)) => Audience::shared(reference.clone()).ok(),
+        None => None,
+    }
+}
 
 pub fn register(registry: &mut ToolRegistry, engine: Arc<MemoryEngine>) {
     registry.insert_handler(
@@ -209,7 +217,7 @@ struct SearchTool {
 
 #[async_trait]
 impl ToolHandler for SearchTool {
-    async fn call(&self, _ctx: ToolCaller, call: ToolCall) -> ToolOutput {
+    async fn call(&self, ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let args: SearchArgs = match serde_json::from_value(call.arguments) {
             Ok(a) => a,
             Err(e) => return ToolOutput::error(format!("invalid search input: {e}")),
@@ -219,7 +227,8 @@ impl ToolHandler for SearchTool {
             Ok(s) => s,
             Err(_) => vec![Scope::Owner, Scope::Self_],
         };
-        match self.engine.recall(&scopes, &args.query, k).await {
+        let audience = memory_audience(ctx.audience.as_ref()).unwrap_or_else(Audience::global);
+        match self.engine.recall(&audience, &scopes, &args.query, k).await {
             Ok(hits) => {
                 let results: Vec<_> = hits
                     .into_iter()
@@ -279,7 +288,7 @@ fn scope_from_opt(s: Option<&str>) -> Result<Scope, String> {
 
 #[async_trait]
 impl ToolHandler for FactTool {
-    async fn call(&self, _ctx: ToolCaller, call: ToolCall) -> ToolOutput {
+    async fn call(&self, ctx: ToolCaller, call: ToolCall) -> ToolOutput {
         let cmd: FactCmd = match serde_json::from_value(call.arguments) {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(format!("invalid fact command: {e}")),
@@ -298,8 +307,13 @@ impl ToolHandler for FactTool {
                 if text.trim().is_empty() {
                     return ToolOutput::error("fact text must not be empty");
                 }
+                let audience = memory_audience(ctx.audience.as_ref());
+                if scope == Scope::Owner && audience.is_none() {
+                    return ToolOutput::error("owner facts require a conversation audience");
+                }
                 let nf = NewFact {
                     scope,
+                    audience: audience.unwrap_or_else(Audience::global),
                     subject,
                     text: text.trim().to_string(),
                     origin: FactOrigin::OwnerStated,
@@ -323,9 +337,11 @@ impl ToolHandler for FactTool {
                     Ok(s) => s,
                     Err(e) => return ToolOutput::error(e),
                 };
+                let audience =
+                    memory_audience(ctx.audience.as_ref()).unwrap_or_else(Audience::global);
                 match self
                     .engine
-                    .current_facts(&scope, subject.as_deref(), 50)
+                    .current_facts(&audience, &scope, subject.as_deref(), 50)
                     .await
                 {
                     Ok(facts) => {
@@ -354,8 +370,8 @@ fn spec_memory() -> ToolSpec {
     ToolSpec::new(
         MEMORY,
         "Read and edit your long-term memory files. Paths are \
-         /memories/<scope>/<file>, where <scope> is 'owner' (about the user, \
-         shared), 'self' (your own memory), or a domain name. Prose lives in \
+         /memories/<scope>/<file>, where <scope> is 'owner' (about the current \
+         person or shared context), 'self' (your own memory), or a domain name. Prose lives in \
          markdown files; use the `fact` tool for discrete claims.",
         json!({
             "type": "object",
@@ -380,8 +396,8 @@ fn spec_memory() -> ToolSpec {
 fn spec_memory_search() -> ToolSpec {
     ToolSpec::new(
         MEMORY_SEARCH,
-        "Search your long-term memory (owner + self) for anything relevant to a \
-         query. Returns file excerpts and facts with provenance.",
+        "Search the long-term memory available to this conversation for anything \
+         relevant to a query. Returns file excerpts and facts with provenance.",
         json!({
             "type": "object",
             "required": ["query"],
@@ -437,6 +453,7 @@ mod tests {
                 InstanceId::new(),
                 "chat:1",
             ),
+            audience: Some(goat_agent_tool::ToolAudience::Principal("person-a".into())),
             goat_root: PathBuf::from("/tmp"),
             read_state: ToolReadState::default(),
         };

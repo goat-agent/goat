@@ -8,7 +8,7 @@ use futures::{StreamExt, stream};
 use goat_agent_command::{CommandOutput, CommandRegistry};
 use goat_agent_config::AgentCard;
 use goat_agent_tool::{
-    ToolCall, ToolCaller, ToolOutput, ToolReadState, ToolRegistry, selector_allows,
+    ToolAudience, ToolCall, ToolCaller, ToolOutput, ToolReadState, ToolRegistry, selector_allows,
     validate_tool_selectors,
 };
 use goat_bus::{EventBus, EventFilter};
@@ -26,7 +26,7 @@ use goat_store::{
 };
 use goat_types::{
     AgentId, ConversationId, Event, IncomingMessage, IntegrationId, IntegrationUpdateKind,
-    MessageId, SCHEDULE_FALLBACK_TIMEZONE, Surface, WorkflowItem,
+    MessageId, SCHEDULE_FALLBACK_TIMEZONE, Surface, UserHandle, WorkflowItem,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -565,6 +565,7 @@ impl Brain {
                     conversation: msg.conversation.clone(),
                     reply_to,
                     surface: msg.surface,
+                    audience: turn_audience(msg.surface, &msg.conversation, Some(&msg.from)),
                     thread_open,
                 },
                 &mut messages,
@@ -581,11 +582,15 @@ impl Brain {
         Ok(())
     }
 
-    async fn build_memory_section(&self, query_text: Option<&str>) -> Option<String> {
+    async fn build_memory_section(
+        &self,
+        audience: Option<&ToolAudience>,
+        query_text: Option<&str>,
+    ) -> Option<String> {
         if !self.memory_enabled {
             return None;
         }
-        self.build_engine_section(query_text).await
+        self.build_engine_section(audience, query_text).await
     }
 
     async fn build_goals_section(&self) -> Option<String> {
@@ -608,8 +613,12 @@ impl Brain {
         Some(out)
     }
 
-    async fn build_engine_section(&self, query_text: Option<&str>) -> Option<String> {
-        use goat_memory::Scope;
+    async fn build_engine_section(
+        &self,
+        audience: Option<&ToolAudience>,
+        query_text: Option<&str>,
+    ) -> Option<String> {
+        use goat_memory::{Audience, Scope};
         let scopes = [Scope::Owner, Scope::Self_];
         let mut out = String::new();
 
@@ -635,8 +644,17 @@ impl Brain {
             out.push_str("</core_memory>");
         }
 
+        let audience = match audience {
+            Some(ToolAudience::Principal(reference)) => Audience::principal(reference.clone()).ok(),
+            Some(ToolAudience::Shared(reference)) => Audience::shared(reference.clone()).ok(),
+            None => None,
+        }
+        .unwrap_or_else(Audience::global);
         if let Some(query) = query_text.filter(|q| !q.trim().is_empty())
-            && let Ok(hits) = self.memory_engine.recall(&scopes, query, 6).await
+            && let Ok(hits) = self
+                .memory_engine
+                .recall(&audience, &scopes, query, 6)
+                .await
         {
             let hits: Vec<_> = hits.into_iter().filter(|h| h.kind != "core").collect();
             if !hits.is_empty() {
@@ -805,7 +823,9 @@ impl Brain {
             }
         });
         let memory_section = {
-            let mem = self.build_memory_section(query_text.as_deref()).await;
+            let mem = self
+                .build_memory_section(route.audience.as_ref(), query_text.as_deref())
+                .await;
             let goals = self.build_goals_section().await;
             match (mem, goals) {
                 (Some(m), Some(g)) => Some(format!("{m}\n\n{g}")),
@@ -893,6 +913,8 @@ impl Brain {
                                         .store
                                         .append_incoming_text(self.agent, &new_thread, &seed)
                                         .await;
+                                    route.audience =
+                                        Some(ToolAudience::Shared(new_thread.to_key()));
                                     route.conversation = new_thread;
                                     route.reply_to = None;
                                     route.thread_open = None;
@@ -917,6 +939,7 @@ impl Brain {
                 let output = self
                     .execute_tool(
                         &route.conversation,
+                        route.audience.clone(),
                         &call,
                         read_state.clone(),
                         &allowed_tools,
@@ -1049,6 +1072,7 @@ impl Brain {
                     conversation: conv.clone(),
                     reply_to: None,
                     surface,
+                    audience: turn_audience(surface, &conv, None),
                     thread_open: None,
                 },
                 &mut messages,
@@ -1155,6 +1179,7 @@ impl Brain {
                     conversation: conversation.clone(),
                     reply_to: None,
                     surface,
+                    audience: turn_audience(surface, &conversation, None),
                     thread_open: None,
                 },
                 &mut messages,
@@ -1220,6 +1245,7 @@ impl Brain {
                     conversation: conversation.clone(),
                     reply_to: None,
                     surface,
+                    audience: turn_audience(surface, &conversation, None),
                     thread_open: None,
                 },
                 &mut messages,
@@ -1273,6 +1299,7 @@ impl Brain {
     async fn execute_tool(
         &self,
         conv: &ConversationId,
+        audience: Option<ToolAudience>,
         call: &ModelToolCall,
         read_state: ToolReadState,
         allowed_tools: &HashSet<String>,
@@ -1304,6 +1331,7 @@ impl Brain {
         let ctx = ToolCaller {
             agent: self.agent,
             conversation: conv.clone(),
+            audience,
             goat_root: self.goat_root.clone(),
             read_state,
         };
@@ -1386,7 +1414,29 @@ struct TurnRoute {
     conversation: ConversationId,
     reply_to: Option<MessageId>,
     surface: Surface,
+    audience: Option<ToolAudience>,
     thread_open: Option<ThreadOpenCtx>,
+}
+
+fn turn_audience(
+    surface: Surface,
+    conversation: &ConversationId,
+    user: Option<&UserHandle>,
+) -> Option<ToolAudience> {
+    match (surface, user) {
+        (Surface::Dm, Some(user)) => Some(ToolAudience::Principal(
+            serde_json::json!([
+                conversation.channel.as_str(),
+                conversation.instance.to_string(),
+                user.external
+            ])
+            .to_string(),
+        )),
+        (Surface::Dm, None) => None,
+        (Surface::Channel | Surface::Thread, _) => {
+            Some(ToolAudience::Shared(conversation.to_key()))
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
