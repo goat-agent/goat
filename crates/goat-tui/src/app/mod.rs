@@ -25,7 +25,7 @@ use crate::{
     config::{Config, ConfigOutcome},
     files::FileMenu,
     highlight::SyntectHighlighter,
-    picker::{EffortPicker, Picker, RewindPicker, ThreadPicker},
+    picker::{Picker, RewindPicker, ThreadPicker},
     symbols,
     theme::Theme,
     transcript::Transcript,
@@ -88,7 +88,6 @@ pub(crate) enum Overlay {
     Screen(Box<dyn Screen>),
     Model(Picker),
     Account(AccountMenu),
-    Effort(EffortPicker),
     Thread(ThreadPicker),
     Rewind(RewindPicker),
     Config(Config),
@@ -560,30 +559,6 @@ impl App {
                 self.dirty = true;
                 vec![Op::SetMode { mode }]
             }
-            CommandEffect::OpenEffortPicker => {
-                let efforts = self.current_efforts();
-                let label = self.model.as_ref().map_or_else(
-                    || "no model selected".to_owned(),
-                    |m| format!("{}/{}", m.provider, m.model),
-                );
-                let current = self.model.as_ref().and_then(|m| m.effort);
-                self.overlay = Overlay::Effort(EffortPicker::new(label, efforts, current));
-                Vec::new()
-            }
-            CommandEffect::SelectEffort(level) => {
-                let Some(effort) = Effort::parse(&level) else {
-                    self.push_toast(NotifyKind::Error, format!("unknown effort: {level}"));
-                    return Vec::new();
-                };
-                if !self.current_efforts().contains(&effort) {
-                    self.push_toast(
-                        NotifyKind::Error,
-                        format!("current model does not support effort: {level}"),
-                    );
-                    return Vec::new();
-                }
-                self.apply_effort(effort)
-            }
             CommandEffect::OpenThreadPicker => {
                 self.pending.resume = Some(ResumeIntent::Picker);
                 vec![Op::ListThreads {}]
@@ -996,16 +971,6 @@ impl App {
                 }
             })
             .collect()
-    }
-
-    pub(crate) fn apply_effort(&mut self, effort: Effort) -> Vec<Op> {
-        let Some(current) = &self.model else {
-            self.push_toast(NotifyKind::Error, "select a model first".to_owned());
-            return Vec::new();
-        };
-        let mut target = current.clone();
-        target.effort = Some(effort);
-        vec![Op::SelectModel { target }]
     }
 
     pub(crate) fn select_model_named(&mut self, query: &str) -> Vec<Op> {
@@ -3219,10 +3184,7 @@ mod tests {
         let mut app = App::new(Theme::dark(), &test_origin());
         let ops = app.dispatch_slash_command("/effort");
         assert!(ops.is_empty());
-        match &app.overlay {
-            Overlay::Effort(p) => assert!(p.is_empty()),
-            _ => panic!("expected effort overlay"),
-        }
+        assert!(matches!(app.overlay, Overlay::Screen(_)));
         assert!(app.toasts.is_empty());
     }
 
@@ -3240,13 +3202,13 @@ mod tests {
         select_model(&mut app, "openai", "gpt");
         let ops = app.dispatch_slash_command("/effort");
         assert!(ops.is_empty());
-        assert!(matches!(app.overlay, Overlay::Effort(_)));
+        assert!(matches!(app.overlay, Overlay::Screen(_)));
         app.on_key(press(KeyCode::Down, KeyModifiers::NONE));
         let ops = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
         assert!(
             matches!(ops.as_slice(), [Op::SelectModel { target }] if target.effort == Some(Effort::High))
         );
-        assert!(!matches!(app.overlay, Overlay::Effort(_)));
+        assert!(matches!(app.overlay, Overlay::None));
     }
 
     #[test]
@@ -3315,7 +3277,7 @@ mod tests {
             matches!(ops.as_slice(), [Op::SelectModel { target }] if target.effort == Some(Effort::High)),
             "expected direct SelectModel, got {ops:?}"
         );
-        assert!(!matches!(app.overlay, Overlay::Effort(_)));
+        assert!(matches!(app.overlay, Overlay::None));
     }
 
     #[test]

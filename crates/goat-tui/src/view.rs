@@ -92,6 +92,11 @@ fn render_ask(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
 
 enum Panel {
     None,
+    Screen {
+        height: u16,
+        hints: Option<Vec<goat_command::KeyHint>>,
+        composer_focused: bool,
+    },
     Commands,
     Account,
     Files,
@@ -102,6 +107,18 @@ const HEADER_H: u16 = 2;
 
 fn active_panel(app: &App) -> Panel {
     match app.overlay() {
+        Overlay::Screen(screen) => match screen.placement() {
+            Placement::Panel {
+                height,
+                hints,
+                composer_focused,
+            } => Panel::Screen {
+                height,
+                hints,
+                composer_focused,
+            },
+            _ => Panel::None,
+        },
         Overlay::Commands(_) => Panel::Commands,
         Overlay::Account(_) => Panel::Account,
         Overlay::Files(_) => Panel::Files,
@@ -110,13 +127,21 @@ fn active_panel(app: &App) -> Panel {
     }
 }
 
-fn composer_focused(app: &App) -> bool {
-    !is_full_body_overlay(app) && !matches!(app.overlay(), Overlay::Runs(_))
+fn composer_focused(app: &App, panel: &Panel) -> bool {
+    !is_full_body_overlay(app)
+        && match panel {
+            Panel::Screen {
+                composer_focused, ..
+            } => *composer_focused,
+            Panel::Runs(_) => false,
+            _ => true,
+        }
 }
 
 fn panel_desired_height(app: &App, panel: &Panel) -> u16 {
     match panel {
         Panel::None => 0,
+        Panel::Screen { height, .. } => *height,
         Panel::Commands => match app.overlay() {
             Overlay::Commands(menu) => menu.desired_height(),
             _ => 0,
@@ -138,7 +163,7 @@ fn panel_desired_height(app: &App, panel: &Panel) -> u16 {
 fn render_main(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
     let composer_h = app.composer_height(area.width);
     let panel = active_panel(app);
-    let focused = composer_focused(app);
+    let focused = composer_focused(app, &panel);
     let full_body = is_full_body_overlay(app);
 
     let footer_h = 1u16;
@@ -189,6 +214,23 @@ fn render_hint(frame: &mut Frame, area: Rect, app: &App, theme: Theme, panel: &P
         return;
     }
     match panel {
+        Panel::Screen {
+            hints: Some(hints), ..
+        } => {
+            let pairs: Vec<_> = hints.iter().map(|hint| (hint.key, hint.label)).collect();
+            frame.render_widget(
+                Paragraph::new(overlay::hint_line(&pairs, theme)),
+                area.inner(Margin {
+                    horizontal: PAD_X,
+                    vertical: 0,
+                }),
+            );
+        }
+        Panel::Screen { hints: None, .. } => {
+            if footer_visible(app) {
+                render_footer(frame, area, app, theme);
+            }
+        }
         Panel::Commands => frame.render_widget(
             Paragraph::new(overlay::hint_line(
                 &[
@@ -230,7 +272,6 @@ fn is_full_body_overlay(app: &App) -> bool {
         Overlay::Screen(screen) => matches!(screen.placement(), Placement::Overlay),
         Overlay::Config(_)
         | Overlay::Model(_)
-        | Overlay::Effort(_)
         | Overlay::Thread(_)
         | Overlay::Rewind(_)
         | Overlay::Usage
@@ -250,7 +291,6 @@ fn render_full_body_overlay(frame: &mut Frame, body: Rect, app: &mut App, theme:
     match app.overlay() {
         Overlay::Config(config) => config.render(frame, body, theme),
         Overlay::Model(picker) => picker.render(frame, body, theme),
-        Overlay::Effort(picker) => picker.render(frame, body, theme),
         Overlay::Thread(picker) => picker.render(frame, body, theme),
         Overlay::Rewind(picker) => picker.render(frame, body, theme),
         Overlay::Usage => {
@@ -274,12 +314,17 @@ fn render_full_body_overlay(frame: &mut Frame, body: Rect, app: &mut App, theme:
     }
 }
 
-fn render_panel(frame: &mut Frame, area: Rect, app: &App, theme: Theme, panel: &Panel) {
+fn render_panel(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme, panel: &Panel) {
     if area.height == 0 {
         return;
     }
     match panel {
         Panel::None => {}
+        Panel::Screen { .. } => {
+            if let Overlay::Screen(screen) = app.overlay_mut() {
+                screen.render(frame, area, &theme);
+            }
+        }
         Panel::Commands => {
             if let Overlay::Commands(menu) = app.overlay() {
                 menu.render(frame, area, theme);

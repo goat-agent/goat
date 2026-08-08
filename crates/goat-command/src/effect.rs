@@ -9,8 +9,6 @@ pub enum CommandEffect {
     Notify(NotifyKind, String),
     OpenModelPicker,
     SelectModelNamed(String),
-    OpenEffortPicker,
-    SelectEffort(String),
     OpenThreadPicker,
     ResumeIndex(usize),
     OpenRewind,

@@ -6,7 +6,7 @@ use crate::{
     ask::AskOutcome,
     config::ConfigOutcome,
     keymap,
-    picker::{EffortOutcome, PickerOutcome, RewindOutcome, ThreadOutcome},
+    picker::{PickerOutcome, RewindOutcome, ThreadOutcome},
 };
 
 impl App {
@@ -23,7 +23,6 @@ impl App {
             Overlay::Screen(_) => {}
             Overlay::Model(_) => return self.on_picker_key(key),
             Overlay::Account(_) => return self.on_account_menu_key(key),
-            Overlay::Effort(_) => return self.on_effort_picker_key(key),
             Overlay::Thread(_) => return self.on_thread_picker_key(key),
             Overlay::Rewind(_) => return self.on_rewind_picker_key(key),
             Overlay::Config(_) => return self.on_config_key(key),
@@ -469,43 +468,6 @@ impl App {
             KeyCode::Char(c) => {
                 if let Overlay::Model(picker) = &mut self.overlay {
                     picker.on_char(c);
-                }
-            }
-            _ => {}
-        }
-        Vec::new()
-    }
-
-    pub(crate) fn on_effort_picker_key(&mut self, key: KeyEvent) -> Vec<Op> {
-        self.dirty = true;
-        if let Some(ch) = keymap::ctrl_key(&key) {
-            if ch == 'c' {
-                self.overlay = Overlay::None;
-            }
-            return Vec::new();
-        }
-        match key.code {
-            KeyCode::Esc => self.overlay = Overlay::None,
-            KeyCode::Up => {
-                if let Overlay::Effort(picker) = &mut self.overlay {
-                    picker.move_up();
-                }
-            }
-            KeyCode::Down => {
-                if let Overlay::Effort(picker) = &mut self.overlay {
-                    picker.move_down();
-                }
-            }
-            KeyCode::Enter => {
-                if let Overlay::Effort(picker) = &self.overlay {
-                    if picker.is_empty() {
-                        self.overlay = Overlay::None;
-                        return Vec::new();
-                    }
-                    if let EffortOutcome::Selected(effort) = picker.choose() {
-                        self.overlay = Overlay::None;
-                        return self.apply_effort(effort);
-                    }
                 }
             }
             _ => {}

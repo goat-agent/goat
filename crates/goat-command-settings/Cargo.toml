@@ -14,6 +14,10 @@ goat-config = { workspace = true }
 goat-auth = { workspace = true }
 goat-search-provider = { workspace = true }
 goat-search-providers = { workspace = true }
+goat-protocol = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+unicode-width = { workspace = true }
 
 [lints]
 workspace = true

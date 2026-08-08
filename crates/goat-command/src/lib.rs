@@ -1,5 +1,6 @@
 mod command;
 mod effect;
+pub mod keymap;
 pub mod layout;
 pub mod overlay;
 mod parse;
