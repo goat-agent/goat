@@ -6,10 +6,11 @@ use std::{collections::HashMap, path::Path, time::Duration};
 use crossterm::event::{Event as CtEvent, EventStream, KeyEventKind, MouseEventKind};
 use futures::StreamExt;
 use goat_client::Identity;
+use goat_command::{Session, SessionSnapshot, Settings, UsageState, Viewport};
 use goat_commands::{CommandEffect, CommandRegistry};
 use goat_protocol::{
-    AccountEntry, Effort, Event as EngineEvent, ModelEntry, ModelTarget, NotifyKind, Op,
-    RateLimitSnapshot, TaskId, ToolCallId, Usage,
+    AccountEntry, Effort, Event as EngineEvent, ModelEntry, ModelTarget, NotifyKind, Op, TaskId,
+    ToolCallId,
 };
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -170,6 +171,7 @@ pub struct App {
     pub(crate) last_click: Option<(std::time::Instant, usize, u16)>,
     pub(crate) models: Vec<ModelEntry>,
     pub(crate) models_loaded: bool,
+    pub(crate) threads: Vec<goat_protocol::ThreadSummary>,
     pub(crate) model: Option<ModelTarget>,
     pub(crate) mode: goat_protocol::Mode,
     pub(crate) plan_path: Option<String>,
@@ -200,15 +202,6 @@ pub struct App {
     pub(crate) thread_id: Option<i64>,
     pub(crate) daemon: Option<Identity>,
     pub(crate) started: std::time::Instant,
-}
-
-#[derive(Default)]
-pub(crate) struct UsageState {
-    pub(crate) last: HashMap<(String, String), Usage>,
-    pub(crate) total: HashMap<(String, String), (u64, u64)>,
-    pub(crate) rate_limits: HashMap<(String, String), (RateLimitSnapshot, i64)>,
-    pub(crate) scroll: usize,
-    pub(crate) turn_tokens: u64,
 }
 
 #[derive(Default)]
@@ -330,6 +323,7 @@ impl App {
             last_click: None,
             models: Vec::new(),
             models_loaded: false,
+            threads: Vec::new(),
             model: None,
             mode: goat_protocol::Mode::Normal,
             plan_path: None,
@@ -522,7 +516,9 @@ impl App {
     }
 
     pub(crate) fn dispatch_slash_command(&mut self, raw: &str) -> Vec<Op> {
-        let effect = self.commands.resolve_line(raw);
+        let commands = std::mem::take(&mut self.commands);
+        let effect = commands.resolve_line(raw, self);
+        self.commands = commands;
         self.apply_command_effect(effect)
     }
 
@@ -1807,6 +1803,188 @@ impl App {
                 .map(|window| (window.label.clone(), window.used_percent))
                 .collect()
         })
+    }
+}
+
+impl Settings for App {
+    fn theme(&self) -> Theme {
+        self.theme
+    }
+
+    fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme.with_base(self.terminal_bg);
+        self.transcript.invalidate();
+        for run in &mut self.subagent_runs {
+            run.transcript.invalidate();
+        }
+        let mut cfg = goat_config::Config::load();
+        cfg.theme = if theme.is_dark() {
+            goat_config::ThemeChoice::Dark
+        } else {
+            goat_config::ThemeChoice::Light
+        };
+        self.persist_config(&cfg);
+    }
+
+    fn mouse_capture(&self) -> bool {
+        self.mouse_capture
+    }
+
+    fn set_mouse_capture(&mut self, enabled: bool) {
+        self.mouse_capture = enabled;
+        tui::set_mouse_capture(enabled);
+        let mut cfg = goat_config::Config::load();
+        cfg.mouse_capture_enabled = enabled;
+        self.persist_config(&cfg);
+    }
+
+    fn computer_use(&self) -> bool {
+        self.computer_use
+    }
+
+    fn set_computer_use(&mut self, enabled: bool) {
+        self.computer_use = enabled;
+        let mut cfg = goat_config::Config::load();
+        cfg.computer_use_enabled = enabled;
+        self.persist_config(&cfg);
+    }
+
+    fn browser(&self) -> bool {
+        self.browser
+    }
+
+    fn set_browser(&mut self, enabled: bool) {
+        self.browser = enabled;
+        let mut cfg = goat_config::Config::load();
+        cfg.browser_enabled = enabled;
+        self.persist_config(&cfg);
+    }
+}
+
+impl Viewport for App {
+    fn scroll(&self) -> usize {
+        self.scroll
+    }
+
+    fn set_scroll(&mut self, scroll: usize) {
+        self.scroll = scroll;
+        self.dirty = true;
+    }
+
+    fn follow(&self) -> bool {
+        self.follow
+    }
+
+    fn set_follow(&mut self, follow: bool) {
+        self.follow = follow;
+        self.dirty = true;
+    }
+
+    fn page_rows(&self) -> usize {
+        App::page_rows(self)
+    }
+
+    fn run_cursor(&self) -> Option<usize> {
+        self.run_selector()
+    }
+
+    fn run_count(&self) -> usize {
+        self.run_row_count()
+    }
+
+    fn move_run_cursor(&mut self, cursor: usize) {
+        App::move_run_cursor(self, cursor);
+    }
+
+    fn open_run(&mut self, cursor: usize) {
+        App::open_run(self, cursor);
+    }
+
+    fn close_run_selector(&mut self) {
+        App::close_run_selector(self);
+    }
+}
+
+impl Session for App {
+    fn models(&self) -> &[ModelEntry] {
+        &self.models
+    }
+
+    fn current_model(&self) -> Option<&ModelTarget> {
+        self.model.as_ref()
+    }
+
+    fn threads(&self) -> &[goat_protocol::ThreadSummary] {
+        &self.threads
+    }
+
+    fn usage(&self) -> &UsageState {
+        &self.usage
+    }
+
+    fn mode(&self) -> goat_protocol::Mode {
+        self.mode
+    }
+
+    fn accounts(&self) -> &[AccountEntry] {
+        &self.account_entries
+    }
+
+    fn snapshot(&self) -> SessionSnapshot {
+        SessionSnapshot {
+            session_id: self.session_id,
+            client_id: self.client_id,
+            thread_id: self.thread_id,
+            daemon: self.daemon.clone(),
+            model: self.model.clone(),
+            mode: self.mode,
+            plan_path: self.plan_path.clone(),
+            cwd: self.cwd.clone(),
+            remote: self.remote.clone(),
+            workspace: self.git_workspace.clone(),
+            pull_request: self.current_pr().cloned(),
+            window_count: self.window_count,
+            queued_count: self.queued.len(),
+            process_count: self.processes.len(),
+            skill_count: self.commands.specs().len(),
+            transcript_entries: self.transcript.entry_count(),
+            mouse_capture: self.mouse_capture,
+            computer_use: self.computer_use,
+            browser: self.browser,
+            dark_theme: self.theme.is_dark(),
+            log_path: goat_config::log_dir().map(|dir| format!("{}/goat.log", dir.display())),
+            started: self.started,
+        }
+    }
+
+    fn is_busy(&self) -> bool {
+        self.turn.active.is_some()
+    }
+
+    fn queued_len(&self) -> usize {
+        self.queued.len()
+    }
+
+    fn settings(&mut self) -> &mut dyn Settings {
+        self
+    }
+
+    fn composer(&mut self) -> &mut dyn goat_command::Composer {
+        &mut self.composer
+    }
+
+    fn viewport(&mut self) -> &mut dyn Viewport {
+        self
+    }
+
+    fn notify(&mut self, kind: NotifyKind, message: String) {
+        self.push_toast(kind, message);
+    }
+
+    fn allocate_task(&mut self) -> TaskId {
+        let id = TaskId(self.next_task);
+        self.next_task += 1;
+        id
     }
 }
 

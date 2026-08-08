@@ -22,7 +22,11 @@ impl Command for Rename {
         }])
     }
 
-    fn run(&self, invocation: CommandInvocation) -> CommandEffect {
+    fn run(
+        &self,
+        invocation: CommandInvocation,
+        _session: &mut dyn goat_command::Session,
+    ) -> CommandEffect {
         CommandEffect::RenameConversation(invocation.text("title").unwrap_or_default().to_owned())
     }
 }

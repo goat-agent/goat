@@ -655,6 +655,84 @@ impl Composer {
     }
 }
 
+impl goat_command::Composer for Composer {
+    fn text(&self) -> String {
+        Composer::text(self)
+    }
+
+    fn is_empty(&self) -> bool {
+        Composer::is_empty(self)
+    }
+
+    fn shell(&self) -> bool {
+        Composer::shell(self)
+    }
+
+    fn set_plain_text(&mut self, text: &str) {
+        Composer::set_plain_text(self, text);
+    }
+
+    fn replace_at_query(&mut self, replacement: &str) {
+        Composer::replace_at_query(self, replacement);
+    }
+
+    fn insert_str(&mut self, text: &str) {
+        Composer::insert_str(self, text);
+    }
+
+    fn insert_char(&mut self, ch: char) {
+        Composer::insert_char(self, ch);
+    }
+
+    fn backspace(&mut self) {
+        Composer::backspace(self);
+    }
+
+    fn delete_forward(&mut self) {
+        Composer::delete_forward(self);
+    }
+
+    fn move_left(&mut self) -> bool {
+        Composer::move_left(self)
+    }
+
+    fn move_right(&mut self) -> bool {
+        Composer::move_right(self)
+    }
+
+    fn move_word_left(&mut self) -> bool {
+        Composer::move_word_left(self)
+    }
+
+    fn move_word_right(&mut self) -> bool {
+        Composer::move_word_right(self)
+    }
+
+    fn move_home(&mut self) -> bool {
+        Composer::move_home(self)
+    }
+
+    fn move_end(&mut self) -> bool {
+        Composer::move_end(self)
+    }
+
+    fn move_up(&mut self) -> bool {
+        Composer::move_up(self)
+    }
+
+    fn move_down(&mut self) -> bool {
+        Composer::move_down(self)
+    }
+
+    fn newline(&mut self) {
+        Composer::newline(self);
+    }
+
+    fn at_query(&self) -> Option<String> {
+        Composer::at_query(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Composer;

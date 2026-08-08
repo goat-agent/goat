@@ -45,23 +45,26 @@ impl App {
                     Overlay::Plan(Box::new(crate::plan::PlanSheet::new(call, plan, path)));
                 self.dirty = true;
             }
-            EngineEvent::ThreadsListed { threads } => match self.pending.resume.take() {
-                Some(ResumeIntent::Picker) => {
-                    self.overlay = Overlay::Thread(ThreadPicker::new(threads));
-                }
-                Some(ResumeIntent::Index(index)) => match threads.get(index) {
-                    Some(thread) => ops.push(Op::Resume {
-                        thread_id: thread.id,
-                    }),
-                    None => {
-                        self.push_toast(
-                            NotifyKind::Error,
-                            format!("no conversation #{}", index + 1),
-                        );
+            EngineEvent::ThreadsListed { threads } => {
+                self.threads.clone_from(&threads);
+                match self.pending.resume.take() {
+                    Some(ResumeIntent::Picker) => {
+                        self.overlay = Overlay::Thread(ThreadPicker::new(threads));
                     }
-                },
-                None => {}
-            },
+                    Some(ResumeIntent::Index(index)) => match threads.get(index) {
+                        Some(thread) => ops.push(Op::Resume {
+                            thread_id: thread.id,
+                        }),
+                        None => {
+                            self.push_toast(
+                                NotifyKind::Error,
+                                format!("no conversation #{}", index + 1),
+                            );
+                        }
+                    },
+                    None => {}
+                }
+            }
             EngineEvent::RewindPointsListed { points } => {
                 self.overlay = Overlay::Rewind(crate::picker::RewindPicker::new(points));
                 self.rewind_arm = None;

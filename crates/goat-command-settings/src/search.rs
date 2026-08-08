@@ -15,7 +15,11 @@ impl Command for Search {
         "configure web search providers (Tavily is free: 1000/month, no credit card)"
     }
 
-    fn run(&self, invocation: CommandInvocation) -> CommandEffect {
+    fn run(
+        &self,
+        invocation: CommandInvocation,
+        _session: &mut dyn goat_command::Session,
+    ) -> CommandEffect {
         run_search(invocation.raw_args.trim())
     }
 }

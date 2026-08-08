@@ -11,7 +11,11 @@ impl Command for Help {
         "show keybindings and commands"
     }
 
-    fn run(&self, _invocation: CommandInvocation) -> CommandEffect {
+    fn run(
+        &self,
+        _invocation: CommandInvocation,
+        _session: &mut dyn goat_command::Session,
+    ) -> CommandEffect {
         CommandEffect::ShowHelp
     }
 }

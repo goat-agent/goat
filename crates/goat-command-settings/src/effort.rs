@@ -22,7 +22,11 @@ impl Command for Effort {
         }])
     }
 
-    fn run(&self, invocation: CommandInvocation) -> CommandEffect {
+    fn run(
+        &self,
+        invocation: CommandInvocation,
+        _session: &mut dyn goat_command::Session,
+    ) -> CommandEffect {
         if let Some(level) = invocation.text("level") {
             CommandEffect::SelectEffort(level.to_ascii_lowercase())
         } else {

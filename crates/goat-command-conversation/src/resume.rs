@@ -22,7 +22,11 @@ impl Command for Resume {
         }])
     }
 
-    fn run(&self, invocation: CommandInvocation) -> CommandEffect {
+    fn run(
+        &self,
+        invocation: CommandInvocation,
+        _session: &mut dyn goat_command::Session,
+    ) -> CommandEffect {
         if let Some(n) = invocation.integer("n") {
             match usize::try_from(n) {
                 Ok(n) if n >= 1 => CommandEffect::ResumeIndex(n - 1),
@@ -51,26 +55,35 @@ mod tests {
 
     #[test]
     fn bare_opens_picker() {
-        let effect = Resume.run(invocation(Vec::new()));
+        let effect = Resume.run(
+            invocation(Vec::new()),
+            &mut goat_command::EmptySession::default(),
+        );
         assert!(matches!(effect, CommandEffect::OpenThreadPicker));
     }
 
     #[test]
     fn positive_index_is_zero_based() {
-        let effect = Resume.run(invocation(vec![ParsedParameter {
-            name: "n".to_owned(),
-            value: ParsedValue::Integer(3),
-        }]));
+        let effect = Resume.run(
+            invocation(vec![ParsedParameter {
+                name: "n".to_owned(),
+                value: ParsedValue::Integer(3),
+            }]),
+            &mut goat_command::EmptySession::default(),
+        );
         assert!(matches!(effect, CommandEffect::ResumeIndex(2)));
     }
 
     #[test]
     fn zero_or_negative_is_error() {
         for value in [0, -1] {
-            let effect = Resume.run(invocation(vec![ParsedParameter {
-                name: "n".to_owned(),
-                value: ParsedValue::Integer(value),
-            }]));
+            let effect = Resume.run(
+                invocation(vec![ParsedParameter {
+                    name: "n".to_owned(),
+                    value: ParsedValue::Integer(value),
+                }]),
+                &mut goat_command::EmptySession::default(),
+            );
             assert!(matches!(effect, CommandEffect::Error(_)));
         }
     }

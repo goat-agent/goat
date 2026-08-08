@@ -33,7 +33,11 @@ impl CommandRegistry {
             || self.skills.iter().any(|skill| skill.name == name)
     }
 
-    pub fn resolve_line(&self, raw: &str) -> CommandEffect {
+    pub fn resolve_line(
+        &self,
+        raw: &str,
+        session: &mut dyn goat_command::Session,
+    ) -> CommandEffect {
         let line = match parse_line(raw) {
             Ok(line) => line,
             Err(error) => return CommandEffect::Error(error.message()),
@@ -43,7 +47,7 @@ impl CommandRegistry {
         }) {
             let spec = command.spec();
             return match spec.parse(raw, &line.args) {
-                Ok(invocation) => command.run(invocation),
+                Ok(invocation) => command.run(invocation, session),
                 Err(error) => CommandEffect::Error(error.message()),
             };
         }
@@ -53,13 +57,18 @@ impl CommandRegistry {
         CommandEffect::Error(format!("unknown command: /{}", line.name))
     }
 
-    pub fn resolve(&self, name: &str, args: &str) -> CommandEffect {
+    pub fn resolve(
+        &self,
+        name: &str,
+        args: &str,
+        session: &mut dyn goat_command::Session,
+    ) -> CommandEffect {
         let suffix = if args.trim().is_empty() {
             String::new()
         } else {
             format!(" {args}")
         };
-        self.resolve_line(&format!("/{name}{suffix}"))
+        self.resolve_line(&format!("/{name}{suffix}"), session)
     }
 
     pub fn spec(&self, name: &str) -> Option<CommandSpec> {
@@ -227,10 +236,14 @@ fn parsed_value(value: ParsedValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::{CommandEffect, CommandRegistry};
-    use goat_command::{CommandShape, ParameterValue};
+    use goat_command::{CommandShape, EmptySession, ParameterValue};
     use goat_protocol::{
         SkillBranchInfo, SkillCommandShape, SkillInfo, SkillParameterInfo, SkillParameterValue,
     };
+
+    fn resolve(registry: &CommandRegistry, raw: &str) -> CommandEffect {
+        registry.resolve_line(raw, &mut EmptySession::default())
+    }
 
     fn skill(name: &str) -> SkillInfo {
         SkillInfo {
@@ -244,52 +257,46 @@ mod tests {
     fn builtin_commands_resolve_to_effects() {
         let registry = CommandRegistry::builtin();
         assert!(matches!(
-            registry.resolve_line("/model"),
+            resolve(&registry, "/model"),
             CommandEffect::OpenModelPicker
         ));
         assert!(matches!(
-            registry.resolve_line("/config"),
+            resolve(&registry, "/config"),
             CommandEffect::OpenConfig
         ));
         assert!(matches!(
-            registry.resolve_line("/provider"),
+            resolve(&registry, "/provider"),
             CommandEffect::OpenConfig
         ));
         assert!(matches!(
-            registry.resolve_line("/clear"),
+            resolve(&registry, "/clear"),
             CommandEffect::ClearConversation
         ));
         assert!(matches!(
-            registry.resolve_line("/usage"),
+            resolve(&registry, "/usage"),
             CommandEffect::OpenUsage
         ));
         assert!(matches!(
-            registry.resolve_line("/status"),
+            resolve(&registry, "/status"),
             CommandEffect::OpenStatus
         ));
         assert!(matches!(
-            registry.resolve_line("/help"),
+            resolve(&registry, "/help"),
             CommandEffect::ShowHelp
         ));
-        assert!(matches!(
-            registry.resolve_line("/exit"),
-            CommandEffect::Quit
-        ));
+        assert!(matches!(resolve(&registry, "/exit"), CommandEffect::Quit));
     }
 
     #[test]
     fn exit_alias_quit_resolves_to_quit() {
         let registry = CommandRegistry::builtin();
-        assert!(matches!(
-            registry.resolve_line("/quit"),
-            CommandEffect::Quit
-        ));
+        assert!(matches!(resolve(&registry, "/quit"), CommandEffect::Quit));
     }
 
     #[test]
     fn unknown_command_is_error() {
         assert!(matches!(
-            CommandRegistry::builtin().resolve_line("/nope"),
+            resolve(&CommandRegistry::builtin(), "/nope"),
             CommandEffect::Error(_)
         ));
     }
@@ -298,7 +305,7 @@ mod tests {
     fn skills_resolve_to_submit() {
         let mut registry = CommandRegistry::builtin();
         registry.set_skills(&[skill("demo")]);
-        match registry.resolve_line("/demo with args") {
+        match resolve(&registry, "/demo with args") {
             CommandEffect::SubmitCommand { display, prompt } => {
                 assert_eq!(display, "/demo with args");
                 assert_eq!(prompt, "/demo with args");
@@ -321,11 +328,11 @@ mod tests {
             command: None,
         }]);
         assert!(matches!(
-            registry.resolve_line("/old"),
+            resolve(&registry, "/old"),
             CommandEffect::Error(_)
         ));
         assert!(matches!(
-            registry.resolve_line("/new"),
+            resolve(&registry, "/new"),
             CommandEffect::SubmitCommand { .. }
         ));
     }
@@ -389,7 +396,7 @@ mod tests {
             }),
         }]);
         let CommandEffect::SubmitCommand { display, prompt } =
-            registry.resolve_line("/review src/lib.rs")
+            resolve(&registry, "/review src/lib.rs")
         else {
             panic!("expected submit command");
         };
@@ -420,7 +427,7 @@ mod tests {
             }),
         }]);
         let CommandEffect::SubmitCommand { display, prompt } =
-            registry.resolve_line("/review security auth flow")
+            resolve(&registry, "/review security auth flow")
         else {
             panic!("expected submit command");
         };
@@ -446,7 +453,7 @@ mod tests {
             }),
         }]);
         assert!(matches!(
-            registry.resolve_line("/review nope"),
+            resolve(&registry, "/review nope"),
             CommandEffect::Error(_)
         ));
     }

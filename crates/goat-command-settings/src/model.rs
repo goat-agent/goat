@@ -22,7 +22,11 @@ impl Command for Model {
         }])
     }
 
-    fn run(&self, invocation: CommandInvocation) -> CommandEffect {
+    fn run(
+        &self,
+        invocation: CommandInvocation,
+        _session: &mut dyn goat_command::Session,
+    ) -> CommandEffect {
         if let Some(name) = invocation.text("name") {
             CommandEffect::SelectModelNamed(name.to_owned())
         } else {

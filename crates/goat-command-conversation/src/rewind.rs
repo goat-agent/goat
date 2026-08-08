@@ -15,7 +15,11 @@ impl Command for Rewind {
         &["checkpoint", "undo"]
     }
 
-    fn run(&self, _invocation: CommandInvocation) -> CommandEffect {
+    fn run(
+        &self,
+        _invocation: CommandInvocation,
+        _session: &mut dyn goat_command::Session,
+    ) -> CommandEffect {
         CommandEffect::OpenRewind
     }
 }
@@ -28,13 +32,16 @@ mod tests {
 
     #[test]
     fn opens_rewind_picker() {
-        let effect = Rewind.run(CommandInvocation {
-            name: "rewind".to_owned(),
-            subcommand: None,
-            raw: "/rewind".to_owned(),
-            raw_args: String::new(),
-            parameters: Vec::new(),
-        });
+        let effect = Rewind.run(
+            CommandInvocation {
+                name: "rewind".to_owned(),
+                subcommand: None,
+                raw: "/rewind".to_owned(),
+                raw_args: String::new(),
+                parameters: Vec::new(),
+            },
+            &mut goat_command::EmptySession::default(),
+        );
         assert!(matches!(effect, CommandEffect::OpenRewind));
     }
 }

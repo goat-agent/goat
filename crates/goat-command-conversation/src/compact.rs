@@ -22,7 +22,11 @@ impl Command for Compact {
         }])
     }
 
-    fn run(&self, invocation: CommandInvocation) -> CommandEffect {
+    fn run(
+        &self,
+        invocation: CommandInvocation,
+        _session: &mut dyn goat_command::Session,
+    ) -> CommandEffect {
         CommandEffect::CompactConversation(invocation.text("focus").map(str::to_owned))
     }
 }
