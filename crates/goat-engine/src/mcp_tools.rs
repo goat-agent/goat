@@ -101,9 +101,7 @@ impl Tool for McpToolAdapter {
                 .session
                 .call(&self.original_name, arguments)
                 .await
-                .map_err(|err| ToolError::Execution {
-                    message: err.to_string(),
-                })?;
+                .map_err(|err| ToolError::execution(err.to_string()))?;
             output_from(&self.original_name, &result)
         })
     }
@@ -139,9 +137,9 @@ fn output_from(tool_name: &str, result: &McpToolResult) -> Result<ToolOutput, To
         } else {
             parts.join("\n")
         };
-        return Err(ToolError::Execution {
-            message: format!("mcp tool {tool_name} returned an error: {message}"),
-        });
+        return Err(ToolError::execution(format!(
+            "mcp tool {tool_name} returned an error: {message}"
+        )));
     }
     if !parts.is_empty() {
         let joined = parts.join("\n");

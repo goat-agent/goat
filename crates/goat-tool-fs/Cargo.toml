@@ -14,6 +14,7 @@ goat-tool = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

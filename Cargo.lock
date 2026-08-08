@@ -2515,6 +2515,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-agent-tool",
+ "goat-agent-tool-shell",
  "goat-process",
  "goat-types",
  "libc",
@@ -2930,8 +2931,12 @@ dependencies = [
  "goat-sandbox",
  "goat-skill",
  "goat-tool",
+ "goat-tool-ask",
  "goat-tool-browser",
  "goat-tool-computer",
+ "goat-tool-delegate",
+ "goat-tool-plan",
+ "goat-tool-search",
  "goat-tool-shell",
  "goat-tools",
  "goat-worktree",
@@ -3637,11 +3642,23 @@ name = "goat-tool"
 version = "0.1.0"
 dependencies = [
  "goat-protocol",
- "regex",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
+ "tokio-util",
+ "unicode-width 0.2.2",
+]
+
+[[package]]
+name = "goat-tool-ask"
+version = "0.1.0"
+dependencies = [
+ "goat-protocol",
+ "goat-tool",
+ "serde",
+ "serde_json",
+ "tokio-util",
  "unicode-width 0.2.2",
 ]
 
@@ -3679,12 +3696,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-tool-delegate"
+version = "0.1.0"
+dependencies = [
+ "goat-protocol",
+ "goat-tool",
+ "serde",
+ "serde_json",
+ "tokio-util",
+]
+
+[[package]]
 name = "goat-tool-fs"
 version = "0.1.0"
 dependencies = [
  "goat-protocol",
  "goat-tool",
  "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "goat-tool-plan"
+version = "0.1.0"
+dependencies = [
+ "goat-protocol",
+ "goat-tool",
  "serde_json",
  "tempfile",
  "tokio",
@@ -3720,7 +3760,9 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.19",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -3735,6 +3777,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.19",
  "tokio",
 ]
 
@@ -3763,12 +3806,17 @@ dependencies = [
 name = "goat-tools"
 version = "0.1.0"
 dependencies = [
+ "goat-protocol",
  "goat-tool",
+ "goat-tool-ask",
+ "goat-tool-delegate",
  "goat-tool-fs",
+ "goat-tool-plan",
  "goat-tool-search",
  "goat-tool-shell",
  "goat-tool-skill",
  "goat-tool-web",
+ "tokio-util",
 ]
 
 [[package]]

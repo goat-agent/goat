@@ -61,15 +61,14 @@ impl WebSearchTool {
         max: usize,
         target: &str,
     ) -> Result<ToolOutput, ToolError> {
-        let parsed = SearchTarget::parse(target).ok_or_else(|| ToolError::Execution {
-            message: format!("invalid search target: {target}"),
-        })?;
+        let parsed = SearchTarget::parse(target)
+            .ok_or_else(|| ToolError::execution(format!("invalid search target: {target}")))?;
         let provider = self
             .providers
             .iter()
             .find(|candidate| candidate.target() == parsed)
-            .ok_or_else(|| ToolError::Execution {
-                message: format!("unknown or unconfigured search target: {target}"),
+            .ok_or_else(|| {
+                ToolError::execution(format!("unknown or unconfigured search target: {target}"))
             })?;
         let results = provider
             .search(
@@ -77,9 +76,7 @@ impl WebSearchTool {
                 self.credentials.as_ref(),
             )
             .await
-            .map_err(|err| ToolError::Execution {
-                message: err.to_string(),
-            })?;
+            .map_err(|err| ToolError::execution(err.to_string()))?;
         Ok(rendered_output(&results, &[], false))
     }
 

@@ -6,12 +6,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use goat_agent_tool::{
     ToolCall, ToolContent, ToolContext, ToolFactory, ToolHandler, ToolName, ToolOutput, ToolSpec,
-    deny_reason,
 };
 use serde::Deserialize;
 use serde_json::json;
 use tokio::process::Command;
 use tokio::time::timeout;
+
+use crate::deny_reason;
 
 pub const NAME: ToolName = ToolName::from_static("shell");
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;

@@ -1,8 +1,10 @@
 use std::fmt::Write as _;
 
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolContext, ToolError, ToolFuture, ToolOutput, display};
+use goat_tool::{Tool, ToolContext, ToolFuture, ToolOutput, display};
 use serde::Deserialize;
+
+use crate::error::FsError;
 
 pub struct ReadTool;
 
@@ -49,11 +51,11 @@ impl Tool for ReadTool {
             let args: Input = serde_json::from_str(input)?;
             let resolved = ctx.resolve(&args.path)?;
             if !resolved.exists() {
-                return Err(ToolError::NotFound { path: args.path });
+                return Err(FsError::NotFound { path: args.path }.into());
             }
             let file = tokio::fs::File::open(&resolved)
                 .await
-                .map_err(|source| ToolError::Io {
+                .map_err(|source| FsError::Io {
                     path: args.path.clone(),
                     source,
                 })?;
@@ -75,7 +77,7 @@ impl Tool for ReadTool {
                 buf.clear();
                 let read = tokio::io::AsyncBufReadExt::read_until(&mut reader, b'\n', &mut buf)
                     .await
-                    .map_err(|source| ToolError::Io {
+                    .map_err(|source| FsError::Io {
                         path: args.path.clone(),
                         source,
                     })?;
@@ -114,7 +116,7 @@ mod tests {
     use std::fmt::Write as _;
 
     use super::ReadTool;
-    use goat_tool::{Tool, ToolContext, ToolError};
+    use goat_tool::{Tool, ToolContext, ToolErrorClass};
 
     fn ctx(dir: &std::path::Path) -> ToolContext {
         ToolContext::new(dir).unwrap()
@@ -179,7 +181,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ctx(dir.path());
         let result = ReadTool.run(r#"{"path":"nope.txt"}"#, &ctx).await;
-        assert!(matches!(result, Err(ToolError::NotFound { .. })));
+        assert!(matches!(
+            result,
+            Err(error) if error.class() == ToolErrorClass::NotFound
+        ));
     }
 
     #[tokio::test]

@@ -2,8 +2,7 @@ use std::fmt::Write as _;
 
 use goat_protocol::{Event, InputAttachment, Op, TaskId};
 use goat_provider::{ContentBlock, Message, MessageRole, Provider, ToolDefinition};
-use goat_tool::{SandboxPolicy, ToolContext, ToolError};
-use goat_tools::ToolRegistry;
+use goat_tool::{SandboxPolicy, ToolContext, ToolRegistry};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -59,18 +58,21 @@ enum ShellEnd {
 }
 
 async fn run_shell_command(tools: &ToolRegistry, command: &str, cwd: &std::path::Path) -> String {
-    let mut tool_ctx = match ToolContext::new(cwd) {
+    let tool_ctx = match ToolContext::new(cwd) {
         Ok(tool_ctx) => tool_ctx,
         Err(err) => return err.to_string(),
     };
-    tool_ctx.bash_timeout = SHELL_TIMEOUT;
-    let Some(tool) = tools.get("Bash") else {
+    let Some(tool) = tools.get(goat_tool_shell::SHELL_TOOL) else {
         return "shell tool unavailable".to_owned();
     };
-    let input = serde_json::json!({ "command": command }).to_string();
+    let input = serde_json::json!({
+        "command": command,
+        "timeout_ms": SHELL_TIMEOUT.as_millis()
+    })
+    .to_string();
     match tool.run(&input, &tool_ctx).await {
         Ok(output) => output.as_text().unwrap_or_default().to_owned(),
-        Err(ToolError::Timeout { .. }) => {
+        Err(err) if err.class() == goat_tool::ToolErrorClass::Timeout => {
             format!("[timed out after {}m]", SHELL_TIMEOUT.as_secs() / 60)
         }
         Err(err) => err.to_string(),
@@ -173,7 +175,7 @@ async fn bind_plan_path(ctx: &Ctx, state: &mut SessionState, thread_id: Option<i
     }
     let seed = seed.to_owned();
     let Ok(path) =
-        tokio::task::spawn_blocking(move || crate::plan::resolve_path(&dir, tid, &seed)).await
+        tokio::task::spawn_blocking(move || goat_tool_plan::resolve_path(&dir, tid, &seed)).await
     else {
         return;
     };
@@ -233,12 +235,12 @@ fn plan_decision_input(
         goat_protocol::PlanDecision::Approve {} => {
             let path = state.plan_path.as_ref()?;
             (
-                crate::plan::approved_input(path),
+                goat_tool_plan::approved_input(path),
                 "(plan approved)".to_owned(),
             )
         }
         goat_protocol::PlanDecision::Reject { feedback } => (
-            crate::plan::rejected_input(feedback),
+            goat_tool_plan::rejected_input(feedback),
             "(plan rejected)".to_owned(),
         ),
     };
@@ -341,8 +343,7 @@ fn wake_notice(updates: &[(goat_protocol::RunId, crate::background::RunUpdate)])
         let _ = write!(
             body,
             "\n[{} #{id} · {} · {status}]\n",
-            update.kind.label(),
-            update.title
+            update.label, update.title
         );
         if update.output.trim().is_empty() {
             body.push_str("(no output)\n");
@@ -633,7 +634,7 @@ pub(crate) async fn handle_compact(
         tool_defs,
         cwd,
         allow_delegate: true,
-        allow_ask: true,
+        interactive: true,
         plan: false,
         plan_path: None,
         exec_policy: SandboxPolicy::Full,
@@ -814,7 +815,7 @@ async fn run_one_turn(
         tool_defs,
         cwd,
         allow_delegate: true,
-        allow_ask,
+        interactive: allow_ask,
         plan: state.mode.is_plan(),
         plan_path: state.plan_path.clone(),
         exec_policy: SandboxPolicy::Full,
@@ -893,14 +894,14 @@ async fn run_one_turn(
 #[cfg(test)]
 mod tests {
     use super::wake_notice;
-    use crate::background::{Kind, RunUpdate};
+    use crate::background::RunUpdate;
     use goat_protocol::{ProcessState, RunId};
 
     fn bash(title: &str, output: &str, code: i32) -> (RunId, RunUpdate) {
         (
             RunId(3),
             RunUpdate {
-                kind: Kind::Bash,
+                label: "bash".to_owned(),
                 title: title.to_owned(),
                 output: output.to_owned(),
                 state: ProcessState::Exited,
@@ -914,7 +915,7 @@ mod tests {
         (
             RunId(7),
             RunUpdate {
-                kind: Kind::Subagent,
+                label: "subagent".to_owned(),
                 title: title.to_owned(),
                 output: report.to_owned(),
                 state: ProcessState::Exited,

@@ -60,9 +60,7 @@ impl ComputerTool {
 }
 
 fn exec_err(msg: impl std::fmt::Display) -> ToolError {
-    ToolError::Execution {
-        message: msg.to_string(),
-    }
+    ToolError::execution(msg.to_string())
 }
 
 impl Tool for ComputerTool {

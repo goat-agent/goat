@@ -38,17 +38,6 @@ pub fn call_sig(name: &str, args: &[&str]) -> String {
     }
 }
 
-const PRIORITY_KEYS: [&str; 8] = [
-    "path",
-    "file_path",
-    "command",
-    "pattern",
-    "query",
-    "url",
-    "action",
-    "name",
-];
-
 pub fn generic(input: &str) -> ToolDisplay {
     generic_named("", input)
 }
@@ -57,25 +46,13 @@ pub fn generic_named(tool_name: &str, input: &str) -> ToolDisplay {
     let Ok(Value::Object(map)) = serde_json::from_str::<Value>(input) else {
         return raw(input);
     };
-    let mut parts: Vec<String> = Vec::new();
-    let mut used: Vec<&str> = Vec::new();
-    for key in PRIORITY_KEYS {
-        if let Some(text) = map.get(key).and_then(scalar_text) {
-            parts.push(text);
-            used.push(key);
-        }
-    }
-    for (key, value) in &map {
-        if parts.len() >= 3 {
-            break;
-        }
-        if used.iter().any(|k| k == key) {
-            continue;
-        }
-        if let Some(text) = scalar_text(value) {
-            parts.push(text);
-        }
-    }
+    let parts: Vec<String> = map
+        .values()
+        .filter(|value| value.is_string())
+        .chain(map.values().filter(|value| !value.is_string()))
+        .filter_map(scalar_text)
+        .take(3)
+        .collect();
     if parts.is_empty() {
         return raw(input);
     }
@@ -131,7 +108,7 @@ mod tests {
     }
 
     #[test]
-    fn generic_prefers_priority_keys() {
+    fn generic_prefers_descriptive_text_over_scalar_options() {
         let got = generic(r#"{"limit":5,"query":"rust tui"}"#);
         assert_eq!(got.primary, "rust tui");
         assert_eq!(got.detail.as_deref(), Some("5"));

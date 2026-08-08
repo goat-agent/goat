@@ -18,8 +18,6 @@ pub(crate) enum WebFetchError {
 
 impl From<WebFetchError> for ToolError {
     fn from(err: WebFetchError) -> Self {
-        ToolError::Execution {
-            message: err.to_string(),
-        }
+        ToolError::execution(err.to_string())
     }
 }

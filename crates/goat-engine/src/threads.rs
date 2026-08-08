@@ -1,24 +1,26 @@
 use goat_code_store::CodeStore as Store;
 use goat_protocol::{
     Effort, Event, ModelTarget, NotifyKind, RewindDraft, RewindPoint, RewindScope, SkillInfo,
-    SubagentGroupEntry, SubagentGroupMember, ThreadSummary, ToolCall, ToolCallId, ToolOutcome,
-    TranscriptEntry,
+    ThreadSummary, ToolCall, ToolCallId, ToolOutcome, TranscriptEntry,
 };
 use goat_provider::{ContentBlock, Message, MessageRole};
+use goat_tool::{ToolBatchCall, ToolHistoryGroup};
 use tokio::sync::mpsc;
 
 use crate::{
     Ctx,
-    delegate::{SUBAGENT_TOOL_NAME, subagent_group_member},
     prompt::build_system_prompt,
     tools_exec::{call_display, summarize_line},
 };
 
 struct RestoredToolUse {
     call: ToolCall,
-    member: Option<SubagentGroupMember>,
-    group: Option<ToolCallId>,
-    group_size: usize,
+    group: Option<(ToolCallId, usize)>,
+}
+
+struct RestoredToolGroup {
+    history: Box<dyn ToolHistoryGroup>,
+    outcomes: Vec<Option<ToolOutcome>>,
 }
 
 pub(crate) fn parse_content_blocks(body: &str) -> Vec<ContentBlock> {
@@ -274,14 +276,14 @@ type Rebuilt = (
 fn rebuild_entries(
     messages: Vec<goat_code_store::StoredMessage>,
     compactions: &[goat_code_store::Compaction],
-    tools: &goat_tools::ToolRegistry,
+    tools: &goat_tool::ToolRegistry,
     tool_summaries: &std::collections::HashMap<(i64, String), String>,
 ) -> Rebuilt {
     let mut parsed: Vec<(i64, MessageRole, Vec<ContentBlock>)> = Vec::new();
     let mut entries: Vec<TranscriptEntry> = Vec::new();
     let mut tool_uses: std::collections::HashMap<String, RestoredToolUse> =
         std::collections::HashMap::new();
-    let mut agent_groups: std::collections::HashMap<ToolCallId, Vec<SubagentGroupEntry>> =
+    let mut history_groups: std::collections::HashMap<ToolCallId, RestoredToolGroup> =
         std::collections::HashMap::new();
     let mut tool_seq: u64 = 0;
     let mut next_compaction = 0usize;
@@ -318,20 +320,44 @@ fn rebuild_entries(
             _ => continue,
         };
         let content = parse_content_blocks(&stored.body);
-        let tool_count = content
+        let uses: Vec<(&str, String)> = content
             .iter()
-            .filter(|block| matches!(block, ContentBlock::ToolUse { .. }))
-            .count();
-        let agent_group_size = if role == MessageRole::Assistant
-            && tool_count > 1
-            && content.iter().all(|block| {
-                !matches!(block, ContentBlock::ToolUse { name, .. } if name != SUBAGENT_TOOL_NAME)
-            }) {
-            tool_count
+            .filter_map(|block| match block {
+                ContentBlock::ToolUse { name, input, .. } => {
+                    Some((name.as_str(), input.to_string()))
+                }
+                _ => None,
+            })
+            .collect();
+        let restored_group = if role == MessageRole::Assistant
+            && uses.len() > 1
+            && uses.iter().all(|(name, _)| *name == uses[0].0)
+        {
+            let group = ToolCallId(tool_seq + 1);
+            let calls: Vec<ToolBatchCall<'_>> = uses
+                .iter()
+                .enumerate()
+                .map(|(index, (_, input))| ToolBatchCall {
+                    call: ToolCallId(group.0 + index as u64),
+                    input,
+                })
+                .collect();
+            tools.get(uses[0].0).and_then(|tool| {
+                tool.history_group(&calls).map(|history| {
+                    history_groups.insert(
+                        group,
+                        RestoredToolGroup {
+                            history,
+                            outcomes: (0..calls.len()).map(|_| None).collect(),
+                        },
+                    );
+                    group
+                })
+            })
         } else {
-            0
+            None
         };
-        let mut subagent_group = None;
+        let mut group_index = 0usize;
         for block in &content {
             match block {
                 ContentBlock::Text { text } => match role {
@@ -360,12 +386,11 @@ fn rebuild_entries(
                     tool_seq += 1;
                     let call_id = ToolCallId(tool_seq);
                     let input = input.to_string();
-                    let group = if agent_group_size > 0 {
-                        Some(*subagent_group.get_or_insert(call_id))
-                    } else {
-                        None
-                    };
-                    let member = group.map(|_| subagent_group_member(call_id, &input));
+                    let group = restored_group.map(|group| {
+                        let index = group_index;
+                        group_index += 1;
+                        (group, index)
+                    });
                     tool_uses.insert(
                         id.clone(),
                         RestoredToolUse {
@@ -374,9 +399,7 @@ fn rebuild_entries(
                                 name: name.clone(),
                                 display: call_display(tools, name, &input),
                             },
-                            member,
                             group,
-                            group_size: agent_group_size,
                         },
                     );
                 }
@@ -394,7 +417,9 @@ fn rebuild_entries(
                                 summarize_line(&ContentBlock::tool_result_text(content)),
                                 None,
                             )
-                        } else if restored.call.name == crate::ask::ASK_TOOL_NAME {
+                        } else if tools.get(&restored.call.name).is_some_and(|tool| {
+                            tool.summary_kind() == goat_tool::ToolSummaryKind::Body
+                        }) {
                             (None, stored_summary.cloned())
                         } else {
                             (stored_summary.cloned(), None)
@@ -406,12 +431,17 @@ fn rebuild_entries(
                             image: None,
                             git: None,
                         };
-                        if let (Some(group), Some(member)) = (restored.group, restored.member) {
-                            let grouped = agent_groups.entry(group).or_default();
-                            grouped.push(SubagentGroupEntry { member, outcome });
-                            if grouped.len() == restored.group_size {
-                                let members = agent_groups.remove(&group).unwrap_or_default();
-                                entries.push(TranscriptEntry::SubagentGroup { group, members });
+                        if let Some((group, index)) = restored.group {
+                            if let Some(restored_group) = history_groups.get_mut(&group) {
+                                restored_group.outcomes[index] = Some(outcome);
+                                if restored_group.outcomes.iter().all(Option::is_some) {
+                                    let restored_group = history_groups
+                                        .remove(&group)
+                                        .expect("completed history group must exist");
+                                    let outcomes =
+                                        restored_group.outcomes.into_iter().flatten().collect();
+                                    entries.push(restored_group.history.entry(outcomes));
+                                }
                             }
                         } else {
                             entries.push(TranscriptEntry::Tool {
@@ -663,7 +693,7 @@ mod tests {
 
     #[test]
     fn resume_restores_ask_summary_as_body() {
-        let tools = goat_tools::ToolRegistry::builtin();
+        let tools = goat_tools::builtin();
         let messages = vec![
             stored(1, Some(1), "user", "deploy?".to_owned()),
             stored(
@@ -699,7 +729,7 @@ mod tests {
 
     #[test]
     fn resume_restores_other_tool_summary_as_summary() {
-        let tools = goat_tools::ToolRegistry::builtin();
+        let tools = goat_tools::builtin();
         let messages = vec![
             stored(
                 1,
@@ -726,7 +756,7 @@ mod tests {
 
     #[test]
     fn resume_keeps_error_summary_from_result_text() {
-        let tools = goat_tools::ToolRegistry::builtin();
+        let tools = goat_tools::builtin();
         let messages = vec![
             stored(
                 1,
@@ -758,7 +788,7 @@ mod tests {
 
     #[test]
     fn resume_without_stored_summary_leaves_outcome_empty() {
-        let tools = goat_tools::ToolRegistry::builtin();
+        let tools = goat_tools::builtin();
         let messages = vec![
             stored(
                 1,

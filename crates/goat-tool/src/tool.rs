@@ -1,6 +1,7 @@
-use std::{future::Future, pin::Pin};
+use std::{any::Any, future::Future, pin::Pin};
 
-use goat_protocol::{GitFacts, ToolDisplay};
+use goat_protocol::{TaskId, ToolCallId, ToolDisplay, ToolOutcome, TranscriptEntry};
+use tokio_util::sync::CancellationToken;
 
 use crate::{context::ToolContext, display, error::ToolError};
 
@@ -14,11 +15,15 @@ pub enum ToolContent {
     Image(ToolImage),
 }
 
+pub trait ToolOutcomeExtension: Send + Sync {
+    fn apply(&self, outcome: &mut ToolOutcome);
+}
+
 pub struct ToolOutput {
     pub content: ToolContent,
     pub summary: Option<String>,
     pub body: Option<String>,
-    pub git: Option<Box<GitFacts>>,
+    extensions: Vec<Box<dyn ToolOutcomeExtension>>,
 }
 
 impl ToolOutput {
@@ -27,7 +32,7 @@ impl ToolOutput {
             content: ToolContent::Text(s.into()),
             summary: None,
             body: None,
-            git: None,
+            extensions: Vec::new(),
         }
     }
 
@@ -39,7 +44,7 @@ impl ToolOutput {
             }),
             summary: None,
             body: None,
-            git: None,
+            extensions: Vec::new(),
         }
     }
 
@@ -48,7 +53,7 @@ impl ToolOutput {
             content: ToolContent::Image(image),
             summary: None,
             body: None,
-            git: None,
+            extensions: Vec::new(),
         }
     }
 
@@ -65,9 +70,15 @@ impl ToolOutput {
     }
 
     #[must_use]
-    pub fn with_git(mut self, git: GitFacts) -> Self {
-        self.git = Some(Box::new(git));
+    pub fn with_extension(mut self, extension: impl ToolOutcomeExtension + 'static) -> Self {
+        self.extensions.push(Box::new(extension));
         self
+    }
+
+    pub fn extend_outcome(&self, outcome: &mut ToolOutcome) {
+        for extension in &self.extensions {
+            extension.apply(outcome);
+        }
     }
 
     pub fn as_text(&self) -> Option<&str> {
@@ -79,12 +90,84 @@ impl ToolOutput {
 }
 
 pub type ToolFuture<'a> = Pin<Box<dyn Future<Output = Result<ToolOutput, ToolError>> + Send + 'a>>;
+pub type ToolBatchFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+pub struct ToolBatchCall<'a> {
+    pub call: ToolCallId,
+    pub input: &'a str,
+}
+
+pub struct ToolBatchInvocation {
+    pub task: TaskId,
+}
+
+pub trait ToolHistoryGroup: Send + Sync {
+    fn entry(&self, outcomes: Vec<ToolOutcome>) -> TranscriptEntry;
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct ToolDefinitionContext {
+    pub interactive: bool,
+    pub top_level: bool,
+    pub planning: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum ToolSummaryKind {
+    Summary,
+    Body,
+}
+
+pub struct ToolInvocation<'a> {
+    pub task: TaskId,
+    pub call: ToolCallId,
+    pub cancellation: &'a CancellationToken,
+    pub definition_context: ToolDefinitionContext,
+    pub host: Option<&'a (dyn Any + Send + Sync)>,
+}
 
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn parameters(&self) -> serde_json::Value;
     fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolContext) -> ToolFuture<'a>;
+    fn invoke<'a>(
+        &'a self,
+        input: &'a str,
+        ctx: &'a ToolContext,
+        _invocation: ToolInvocation<'a>,
+    ) -> ToolFuture<'a> {
+        self.run(input, ctx)
+    }
+    fn enabled(&self, _context: ToolDefinitionContext) -> bool {
+        true
+    }
+    fn definition(&self, context: ToolDefinitionContext) -> Option<crate::ToolSpec> {
+        self.enabled(context).then(|| crate::ToolSpec {
+            name: self.name(),
+            description: self.description().to_owned(),
+            parameters: self.parameters(),
+        })
+    }
+    fn handles_cancellation(&self) -> bool {
+        false
+    }
+    fn batch_started<'a>(
+        &'a self,
+        _calls: &'a [ToolBatchCall<'a>],
+        _invocation: ToolBatchInvocation,
+    ) -> ToolBatchFuture<'a> {
+        Box::pin(async {})
+    }
+    fn history_group(&self, _calls: &[ToolBatchCall<'_>]) -> Option<Box<dyn ToolHistoryGroup>> {
+        None
+    }
+    fn summary_kind(&self) -> ToolSummaryKind {
+        ToolSummaryKind::Summary
+    }
+    fn mutation_path(&self, _input: &str) -> Option<String> {
+        None
+    }
     fn display_input(&self, input: &str) -> ToolDisplay {
         display::generic(input)
     }
