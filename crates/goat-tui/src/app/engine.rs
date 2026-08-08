@@ -3,7 +3,7 @@ use goat_protocol::{
     TranscriptEntry,
 };
 
-use super::{App, MainView, Overlay, ProcessRunView};
+use super::{App, MainView, PendingScreen, ProcessRunView};
 use crate::{ask::AskPicker, native_screen::AskScreen};
 
 impl App {
@@ -32,8 +32,9 @@ impl App {
                 if !self.focused {
                     self.queue_notification(crate::notification::Notification::Attention);
                 }
-                self.overlay =
-                    Overlay::Screen(Box::new(goat_commands::PlanScreen::new(call, plan, path)));
+                self.overlay = PendingScreen::Screen(Box::new(goat_commands::PlanScreen::new(
+                    call, plan, path,
+                )));
                 self.dirty = true;
             }
             EngineEvent::ThreadsListed { threads } => {
@@ -421,8 +422,10 @@ impl App {
                     self.queue_notification(crate::notification::Notification::Attention);
                 }
                 let screen = AskScreen::new(AskPicker::new(questions), id, call);
-                if matches!(self.overlay, Overlay::None) || self.command_menu.upgrade().is_some() {
-                    self.overlay = Overlay::Screen(Box::new(screen));
+                if matches!(self.overlay, PendingScreen::None)
+                    || self.command_menu.upgrade().is_some()
+                {
+                    self.overlay = PendingScreen::Screen(Box::new(screen));
                 } else {
                     self.pending.ask = Some(screen);
                 }
@@ -522,7 +525,7 @@ impl App {
         };
         self.process_runs
             .retain(|run| Some(run.id) == viewed || processes.iter().any(|p| p.id == run.id));
-        if matches!(self.overlay, Overlay::Runs(_)) {
+        if self.run_selector().is_some() {
             self.sync_run_selector();
         }
     }

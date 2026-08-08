@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use goat_protocol::Op;
 
-use super::{App, CLEAR_ARM_TICKS, Overlay, QUIT_ARM_TICKS};
+use super::{App, CLEAR_ARM_TICKS, PendingScreen, QUIT_ARM_TICKS};
 use crate::keymap;
 
 impl App {
@@ -15,9 +15,8 @@ impl App {
             return ops;
         }
         match &self.overlay {
-            Overlay::Screen(_) => {}
-            Overlay::Runs(_) => return self.on_run_selector_key(key),
-            Overlay::None => {}
+            PendingScreen::Screen(_) => {}
+            PendingScreen::None => {}
         }
         if let Some(ch) = keymap::ctrl_key(&key) {
             if ch == 'c' {
@@ -85,7 +84,7 @@ impl App {
                 Vec::new()
             }
             KeyCode::Enter => {
-                self.overlay = Overlay::None;
+                self.overlay = PendingScreen::None;
                 self.dirty = true;
                 self.submit()
             }
@@ -176,7 +175,7 @@ impl App {
                     self.rewind_arm = None;
                     return vec![Op::Interrupt { id }];
                 }
-                self.overlay = Overlay::None;
+                self.overlay = PendingScreen::None;
                 if self.composer.is_empty() {
                     self.clear_arm = None;
                     if self.composer.shell() {
@@ -227,40 +226,6 @@ impl App {
         } else {
             self.composer.discard();
             self.quit_arm = Some(QUIT_ARM_TICKS);
-        }
-        Vec::new()
-    }
-
-    pub(crate) fn on_run_selector_key(&mut self, key: KeyEvent) -> Vec<Op> {
-        self.dirty = true;
-        match key.code {
-            KeyCode::Esc => self.close_run_selector(),
-            KeyCode::Enter => {
-                if let Some(cursor) = self.run_selector() {
-                    self.open_run(cursor);
-                }
-            }
-            KeyCode::Up => match self.run_selector() {
-                Some(0) | None => self.close_run_selector(),
-                Some(cursor) => self.move_run_cursor(cursor - 1),
-            },
-            KeyCode::Down => match self.run_selector() {
-                Some(cursor) if cursor + 1 < self.run_row_count() => {
-                    self.move_run_cursor(cursor + 1);
-                }
-                Some(_) => self.close_run_selector(),
-                None => {}
-            },
-            KeyCode::PageUp => {
-                self.scroll = self.scroll.saturating_sub(self.page_rows());
-                self.follow = false;
-                self.dirty = true;
-            }
-            KeyCode::PageDown => {
-                self.scroll = self.scroll.saturating_add(self.page_rows());
-                self.dirty = true;
-            }
-            _ => {}
         }
         Vec::new()
     }

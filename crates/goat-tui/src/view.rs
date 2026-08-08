@@ -9,8 +9,8 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::{App, MainView, Overlay, shorten_home},
-    layout::{LIST_MAX, PAD_X, SCROLL_GUTTER, format_tokens},
+    app::{App, PendingScreen, shorten_home},
+    layout::{PAD_X, SCROLL_GUTTER, format_tokens},
     overlay, symbols,
     theme::Theme,
 };
@@ -26,7 +26,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     });
 
     let full_reserve = match app.overlay() {
-        Overlay::Screen(screen) => match screen.placement() {
+        PendingScreen::Screen(screen) => match screen.placement() {
             Placement::Full { reserve_bottom } => Some(reserve_bottom),
             _ => None,
         },
@@ -42,13 +42,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             .areas(area);
             render_header(frame, header, app, theme);
             render_transcript(frame, transcript_area, app, theme);
-            if let Overlay::Screen(screen) = app.overlay_mut() {
+            if let PendingScreen::Screen(screen) = app.overlay_mut() {
                 screen.render(frame, area, &theme);
             }
             render_toasts(frame, area, app, theme);
         } else {
             frame.render_widget(Block::new().style(theme.base()), area);
-            if let Overlay::Screen(screen) = app.overlay_mut() {
+            if let PendingScreen::Screen(screen) = app.overlay_mut() {
                 screen.render(frame, area, &theme);
             }
         }
@@ -66,14 +66,13 @@ enum Panel {
         hints: Option<Vec<goat_command::KeyHint>>,
         composer_focused: bool,
     },
-    Runs(usize),
 }
 
 const HEADER_H: u16 = 2;
 
 fn active_panel(app: &App) -> Panel {
     match app.overlay() {
-        Overlay::Screen(screen) => match screen.placement() {
+        PendingScreen::Screen(screen) => match screen.placement() {
             Placement::Panel {
                 height,
                 hints,
@@ -85,7 +84,6 @@ fn active_panel(app: &App) -> Panel {
             },
             _ => Panel::None,
         },
-        Overlay::Runs(cursor) => Panel::Runs(*cursor),
         _ => Panel::None,
     }
 }
@@ -96,18 +94,14 @@ fn composer_focused(app: &App, panel: &Panel) -> bool {
             Panel::Screen {
                 composer_focused, ..
             } => *composer_focused,
-            Panel::Runs(_) => false,
             _ => true,
         }
 }
 
-fn panel_desired_height(app: &App, panel: &Panel) -> u16 {
+fn panel_desired_height(panel: &Panel) -> u16 {
     match panel {
         Panel::None => 0,
         Panel::Screen { height, .. } => *height,
-        Panel::Runs(_) => u16::try_from(app.run_targets().len() + 1)
-            .unwrap_or(1)
-            .clamp(1, u16::try_from(LIST_MAX).unwrap_or(10)),
     }
 }
 
@@ -125,7 +119,7 @@ fn render_main(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
         .saturating_add(footer_h);
     let stack_budget = area.height.saturating_sub(reserved);
 
-    let panel_want = panel_desired_height(app, &panel);
+    let panel_want = panel_desired_height(&panel);
     let preview_want = if full_body {
         0
     } else {
@@ -182,7 +176,6 @@ fn render_hint(frame: &mut Frame, area: Rect, app: &App, theme: Theme, panel: &P
                 render_footer(frame, area, app, theme);
             }
         }
-        Panel::Runs(_) => render_run_footer(frame, area, theme),
         Panel::None => {
             if footer_visible(app) {
                 render_footer(frame, area, app, theme);
@@ -193,7 +186,7 @@ fn render_hint(frame: &mut Frame, area: Rect, app: &App, theme: Theme, panel: &P
 
 fn is_full_body_overlay(app: &App) -> bool {
     match app.overlay() {
-        Overlay::Screen(screen) => matches!(screen.placement(), Placement::Overlay),
+        PendingScreen::Screen(screen) => matches!(screen.placement(), Placement::Overlay),
         _ => false,
     }
 }
@@ -205,7 +198,7 @@ fn fit_stack(panel_want: u16, preview_want: u16, budget: u16) -> (u16, u16) {
 }
 
 fn render_full_body_overlay(frame: &mut Frame, body: Rect, app: &mut App, theme: Theme) {
-    if let Overlay::Screen(screen) = app.overlay_mut()
+    if let PendingScreen::Screen(screen) = app.overlay_mut()
         && matches!(screen.placement(), Placement::Overlay)
     {
         screen.render(frame, body, &theme);
@@ -219,147 +212,11 @@ fn render_panel(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme, pane
     match panel {
         Panel::None => {}
         Panel::Screen { .. } => {
-            if let Overlay::Screen(screen) = app.overlay_mut() {
+            if let PendingScreen::Screen(screen) = app.overlay_mut() {
                 screen.render(frame, area, &theme);
             }
         }
-        Panel::Runs(cursor) => render_run_panel(frame, area, app, theme, *cursor),
     }
-}
-
-fn render_run_panel(frame: &mut Frame, area: Rect, app: &App, theme: Theme, cursor: usize) {
-    let spinner = app.spinner_frame();
-    let inner_width = usize::from(area.width);
-    let viewing = app.main_view();
-    let mut rows: Vec<Line> = Vec::new();
-    let main_left = vec![
-        Span::styled(symbols::ui::DOT_FULL, theme.accent()),
-        Span::raw(" "),
-        Span::styled(
-            "main",
-            if cursor == 0 {
-                theme.key()
-            } else {
-                theme.muted()
-            },
-        ),
-    ];
-    let main_metrics = if matches!(viewing, MainView::Live) {
-        Some(Span::styled("viewing", theme.accent()))
-    } else {
-        None
-    };
-    rows.push(overlay::selection_row(
-        theme,
-        cursor == 0,
-        inner_width,
-        main_left,
-        main_metrics,
-    ));
-    let mut index = 1usize;
-    for run in app.subagent_runs() {
-        let selected = index == cursor;
-        let (marker, marker_style) = match run.done {
-            None => (spinner, theme.accent()),
-            Some(true) => (symbols::ui::CHECK, theme.success()),
-            Some(false) => (symbols::ui::CROSS, theme.error()),
-        };
-        let name_style = if selected { theme.key() } else { theme.muted() };
-        let mut left = vec![
-            Span::styled(marker, marker_style),
-            Span::raw(" "),
-            Span::styled(run.subagent_type.clone(), name_style),
-        ];
-        if !run.label.is_empty() {
-            left.push(Span::styled(symbols::ui::SEPARATOR, theme.muted()));
-            left.push(Span::styled(run.label.clone(), theme.muted()));
-        }
-        let metrics = if inner_width >= 72 {
-            let mut parts = Vec::new();
-            if run.tools > 0 {
-                parts.push(format!("{} tools", run.tools));
-            }
-            if run.tokens > 0 {
-                parts.push(format!("{} tok", crate::layout::format_tokens(run.tokens)));
-            }
-            let finished = run.finished_at.unwrap_or_else(std::time::Instant::now);
-            parts.push(crate::transcript::format_elapsed(
-                finished.saturating_duration_since(run.started_at).as_secs(),
-            ));
-            Some(Span::styled(
-                parts.join(symbols::ui::SEPARATOR),
-                theme.muted(),
-            ))
-        } else if viewing == MainView::Subagent(run.id) {
-            Some(Span::styled("viewing", theme.accent()))
-        } else {
-            None
-        };
-        rows.push(overlay::selection_row(
-            theme,
-            selected,
-            inner_width,
-            left,
-            metrics,
-        ));
-        index += 1;
-    }
-    for run in app.process_runs() {
-        let selected = index == cursor;
-        let (marker, marker_style) = match run.state {
-            goat_protocol::ProcessState::Running => (spinner, theme.accent()),
-            goat_protocol::ProcessState::Exited => match run.exit_code {
-                Some(0) | None => (symbols::ui::CHECK, theme.success()),
-                Some(_) => (symbols::ui::CROSS, theme.error()),
-            },
-        };
-        let name_style = if selected { theme.key() } else { theme.muted() };
-        let left = vec![
-            Span::styled(marker, marker_style),
-            Span::raw(" "),
-            Span::styled(format!("#{}", run.id), name_style),
-            Span::styled(symbols::ui::SEPARATOR, theme.muted()),
-            Span::styled(flatten_command(&run.command), theme.muted()),
-        ];
-        let metrics = if viewing == MainView::Process(run.id) {
-            Some(Span::styled("viewing", theme.accent()))
-        } else {
-            None
-        };
-        rows.push(overlay::selection_row(
-            theme,
-            selected,
-            inner_width,
-            left,
-            metrics,
-        ));
-        index += 1;
-    }
-    frame.render_widget(Paragraph::new(rows), area);
-}
-
-fn flatten_command(command: &str) -> String {
-    let flat = command.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() > 48 {
-        let head: String = flat.chars().take(48).collect();
-        format!("{head}{}", symbols::ui::ELLIPSIS)
-    } else {
-        flat
-    }
-}
-
-fn render_run_footer(frame: &mut Frame, area: Rect, theme: Theme) {
-    frame.render_widget(
-        Paragraph::new(overlay::hint_line(
-            &[
-                (symbols::key::ARROWS_UPDOWN, "move"),
-                (symbols::key::ENTER, "select"),
-                (symbols::key::ESC, "back"),
-            ],
-            theme,
-        )),
-        area,
-    );
 }
 
 fn render_toasts(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
