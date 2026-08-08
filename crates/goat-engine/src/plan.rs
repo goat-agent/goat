@@ -20,7 +20,7 @@ impl PlanService for EnginePlanService {
             .and_then(|env| env.plan_path.clone())
     }
 
-    fn submit<'a>(&'a self, submission: PlanSubmission) -> PlanFuture<'a> {
+    fn submit(&self, submission: PlanSubmission) -> PlanFuture<'_> {
         Box::pin(async move {
             let _ = self
                 .events

@@ -82,17 +82,31 @@ pub(crate) fn summarize_line(text: &str) -> Option<String> {
     ))
 }
 
-async fn run_regular_tool(
-    ctx: &Ctx,
+struct RegularToolCall<'a> {
     task: goat_protocol::TaskId,
     call: ToolCallId,
     definition_context: ToolDefinitionContext,
-    host: &(dyn std::any::Any + Send + Sync),
-    name: &str,
-    input_json: &str,
-    tool_ctx: &ToolContext,
-    token: &CancellationToken,
+    host: &'a (dyn std::any::Any + Send + Sync),
+    name: &'a str,
+    input_json: &'a str,
+    tool_ctx: &'a ToolContext,
+    token: &'a CancellationToken,
+}
+
+async fn run_regular_tool(
+    ctx: &Ctx,
+    request: RegularToolCall<'_>,
 ) -> Option<Result<ToolOutput, String>> {
+    let RegularToolCall {
+        task,
+        call,
+        definition_context,
+        host,
+        name,
+        input_json,
+        tool_ctx,
+        token,
+    } = request;
     let Some(tool) = ctx
         .tools
         .get(name)
@@ -151,18 +165,20 @@ async fn execute_tool(
     } else {
         run_regular_tool(
             ctx,
-            run.id,
-            ToolCallId(prep.tui_id),
-            ToolDefinitionContext {
-                interactive: env.interactive,
-                top_level: env.allow_delegate,
-                planning: env.plan,
+            RegularToolCall {
+                task: run.id,
+                call: ToolCallId(prep.tui_id),
+                definition_context: ToolDefinitionContext {
+                    interactive: env.interactive,
+                    top_level: env.allow_delegate,
+                    planning: env.plan,
+                },
+                host: env,
+                name: prep.name,
+                input_json: prep.input_json,
+                tool_ctx,
+                token,
             },
-            env,
-            prep.name,
-            prep.input_json,
-            tool_ctx,
-            token,
         )
         .await
     };
@@ -337,7 +353,7 @@ pub(crate) fn build_tool_defs(
         .filter(|spec| selection.is_none_or(|sel| sel.allows(spec.name)))
         .map(|spec| ToolDefinition {
             name: spec.name.to_owned(),
-            description: spec.description.to_owned(),
+            description: spec.description.clone(),
             input_schema: spec.parameters,
         })
         .collect();

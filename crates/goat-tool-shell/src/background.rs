@@ -32,9 +32,9 @@ pub trait BackgroundProcessService: Send + Sync {
         request: ProcessStart,
         cancellation: &'a CancellationToken,
     ) -> BackgroundFuture<'a, RunId>;
-    fn output<'a>(&'a self, run: RunId) -> BackgroundFuture<'a, ProcessChunk>;
-    fn input<'a>(&'a self, run: RunId, text: String) -> BackgroundFuture<'a, ()>;
-    fn kill<'a>(&'a self, run: RunId) -> BackgroundFuture<'a, ()>;
+    fn output(&self, run: RunId) -> BackgroundFuture<'_, ProcessChunk>;
+    fn input(&self, run: RunId, text: String) -> BackgroundFuture<'_, ()>;
+    fn kill(&self, run: RunId) -> BackgroundFuture<'_, ()>;
 }
 
 pub struct BackgroundBashTool {
@@ -73,10 +73,11 @@ impl Tool for BackgroundBashTool {
 
     fn definition(&self, context: ToolDefinitionContext) -> Option<ToolSpec> {
         let mut parameters = self.parameters();
-        if context.top_level {
-            if let Some(properties) = parameters
+        if context.top_level
+            && let Some(properties) = parameters
                 .get_mut("properties")
                 .and_then(serde_json::Value::as_object_mut)
+        {
             {
                 properties.insert(
                     "background".to_owned(),
@@ -369,15 +370,15 @@ mod tests {
             Box::pin(async { Err("unavailable".to_owned()) })
         }
 
-        fn output<'a>(&'a self, _run: RunId) -> BackgroundFuture<'a, ProcessChunk> {
+        fn output(&self, _run: RunId) -> BackgroundFuture<'_, ProcessChunk> {
             Box::pin(async { Err("unavailable".to_owned()) })
         }
 
-        fn input<'a>(&'a self, _run: RunId, _text: String) -> BackgroundFuture<'a, ()> {
+        fn input(&self, _run: RunId, _text: String) -> BackgroundFuture<'_, ()> {
             Box::pin(async { Err("unavailable".to_owned()) })
         }
 
-        fn kill<'a>(&'a self, _run: RunId) -> BackgroundFuture<'a, ()> {
+        fn kill(&self, _run: RunId) -> BackgroundFuture<'_, ()> {
             Box::pin(async { Err("unavailable".to_owned()) })
         }
     }

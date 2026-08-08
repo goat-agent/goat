@@ -55,14 +55,14 @@ pub trait DelegationService: Send + Sync {
         invocation: DelegateInvocation<'a>,
     ) -> DelegateFuture<'a, DelegateResult>;
 
-    fn kill<'a>(&'a self, run: RunId) -> DelegateFuture<'a, ()>;
+    fn kill(&self, run: RunId) -> DelegateFuture<'_, ()>;
 
-    fn group_started<'a>(
-        &'a self,
+    fn group_started(
+        &self,
         parent: TaskId,
         group: ToolCallId,
         members: Vec<SubagentGroupMember>,
-    ) -> DelegateFuture<'a, ()>;
+    ) -> DelegateFuture<'_, ()>;
 }
 
 pub struct DelegateTool {

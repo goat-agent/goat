@@ -45,15 +45,15 @@ impl BackgroundProcessService for UnavailableProcesses {
         Box::pin(async { Err("background process service unavailable".to_owned()) })
     }
 
-    fn output<'a>(&'a self, _run: goat_protocol::RunId) -> BackgroundFuture<'a, ProcessChunk> {
+    fn output(&self, _run: goat_protocol::RunId) -> BackgroundFuture<'_, ProcessChunk> {
         Box::pin(async { Err("background process service unavailable".to_owned()) })
     }
 
-    fn input<'a>(&'a self, _run: goat_protocol::RunId, _text: String) -> BackgroundFuture<'a, ()> {
+    fn input(&self, _run: goat_protocol::RunId, _text: String) -> BackgroundFuture<'_, ()> {
         Box::pin(async { Err("background process service unavailable".to_owned()) })
     }
 
-    fn kill<'a>(&'a self, _run: goat_protocol::RunId) -> BackgroundFuture<'a, ()> {
+    fn kill(&self, _run: goat_protocol::RunId) -> BackgroundFuture<'_, ()> {
         Box::pin(async { Err("background process service unavailable".to_owned()) })
     }
 }
@@ -67,16 +67,16 @@ impl DelegationService for UnavailableDelegation {
         Box::pin(async { Err("delegation service unavailable".to_owned()) })
     }
 
-    fn kill<'a>(&'a self, _run: goat_protocol::RunId) -> DelegateFuture<'a, ()> {
+    fn kill(&self, _run: goat_protocol::RunId) -> DelegateFuture<'_, ()> {
         Box::pin(async { Err("delegation service unavailable".to_owned()) })
     }
 
-    fn group_started<'a>(
-        &'a self,
+    fn group_started(
+        &self,
         _parent: goat_protocol::TaskId,
         _group: goat_protocol::ToolCallId,
         _members: Vec<goat_protocol::SubagentGroupMember>,
-    ) -> DelegateFuture<'a, ()> {
+    ) -> DelegateFuture<'_, ()> {
         Box::pin(async { Err("delegation service unavailable".to_owned()) })
     }
 }
@@ -99,7 +99,7 @@ impl PlanService for UnavailablePlans {
         None
     }
 
-    fn submit<'a>(&'a self, _submission: PlanSubmission) -> PlanFuture<'a> {
+    fn submit(&self, _submission: PlanSubmission) -> PlanFuture<'_> {
         Box::pin(async { Err("plan service unavailable".to_owned()) })
     }
 }

@@ -57,7 +57,7 @@ impl BackgroundProcessService for EngineBackgroundProcessService {
         })
     }
 
-    fn output<'a>(&'a self, run: goat_protocol::RunId) -> BackgroundFuture<'a, ProcessChunk> {
+    fn output(&self, run: goat_protocol::RunId) -> BackgroundFuture<'_, ProcessChunk> {
         Box::pin(async move {
             let chunk = self
                 .runs
@@ -72,11 +72,11 @@ impl BackgroundProcessService for EngineBackgroundProcessService {
         })
     }
 
-    fn input<'a>(&'a self, run: goat_protocol::RunId, text: String) -> BackgroundFuture<'a, ()> {
+    fn input(&self, run: goat_protocol::RunId, text: String) -> BackgroundFuture<'_, ()> {
         Box::pin(async move { self.runs.write_stdin(run, &text).await })
     }
 
-    fn kill<'a>(&'a self, run: goat_protocol::RunId) -> BackgroundFuture<'a, ()> {
+    fn kill(&self, run: goat_protocol::RunId) -> BackgroundFuture<'_, ()> {
         Box::pin(async move { self.runs.kill(run, Some(background::Kind::Process)).await })
     }
 }

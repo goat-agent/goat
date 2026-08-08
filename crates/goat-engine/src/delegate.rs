@@ -148,7 +148,7 @@ impl DelegationService for EngineDelegationService {
         })
     }
 
-    fn kill<'a>(&'a self, run: goat_protocol::RunId) -> DelegateFuture<'a, ()> {
+    fn kill(&self, run: goat_protocol::RunId) -> DelegateFuture<'_, ()> {
         Box::pin(async move {
             self.context()?
                 .background
@@ -157,12 +157,12 @@ impl DelegationService for EngineDelegationService {
         })
     }
 
-    fn group_started<'a>(
-        &'a self,
+    fn group_started(
+        &self,
         parent: TaskId,
         group: ToolCallId,
         members: Vec<goat_protocol::SubagentGroupMember>,
-    ) -> DelegateFuture<'a, ()> {
+    ) -> DelegateFuture<'_, ()> {
         Box::pin(async move {
             let _ = self
                 .context()?
