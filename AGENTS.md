@@ -274,8 +274,8 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   the issuer. `goat-mcp` does the discovery, so it passes `iss` to rmcp and lets rmcp compare.
   Do not add issuer validation to `goat-auth`, and do not let a capture helper return just a code —
   dropping the rest of the response is what broke Sentry login.
-- Sessions are keyed by `SessionId`, with a secondary index by `thread_id`. There is no cwd map:
-  `goat code` defaults to a **new** session, and only `-c` resolves cwd to the latest thread through
+- Sessions are keyed by `SessionId`, with a secondary index by `conversation_id`. There is no cwd map:
+  `goat code` defaults to a **new** session, and only `-c` resolves cwd to the latest conversation through
   a database query. Several live sessions can share a cwd.
 - `goat daemon serve` takes `~/.goat/daemon.lock` first, builds one `CodeSessionHub`, **binds the socket
   and starts accepting**, and only then opens `ProxyStore`, spawns a `Recorder` with two `Meter`s
