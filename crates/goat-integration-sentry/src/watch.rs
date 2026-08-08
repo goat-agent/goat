@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use goat_auth::CredentialStore;
 use goat_integration::diff::RETAIN;
-use goat_integration::query::{self, SelfRefStyle, TokenValue};
+use goat_integration::query::{self, SelfRefStyle, TokenKind, TokenValue};
 use goat_integration::watch::{CompiledWatch, Observed, WatchPage, WatchSource, WatchSpec};
 use goat_integration::{
     IntegrationBinding, IntegrationError, IntegrationResult, IntegrationRuntime,
@@ -57,10 +57,20 @@ fn plan(config: &Value, raw: &str) -> IntegrationResult<Value> {
             "sentry watch needs `organization_slug` in the agent's sentry binding".into(),
         ));
     };
-    let resolved = query::resolve(&VOCABULARY, query::parse(raw)?)?;
+    let tokens = query::parse(raw)?;
+    let resolved = query::resolve(&VOCABULARY, tokens.clone())?;
+    let native = tokens
+        .into_iter()
+        .filter(|token| {
+            !matches!(
+                &token.kind,
+                TokenKind::Pair { key, .. } if key == "project" || key == "sort"
+            )
+        })
+        .collect::<Vec<_>>();
     let mut arguments = json!({
         "organizationSlug": organization_slug,
-        "query": query::render(&resolved.residue, SelfRefStyle::Replace("me")),
+        "query": query::render(&native, SelfRefStyle::Replace("me")),
     });
     if let Some(sort) = resolved.single("sort")
         && let TokenValue::Text(sort) = &sort.value
@@ -169,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn native_tokens_pass_through_verbatim_and_selfrefs_become_me() {
+    fn documented_issue_tokens_and_raw_text_pass_through() {
         let arguments = plan(
             &json!({ "organization_slug": "acme" }),
             "assigned:@me is:unresolved level:error \"payment failed\"",
@@ -181,6 +191,17 @@ mod tests {
         );
         assert!(arguments.get("sort").is_none());
         assert!(arguments.get("projectSlugOrId").is_none());
+    }
+
+    #[test]
+    fn foreign_key_value_tokens_are_rejected() {
+        let error = plan(
+            &json!({ "organization_slug": "acme" }),
+            "is:unresolved repo:goat-agent/goat",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("repo"), "{error}");
+        assert!(error.to_string().contains("assigned"), "{error}");
     }
 
     #[test]

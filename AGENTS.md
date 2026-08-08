@@ -122,10 +122,12 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
   validator resolves a query against the vocabulary alone, so it needs no store, bus, or network and
   runs anywhere (`goat doctor`, the config-writing CLIs, `goat reload`); `compile_watch` stays
   authoritative and runs only when a plan is actually built.
-  `Residue::Keep` leaves (github, sentry, slack, langfuse) forward unrecognized tokens verbatim to
-  the service's native search language — including bare terms, so their `TermPolicy` never fires;
-  `Residue::Reject` leaves (linear, notion, tiro) hard-error on unknown keys, and only there does
-  `TermPolicy::Reject` refuse free text. `limit:` is resolver-reserved, `@me` is the one
+  `Residue::Keep` leaves (github, slack, langfuse) forward unrecognized tokens verbatim to the
+  service's native search language — including bare terms, so their `TermPolicy` never fires;
+  Sentry uses `Residue::KeepTerms`, which forwards bare search text but rejects unknown key-value
+  tokens against its documented issue properties; `Residue::Reject` leaves (linear, notion, tiro)
+  hard-error on unknown keys, and only there does `TermPolicy::Reject` refuse free text. `limit:` is
+  resolver-reserved, `@me` is the one
   self-reference, and stream names key persisted `WatchState`, so default stream names never change.
 - Connections are global; `IntegrationAuth` decides how one is established — a pasted `Secret`, an
   `OAuth` round trip, or `External`, meaning a host tool such as `gh` owns the credential and the
