@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 goat-protocol = { workspace = true }
+goat-command = { workspace = true }
 goat-commands = { workspace = true }
 goat-client = { workspace = true }
 goat-tool = { workspace = true }
