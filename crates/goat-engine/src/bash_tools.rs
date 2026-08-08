@@ -197,7 +197,7 @@ async fn start(ctx: &Ctx, env: &LoopEnv, input_json: &str) -> Result<ToolOutput,
     if let Some(pgid) = started.pgid {
         let db_id = ctx
             .store
-            .create_process(goat_store::NewProcess {
+            .create_process(goat_code_store::NewProcess {
                 pgid: i64::from(pgid),
                 command: args.command.clone(),
                 cwd: env.cwd.display().to_string(),

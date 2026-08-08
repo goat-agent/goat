@@ -419,16 +419,14 @@ fn spec_fact() -> ToolSpec {
 mod tests {
     use super::*;
     use goat_agent_tool::ToolReadState;
-    use goat_store::SqliteStore;
     use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
     use std::path::PathBuf;
 
     async fn setup() -> (Arc<MemoryEngine>, ToolContext, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("goat.db");
-        let pool = SqliteStore::open(&path).await.unwrap().pool();
         let engine = Arc::new(
-            MemoryEngine::open(pool, dir.path(), None, 180.0)
+            MemoryEngine::open(&path, dir.path(), None, 180.0)
                 .await
                 .unwrap(),
         );

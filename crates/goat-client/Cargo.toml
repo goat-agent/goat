@@ -9,6 +9,7 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+goat-process = { workspace = true }
 goat-protocol = { workspace = true }
 goat-remote = { workspace = true }
 goat-wire = { workspace = true }

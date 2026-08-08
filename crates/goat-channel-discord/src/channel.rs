@@ -53,9 +53,24 @@ impl Channel for DiscordChannel {
         } else {
             parse_intents(&cfg.intents)
         };
-        let allowed_user_ids: HashSet<u64> = cfg.allowed_user_ids.iter().copied().collect();
-        if allowed_user_ids.len() != cfg.allowed_user_ids.len() {
-            warn!("discord: allowed_user_ids contains duplicate entries; deduplicated");
+        let allowed_user_ids = cfg.allowed_user_ids.map(|configured| {
+            let configured_len = configured.len();
+            let allowed: HashSet<u64> = configured.into_iter().collect();
+            if allowed.len() != configured_len {
+                warn!("discord: allowed_user_ids contains duplicate entries; deduplicated");
+            }
+            allowed
+        });
+        match &allowed_user_ids {
+            None => warn!(
+                agent = %agent,
+                "discord: allowed_user_ids is not configured; all inbound users will be denied"
+            ),
+            Some(allowed) if allowed.is_empty() => warn!(
+                agent = %agent,
+                "discord: allowed_user_ids is empty; all inbound users will be denied"
+            ),
+            Some(_) => {}
         }
 
         let (tx, rx) = mpsc::channel(INCOMING_CAPACITY);

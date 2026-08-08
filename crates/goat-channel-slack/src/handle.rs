@@ -6,7 +6,7 @@ use goat_channel::{
     SentRef, TypingGuard,
 };
 use goat_types::{
-    AgentId, ChannelId, IncomingMessage, InstanceId, MessageId, OutgoingBody, ThreadId,
+    AgentId, ChannelId, IncomingMessage, InstanceId, MessageId, OutgoingBody, Surface, ThreadId,
 };
 
 use crate::api::SlackApi;
@@ -55,6 +55,17 @@ impl ChannelHandle for SlackHandle {
 
     fn capabilities(&self) -> ChannelCapabilities {
         CAPABILITIES
+    }
+
+    async fn surface(&self, stored_thread: &ThreadId) -> ChannelResult<Surface> {
+        let coords = thread::parse(&stored_thread.external)?;
+        if coords.channel.starts_with('D') {
+            Ok(Surface::Dm)
+        } else if coords.thread_ts.is_some() {
+            Ok(Surface::Thread)
+        } else {
+            Ok(Surface::Channel)
+        }
     }
 
     async fn send(
@@ -194,6 +205,43 @@ mod tests {
             raw: serde_json::json!({}),
         };
         assert!(sent_coords(&sent).is_err());
+    }
+
+    #[tokio::test]
+    async fn stored_thread_surfaces_preserve_audience_and_thread_context() {
+        let handle = SlackHandle::new(
+            InstanceId::new(),
+            AgentId::from_slug("dev"),
+            ChannelIdentity::new("bot", "bot"),
+            Arc::new(SlackApi::new("token").unwrap()),
+        );
+        let thread = |external| ThreadId::new(ID.clone(), handle.instance, external);
+
+        assert_eq!(handle.surface(&thread("c:D1")).await.unwrap(), Surface::Dm);
+        assert_eq!(
+            handle.surface(&thread("c:D1:t:1.1")).await.unwrap(),
+            Surface::Dm
+        );
+        assert_eq!(
+            handle.surface(&thread("c:C1")).await.unwrap(),
+            Surface::Channel
+        );
+        assert_eq!(
+            handle.surface(&thread("c:C1:t:1.1")).await.unwrap(),
+            Surface::Thread
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_stored_thread_surface_is_an_error() {
+        let handle = SlackHandle::new(
+            InstanceId::new(),
+            AgentId::from_slug("dev"),
+            ChannelIdentity::new("bot", "bot"),
+            Arc::new(SlackApi::new("token").unwrap()),
+        );
+        let stored_thread = ThreadId::new(ID.clone(), handle.instance, "unknown");
+        assert!(handle.surface(&stored_thread).await.is_err());
     }
 
     #[test]

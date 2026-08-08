@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use goat_auth::{
-    Credential, CredentialKey, CredentialStore as GoatCredentialStore, SecretString, TokenSet,
-};
+use goat_auth::{Credential, CredentialKey, CredentialStore as GoatCredentialStore, TokenSet};
 use rmcp::transport::auth::{
     AuthClient, AuthError, AuthorizationManager, AuthorizationRequest, CredentialStore, OAuthState,
     OAuthTokenResponse, StoredCredentials,
@@ -95,23 +93,22 @@ pub fn tokens_from_response(response: &OAuthTokenResponse) -> Result<TokenSet, M
             server: "oauth".to_owned(),
             message: "token response missing access_token".to_owned(),
         })?;
-    Ok(TokenSet {
-        access_token: SecretString::from(access),
-        refresh_token: raw
-            .get("refresh_token")
-            .and_then(Value::as_str)
-            .map(SecretString::from),
-        expires_at: raw
-            .get("expires_in")
-            .and_then(Value::as_i64)
-            .map(|secs| chrono::Utc::now().timestamp() + secs),
-        ..TokenSet::default()
+    let refresh = raw
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let expires_in = raw.get("expires_in").and_then(Value::as_i64);
+    TokenSet::from_parts(access.to_owned(), refresh, expires_in, None).map_err(|error| {
+        McpError::Initialize {
+            server: "oauth".to_owned(),
+            message: error.to_string(),
+        }
     })
 }
 
 pub fn response_from_tokens(tokens: &TokenSet) -> Result<OAuthTokenResponse, McpError> {
     let mut raw = json!({
-        "access_token": tokens.access_token.expose(),
+        "access_token": tokens.access_token().expose(),
         "token_type": "bearer",
     });
     if let Some(refresh) = &tokens.refresh_token {
@@ -238,12 +235,11 @@ mod tests {
     use super::*;
 
     fn tokens(access: &str, refresh: Option<&str>, expires_at: Option<i64>) -> TokenSet {
-        TokenSet {
-            access_token: SecretString::from(access),
-            refresh_token: refresh.map(SecretString::from),
-            expires_at,
-            ..TokenSet::default()
-        }
+        let mut tokens =
+            TokenSet::from_parts(access.to_owned(), refresh.map(str::to_owned), None, None)
+                .unwrap();
+        tokens.expires_at = expires_at;
+        tokens
     }
 
     #[test]
@@ -255,7 +251,7 @@ mod tests {
         );
         let response = response_from_tokens(&original).unwrap();
         let back = tokens_from_response(&response).unwrap();
-        assert_eq!(back.access_token.expose(), "at");
+        assert_eq!(back.access_token().expose(), "at");
         assert_eq!(
             back.refresh_token.map(|r| r.expose().to_owned()),
             Some("rt".to_owned())
@@ -267,7 +263,7 @@ mod tests {
     fn a_token_without_refresh_or_expiry_still_round_trips() {
         let response = response_from_tokens(&tokens("at", None, None)).unwrap();
         let back = tokens_from_response(&response).unwrap();
-        assert_eq!(back.access_token.expose(), "at");
+        assert_eq!(back.access_token().expose(), "at");
         assert!(back.refresh_token.is_none());
     }
 
@@ -303,7 +299,7 @@ mod tests {
         let Some(Credential::OAuth(saved)) = credentials.get(&key) else {
             panic!("expected an oauth credential");
         };
-        assert_eq!(saved.access_token.expose(), "second");
+        assert_eq!(saved.access_token().expose(), "second");
         assert_eq!(
             saved.refresh_token.map(|r| r.expose().to_owned()),
             Some("rt2".to_owned())

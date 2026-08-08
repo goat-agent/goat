@@ -14,10 +14,10 @@ pub use write::NAME as WRITE_NAME;
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use crate::{edit, glob, grep, read};
-    use goat_agent_tool::{ToolCall, ToolContext, ToolHandler, ToolName};
+    use goat_agent_tool::{ToolCall, ToolContext, ToolHandler, ToolName, ToolOutput};
     use goat_types::{AgentId, ChannelId, InstanceId, ThreadId};
     use serde_json::json;
 
@@ -28,6 +28,67 @@ mod tests {
             goat_root: root,
             read_state: std::sync::Arc::default(),
         }
+    }
+
+    async fn read_path(ctx: ToolContext, path: &Path) -> ToolOutput {
+        read::ReadTool
+            .call(
+                ctx,
+                ToolCall {
+                    call_id: "path-policy".into(),
+                    name: ToolName::from_static("read"),
+                    arguments: json!({"file_path": path}),
+                },
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn path_inside_root_is_allowed() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("inside.txt"), "inside").unwrap();
+        let output = read_path(ctx(root.path().to_path_buf()), Path::new("inside.txt")).await;
+        assert!(!output.is_error);
+    }
+
+    #[tokio::test]
+    async fn absolute_path_outside_root_is_denied() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = outside.path().join("outside.txt");
+        fs::write(&path, "outside").unwrap();
+        let output = read_path(ctx(root.path().to_path_buf()), &path).await;
+        assert!(output.is_error);
+        assert!(output.text_for_model().contains("escapes agent tool root"));
+    }
+
+    #[tokio::test]
+    async fn parent_traversal_is_denied() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("root");
+        fs::create_dir(&root).unwrap();
+        fs::write(parent.path().join("outside.txt"), "outside").unwrap();
+        let output = read_path(ctx(root), Path::new("../outside.txt")).await;
+        assert!(output.is_error);
+        assert!(output.text_for_model().contains("escapes agent tool root"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_escape_is_denied() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("outside.txt"), "outside").unwrap();
+        symlink(outside.path(), root.path().join("link")).unwrap();
+        let output = read_path(
+            ctx(root.path().to_path_buf()),
+            Path::new("link/outside.txt"),
+        )
+        .await;
+        assert!(output.is_error);
+        assert!(output.text_for_model().contains("escapes agent tool root"));
     }
 
     #[tokio::test]

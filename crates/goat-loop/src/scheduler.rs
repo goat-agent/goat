@@ -44,25 +44,27 @@ pub async fn prepare_scheduler(
         Err(e) => warn!(error = ?e, "boot-time reclaim_stale_runs failed; continuing"),
     }
 
-    match store.cron_tasks_missing_next_run().await {
-        Ok(tasks) => {
+    match store.cron_schedules_missing_next_run().await {
+        Ok(schedules) => {
             let now = Utc::now();
-            for task in tasks {
-                let ScheduleKind::Cron(expr) = &task.schedule else {
+            for schedule in schedules {
+                let ScheduleKind::Cron(expr) = &schedule.schedule else {
                     continue;
                 };
-                let Some(next) = cron_next(expr, now) else {
-                    warn!(task_id = task.id, expr = %expr, "cron repair: unparseable expr");
+                let Some(next) = cron_next(expr, schedule.timezone.as_deref(), now) else {
+                    warn!(schedule_id = schedule.id, expr = %expr, "cron repair: invalid schedule");
                     continue;
                 };
                 match store
-                    .insert_task_run(task.id, next, task.task.clone())
+                    .insert_schedule_run(schedule.id, next, schedule.instruction.clone())
                     .await
                 {
                     Ok(_) => {
-                        info!(task_id = task.id, next = %next, "cron repair: re-seeded next run");
+                        info!(schedule_id = schedule.id, next = %next, "cron repair: re-seeded next run");
                     }
-                    Err(e) => warn!(error = ?e, task_id = task.id, "cron repair: insert failed"),
+                    Err(e) => {
+                        warn!(error = ?e, schedule_id = schedule.id, "cron repair: insert failed");
+                    }
                 }
             }
         }
@@ -173,29 +175,29 @@ async fn drain_due(
         }
 
         match store.claim_due_run(now).await {
-            Ok(Some((run, task))) => {
+            Ok(Some((run, schedule))) => {
                 info!(
                     run_id = run.id,
-                    task_id = run.task_id,
-                    agent = %task.agent,
+                    schedule_id = run.schedule_id,
+                    agent = %schedule.agent,
                     "scheduler dispatching schedule"
                 );
                 bus.publish(Event::Schedule {
-                    agent: task.agent,
+                    agent: schedule.agent,
                     run_id: run.id,
-                    task_id: run.task_id,
+                    schedule_id: run.schedule_id,
                 });
-                if let ScheduleKind::Cron(expr) = &task.schedule
-                    && let Some(next) = cron_next(expr, now)
+                if let ScheduleKind::Cron(expr) = &schedule.schedule
+                    && let Some(next) = cron_next(expr, schedule.timezone.as_deref(), now)
                 {
                     match store
-                        .insert_task_run(task.id, next, task.task.clone())
+                        .insert_schedule_run(schedule.id, next, schedule.instruction.clone())
                         .await
                     {
                         Ok(_) => heap.push(Reverse(next)),
                         Err(e) => error!(
                             error = ?e,
-                            task_id = task.id,
+                            schedule_id = schedule.id,
                             next = %next,
                             "cron re-schedule failed; task will NOT fire again until reboot",
                         ),
@@ -210,11 +212,17 @@ async fn drain_due(
     }
 }
 
-fn cron_next(expr: &str, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    match cron_expr::parse(expr) {
-        Ok(schedule) => cron_expr::next_after(&schedule, after),
-        Err(e) => {
-            warn!(error = ?e, expr = %expr, "invalid cron in db");
+fn cron_next(
+    expr: &str,
+    timezone_name: Option<&str>,
+    after: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let schedule = cron_expr::parse(expr);
+    let timezone = cron_expr::parse_timezone(timezone_name);
+    match (schedule, timezone) {
+        (Ok(schedule), Ok(timezone)) => cron_expr::next_after(&schedule, after, timezone),
+        (Err(error), _) | (_, Err(error)) => {
+            warn!(error = ?error, expr = %expr, timezone = ?timezone_name, "invalid cron in db");
             None
         }
     }
@@ -223,7 +231,20 @@ fn cron_next(expr: &str, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration as ChronoDuration;
+    use chrono::{Duration as ChronoDuration, Local, TimeZone};
+
+    #[test]
+    fn legacy_schedule_without_timezone_uses_host_local() {
+        let after = Utc.with_ymd_and_hms(2026, 1, 1, 0, 1, 0).unwrap();
+        let actual = cron_next("0 9 * * *", None, after).unwrap();
+        let schedule = cron_expr::parse("0 9 * * *").unwrap();
+        let expected = schedule
+            .after(&after.with_timezone(&Local))
+            .next()
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn next_deadline_uses_wall_clock_offset() {

@@ -4,7 +4,7 @@ use std::{
     sync::atomic::{AtomicI64, Ordering},
 };
 
-use goat_store::{
+use goat_code_store::{
     CheckpointFileVersion, CodeCheckpoint, CodeStore as Store, CreatedMessage, NewCheckpointFile,
     NewCodeCheckpoint,
 };
@@ -307,12 +307,14 @@ async fn set_file_mode(_path: &Path, _mode: Option<u32>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use goat_store::{CodeStore, NewMessage, NewThread};
+    use goat_code_store::{CodeStore, NewMessage, NewThread};
     use goat_tool::ToolContext;
 
     use super::CheckpointTracker;
 
-    async fn setup(root: &std::path::Path) -> (CheckpointTracker, i64, goat_store::CreatedMessage) {
+    async fn setup(
+        root: &std::path::Path,
+    ) -> (CheckpointTracker, i64, goat_code_store::CreatedMessage) {
         let store = CodeStore::open_in_memory().await.unwrap();
         let thread_id = store
             .create_thread(NewThread {

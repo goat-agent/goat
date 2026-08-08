@@ -210,7 +210,7 @@ fn bind(socket_path: &Path) -> Result<transport::Listener, DaemonError> {
 }
 
 async fn sweep_orphaned_turns(db_path: &Path) {
-    let Ok(store) = goat_store::CodeStore::open(db_path).await else {
+    let Ok(store) = goat_code_store::CodeStore::open(db_path).await else {
         return;
     };
     let now = std::time::SystemTime::now()
@@ -224,7 +224,7 @@ async fn sweep_orphaned_turns(db_path: &Path) {
 }
 
 async fn sweep_orphaned_processes(db_path: &Path) {
-    let Ok(store) = goat_store::CodeStore::open(db_path).await else {
+    let Ok(store) = goat_code_store::CodeStore::open(db_path).await else {
         return;
     };
     let now = std::time::SystemTime::now()

@@ -324,16 +324,16 @@ async fn pump_op(
     }
 }
 
-fn wake_notice(observations: &[(goat_protocol::RunId, crate::background::Observation)]) -> String {
+fn wake_notice(updates: &[(goat_protocol::RunId, crate::background::RunUpdate)]) -> String {
     let mut body = String::from(
         "<environment-notice>\nAutomated runtime signal — this is NOT a message from the user. Do not reply to it conversationally, do not acknowledge or thank it, and do not repeat an earlier waiting reply. Background work finished or produced output you had not read; act only if it now needs action (read it, fix it, or move on), otherwise produce no user-facing text and continue what you were doing.\n",
     );
-    for (id, obs) in observations {
-        let status = match (obs.state, obs.ok) {
+    for (id, update) in updates {
+        let status = match (update.state, update.ok) {
             (goat_protocol::ProcessState::Running, _) => "running".to_owned(),
             (goat_protocol::ProcessState::Exited, Some(true)) => "done".to_owned(),
             (goat_protocol::ProcessState::Exited, Some(false)) => "failed".to_owned(),
-            (goat_protocol::ProcessState::Exited, None) => match obs.exit_code {
+            (goat_protocol::ProcessState::Exited, None) => match update.exit_code {
                 Some(code) => format!("exited(code {code})"),
                 None => "exited".to_owned(),
             },
@@ -341,13 +341,13 @@ fn wake_notice(observations: &[(goat_protocol::RunId, crate::background::Observa
         let _ = write!(
             body,
             "\n[{} #{id} · {} · {status}]\n",
-            obs.kind.label(),
-            obs.title
+            update.kind.label(),
+            update.title
         );
-        if obs.output.trim().is_empty() {
+        if update.output.trim().is_empty() {
             body.push_str("(no output)\n");
         } else {
-            body.push_str(obs.output.trim_end());
+            body.push_str(update.output.trim_end());
             body.push('\n');
         }
     }
@@ -360,11 +360,11 @@ pub(crate) async fn handle_wake(
     state: &mut SessionState,
     ops: &mut mpsc::Receiver<Op>,
 ) -> Flow {
-    let observations = ctx.background.take_pending_observations().await;
-    if observations.is_empty() {
+    let updates = ctx.background.take_pending_updates().await;
+    if updates.is_empty() {
         return Flow::Continue;
     }
-    let body = wake_notice(&observations);
+    let body = wake_notice(&updates);
 
     let wake_id = TaskId(
         ctx.wake_ids
@@ -893,13 +893,13 @@ async fn run_one_turn(
 #[cfg(test)]
 mod tests {
     use super::wake_notice;
-    use crate::background::{Kind, Observation};
+    use crate::background::{Kind, RunUpdate};
     use goat_protocol::{ProcessState, RunId};
 
-    fn bash(title: &str, output: &str, code: i32) -> (RunId, Observation) {
+    fn bash(title: &str, output: &str, code: i32) -> (RunId, RunUpdate) {
         (
             RunId(3),
-            Observation {
+            RunUpdate {
                 kind: Kind::Bash,
                 title: title.to_owned(),
                 output: output.to_owned(),
@@ -910,10 +910,10 @@ mod tests {
         )
     }
 
-    fn subagent(title: &str, report: &str, ok: bool) -> (RunId, Observation) {
+    fn subagent(title: &str, report: &str, ok: bool) -> (RunId, RunUpdate) {
         (
             RunId(7),
-            Observation {
+            RunUpdate {
                 kind: Kind::Subagent,
                 title: title.to_owned(),
                 output: report.to_owned(),

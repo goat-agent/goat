@@ -13,17 +13,18 @@ goat-sqlite-vec = { workspace = true }
 goat-types  = { workspace = true }
 sqlx        = { workspace = true }
 async-trait = { workspace = true }
-anyhow      = { workspace = true }
 thiserror   = { workspace = true }
 tokio       = { workspace = true }
 chrono      = { workspace = true }
 uuid        = { workspace = true }
 serde_json  = { workspace = true }
-sha2        = { workspace = true }
 tracing     = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+goat-code-store = { workspace = true }
+goat-memory = { workspace = true }
+goat-proxy-store = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

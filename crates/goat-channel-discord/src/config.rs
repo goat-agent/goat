@@ -5,6 +5,5 @@ use serde::Deserialize;
 pub(crate) struct DiscordConfig {
     #[serde(default)]
     pub(crate) intents: Vec<String>,
-    #[serde(default)]
-    pub(crate) allowed_user_ids: Vec<u64>,
+    pub(crate) allowed_user_ids: Option<Vec<u64>>,
 }

@@ -207,9 +207,41 @@ fn connect_opts(path: &Path) -> CodeResult<SqliteConnectOptions> {
     Ok(opts)
 }
 
+async fn run_migrations(pool: &SqlitePool) -> CodeResult<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS _sqlx_migrations_code (
+             version BIGINT PRIMARY KEY,
+             description TEXT NOT NULL,
+             installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+             success BOOLEAN NOT NULL,
+             checksum BLOB NOT NULL,
+             execution_time BIGINT NOT NULL
+         )",
+    )
+    .execute(pool)
+    .await?;
+    let legacy: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations')",
+    )
+    .fetch_one(pool)
+    .await?;
+    if legacy {
+        sqlx::query(
+            "INSERT OR IGNORE INTO _sqlx_migrations_code
+             SELECT * FROM _sqlx_migrations WHERE version IN (15, 21)",
+        )
+        .execute(pool)
+        .await?;
+    }
+    let mut migrator = sqlx::migrate!("./migrations");
+    migrator.dangerous_set_table_name("_sqlx_migrations_code");
+    migrator.run(pool).await?;
+    Ok(())
+}
+
 impl CodeStore {
     pub async fn open(path: &Path) -> CodeResult<Self> {
-        crate::register_sqlite_vec();
+        goat_sqlite_vec::register();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -217,7 +249,7 @@ impl CodeStore {
             .max_connections(1)
             .connect_with(connect_opts(path)?)
             .await?;
-        sqlx::migrate!("./migrations").run(&writer).await?;
+        run_migrations(&writer).await?;
         let readers = SqlitePoolOptions::new()
             .max_connections(READER_POOL_MAX)
             .connect_with(connect_opts(path)?.read_only(true))
@@ -226,7 +258,7 @@ impl CodeStore {
     }
 
     pub async fn open_in_memory() -> CodeResult<Self> {
-        crate::register_sqlite_vec();
+        goat_sqlite_vec::register();
         let opts = "sqlite::memory:"
             .parse::<SqliteConnectOptions>()?
             .disable_statement_logging();
@@ -238,7 +270,7 @@ impl CodeStore {
             .test_before_acquire(false)
             .connect_with(opts)
             .await?;
-        sqlx::migrate!("./migrations").run(&writer).await?;
+        run_migrations(&writer).await?;
         let readers = writer.clone();
         Ok(Self { writer, readers })
     }

@@ -173,13 +173,15 @@ fn row_to_fact(r: &sqlx::sqlite::SqliteRow) -> Fact {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goat_store::SqliteStore;
 
     async fn pool() -> std::sync::Arc<SqlitePool> {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("goat.db");
+        let engine = crate::MemoryEngine::open(&path, dir.path(), None, 180.0)
+            .await
+            .unwrap();
         std::mem::forget(dir);
-        SqliteStore::open(&path).await.unwrap().pool()
+        engine.pool()
     }
 
     fn nf(text: &str, origin: FactOrigin) -> NewFact {

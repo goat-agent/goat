@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use goat_provider::{RateLimitSnapshot, RateWindow};
-use goat_store::ProxyStore;
+use goat_proxy_store::ProxyStore;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +43,7 @@ pub async fn backfill_rate_limits(store: &ProxyStore, path: &Path) -> usize {
 #[cfg(test)]
 mod tests {
     use super::backfill_rate_limits;
+    use goat_proxy_store as goat_store;
 
     fn write_cache(dir: &std::path::Path, json: &str) -> std::path::PathBuf {
         let path = dir.join("rate_limits.json");

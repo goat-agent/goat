@@ -4,10 +4,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use goat_auth::CredentialStore;
+use goat_code_store::CodeStore as Store;
 use goat_core::Session;
 use goat_engine::GoatAgent;
 use goat_protocol::Op;
-use goat_store::CodeStore as Store;
 use goat_wire::{ClientId, ResumeMode, ServerFrame, SessionId, SessionInfo};
 use tokio::sync::Mutex;
 use tokio::sync::{mpsc, oneshot};
@@ -320,7 +320,10 @@ impl Manager {
             next_task: 1,
             subscribers: Vec::new(),
             state: goat_wire::SessionLiveState::Idle {},
-            snapshot: None,
+            transcript: crate::session::LiveTranscript::default(),
+            restore_target: None,
+            context_tokens: None,
+            compaction_threshold: None,
             tokens: 0,
             open_asks: 0,
             live_processes: 0,
@@ -334,8 +337,16 @@ impl Manager {
             model_list: Vec::new(),
             selected_target: None,
             rate_limits: std::collections::HashMap::new(),
+            usage: std::collections::HashMap::new(),
+            mode: goat_protocol::Mode::Normal,
+            plan_path: None,
+            processes: std::collections::HashMap::new(),
+            active: None,
+            retry: None,
+            asks: std::collections::HashMap::new(),
+            subagents: std::collections::HashMap::new(),
+            plan: None,
             state_ready: false,
-            state_watermark: 0,
         }));
 
         let id = {
@@ -370,6 +381,7 @@ impl Manager {
         session: SessionId,
         client: ClientId,
         sender: mpsc::Sender<ServerFrame>,
+        lagged: tokio_util::sync::CancellationToken,
     ) -> Result<(), String> {
         let live = {
             let table = self.inner.sessions.lock().await;
@@ -402,32 +414,17 @@ impl Manager {
                 break;
             }
         }
-        let (backlog, live_rx) = {
+        let (snapshot, live_rx) = {
             let mut inner = live.inner.lock().await;
             let snapshot = inner.build_snapshot();
-            let ServerFrame::Snapshot { watermark, .. } = &snapshot else {
-                unreachable!("build_snapshot always returns a Snapshot frame")
-            };
-            let watermark = *watermark;
-            let mut backlog = vec![snapshot];
-            for (seq, event) in &inner.log {
-                if *seq < watermark {
-                    continue;
-                }
-                backlog.push(ServerFrame::Event {
-                    session,
-                    seq: *seq,
-                    event: event.clone(),
-                });
-            }
             let (bridge_tx, bridge_rx) = mpsc::channel(SUBSCRIBER_QUEUE);
-            crate::session::subscriber_upsert(&mut inner.subscribers, client, bridge_tx);
+            crate::session::subscriber_upsert(&mut inner.subscribers, client, bridge_tx, lagged);
             inner.pending_attaches = inner.pending_attaches.saturating_sub(1);
             let clients = inner.presence();
             broadcast_presence(&mut inner, clients);
-            (backlog, bridge_rx)
+            (snapshot, bridge_rx)
         };
-        let replay_sent = spawn_subscriber_bridge(sender, backlog, live_rx);
+        let replay_sent = spawn_subscriber_bridge(sender, vec![snapshot], live_rx);
         let _ = replay_sent.await;
         Ok(())
     }
@@ -516,6 +513,7 @@ impl Manager {
         from: SessionId,
         client_sender: &mpsc::Sender<ServerFrame>,
         resume: ResumeMode,
+        lagged: tokio_util::sync::CancellationToken,
     ) -> Result<(), String> {
         let cwd = {
             let table = self.inner.sessions.lock().await;
@@ -534,7 +532,8 @@ impl Manager {
                 cwd: opened_cwd,
             })
             .await;
-        self.subscribe(new, client, client_sender.clone()).await
+        self.subscribe(new, client, client_sender.clone(), lagged)
+            .await
     }
 
     pub(crate) async fn submit(
@@ -552,6 +551,7 @@ impl Manager {
         let (ops, task) = {
             let mut inner = live.inner.lock().await;
             let task = inner.allocate_task();
+            inner.record_op(task, &op);
             (inner.ops.clone(), task)
         };
         match &mut op {
@@ -578,7 +578,9 @@ impl Manager {
         let (session, _cwd) = self.open_or_attach(cwd, ResumeMode::New {}).await?;
         let client = self.next_client_id();
         let (frame_tx, mut frame_rx) = mpsc::channel::<ServerFrame>(SUBSCRIBER_QUEUE);
-        self.subscribe(session, client, frame_tx.clone()).await?;
+        let lagged = tokio_util::sync::CancellationToken::new();
+        self.subscribe(session, client, frame_tx.clone(), lagged.clone())
+            .await?;
         self.submit(
             session,
             &frame_tx,
@@ -595,7 +597,21 @@ impl Manager {
         let (event_tx, event_rx) = mpsc::channel::<goat_protocol::Event>(SUBSCRIBER_QUEUE);
         let manager = self.clone();
         tokio::spawn(async move {
-            while let Some(frame) = frame_rx.recv().await {
+            loop {
+                let frame = tokio::select! {
+                    () = lagged.cancelled() => {
+                        let _ = event_tx.send(goat_protocol::Event::Error {
+                            id: None,
+                            message: "session subscriber fell behind".to_owned(),
+                            hint: None,
+                        }).await;
+                        break;
+                    }
+                    frame = frame_rx.recv() => frame,
+                };
+                let Some(frame) = frame else {
+                    break;
+                };
                 let ServerFrame::Event { event, .. } = frame else {
                     continue;
                 };
@@ -813,9 +829,7 @@ fn broadcast_presence(inner: &mut SessionInner, clients: Vec<ClientId>) {
         session: inner.id,
         clients,
     };
-    inner
-        .subscribers
-        .retain(|sub| sub.sender.try_send(frame.clone()).is_ok());
+    inner.fanout(&frame);
 }
 
 fn spawn_pump(
@@ -872,9 +886,7 @@ fn spawn_pump(
             let frame = ServerFrame::Error {
                 message: "session engine stopped".to_owned(),
             };
-            guard
-                .subscribers
-                .retain(|sub| sub.sender.try_send(frame.clone()).is_ok());
+            guard.fanout(&frame);
         }
         manager.remove_session(session).await;
         handle.abort();
@@ -918,7 +930,7 @@ async fn resurrect_open_prompts(inner: &Arc<Mutex<SessionInner>>, store: &Store,
 }
 
 fn thread_info(
-    t: goat_store::Thread,
+    t: goat_code_store::Thread,
     live: &HashMap<i64, SessionId>,
     states: &HashMap<SessionId, goat_wire::SessionLiveState>,
 ) -> goat_wire::ThreadInfo {
@@ -1023,8 +1035,8 @@ mod tests {
         assert_eq!(threads.get(&7), Some(&SessionId(2)));
     }
 
-    fn sample_thread(id: i64) -> goat_store::Thread {
-        goat_store::Thread {
+    fn sample_thread(id: i64) -> goat_code_store::Thread {
+        goat_code_store::Thread {
             id,
             cwd: "/tmp".to_owned(),
             title: Some("t".to_owned()),

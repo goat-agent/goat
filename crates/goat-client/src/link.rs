@@ -133,6 +133,8 @@ fn spawn_daemon(daemon_exe: &Path, socket_path: &Path) -> Result<(), ClientError
     let stderr = daemon_stderr(socket_path);
     Command::new(daemon_exe)
         .arg("daemon")
+        .env_clear()
+        .envs(goat_process::child_environment())
         .arg("serve")
         .arg("--detached")
         .stdin(Stdio::null())

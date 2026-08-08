@@ -28,6 +28,7 @@ pub struct AgentConfig {
     pub display: String,
     pub personality: AgentCard,
     pub default_model: Model,
+    pub timezone: Option<String>,
     pub history_window: usize,
     pub tool_selectors: Vec<String>,
     pub bindings: Vec<AgentBinding>,

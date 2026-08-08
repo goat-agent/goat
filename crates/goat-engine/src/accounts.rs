@@ -8,6 +8,7 @@ use goat_auth::{
     Credential, CredentialKey, CredentialKind, CredentialService, CredentialStore, SecretString,
     TokenSet,
 };
+use goat_code_store::{CodeStore as Store, Thread};
 use goat_config::UserProviders;
 use goat_protocol::{
     AccountChoice, AccountEntry, AccountInfo, AuthMethod, Effort, Event, LoginCredential,
@@ -15,7 +16,6 @@ use goat_protocol::{
 };
 use goat_provider::{ModelListSource, Provider};
 use goat_providers::{DEFAULT_ACCOUNT, Registry};
-use goat_store::{CodeStore as Store, Thread};
 use tokio::sync::mpsc;
 
 use crate::Ctx;
@@ -597,9 +597,9 @@ mod tests {
     use goat_provider::{ModelListSource, Provider, ProviderId};
 
     use super::{catalog_only, latest_thread_or_seed, models_for_provider};
+    use goat_code_store::{CodeStore as Store, NewThread};
     use goat_config::UserProviders;
     use goat_providers::Registry;
-    use goat_store::{CodeStore as Store, NewThread};
 
     fn store(name: &str) -> CredentialStore {
         let path = std::env::temp_dir().join(name);
@@ -670,12 +670,15 @@ mod tests {
         store
             .store(
                 &goat_auth::CredentialKey::model("xai", "oauth"),
-                Credential::OAuth(goat_auth::TokenSet::from_parts(
-                    "access".to_owned(),
-                    Some("refresh".to_owned()),
-                    Some(3600),
-                    None,
-                )),
+                Credential::OAuth(
+                    goat_auth::TokenSet::from_parts(
+                        "access".to_owned(),
+                        Some("refresh".to_owned()),
+                        Some(3600),
+                        None,
+                    )
+                    .unwrap(),
+                ),
             )
             .unwrap();
         store

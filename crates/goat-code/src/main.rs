@@ -453,7 +453,7 @@ async fn run_unified_daemon(
     let mut agent_meter = None;
     let mut proxy_http = None;
     if proxy_config.enabled {
-        match goat_store::ProxyStore::open(&db_path).await {
+        match goat_proxy_store::ProxyStore::open(&db_path).await {
             Ok(proxy_store) => {
                 let (recorder, _writer) = goat_proxy::Recorder::spawn(proxy_store.clone());
                 manager.set_meter(goat_proxy::Meter::new(

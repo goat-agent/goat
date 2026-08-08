@@ -3,15 +3,20 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use goat_protocol::{
-    AccountEntry, Event, ModelEntry, ModelTarget, Op, RateLimitSnapshot, SkillInfo,
+    AccountEntry, Event, Mode, ModelEntry, ModelTarget, Op, ProcessInfo, ProcessState,
+    RateLimitSnapshot, RunId, SkillInfo, TaskId, ToolCall, ToolCallId, TranscriptEntry, Usage,
 };
-use goat_wire::{ClientId, RateLimitEntry, ServerFrame, SessionId, SessionLiveState};
+use goat_wire::{
+    ClientId, ModeEntry, RateLimitEntry, RetryEntry, ServerFrame, SessionId, SessionLiveState,
+    UsageEntry,
+};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
 pub(crate) struct Subscriber {
     pub(crate) client: ClientId,
     pub(crate) sender: mpsc::Sender<ServerFrame>,
+    pub(crate) lagged: tokio_util::sync::CancellationToken,
 }
 
 pub(crate) struct SessionInner {
@@ -24,7 +29,10 @@ pub(crate) struct SessionInner {
     pub(crate) next_task: u64,
     pub(crate) subscribers: Vec<Subscriber>,
     pub(crate) state: SessionLiveState,
-    pub(crate) snapshot: Option<RestoredSnapshot>,
+    pub(crate) transcript: LiveTranscript,
+    pub(crate) restore_target: Option<ModelTarget>,
+    pub(crate) context_tokens: Option<u32>,
+    pub(crate) compaction_threshold: Option<u32>,
     pub(crate) tokens: u64,
     pub(crate) open_asks: usize,
     pub(crate) live_processes: usize,
@@ -38,17 +46,41 @@ pub(crate) struct SessionInner {
     pub(crate) model_list: Vec<ModelEntry>,
     pub(crate) selected_target: Option<ModelTarget>,
     pub(crate) rate_limits: HashMap<(String, String), (RateLimitSnapshot, i64)>,
+    pub(crate) usage: HashMap<(String, String), UsageState>,
+    pub(crate) mode: Mode,
+    pub(crate) plan_path: Option<String>,
+    pub(crate) processes: HashMap<RunId, ProcessInfo>,
+    pub(crate) active: Option<TaskId>,
+    pub(crate) retry: Option<RetryState>,
+    pub(crate) asks: HashMap<ToolCallId, Event>,
+    pub(crate) subagents: HashMap<TaskId, Event>,
+    pub(crate) plan: Option<Event>,
     pub(crate) state_ready: bool,
-    pub(crate) state_watermark: u64,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct LiveTranscript {
+    entries: Vec<TranscriptEntry>,
+    text: HashMap<TaskId, String>,
+    thinking: HashMap<TaskId, String>,
+    tools: HashMap<ToolCallId, (TaskId, ToolCall)>,
+    shells: HashMap<TaskId, String>,
 }
 
 #[derive(Clone)]
-pub(crate) struct RestoredSnapshot {
-    pub(crate) watermark: u64,
-    pub(crate) target: Option<goat_protocol::ModelTarget>,
-    pub(crate) entries: Vec<goat_protocol::TranscriptEntry>,
-    pub(crate) context_tokens: Option<u32>,
-    pub(crate) compaction_threshold: Option<u32>,
+pub(crate) struct UsageState {
+    usage: Usage,
+    context_window: Option<u32>,
+    compaction_threshold: Option<u32>,
+}
+
+pub(crate) struct RetryState {
+    id: TaskId,
+    attempt: u32,
+    max_attempts: u32,
+    until: tokio::time::Instant,
+    reason: String,
+    resets_at: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -73,6 +105,156 @@ pub(crate) enum PromptAction {
     },
 }
 
+impl LiveTranscript {
+    fn restore(&mut self, entries: &[TranscriptEntry]) {
+        self.entries = entries.to_vec();
+        self.text.clear();
+        self.thinking.clear();
+        self.tools.clear();
+        self.shells.clear();
+    }
+
+    fn flush_thinking(&mut self, id: TaskId) {
+        if let Some(text) = self.thinking.remove(&id) {
+            self.entries.push(TranscriptEntry::Thinking { text });
+        }
+    }
+
+    fn append_text(&mut self, id: TaskId, chunk: &str) {
+        self.flush_thinking(id);
+        self.text.entry(id).or_default().push_str(chunk);
+    }
+
+    fn finish_text(&mut self, id: TaskId, value: &str) {
+        self.flush_thinking(id);
+        self.text.remove(&id);
+        self.entries.push(TranscriptEntry::Assistant {
+            text: value.to_owned(),
+        });
+    }
+
+    fn append_thinking(&mut self, id: TaskId, chunk: &str) {
+        self.thinking.entry(id).or_default().push_str(chunk);
+    }
+
+    fn pending_events(&self) -> Vec<Event> {
+        let mut events = Vec::new();
+        let mut thinking: Vec<_> = self.thinking.iter().collect();
+        thinking.sort_by_key(|(id, _)| **id);
+        for (id, chunk) in thinking {
+            events.push(Event::ThinkingDelta {
+                id: *id,
+                chunk: chunk.clone(),
+            });
+        }
+        let mut text: Vec<_> = self.text.iter().collect();
+        text.sort_by_key(|(id, _)| **id);
+        for (id, chunk) in text {
+            events.push(Event::TextDelta {
+                id: *id,
+                chunk: chunk.clone(),
+            });
+        }
+        let mut tools: Vec<_> = self.tools.values().collect();
+        tools.sort_by_key(|(_, call)| call.id);
+        for (id, call) in tools {
+            events.push(Event::ToolStarted {
+                id: *id,
+                call: call.clone(),
+            });
+        }
+        events
+    }
+
+    fn apply(&mut self, event: &Event) {
+        match event {
+            Event::ConversationRestored { entries, .. } => self.restore(entries),
+            Event::UserMessage {
+                text,
+                display,
+                attachments,
+                ..
+            } => self.entries.push(TranscriptEntry::User {
+                text: display.clone().unwrap_or_else(|| text.clone()),
+                attachments: attachments.clone(),
+            }),
+            Event::TextDelta { id, chunk } => self.append_text(*id, chunk),
+            Event::TextDone { id, text } => self.finish_text(*id, text),
+            Event::ThinkingDelta { id, chunk } => self.append_thinking(*id, chunk),
+            Event::Retrying { id, .. } => {
+                self.text.remove(id);
+            }
+            Event::ToolStarted { id, call } => {
+                self.tools.insert(call.id, (*id, call.clone()));
+            }
+            Event::ToolDone { call, outcome, .. } => {
+                if let Some((_, call)) = self.tools.remove(call) {
+                    self.entries.push(TranscriptEntry::Tool {
+                        call,
+                        outcome: outcome.clone(),
+                    });
+                }
+            }
+            Event::CompactionDone {
+                ok: true,
+                tokens_before,
+                tokens_after,
+                ..
+            } => self.entries.push(TranscriptEntry::Compaction {
+                tokens_before: *tokens_before,
+                tokens_after: *tokens_after,
+            }),
+            Event::ShellDone { id, output } => {
+                if let Some(command) = self.shells.remove(id) {
+                    self.entries.push(TranscriptEntry::Shell {
+                        command,
+                        output: output.clone(),
+                    });
+                }
+            }
+            Event::TaskDone { id, interrupted } => {
+                self.flush_thinking(*id);
+                if let Some(text) = self.text.remove(id) {
+                    self.entries.push(TranscriptEntry::Assistant {
+                        text: if *interrupted {
+                            format!("{text}\n\n(interrupted)")
+                        } else {
+                            text
+                        },
+                    });
+                }
+                let unfinished: Vec<_> = self
+                    .tools
+                    .extract_if(|_, (task, _)| task == id)
+                    .map(|(_, (_, call))| call)
+                    .collect();
+                if *interrupted {
+                    for call in unfinished {
+                        self.entries.push(TranscriptEntry::Tool {
+                            call,
+                            outcome: goat_protocol::ToolOutcome {
+                                ok: false,
+                                summary: None,
+                                body: None,
+                                image: None,
+                                git: None,
+                            },
+                        });
+                    }
+                }
+                self.shells.remove(id);
+            }
+            _ => {}
+        }
+    }
+
+    fn record_op(&mut self, id: TaskId, op: &Op) {
+        if let Op::SubmitShell { command, .. } = op {
+            self.shells.insert(id, command.clone());
+        }
+    }
+}
+
 impl SessionInner {
     pub(crate) fn allocate_task(&mut self) -> goat_protocol::TaskId {
         let id = self.next_task;
@@ -81,25 +263,15 @@ impl SessionInner {
     }
 
     fn cache_state_event(&mut self, event: &Event) {
-        let is_state = match event {
+        match event {
             Event::SkillsChanged { skills } => {
                 self.skills.clone_from(skills);
                 self.state_ready = true;
                 self.ready.notify_waiters();
-                true
             }
-            Event::AccountsChanged { providers } => {
-                self.accounts.clone_from(providers);
-                true
-            }
-            Event::ModelListChanged { entries } => {
-                self.model_list.clone_from(entries);
-                true
-            }
-            Event::ModelSelected { target } => {
-                self.selected_target = Some(target.clone());
-                true
-            }
+            Event::AccountsChanged { providers } => self.accounts.clone_from(providers),
+            Event::ModelListChanged { entries } => self.model_list.clone_from(entries),
+            Event::ModelSelected { target } => self.selected_target = Some(target.clone()),
             Event::RateLimits {
                 provider,
                 account,
@@ -110,25 +282,143 @@ impl SessionInner {
                     (provider.clone(), account.clone()),
                     (snapshot.clone(), *cached_at),
                 );
-                true
             }
-            _ => false,
-        };
-        if is_state {
-            self.state_watermark = self.next_seq + 1;
+            Event::ModeChanged { mode, plan_path } => {
+                self.mode = *mode;
+                self.plan_path.clone_from(plan_path);
+            }
+            Event::ProcessListChanged { processes } => {
+                self.processes = processes
+                    .iter()
+                    .cloned()
+                    .map(|process| (process.id, process))
+                    .collect();
+            }
+            Event::Usage {
+                provider,
+                account,
+                usage,
+                context_window,
+                compaction_threshold,
+                ..
+            } => {
+                self.usage.insert(
+                    (provider.clone(), account.clone()),
+                    UsageState {
+                        usage: usage.clone(),
+                        context_window: *context_window,
+                        compaction_threshold: *compaction_threshold,
+                    },
+                );
+                if self.selected_target.as_ref().is_some_and(|target| {
+                    target.provider == *provider && target.account == *account
+                }) {
+                    self.context_tokens = Some(usage.input_tokens);
+                    if compaction_threshold.is_some() {
+                        self.compaction_threshold = *compaction_threshold;
+                    }
+                }
+            }
+            Event::TaskStarted { id } => {
+                self.active = Some(*id);
+                self.retry = None;
+            }
+            Event::TaskDone { id, .. } if self.active == Some(*id) => {
+                self.active = None;
+                self.retry = None;
+            }
+            Event::Retrying {
+                id,
+                attempt,
+                max_attempts,
+                delay_ms,
+                reason,
+                resets_at,
+            } => {
+                self.retry = Some(RetryState {
+                    id: *id,
+                    attempt: *attempt,
+                    max_attempts: *max_attempts,
+                    until: tokio::time::Instant::now()
+                        + std::time::Duration::from_millis(*delay_ms),
+                    reason: reason.clone(),
+                    resets_at: *resets_at,
+                });
+            }
+            Event::TextDelta { id, .. } | Event::ToolStarted { id, .. }
+                if self.active == Some(*id) =>
+            {
+                self.retry = None;
+            }
+            _ => {}
         }
+    }
+
+    pub(crate) fn record_op(&mut self, id: TaskId, op: &Op) {
+        self.transcript.record_op(id, op);
+        if matches!(op, Op::ResolvePlan { .. }) {
+            self.plan = None;
+        }
+    }
+
+    pub(crate) fn fanout(&mut self, frame: &ServerFrame) {
+        self.subscribers.retain(|sub| {
+            if sub.sender.try_send(frame.clone()).is_ok() {
+                true
+            } else {
+                tracing::warn!(
+                    session = self.id.0,
+                    client = sub.client.0,
+                    "closing lagged subscriber"
+                );
+                sub.lagged.cancel();
+                false
+            }
+        });
     }
 
     pub(crate) fn record_and_fanout(&mut self, event: Event) -> Option<PersistEvent> {
         update_state_from_event(&mut self.state, &event);
+        self.transcript.apply(&event);
         match &event {
-            Event::AskStarted { .. } => self.open_asks += 1,
-            Event::AskDismissed { .. } => {
-                self.open_asks = self.open_asks.saturating_sub(1);
+            Event::AskStarted { call, .. } => {
+                self.open_asks += 1;
+                self.asks.insert(*call, event.clone());
             }
-            Event::ProcessStarted { .. } => self.live_processes += 1,
-            Event::ProcessExited { .. } => {
+            Event::AskDismissed { call, .. } => {
+                self.open_asks = self.open_asks.saturating_sub(1);
+                self.asks.remove(call);
+            }
+            Event::SubagentStarted { id, .. } => {
+                self.subagents.insert(*id, event.clone());
+            }
+            Event::SubagentDone { id, .. } => {
+                self.subagents.remove(id);
+            }
+            Event::PlanProposed { .. } => self.plan = Some(event.clone()),
+            Event::ProcessStarted {
+                process,
+                command,
+                watched,
+            } => {
+                self.live_processes += 1;
+                self.processes.insert(
+                    *process,
+                    ProcessInfo {
+                        id: *process,
+                        command: command.clone(),
+                        state: ProcessState::Running,
+                        watched: *watched,
+                        exit_code: None,
+                    },
+                );
+            }
+            Event::ProcessExited { process, code, .. } => {
                 self.live_processes = self.live_processes.saturating_sub(1);
+                if let Some(info) = self.processes.get_mut(process) {
+                    info.state = ProcessState::Exited;
+                    info.exit_code = *code;
+                }
             }
             Event::Usage { usage, .. } => {
                 self.tokens = self
@@ -142,18 +432,14 @@ impl SessionInner {
         self.cache_state_event(&event);
         if let Event::ConversationRestored {
             target,
-            entries,
             context_tokens,
             compaction_threshold,
+            ..
         } = &event
         {
-            self.snapshot = Some(RestoredSnapshot {
-                watermark: self.next_seq + 1,
-                target: Some(target.clone()),
-                entries: entries.clone(),
-                context_tokens: *context_tokens,
-                compaction_threshold: *compaction_threshold,
-            });
+            self.restore_target = Some(target.clone());
+            self.context_tokens = *context_tokens;
+            self.compaction_threshold = *compaction_threshold;
             self.awaits_restore = false;
             self.ready.notify_waiters();
         }
@@ -170,8 +456,7 @@ impl SessionInner {
             event: event.clone(),
         };
         self.log.push_back((seq, event));
-        self.subscribers
-            .retain(|sub| sub.sender.try_send(frame.clone()).is_ok());
+        self.fanout(&frame);
         thread_id.map(|thread_id| PersistEvent { thread_id, prompt })
     }
 
@@ -181,24 +466,13 @@ impl SessionInner {
 
     pub(crate) fn subscribe_ready(&self) -> bool {
         if self.awaits_restore {
-            self.snapshot.is_some()
+            self.restore_target.is_some()
         } else {
-            self.state_ready || self.snapshot.is_some()
+            self.state_ready || self.restore_target.is_some()
         }
     }
 
     pub(crate) fn build_snapshot(&self) -> ServerFrame {
-        let (watermark, target, transcript, context_tokens, compaction_threshold) =
-            match &self.snapshot {
-                Some(snap) => (
-                    snap.watermark,
-                    snap.target.clone(),
-                    snap.entries.clone(),
-                    snap.context_tokens,
-                    snap.compaction_threshold,
-                ),
-                None => (self.state_watermark, None, Vec::new(), None, None),
-            };
         let rate_limits = self
             .rate_limits
             .iter()
@@ -211,18 +485,70 @@ impl SessionInner {
                 },
             )
             .collect();
+        let usage = self
+            .usage
+            .iter()
+            .map(|((provider, account), state)| UsageEntry {
+                provider: provider.clone(),
+                account: account.clone(),
+                usage: state.usage.clone(),
+                context_window: state.context_window,
+                compaction_threshold: state.compaction_threshold,
+            })
+            .collect();
+        let mut processes: Vec<_> = self.processes.values().cloned().collect();
+        processes.sort_by_key(|process| process.id);
+        let retry = self.retry.as_ref().map(|retry| RetryEntry {
+            id: retry.id,
+            attempt: retry.attempt,
+            max_attempts: retry.max_attempts,
+            delay_ms: u64::try_from(
+                retry
+                    .until
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .as_millis(),
+            )
+            .unwrap_or(u64::MAX),
+            reason: retry.reason.clone(),
+            resets_at: retry.resets_at,
+        });
+        let mut pending = Vec::new();
+        if let Some(thread_id) = self.thread_id {
+            pending.push(Event::ThreadBound { thread_id });
+        }
+        pending.extend(self.transcript.pending_events());
+        let mut subagents: Vec<_> = self.subagents.iter().collect();
+        subagents.sort_by_key(|(id, _)| **id);
+        pending.extend(subagents.into_iter().map(|(_, event)| event.clone()));
+        let mut asks: Vec<_> = self.asks.iter().collect();
+        asks.sort_by_key(|(call, _)| **call);
+        pending.extend(asks.into_iter().map(|(_, event)| event.clone()));
+        pending.extend(self.plan.iter().cloned());
         ServerFrame::Snapshot {
             session: self.id,
-            watermark,
-            target,
-            transcript,
-            context_tokens,
-            compaction_threshold,
+            watermark: self.next_seq,
+            target: Box::new(
+                self.selected_target
+                    .clone()
+                    .or_else(|| self.restore_target.clone()),
+            ),
+            transcript: self.transcript.entries.clone(),
+            pending,
+            context_tokens: self.context_tokens,
+            compaction_threshold: self.compaction_threshold,
             skills: self.skills.clone(),
             accounts: self.accounts.clone(),
             model_list: self.model_list.clone(),
-            selected: self.selected_target.clone(),
+            selected: Box::new(self.selected_target.clone()),
             rate_limits,
+            mode: ModeEntry {
+                mode: self.mode,
+                plan_path: self.plan_path.clone(),
+            },
+            processes,
+            usage,
+            active: self.active,
+            retry: Box::new(retry),
         }
     }
 
@@ -275,11 +601,17 @@ pub(crate) fn subscriber_upsert(
     subs: &mut Vec<Subscriber>,
     client: ClientId,
     sender: mpsc::Sender<ServerFrame>,
+    lagged: tokio_util::sync::CancellationToken,
 ) {
     if let Some(existing) = subs.iter_mut().find(|s| s.client == client) {
         existing.sender = sender;
+        existing.lagged = lagged;
     } else {
-        subs.push(Subscriber { client, sender });
+        subs.push(Subscriber {
+            client,
+            sender,
+            lagged,
+        });
     }
 }
 
@@ -309,7 +641,10 @@ mod tests {
             next_task: 1,
             subscribers: Vec::new(),
             state: SessionLiveState::Idle {},
-            snapshot: None,
+            transcript: super::LiveTranscript::default(),
+            restore_target: None,
+            context_tokens: None,
+            compaction_threshold: None,
             tokens: 0,
             open_asks: 0,
             live_processes: 0,
@@ -323,8 +658,16 @@ mod tests {
             model_list: Vec::new(),
             selected_target: None,
             rate_limits: HashMap::new(),
+            usage: HashMap::new(),
+            mode: goat_protocol::Mode::Normal,
+            plan_path: None,
+            processes: HashMap::new(),
+            active: None,
+            retry: None,
+            asks: HashMap::new(),
+            subagents: HashMap::new(),
+            plan: None,
             state_ready: false,
-            state_watermark: 0,
         }
     }
 
@@ -370,8 +713,18 @@ mod tests {
         let mut subs: Vec<Subscriber> = Vec::new();
         let (a, _ra) = mpsc::channel::<ServerFrame>(8);
         let (b, _rb) = mpsc::channel::<ServerFrame>(8);
-        subscriber_upsert(&mut subs, ClientId(7), a);
-        subscriber_upsert(&mut subs, ClientId(7), b);
+        subscriber_upsert(
+            &mut subs,
+            ClientId(7),
+            a,
+            tokio_util::sync::CancellationToken::new(),
+        );
+        subscriber_upsert(
+            &mut subs,
+            ClientId(7),
+            b,
+            tokio_util::sync::CancellationToken::new(),
+        );
         assert_eq!(subs.len(), 1);
         subscriber_map_remove(&mut subs, ClientId(7));
         assert!(subs.is_empty());
@@ -393,13 +746,11 @@ mod tests {
             compaction_threshold: None,
         };
         inner.record_and_fanout(event);
-        let snap = inner.snapshot.clone().expect("snapshot recorded");
+        let ServerFrame::Snapshot { watermark, .. } = inner.build_snapshot() else {
+            panic!("expected snapshot frame");
+        };
         let restored_seq = inner.log.back().map(|(seq, _)| *seq).unwrap();
-        assert!(
-            restored_seq < snap.watermark,
-            "ConversationRestored seq {restored_seq} must be below watermark {}",
-            snap.watermark
-        );
+        assert_eq!(watermark, restored_seq + 1);
     }
 
     #[test]
@@ -415,7 +766,6 @@ mod tests {
         });
         assert!(inner.state_ready);
         assert_eq!(inner.skills.len(), 1);
-        assert_eq!(inner.state_watermark, 1);
     }
 
     #[test]
@@ -459,10 +809,174 @@ mod tests {
         );
         assert_eq!(skills.len(), 1);
         assert_eq!(rate_limits.len(), 1);
-        assert_eq!(
-            watermark, inner.state_watermark,
-            "new session snapshot rides on the state watermark"
-        );
+        assert_eq!(watermark, inner.next_seq);
+    }
+
+    #[test]
+    fn restored_transcript_stays_current_after_log_floor_advances() {
+        let mut inner = blank_inner();
+        inner.record_and_fanout(Event::ConversationRestored {
+            target: goat_protocol::ModelTarget {
+                provider: "p".to_owned(),
+                model: "m".to_owned(),
+                account: "a".to_owned(),
+                effort: None,
+            },
+            entries: vec![goat_protocol::TranscriptEntry::User {
+                text: "restored".to_owned(),
+                attachments: Vec::new(),
+            }],
+            context_tokens: Some(1),
+            compaction_threshold: None,
+        });
+        for id in 0..=super::MAX_RETAINED_EVENTS {
+            inner.record_and_fanout(Event::TextDone {
+                id: TaskId(u64::try_from(id).unwrap()),
+                text: format!("answer {id}"),
+            });
+        }
+        let ServerFrame::Snapshot {
+            watermark,
+            transcript,
+            ..
+        } = inner.build_snapshot()
+        else {
+            panic!("expected snapshot frame");
+        };
+        assert_eq!(watermark, inner.next_seq);
+        assert_eq!(transcript.len(), super::MAX_RETAINED_EVENTS + 2);
+        assert!(matches!(
+            transcript.last(),
+            Some(goat_protocol::TranscriptEntry::Assistant { text })
+                if text == &format!("answer {}", super::MAX_RETAINED_EVENTS)
+        ));
+    }
+
+    #[test]
+    fn never_restored_session_snapshots_live_history() {
+        let mut inner = blank_inner();
+        let target = goat_protocol::ModelTarget {
+            provider: "p".to_owned(),
+            model: "m".to_owned(),
+            account: "a".to_owned(),
+            effort: None,
+        };
+        inner.record_and_fanout(Event::ModelSelected {
+            target: target.clone(),
+        });
+        inner.record_and_fanout(Event::UserMessage {
+            id: TaskId(1),
+            text: "hello".to_owned(),
+            display: None,
+            attachments: Vec::new(),
+        });
+        inner.record_and_fanout(Event::TextDone {
+            id: TaskId(1),
+            text: "world".to_owned(),
+        });
+        let ServerFrame::Snapshot {
+            target: snapshot_target,
+            transcript,
+            ..
+        } = inner.build_snapshot()
+        else {
+            panic!("expected snapshot frame");
+        };
+        assert_eq!(*snapshot_target, Some(target));
+        assert_eq!(transcript.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn lagged_subscriber_is_cancelled_out_of_band() {
+        let mut inner = blank_inner();
+        let (sender, _receiver) = mpsc::channel(1);
+        let lagged = tokio_util::sync::CancellationToken::new();
+        subscriber_upsert(&mut inner.subscribers, ClientId(9), sender, lagged.clone());
+        inner.fanout(&ServerFrame::Error {
+            message: "first".to_owned(),
+        });
+        inner.fanout(&ServerFrame::Error {
+            message: "second".to_owned(),
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), lagged.cancelled())
+            .await
+            .expect("lag cancellation must be observable");
+        assert!(inner.subscribers.is_empty());
+    }
+
+    #[test]
+    fn snapshot_matches_transcript_at_every_event_boundary() {
+        let mut inner = blank_inner();
+        let events = [
+            Event::UserMessage {
+                id: TaskId(1),
+                text: "hello".to_owned(),
+                display: None,
+                attachments: Vec::new(),
+            },
+            Event::TextDelta {
+                id: TaskId(1),
+                chunk: "wo".to_owned(),
+            },
+            Event::TextDelta {
+                id: TaskId(1),
+                chunk: "rld".to_owned(),
+            },
+            Event::TextDone {
+                id: TaskId(1),
+                text: "world".to_owned(),
+            },
+        ];
+        let expected = [
+            vec![goat_protocol::TranscriptEntry::User {
+                text: "hello".to_owned(),
+                attachments: Vec::new(),
+            }],
+            vec![goat_protocol::TranscriptEntry::User {
+                text: "hello".to_owned(),
+                attachments: Vec::new(),
+            }],
+            vec![goat_protocol::TranscriptEntry::User {
+                text: "hello".to_owned(),
+                attachments: Vec::new(),
+            }],
+            vec![
+                goat_protocol::TranscriptEntry::User {
+                    text: "hello".to_owned(),
+                    attachments: Vec::new(),
+                },
+                goat_protocol::TranscriptEntry::Assistant {
+                    text: "world".to_owned(),
+                },
+            ],
+        ];
+        let pending = [
+            Vec::new(),
+            vec![Event::TextDelta {
+                id: TaskId(1),
+                chunk: "wo".to_owned(),
+            }],
+            vec![Event::TextDelta {
+                id: TaskId(1),
+                chunk: "world".to_owned(),
+            }],
+            Vec::new(),
+        ];
+        for ((event, expected), pending) in events.into_iter().zip(expected).zip(pending) {
+            inner.record_and_fanout(event);
+            let ServerFrame::Snapshot {
+                watermark,
+                transcript,
+                pending: snapshot_pending,
+                ..
+            } = inner.build_snapshot()
+            else {
+                panic!("expected snapshot frame");
+            };
+            assert_eq!(watermark, inner.next_seq);
+            assert_eq!(transcript, expected);
+            assert_eq!(snapshot_pending, pending);
+        }
     }
 
     #[test]

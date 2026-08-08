@@ -24,7 +24,6 @@ goat-proxy        = { workspace = true }
 goat-channel          = { workspace = true }
 goat-integration      = { workspace = true }
 goat-render           = { workspace = true }
-goat-plugin           = { workspace = true }
 goat-agent-tool             = { workspace = true }
 goat-agent-tool-schedule    = { workspace = true }
 goat-agent-tool-observation = { workspace = true }

@@ -62,7 +62,7 @@ fn rebuild(prev: Option<&WatchState>, fetched: &[Observed]) -> (WatchState, Vec<
     };
     let fresh = fetched
         .iter()
-        .filter(|item| !prev.seen.contains_key(&item.key))
+        .filter(|item| prev.seen.get(&item.key) != Some(&item.stamp))
         .cloned()
         .collect();
     (next, fresh)
@@ -74,7 +74,7 @@ fn retain(prev: Option<&WatchState>, fetched: &[Observed]) -> (WatchState, Vec<O
         None => Vec::new(),
         Some(prev) => fetched
             .iter()
-            .filter(|item| !prev.seen.contains_key(&item.key))
+            .filter(|item| prev.seen.get(&item.key) != Some(&item.stamp))
             .cloned()
             .collect(),
     };
@@ -99,9 +99,11 @@ fn settle(prev: Option<&WatchState>, fetched: &[Observed]) -> (WatchState, Vec<O
     let mut pending = BTreeMap::new();
     let mut fresh = Vec::new();
     for item in fetched {
-        if prev.seen.contains_key(&item.key) {
-            seen.insert(item.key.clone(), item.stamp.clone());
-        } else if prev.pending.get(&item.key) == Some(&item.stamp) {
+        if prev.seen.get(&item.key) == Some(&item.stamp) {
+            continue;
+        }
+        seen.remove(&item.key);
+        if prev.pending.get(&item.key) == Some(&item.stamp) {
             seen.insert(item.key.clone(), item.stamp.clone());
             fresh.push(item.clone());
         } else {
@@ -166,6 +168,15 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_refires_only_when_the_stamp_changes() {
+        let (first, _) = rebuild(None, &[item("a", "1")]);
+        let (second, unchanged) = rebuild(Some(&first), &[item("a", "1")]);
+        assert!(unchanged.is_empty());
+        let (_, changed) = rebuild(Some(&second), &[item("a", "2")]);
+        assert_eq!(keys(&changed), ["a"]);
+    }
+
+    #[test]
     fn rebuild_forgets_what_scrolled_off_so_it_can_fire_again() {
         let (first, _) = rebuild(None, &[item("a", "1")]);
         let (second, fresh) = rebuild(Some(&first), &[item("b", "2")]);
@@ -186,6 +197,17 @@ mod tests {
     }
 
     #[test]
+    fn retain_refires_a_changed_stamp_without_forgetting_old_keys() {
+        let (first, _) = retain(None, &[item("a", "1"), item("b", "1")]);
+        let (second, fresh) = retain(Some(&first), &[item("a", "2")]);
+        assert_eq!(keys(&fresh), ["a"]);
+        assert_eq!(second.seen.get("a").map(String::as_str), Some("2"));
+        assert!(second.seen.contains_key("b"));
+        let (_, unchanged) = retain(Some(&second), &[item("a", "2")]);
+        assert!(unchanged.is_empty());
+    }
+
+    #[test]
     fn settle_waits_for_a_stable_second_sighting() {
         let (first, _) = settle(None, &[]);
         let (second, fresh) = settle(Some(&first), &[item("a", "1")]);
@@ -198,6 +220,19 @@ mod tests {
     }
 
     #[test]
+    fn settle_gates_a_changed_stamp_until_it_is_stable() {
+        let (first, _) = settle(None, &[item("a", "1")]);
+        let (second, changed) = settle(Some(&first), &[item("a", "2")]);
+        assert!(changed.is_empty());
+        assert!(!second.seen.contains_key("a"));
+        assert_eq!(second.pending.get("a").map(String::as_str), Some("2"));
+
+        let (third, fresh) = settle(Some(&second), &[item("a", "2")]);
+        assert_eq!(keys(&fresh), ["a"]);
+        assert_eq!(third.seen.get("a").map(String::as_str), Some("2"));
+    }
+
+    #[test]
     fn settle_restarts_the_gate_when_the_item_keeps_changing() {
         let (first, _) = settle(None, &[]);
         let (second, _) = settle(Some(&first), &[item("a", "1")]);
@@ -207,13 +242,14 @@ mod tests {
     }
 
     #[test]
-    fn holding_back_lets_the_next_poll_retry() {
+    fn holding_back_restores_the_previous_stamp_for_a_retry() {
         let (first, _) = retain(None, &[item("a", "1")]);
-        let (mut second, fresh) = retain(Some(&first), &[item("b", "2")]);
-        assert_eq!(keys(&fresh), ["b"]);
+        let (mut second, fresh) = retain(Some(&first), &[item("a", "2")]);
+        assert_eq!(keys(&fresh), ["a"]);
         (RETAIN.hold_back)(&mut second, Some(&first), &fresh[0]);
-        let (_, again) = retain(Some(&second), &[item("b", "2")]);
-        assert_eq!(keys(&again), ["b"]);
+        assert_eq!(second.seen.get("a").map(String::as_str), Some("1"));
+        let (_, again) = retain(Some(&second), &[item("a", "2")]);
+        assert_eq!(keys(&again), ["a"]);
     }
 
     #[test]

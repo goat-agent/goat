@@ -259,7 +259,12 @@ fn spawn_child(
     cwd: &Path,
 ) -> Result<(TokioChildProcess, Option<u32>), McpError> {
     let mut command = Command::new(executable);
-    command.args(args).envs(env).current_dir(cwd);
+    command
+        .args(args)
+        .env_clear()
+        .envs(goat_process::child_environment())
+        .envs(env)
+        .current_dir(cwd);
     let (transport, stderr) = TokioChildProcess::builder(command.configure(|cmd| {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())

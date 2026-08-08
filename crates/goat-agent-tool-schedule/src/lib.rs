@@ -7,7 +7,8 @@ use goat_agent_tool::{
 };
 use goat_loop::cron_expr;
 use goat_loop::scheduler::SchedulerHandle;
-use goat_store::{NewScheduledTask, ScheduleKind, Store};
+use goat_store::{NewSchedule, ScheduleKind, Store};
+use goat_types::SCHEDULE_FALLBACK_TIMEZONE;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -50,6 +51,8 @@ struct ScheduleOnceArgs {
     due_at: String,
     task: String,
     tools: Vec<String>,
+    #[serde(default)]
+    timezone: Option<String>,
 }
 
 pub struct ScheduleOnceTool {
@@ -71,6 +74,10 @@ impl ToolHandler for ScheduleOnceTool {
             Ok(d) => d.with_timezone(&Utc),
             Err(e) => return ToolOutput::error(format!("invalid due_at (RFC3339 required): {e}")),
         };
+        let (_, timezone_name) = match selected_timezone(args.timezone.as_deref()) {
+            Ok(timezone) => timezone,
+            Err(error) => return ToolOutput::error(error),
+        };
         let now = Utc::now();
         if due_at <= now {
             return ToolOutput::error(format!(
@@ -80,30 +87,32 @@ impl ToolHandler for ScheduleOnceTool {
             ));
         }
         let similar = similar_summaries(&*self.store, ctx.agent, &args.task).await;
-        let new = NewScheduledTask {
+        let new = NewSchedule {
             agent: ctx.agent,
-            task: args.task.clone(),
+            instruction: args.task.clone(),
             tools: args.tools,
             origin_conv: ctx.thread,
             schedule: ScheduleKind::Once(due_at),
+            timezone: Some(timezone_name.clone()),
             created_by_msg_id: None,
         };
-        let task_id = match self.store.insert_scheduled_task(new).await {
+        let schedule_id = match self.store.insert_schedule(new).await {
             Ok(id) => id,
-            Err(e) => return ToolOutput::error(format!("insert_scheduled_task failed: {e}")),
+            Err(e) => return ToolOutput::error(format!("insert_schedule failed: {e}")),
         };
         if let Err(e) = self
             .store
-            .insert_task_run(task_id, due_at, args.task.clone())
+            .insert_schedule_run(schedule_id, due_at, args.task.clone())
             .await
         {
-            return ToolOutput::error(format!("insert_task_run failed: {e}"));
+            return ToolOutput::error(format!("insert_schedule_run failed: {e}"));
         }
         self.scheduler.schedule(due_at);
         ToolOutput::structured(json!({
-            "task_id": task_id,
+            "task_id": schedule_id,
             "schedule_kind": "once",
             "due_at": due_at.to_rfc3339(),
+            "timezone": timezone_name,
             "similar_existing": similar,
         }))
     }
@@ -114,6 +123,8 @@ struct ScheduleCronArgs {
     cron: String,
     task: String,
     tools: Vec<String>,
+    #[serde(default)]
+    timezone: Option<String>,
     #[serde(default)]
     first_at: Option<String>,
 }
@@ -134,53 +145,77 @@ impl ToolHandler for ScheduleCronTool {
             return ToolOutput::error("task must not be empty");
         }
         let schedule = match cron_expr::parse(&args.cron) {
-            Ok(s) => s,
-            Err(e) => return ToolOutput::error(format!("invalid cron: {e}")),
+            Ok(schedule) => schedule,
+            Err(error) => return ToolOutput::error(format!("invalid cron: {error}")),
+        };
+        let (timezone, timezone_name) = match selected_timezone(args.timezone.as_deref()) {
+            Ok(timezone) => timezone,
+            Err(error) => return ToolOutput::error(error),
         };
         let now = Utc::now();
+        let explicit_first = args.first_at.is_some();
         let first_at = if let Some(raw) = args.first_at.as_deref() {
             match DateTime::parse_from_rfc3339(raw) {
-                Ok(d) => d.with_timezone(&Utc),
-                Err(e) => return ToolOutput::error(format!("invalid first_at: {e}")),
+                Ok(date) => date.with_timezone(&Utc),
+                Err(error) => return ToolOutput::error(format!("invalid first_at: {error}")),
             }
         } else {
-            match cron_expr::next_after(&schedule, now) {
-                Some(d) => d,
+            match cron_expr::next_after(&schedule, now, timezone) {
+                Some(date) => date,
                 None => return ToolOutput::error("cron has no future occurrences"),
             }
         };
         if first_at <= now {
             return ToolOutput::error("first_at must be in the future");
         }
-        let preview: Vec<String> = cron_expr::upcoming(&schedule, now, PREVIEW_OCCURRENCES)
+        if explicit_first && !cron_expr::includes(&schedule, first_at, timezone) {
+            return ToolOutput::error(format!(
+                "first_at is not an occurrence of this cron in {timezone_name}"
+            ));
+        }
+        let preview_dates = if explicit_first {
+            let mut dates = vec![first_at];
+            dates.extend(cron_expr::upcoming(
+                &schedule,
+                first_at,
+                PREVIEW_OCCURRENCES - 1,
+                timezone,
+            ));
+            dates
+        } else {
+            cron_expr::upcoming(&schedule, now, PREVIEW_OCCURRENCES, timezone)
+        };
+        let preview: Vec<String> = preview_dates
             .into_iter()
-            .map(|d| d.to_rfc3339())
+            .map(|date| date.to_rfc3339())
             .collect();
         let similar = similar_summaries(&*self.store, ctx.agent, &args.task).await;
-        let new = NewScheduledTask {
+        let new = NewSchedule {
             agent: ctx.agent,
-            task: args.task.clone(),
+            instruction: args.task.clone(),
             tools: args.tools,
             origin_conv: ctx.thread,
             schedule: ScheduleKind::Cron(args.cron.clone()),
+            timezone: Some(timezone_name.clone()),
             created_by_msg_id: None,
         };
-        let task_id = match self.store.insert_scheduled_task(new).await {
+        let schedule_id = match self.store.insert_schedule(new).await {
             Ok(id) => id,
-            Err(e) => return ToolOutput::error(format!("insert_scheduled_task failed: {e}")),
+            Err(e) => return ToolOutput::error(format!("insert_schedule failed: {e}")),
         };
         if let Err(e) = self
             .store
-            .insert_task_run(task_id, first_at, args.task.clone())
+            .insert_schedule_run(schedule_id, first_at, args.task.clone())
             .await
         {
-            return ToolOutput::error(format!("insert_task_run failed: {e}"));
+            return ToolOutput::error(format!("insert_schedule_run failed: {e}"));
         }
         self.scheduler.schedule(first_at);
         ToolOutput::structured(json!({
-            "task_id": task_id,
+            "task_id": schedule_id,
             "schedule_kind": "cron",
             "cron": args.cron,
+            "timezone": timezone_name,
             "first_at": first_at.to_rfc3339(),
             "preview": preview,
             "similar_existing": similar,
@@ -190,7 +225,8 @@ impl ToolHandler for ScheduleCronTool {
 
 #[derive(Debug, Deserialize)]
 struct CancelTaskArgs {
-    task_id: i64,
+    #[serde(rename = "task_id")]
+    schedule_id: i64,
 }
 
 pub struct CancelTaskTool {
@@ -204,9 +240,9 @@ impl ToolHandler for CancelTaskTool {
             Ok(a) => a,
             Err(e) => return ToolOutput::error(format!("invalid cancel_task input: {e}")),
         };
-        match self.store.cancel_task_by_id(args.task_id).await {
-            Ok(true) => ToolOutput::structured(json!({"cancelled": [args.task_id]})),
-            Ok(false) => ToolOutput::error(format!("no active task with id {}", args.task_id)),
+        match self.store.cancel_schedule(args.schedule_id).await {
+            Ok(true) => ToolOutput::structured(json!({"cancelled": [args.schedule_id]})),
+            Ok(false) => ToolOutput::error(format!("no active task with id {}", args.schedule_id)),
             Err(e) => ToolOutput::error(format!("cancel failed: {e}")),
         }
     }
@@ -219,28 +255,29 @@ pub struct ListTasksTool {
 #[async_trait]
 impl ToolHandler for ListTasksTool {
     async fn call(&self, ctx: ToolContext, _call: ToolCall) -> ToolOutput {
-        match self.store.list_active_tasks(ctx.agent).await {
+        match self.store.list_active_schedules(ctx.agent).await {
             Ok(rows) => {
                 let entries: Vec<_> = rows
                     .into_iter()
-                    .map(|(task, next_at)| {
-                        let (kind, schedule_summary) = match &task.schedule {
+                    .map(|(schedule, next_at)| {
+                        let (kind, schedule_summary) = match &schedule.schedule {
                             ScheduleKind::Once(at) => ("once", at.to_rfc3339()),
                             ScheduleKind::Cron(expr) => ("cron", expr.clone()),
                         };
                         json!({
-                            "id": task.id,
+                            "id": schedule.id,
                             "kind": kind,
-                            "task": task.task,
+                            "task": schedule.instruction,
                             "schedule": schedule_summary,
+                            "timezone": schedule.timezone.as_deref().unwrap_or("host-local"),
                             "next_at": next_at.map(|d| d.to_rfc3339()),
-                            "tools": task.tools,
+                            "tools": schedule.tools,
                         })
                     })
                     .collect();
                 ToolOutput::structured(json!({"tasks": entries}))
             }
-            Err(e) => ToolOutput::error(format!("list_active_tasks failed: {e}")),
+            Err(e) => ToolOutput::error(format!("list_active_schedules failed: {e}")),
         }
     }
 }
@@ -259,6 +296,11 @@ fn spec_schedule_once() -> ToolSpec {
                 "due_at": {
                     "type": "string",
                     "description": "When the task fires (RFC 3339)."
+                },
+                "timezone": {
+                    "type": "string",
+                    "default": "UTC",
+                    "description": "IANA timezone recording the owner's time context. Defaults to the agent's configured timezone, or UTC when none is configured."
                 },
                 "task": {
                     "type": "string",
@@ -287,7 +329,12 @@ fn spec_schedule_cron() -> ToolSpec {
             "properties": {
                 "cron": {
                     "type": "string",
-                    "description": "5-field cron: minute hour day month day-of-week (day-of-week 0=Sun..6=Sat)."
+                    "description": "5-field cron evaluated in timezone: minute hour day month day-of-week (day-of-week 0=Sun..6=Sat)."
+                },
+                "timezone": {
+                    "type": "string",
+                    "default": "UTC",
+                    "description": "IANA timezone for every cron occurrence. Defaults to the agent's configured timezone, or UTC when none is configured."
                 },
                 "task": {
                     "type": "string",
@@ -300,7 +347,7 @@ fn spec_schedule_cron() -> ToolSpec {
                 },
                 "first_at": {
                     "type": "string",
-                    "description": "Optional RFC 3339 override for the first occurrence."
+                    "description": "Optional RFC 3339 first occurrence. It must match the cron in timezone."
                 }
             }
         }),
@@ -338,6 +385,15 @@ fn spec_list_tasks() -> ToolSpec {
     )
 }
 
+fn selected_timezone(requested: Option<&str>) -> Result<(cron_expr::CronTimezone, String), String> {
+    let requested = requested.unwrap_or(SCHEDULE_FALLBACK_TIMEZONE);
+    let timezone = cron_expr::parse_timezone(Some(requested)).map_err(|error| error.to_string())?;
+    let cron_expr::CronTimezone::Named(named) = timezone else {
+        return Err("timezone must be an IANA timezone".to_string());
+    };
+    Ok((timezone, named.to_string()))
+}
+
 async fn similar_summaries(
     store: &dyn Store,
     agent: goat_types::AgentId,
@@ -349,14 +405,14 @@ async fn similar_summaries(
     if needle.is_empty() {
         return Vec::new();
     }
-    match store.similar_active_tasks(agent, needle).await {
+    match store.similar_active_schedules(agent, needle).await {
         Ok(rows) => rows
             .into_iter()
             .take(5)
             .map(|t| {
                 json!({
                     "id": t.id,
-                    "task": t.task,
+                    "task": t.instruction,
                 })
             })
             .collect(),
@@ -428,8 +484,12 @@ mod tests {
             .call(ctx, call_once(&future, "ping example.com from staging"))
             .await;
         assert!(!out.is_error, "got error: {out:?}");
-        let active = store.list_active_tasks(agent).await.unwrap();
+        let active = store.list_active_schedules(agent).await.unwrap();
         assert_eq!(active.len(), 1);
+        assert_eq!(
+            active[0].0.timezone.as_deref(),
+            Some(SCHEDULE_FALLBACK_TIMEZONE)
+        );
     }
 
     #[tokio::test]
@@ -501,6 +561,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn schedule_cron_rejects_disagreeing_first_at() {
+        let (store, ctx, _) = setup().await;
+        let tool = ScheduleCronTool {
+            store,
+            scheduler: SchedulerHandle::detached(),
+        };
+        let out = tool
+            .call(
+                ctx,
+                ToolCall {
+                    call_id: "c".into(),
+                    name: SCHEDULE_CRON,
+                    arguments: json!({
+                        "cron": "0 9 * * *",
+                        "timezone": "Asia/Seoul",
+                        "first_at": "2099-01-01T09:00:00Z",
+                        "task": "daily summary",
+                        "tools": [],
+                    }),
+                },
+            )
+            .await;
+        assert!(out.is_error);
+        assert!(out.text_for_model().contains("not an occurrence"));
+    }
+
+    #[test]
+    fn schedule_schemas_expose_utc_fallback() {
+        for spec in [spec_schedule_once(), spec_schedule_cron()] {
+            assert_eq!(
+                spec.input_schema["properties"]["timezone"]["default"],
+                SCHEDULE_FALLBACK_TIMEZONE
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn cancel_by_id_succeeds() {
         let (store, ctx, agent) = setup().await;
         let once = ScheduleOnceTool {
@@ -510,8 +607,8 @@ mod tests {
         let future = (Utc::now() + Duration::minutes(10)).to_rfc3339();
         once.call(ctx.clone(), call_once(&future, "loadtest staging"))
             .await;
-        let active_before = store.list_active_tasks(agent).await.unwrap();
-        let task_id = active_before[0].0.id;
+        let active_before = store.list_active_schedules(agent).await.unwrap();
+        let schedule_id = active_before[0].0.id;
 
         let cancel = CancelTaskTool {
             store: store.clone(),
@@ -522,12 +619,12 @@ mod tests {
                 ToolCall {
                     call_id: "c".into(),
                     name: CANCEL_TASK,
-                    arguments: json!({"task_id": task_id}),
+                    arguments: json!({"task_id": schedule_id}),
                 },
             )
             .await;
         assert!(!out.is_error, "got error: {out:?}");
-        let active = store.list_active_tasks(agent).await.unwrap();
+        let active = store.list_active_schedules(agent).await.unwrap();
         assert!(active.is_empty());
     }
 

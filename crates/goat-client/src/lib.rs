@@ -484,16 +484,18 @@ async fn run_connection(
                         let _ = presence_tx.try_send(clients.len());
                         continue;
                     }
+                    ServerFrame::Snapshot { .. } => {
+                        let _ = sink
+                            .send(ClientFrame::ListDirectory {
+                                path: shared.cwd.clone(),
+                                recursive: true,
+                            })
+                            .await;
+                    }
                     _ => {}
                 }
                 match sequenced_delivery(&mut expected_seq, &mut replaying, &frame) {
-                    Delivery::RequestResync => {
-                        let session = *shared.current.lock().await;
-                        if sink.send(ClientFrame::Attach { session }).await.is_err() {
-                            return true;
-                        }
-                        continue;
-                    }
+                    Delivery::Reconnect => return true,
                     Delivery::Skip => continue,
                     Delivery::Forward => {}
                 }
@@ -519,7 +521,7 @@ async fn run_connection(
 enum Delivery {
     Forward,
     Skip,
-    RequestResync,
+    Reconnect,
 }
 
 fn sequenced_delivery(
@@ -546,7 +548,7 @@ fn sequenced_delivery(
             Some(exp) if *seq < exp => Delivery::Skip,
             Some(exp) if *seq > exp => {
                 *replaying = true;
-                Delivery::RequestResync
+                Delivery::Reconnect
             }
             _ => {
                 *expected_seq = Some(*seq + 1);
@@ -570,6 +572,7 @@ fn frame_to_events(frame: ServerFrame) -> Vec<Event> {
         ServerFrame::Snapshot {
             target,
             transcript,
+            pending,
             context_tokens,
             compaction_threshold,
             skills,
@@ -577,10 +580,15 @@ fn frame_to_events(frame: ServerFrame) -> Vec<Event> {
             model_list,
             selected,
             rate_limits,
+            mode,
+            processes,
+            usage,
+            active,
+            retry,
             ..
         } => {
             let mut events = Vec::new();
-            if let Some(target) = target {
+            if let Some(target) = *target {
                 events.push(Event::ConversationRestored {
                     target,
                     entries: transcript,
@@ -595,8 +603,37 @@ fn frame_to_events(frame: ServerFrame) -> Vec<Event> {
             events.push(Event::ModelListChanged {
                 entries: model_list,
             });
-            if let Some(target) = selected {
+            if let Some(target) = *selected {
                 events.push(Event::ModelSelected { target });
+            }
+            events.push(Event::ModeChanged {
+                mode: mode.mode,
+                plan_path: mode.plan_path,
+            });
+            events.push(Event::ProcessListChanged { processes });
+            if let Some(id) = active {
+                events.push(Event::TaskStarted { id });
+            }
+            events.extend(pending);
+            for entry in usage {
+                events.push(Event::Usage {
+                    id: active.unwrap_or(goat_protocol::TaskId(0)),
+                    provider: entry.provider,
+                    account: entry.account,
+                    usage: entry.usage,
+                    context_window: entry.context_window,
+                    compaction_threshold: entry.compaction_threshold,
+                });
+            }
+            if let Some(retry) = *retry {
+                events.push(Event::Retrying {
+                    id: retry.id,
+                    attempt: retry.attempt,
+                    max_attempts: retry.max_attempts,
+                    delay_ms: retry.delay_ms,
+                    reason: retry.reason,
+                    resets_at: retry.resets_at,
+                });
             }
             for entry in rate_limits {
                 events.push(Event::RateLimits {
@@ -819,12 +856,12 @@ mod tests {
     }
 
     #[test]
-    fn gap_requests_resync_and_suppresses_until_snapshot() {
+    fn gap_requests_one_reconnect_and_suppresses_until_snapshot() {
         let mut expected = Some(2);
         let mut replaying = false;
         assert_eq!(
             sequenced_delivery(&mut expected, &mut replaying, &text(4)),
-            Delivery::RequestResync
+            Delivery::Reconnect
         );
         assert!(replaying);
         assert_eq!(
@@ -847,15 +884,24 @@ mod tests {
         let snapshot = ServerFrame::Snapshot {
             session: SessionId(1),
             watermark: 4,
-            target: None,
+            target: Box::new(None),
             transcript: Vec::new(),
+            pending: Vec::new(),
             context_tokens: None,
             compaction_threshold: None,
             skills: Vec::new(),
             accounts: Vec::new(),
             model_list: Vec::new(),
-            selected: None,
+            selected: Box::new(None),
             rate_limits: Vec::new(),
+            mode: goat_wire::ModeEntry {
+                mode: goat_protocol::Mode::Normal,
+                plan_path: None,
+            },
+            processes: Vec::new(),
+            usage: Vec::new(),
+            active: None,
+            retry: Box::new(None),
         };
         assert_eq!(
             sequenced_delivery(&mut expected, &mut replaying, &snapshot),
@@ -875,13 +921,14 @@ mod tests {
         let snapshot = ServerFrame::Snapshot {
             session: SessionId(1),
             watermark: 4,
-            target: Some(ModelTarget {
+            target: Box::new(Some(ModelTarget {
                 provider: "p".to_owned(),
                 model: "m".to_owned(),
                 account: "a".to_owned(),
                 effort: None,
-            }),
+            })),
             transcript: Vec::new(),
+            pending: Vec::new(),
             context_tokens: None,
             compaction_threshold: None,
             skills: vec![SkillInfo {
@@ -891,8 +938,16 @@ mod tests {
             }],
             accounts: Vec::new(),
             model_list: Vec::new(),
-            selected: None,
+            selected: Box::new(None),
             rate_limits: Vec::new(),
+            mode: goat_wire::ModeEntry {
+                mode: goat_protocol::Mode::Normal,
+                plan_path: None,
+            },
+            processes: Vec::new(),
+            usage: Vec::new(),
+            active: None,
+            retry: Box::new(None),
         };
         let events = frame_to_events(snapshot);
         assert!(
@@ -912,8 +967,9 @@ mod tests {
         let snapshot = ServerFrame::Snapshot {
             session: SessionId(1),
             watermark: 2,
-            target: None,
+            target: Box::new(None),
             transcript: Vec::new(),
+            pending: Vec::new(),
             context_tokens: None,
             compaction_threshold: None,
             skills: vec![SkillInfo {
@@ -923,8 +979,16 @@ mod tests {
             }],
             accounts: Vec::new(),
             model_list: Vec::new(),
-            selected: None,
+            selected: Box::new(None),
             rate_limits: Vec::new(),
+            mode: goat_wire::ModeEntry {
+                mode: goat_protocol::Mode::Normal,
+                plan_path: None,
+            },
+            processes: Vec::new(),
+            usage: Vec::new(),
+            active: None,
+            retry: Box::new(None),
         };
         let events = frame_to_events(snapshot);
         assert!(
@@ -946,15 +1010,24 @@ mod tests {
         let snapshot = ServerFrame::Snapshot {
             session: SessionId(1),
             watermark: 2,
-            target: None,
+            target: Box::new(None),
             transcript: Vec::new(),
+            pending: Vec::new(),
             context_tokens: None,
             compaction_threshold: None,
             skills: Vec::new(),
             accounts: Vec::new(),
             model_list: Vec::new(),
-            selected: None,
+            selected: Box::new(None),
             rate_limits: Vec::new(),
+            mode: goat_wire::ModeEntry {
+                mode: goat_protocol::Mode::Normal,
+                plan_path: None,
+            },
+            processes: Vec::new(),
+            usage: Vec::new(),
+            active: None,
+            retry: Box::new(None),
         };
         let mut expected = None;
         let mut replaying = false;

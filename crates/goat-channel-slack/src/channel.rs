@@ -42,9 +42,24 @@ impl Channel for SlackChannel {
         let whoami = api.auth_test().await?;
         let identity = identity_of(&whoami, api.as_ref()).await;
 
-        let allowed_user_ids: HashSet<String> = cfg.allowed_user_ids.iter().cloned().collect();
-        if allowed_user_ids.len() != cfg.allowed_user_ids.len() {
-            warn!("slack: allowed_user_ids contains duplicate entries; deduplicated");
+        let allowed_user_ids = cfg.allowed_user_ids.map(|configured| {
+            let configured_len = configured.len();
+            let allowed: HashSet<String> = configured.into_iter().collect();
+            if allowed.len() != configured_len {
+                warn!("slack: allowed_user_ids contains duplicate entries; deduplicated");
+            }
+            allowed
+        });
+        match &allowed_user_ids {
+            None => warn!(
+                agent = %agent,
+                "slack: allowed_user_ids is not configured; all inbound users will be denied"
+            ),
+            Some(allowed) if allowed.is_empty() => warn!(
+                agent = %agent,
+                "slack: allowed_user_ids is empty; all inbound users will be denied"
+            ),
+            Some(_) => {}
         }
 
         let (tx, rx) = mpsc::channel(INCOMING_CAPACITY);

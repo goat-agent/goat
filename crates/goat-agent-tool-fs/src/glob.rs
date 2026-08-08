@@ -38,11 +38,14 @@ impl ToolHandler for GlobTool {
             return common::error("pattern must not be empty");
         }
         let root = match args.path.as_deref() {
-            Some(path) => match common::existing_path(&ctx.goat_root, path) {
+            Some(path) => match common::existing_path(&ctx, path) {
                 Ok(path) => path,
                 Err(e) => return common::error(e),
             },
-            None => ctx.goat_root.clone(),
+            None => match common::existing_path(&ctx, Path::new(".")) {
+                Ok(path) => path,
+                Err(e) => return common::error(e),
+            },
         };
         let glob_matcher = match Glob::new(&args.pattern).map(|g| g.compile_matcher()) {
             Ok(m) => m,

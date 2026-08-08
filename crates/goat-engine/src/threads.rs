@@ -1,10 +1,10 @@
+use goat_code_store::CodeStore as Store;
 use goat_protocol::{
     Effort, Event, ModelTarget, NotifyKind, RewindDraft, RewindPoint, RewindScope, SkillInfo,
     SubagentGroupEntry, SubagentGroupMember, ThreadSummary, ToolCall, ToolCallId, ToolOutcome,
     TranscriptEntry,
 };
 use goat_provider::{ContentBlock, Message, MessageRole};
-use goat_store::CodeStore as Store;
 use tokio::sync::mpsc;
 
 use crate::{
@@ -272,8 +272,8 @@ type Rebuilt = (
 );
 
 fn rebuild_entries(
-    messages: Vec<goat_store::StoredMessage>,
-    compactions: &[goat_store::Compaction],
+    messages: Vec<goat_code_store::StoredMessage>,
+    compactions: &[goat_code_store::Compaction],
     tools: &goat_tools::ToolRegistry,
     tool_summaries: &std::collections::HashMap<(i64, String), String>,
 ) -> Rebuilt {
@@ -614,9 +614,9 @@ pub(crate) async fn handle_resume_latest(ctx: &crate::Ctx, state: &mut crate::Se
 mod tests {
     use std::collections::HashMap;
 
+    use goat_code_store::StoredMessage;
     use goat_protocol::{ToolOutcome, TranscriptEntry};
     use goat_provider::ContentBlock;
-    use goat_store::StoredMessage;
 
     use super::rebuild_entries;
 
