@@ -4,7 +4,7 @@ use goat_protocol::{
 };
 
 use super::{App, MainView, Overlay, ProcessRunView};
-use crate::ask::AskPicker;
+use crate::{ask::AskPicker, native_screen::AskScreen};
 
 impl App {
     #[allow(clippy::too_many_lines)]
@@ -85,7 +85,7 @@ impl App {
                             let id = call.id;
                             self.transcript.push_tool(call);
                             self.transcript
-                                .finish_tool(id, outcome, self.picker.as_ref());
+                                .finish_tool(id, outcome, self.picker.as_deref());
                         }
                         TranscriptEntry::SubagentGroup { group, members } => {
                             self.transcript.push_restored_agent_group(group, members);
@@ -331,7 +331,7 @@ impl App {
                     self.subagent_runs[i].transcript.finish_tool(
                         call,
                         outcome,
-                        self.picker.as_ref(),
+                        self.picker.as_deref(),
                     );
                 } else if self.transcript.is_subagent_group_call(id, call) {
                     if !self.transcript.detached_group_member(id, call) {
@@ -340,7 +340,7 @@ impl App {
                 } else {
                     let touched = outcome.ok && self.transcript.touches_pull_request(call);
                     self.transcript
-                        .finish_tool(call, outcome, self.picker.as_ref());
+                        .finish_tool(call, outcome, self.picker.as_deref());
                     if touched {
                         self.forget_pull_request();
                     }
@@ -413,25 +413,28 @@ impl App {
                 self.dirty = true;
             }
             EngineEvent::AskStarted {
-                call, questions, ..
+                id,
+                call,
+                questions,
             } => {
                 if !self.focused {
                     self.queue_notification(crate::notification::Notification::Attention);
                 }
-                let picker = AskPicker::new(questions);
+                let screen = AskScreen::new(AskPicker::new(questions), id, call);
                 if matches!(self.overlay, Overlay::None | Overlay::Commands(_)) {
-                    self.overlay = Overlay::Ask(picker, call);
+                    self.overlay = Overlay::Screen(Box::new(screen));
                 } else {
-                    self.pending.ask = Some((picker, call));
+                    self.pending.ask = Some(screen);
                 }
                 self.dirty = true;
             }
             EngineEvent::AskDismissed { call, .. } => {
-                if matches!(&self.overlay, Overlay::Ask(_, c) if *c == call) {
-                    self.overlay = Overlay::None;
-                    self.dirty = true;
-                }
-                if matches!(&self.pending.ask, Some((_, c)) if *c == call) {
+                if self
+                    .pending
+                    .ask
+                    .as_ref()
+                    .is_some_and(|screen| screen.call() == call)
+                {
                     self.pending.ask = None;
                     self.dirty = true;
                 }

@@ -25,68 +25,37 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         vertical: 0,
     });
 
-    if let Overlay::ImageZoom(source) = app.overlay() {
-        render_image_zoom(frame, area, app, theme, source);
-        return;
-    }
-
-    if let Overlay::Ask(..) = app.overlay() {
-        render_ask(frame, area, app, theme);
+    let full_reserve = match app.overlay() {
+        Overlay::Screen(screen) => match screen.placement() {
+            Placement::Full { reserve_bottom } => Some(reserve_bottom),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(reserve_bottom) = full_reserve {
+        if let Some(panel_h) = reserve_bottom {
+            let [header, transcript_area, _panel] = Layout::vertical([
+                Constraint::Length(2),
+                Constraint::Min(1),
+                Constraint::Length(panel_h.min(area.height.saturating_sub(2)).max(3)),
+            ])
+            .areas(area);
+            render_header(frame, header, app, theme);
+            render_transcript(frame, transcript_area, app, theme);
+            if let Overlay::Screen(screen) = app.overlay_mut() {
+                screen.render(frame, area, &theme);
+            }
+            render_toasts(frame, area, app, theme);
+        } else {
+            frame.render_widget(Block::new().style(theme.base()), area);
+            if let Overlay::Screen(screen) = app.overlay_mut() {
+                screen.render(frame, area, &theme);
+            }
+        }
         return;
     }
 
     render_main(frame, area, app, theme);
-    render_toasts(frame, area, app, theme);
-}
-
-fn render_image_zoom(
-    frame: &mut Frame,
-    area: Rect,
-    app: &App,
-    theme: Theme,
-    source: &goat_protocol::ToolImageData,
-) {
-    let [body, hint] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
-    let img_area = body.inner(Margin {
-        horizontal: 2,
-        vertical: 1,
-    });
-    if let Some(picker) = app.picker.as_ref() {
-        crate::screenshot::render_zoom(frame, img_area, picker, source);
-    } else {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                " image preview unavailable in this terminal ",
-                theme.muted(),
-            ))),
-            img_area,
-        );
-    }
-    frame.render_widget(
-        Paragraph::new(overlay::hint_line(&[(symbols::key::ESC, "close")], theme)),
-        hint,
-    );
-}
-
-fn render_ask(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
-    let panel_h = match app.overlay() {
-        Overlay::Ask(picker, _) => picker
-            .desired_height()
-            .min(area.height.saturating_sub(2))
-            .max(3),
-        _ => 3,
-    };
-    let [header, transcript_area, _panel] = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Min(1),
-        Constraint::Length(panel_h),
-    ])
-    .areas(area);
-    render_header(frame, header, app, theme);
-    render_transcript(frame, transcript_area, app, theme);
-    if let Overlay::Ask(picker, _) = app.overlay() {
-        picker.render(frame, area, theme);
-    }
     render_toasts(frame, area, app, theme);
 }
 
@@ -509,7 +478,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme)
             working: working.as_ref(),
             queued: &queued,
             hl: &app.highlighter,
-            picker: app.picker.as_ref(),
+            picker: app.picker.as_deref(),
         },
     );
     render_selection(frame, app, theme);
@@ -604,7 +573,7 @@ fn render_composer_preview(frame: &mut Frame, area: Rect, app: &App, theme: Them
         None => {}
         Some(crate::composer::CursorToken::Image(att)) => {
             frame.render_widget(block, area);
-            if let Some(picker) = app.picker.as_ref() {
+            if let Some(picker) = app.picker.as_deref() {
                 let source = goat_protocol::ToolImageData {
                     media_type: att.media_type.clone(),
                     data: att.data.clone(),

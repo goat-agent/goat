@@ -8,6 +8,7 @@ pub mod highlight;
 mod keymap;
 pub(crate) mod layout;
 pub mod markdown;
+mod native_screen;
 mod notification;
 mod overlay;
 mod picker;

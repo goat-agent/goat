@@ -18,11 +18,11 @@ use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::{
-    ask::AskPicker,
     command::{CommandMenu, CommandMenuContext, RuntimeChoice, RuntimeChoiceGroup},
     composer::Composer,
     files::FileMenu,
     highlight::SyntectHighlighter,
+    native_screen::{AskScreen, ImageZoomScreen},
     symbols,
     theme::Theme,
     transcript::Transcript,
@@ -79,8 +79,6 @@ pub(crate) enum Overlay {
     Commands(CommandMenu),
     Files(FileMenu),
     Runs(usize),
-    Ask(AskPicker, ToolCallId),
-    ImageZoom(Box<goat_protocol::ToolImageData>),
 }
 
 const TICK: Duration = Duration::from_millis(120);
@@ -175,7 +173,7 @@ pub struct App {
     pub(crate) compaction_threshold: Option<u32>,
     pub(crate) focused: bool,
     pub(crate) notification_pending: Option<crate::notification::Notification>,
-    pub(crate) picker: Option<ratatui_image::picker::Picker>,
+    pub(crate) picker: Option<std::sync::Arc<ratatui_image::picker::Picker>>,
     pub(crate) processes: Vec<goat_protocol::ProcessInfo>,
     pub(crate) files: Vec<String>,
     pub(crate) files_loaded: bool,
@@ -189,7 +187,7 @@ pub struct App {
 
 #[derive(Default)]
 pub(crate) struct PendingState {
-    pub(crate) ask: Option<(AskPicker, ToolCallId)>,
+    pub(crate) ask: Option<AskScreen>,
 }
 
 #[derive(Default)]
@@ -406,9 +404,6 @@ impl App {
                     return ops;
                 }
                 match &mut self.overlay {
-                    Overlay::Ask(picker, _) => {
-                        picker.insert_str(&text);
-                    }
                     _ => {
                         match crate::attachment::attachments_from_paste(&text) {
                             Ok(attachments) => self.composer.push_attachments(attachments),
@@ -914,7 +909,6 @@ impl App {
     pub(crate) fn overlay_captures_text(&self) -> bool {
         match &self.overlay {
             Overlay::Screen(screen) => screen.captures_text(),
-            Overlay::Ask(_, _) => true,
             _ => false,
         }
     }
@@ -1001,7 +995,10 @@ impl App {
         if let Some(url) = self.active_transcript().url_at(line, content_col) {
             self.pending_open = Some(url);
         } else if let Some(img) = self.active_transcript().image_at(line) {
-            self.overlay = Overlay::ImageZoom(Box::new(img));
+            self.overlay = Overlay::Screen(Box::new(ImageZoomScreen::new(
+                Box::new(img),
+                self.picker.clone(),
+            )));
         }
     }
 
@@ -1050,12 +1047,6 @@ impl App {
             }
             MouseEventKind::ScrollDown if self.wheel_scroll_allowed() => {
                 self.scroll = self.scroll.saturating_add(self.wheel_step());
-                self.dirty = true;
-            }
-            MouseEventKind::Down(MouseButton::Left)
-                if matches!(self.overlay, Overlay::ImageZoom(_)) =>
-            {
-                self.overlay = Overlay::None;
                 self.dirty = true;
             }
             MouseEventKind::Down(MouseButton::Left) if self.selection_allowed() => {
@@ -1118,9 +1109,9 @@ impl App {
     }
     pub(crate) fn promote_pending_ask(&mut self) {
         if matches!(self.overlay, Overlay::None | Overlay::Commands(_))
-            && let Some((picker, call)) = self.pending.ask.take()
+            && let Some(screen) = self.pending.ask.take()
         {
-            self.overlay = Overlay::Ask(picker, call);
+            self.overlay = Overlay::Screen(Box::new(screen));
             self.dirty = true;
         }
     }
@@ -1739,7 +1730,7 @@ pub async fn run(
 ) -> color_eyre::Result<ExitReason> {
     let mut app = App::new(theme, &origin);
     let (mut terminal, picker, background) = tui::init(app.mouse_capture)?;
-    app.picker = picker;
+    app.picker = picker.map(std::sync::Arc::new);
     app.set_terminal_bg(background);
     let result = event_loop(
         &mut terminal,
@@ -3296,7 +3287,7 @@ mod tests {
 
         app.overlay = Overlay::None;
         app.promote_pending_ask();
-        assert!(matches!(app.overlay, Overlay::Ask(..)));
+        assert!(matches!(app.overlay, Overlay::Screen(_)));
         assert!(app.pending.ask.is_none());
     }
 
