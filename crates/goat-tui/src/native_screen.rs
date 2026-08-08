@@ -1,7 +1,9 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 
 use crossterm::event::{Event as InputEvent, KeyCode};
-use goat_command::{CommandEffect, InputOutcome, Placement, Screen, ScreenOutcome, Session, Theme};
+use goat_command::{
+    CommandEffect, InputOutcome, KeyHint, Placement, Screen, ScreenOutcome, Session, Theme,
+};
 use goat_protocol::{Event, Op, TaskId, ToolCallId, ToolImageData};
 use ratatui::{
     Frame,
@@ -10,7 +12,147 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ask::{AskOutcome, AskPicker};
+use crate::{
+    ask::{AskOutcome, AskPicker},
+    command::CommandMenu,
+    files::FileMenu,
+};
+
+pub struct CommandMenuScreen {
+    menu: Arc<Mutex<CommandMenu>>,
+    done: bool,
+}
+
+impl CommandMenuScreen {
+    pub fn new(menu: CommandMenu) -> (Self, Weak<Mutex<CommandMenu>>) {
+        let menu = Arc::new(Mutex::new(menu));
+        let handle = Arc::downgrade(&menu);
+        (Self { menu, done: false }, handle)
+    }
+}
+
+impl Screen for CommandMenuScreen {
+    fn placement(&self) -> Placement {
+        Placement::Panel {
+            height: self.menu.lock().unwrap().desired_height(),
+            hints: Some(vec![
+                KeyHint {
+                    key: crate::symbols::key::TAB,
+                    label: "complete",
+                },
+                KeyHint {
+                    key: crate::symbols::key::ENTER,
+                    label: "run",
+                },
+            ]),
+            composer_focused: true,
+        }
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        self.menu.lock().unwrap().render(frame, area, *theme);
+    }
+
+    fn handle_input(&mut self, event: &InputEvent, session: &mut dyn Session) -> InputOutcome {
+        let InputEvent::Key(key) = event else {
+            return InputOutcome::Ignored;
+        };
+        let outcome = match key.code {
+            KeyCode::Tab => {
+                if let Some(completion) = self.menu.lock().unwrap().selected_completion() {
+                    let completed = completion.apply(&session.composer().text());
+                    session.composer().set_plain_text(&completed);
+                }
+                ScreenOutcome::Continue
+            }
+            KeyCode::Enter => {
+                if let Some(completion) = self.menu.lock().unwrap().selected_command_completion() {
+                    let completed = completion.apply(&session.composer().text());
+                    session.composer().set_plain_text(&completed);
+                    ScreenOutcome::Continue
+                } else {
+                    if let Some(completion) = self.menu.lock().unwrap().selected_submit_completion()
+                    {
+                        let completed = completion.apply(&session.composer().text());
+                        session.composer().set_plain_text(&completed);
+                    }
+                    self.done = true;
+                    return InputOutcome::Ignored;
+                }
+            }
+            KeyCode::Esc => ScreenOutcome::Close,
+            KeyCode::Up => {
+                self.menu.lock().unwrap().move_up();
+                ScreenOutcome::Continue
+            }
+            KeyCode::Down => {
+                self.menu.lock().unwrap().move_down();
+                ScreenOutcome::Continue
+            }
+            _ => return InputOutcome::Ignored,
+        };
+        InputOutcome::Handled(outcome)
+    }
+
+    fn tick(&mut self) -> ScreenOutcome {
+        if self.done {
+            ScreenOutcome::Close
+        } else {
+            ScreenOutcome::Continue
+        }
+    }
+}
+
+pub struct FileMenuScreen {
+    menu: Arc<Mutex<FileMenu>>,
+}
+
+impl FileMenuScreen {
+    pub fn new(menu: FileMenu) -> (Self, Weak<Mutex<FileMenu>>) {
+        let menu = Arc::new(Mutex::new(menu));
+        let handle = Arc::downgrade(&menu);
+        (Self { menu }, handle)
+    }
+}
+
+impl Screen for FileMenuScreen {
+    fn placement(&self) -> Placement {
+        Placement::Panel {
+            height: self.menu.lock().unwrap().desired_height(),
+            hints: None,
+            composer_focused: true,
+        }
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        self.menu.lock().unwrap().render(frame, area, *theme);
+    }
+
+    fn handle_input(&mut self, event: &InputEvent, session: &mut dyn Session) -> InputOutcome {
+        let InputEvent::Key(key) = event else {
+            return InputOutcome::Ignored;
+        };
+        let outcome = match key.code {
+            KeyCode::Tab | KeyCode::Enter => {
+                if let Some(path) = self.menu.lock().unwrap().selected() {
+                    session.composer().replace_at_query(&path);
+                }
+                ScreenOutcome::Close
+            }
+            KeyCode::Esc => ScreenOutcome::Close,
+            KeyCode::Up => {
+                self.menu.lock().unwrap().move_up();
+                ScreenOutcome::Continue
+            }
+            KeyCode::Down => {
+                self.menu.lock().unwrap().move_down();
+                ScreenOutcome::Continue
+            }
+            _ => return InputOutcome::Ignored,
+        };
+        InputOutcome::Handled(outcome)
+    }
+}
 
 pub struct AskScreen {
     picker: AskPicker,

@@ -17,16 +17,6 @@ impl App {
         match &self.overlay {
             Overlay::Screen(_) => {}
             Overlay::Runs(_) => return self.on_run_selector_key(key),
-            Overlay::Commands(_) => {
-                if let Some(result) = self.on_command_menu_key(key) {
-                    return result;
-                }
-            }
-            Overlay::Files(_) => {
-                if let Some(result) = self.on_file_menu_key(key) {
-                    return result;
-                }
-            }
             Overlay::None => {}
         }
         if let Some(ch) = keymap::ctrl_key(&key) {
@@ -60,97 +50,9 @@ impl App {
             self.clear_arm = None;
             self.rewind_arm = None;
         }
-        self.on_normal_key(key)
-    }
-
-    pub(crate) fn on_command_menu_key(&mut self, key: KeyEvent) -> Option<Vec<Op>> {
-        self.dirty = true;
-        match key.code {
-            KeyCode::Tab => {
-                if let Overlay::Commands(menu) = &self.overlay
-                    && let Some(completion) = menu.selected_completion()
-                {
-                    let text = self.composer.text();
-                    let completed = completion.apply(&text);
-                    self.composer.set_plain_text(&completed);
-                    self.update_command_menu();
-                }
-                Some(Vec::new())
-            }
-            KeyCode::Enter => {
-                if let Overlay::Commands(menu) = &self.overlay
-                    && let Some(completion) = menu.selected_command_completion()
-                {
-                    let text = self.composer.text();
-                    let completed = completion.apply(&text);
-                    self.composer.set_plain_text(&completed);
-                    self.update_command_menu();
-                    return Some(Vec::new());
-                }
-                if let Overlay::Commands(menu) = &self.overlay
-                    && let Some(completion) = menu.selected_submit_completion()
-                {
-                    let text = self.composer.text();
-                    let completed = completion.apply(&text);
-                    self.composer.set_plain_text(&completed);
-                }
-                self.overlay = Overlay::None;
-                self.dirty = true;
-                Some(self.submit())
-            }
-            KeyCode::Esc => {
-                self.overlay = Overlay::None;
-                Some(Vec::new())
-            }
-            KeyCode::Up => {
-                if let Overlay::Commands(menu) = &mut self.overlay {
-                    menu.move_up();
-                }
-                Some(Vec::new())
-            }
-            KeyCode::Down => {
-                if let Overlay::Commands(menu) = &mut self.overlay {
-                    menu.move_down();
-                }
-                Some(Vec::new())
-            }
-            _ => None,
-        }
-    }
-
-    pub(crate) fn on_file_menu_key(&mut self, key: KeyEvent) -> Option<Vec<Op>> {
-        match key.code {
-            KeyCode::Tab | KeyCode::Enter => {
-                if let Overlay::Files(menu) = &self.overlay
-                    && let Some(path) = menu.selected()
-                {
-                    self.composer.replace_at_query(&path);
-                }
-                self.overlay = Overlay::None;
-                self.dirty = true;
-                Some(Vec::new())
-            }
-            KeyCode::Esc => {
-                self.overlay = Overlay::None;
-                self.dirty = true;
-                Some(Vec::new())
-            }
-            KeyCode::Up => {
-                if let Overlay::Files(menu) = &mut self.overlay {
-                    menu.move_up();
-                }
-                self.dirty = true;
-                Some(Vec::new())
-            }
-            KeyCode::Down => {
-                if let Overlay::Files(menu) = &mut self.overlay {
-                    menu.move_down();
-                }
-                self.dirty = true;
-                Some(Vec::new())
-            }
-            _ => None,
-        }
+        let mut ops = self.on_normal_key(key);
+        ops.extend(self.tick_screen());
+        ops
     }
 
     #[allow(clippy::too_many_lines)]

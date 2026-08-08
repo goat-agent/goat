@@ -22,7 +22,7 @@ use crate::{
     composer::Composer,
     files::FileMenu,
     highlight::SyntectHighlighter,
-    native_screen::{AskScreen, ImageZoomScreen},
+    native_screen::{AskScreen, CommandMenuScreen, FileMenuScreen, ImageZoomScreen},
     symbols,
     theme::Theme,
     transcript::Transcript,
@@ -76,8 +76,6 @@ impl RunTarget {
 pub(crate) enum Overlay {
     None,
     Screen(Box<dyn Screen>),
-    Commands(CommandMenu),
-    Files(FileMenu),
     Runs(usize),
 }
 
@@ -163,6 +161,8 @@ pub struct App {
     pub(crate) computer_use: bool,
     pub(crate) browser: bool,
     pub(crate) commands: CommandRegistry,
+    command_menu: std::sync::Weak<std::sync::Mutex<CommandMenu>>,
+    file_menu: std::sync::Weak<std::sync::Mutex<FileMenu>>,
     pub(crate) toasts: Vec<crate::toast::Toast>,
     pub(crate) subagent_runs: Vec<SubagentRunView>,
     pub(crate) process_runs: Vec<ProcessRunView>,
@@ -314,6 +314,8 @@ impl App {
             computer_use: cfg.computer_use_enabled,
             browser: cfg.browser_enabled,
             commands: CommandRegistry::builtin(),
+            command_menu: std::sync::Weak::new(),
+            file_menu: std::sync::Weak::new(),
             toasts: Vec::new(),
             subagent_runs: Vec::new(),
             process_runs: Vec::new(),
@@ -565,7 +567,13 @@ impl App {
                 self.overlay = Overlay::Screen(screen);
                 None
             }
-            InputOutcome::Handled(outcome) => Some(self.apply_screen_outcome(screen, outcome)),
+            InputOutcome::Handled(outcome) => {
+                let ops = self.apply_screen_outcome(screen, outcome);
+                if self.command_menu.upgrade().is_some() {
+                    self.update_command_menu();
+                }
+                Some(ops)
+            }
         }
     }
 
@@ -815,27 +823,29 @@ impl App {
 
     pub(crate) fn update_command_menu(&mut self) {
         if self.composer.shell() {
-            if matches!(self.overlay, Overlay::Commands(_) | Overlay::Files(_)) {
+            if self.command_menu.upgrade().is_some() || self.file_menu.upgrade().is_some() {
                 self.overlay = Overlay::None;
             }
             return;
         }
         if let Some(query) = self.composer.at_query() {
-            if let Overlay::Files(menu) = &mut self.overlay {
-                menu.update(&query);
+            if let Some(menu) = self.file_menu.upgrade() {
+                menu.lock().unwrap().update(&query);
             } else {
                 if !self.files_loaded {
                     self.outbox.push(Op::ListFiles {});
                 }
-                self.overlay = Overlay::Files(FileMenu::new(
+                let (screen, handle) = FileMenuScreen::new(FileMenu::new(
                     self.files.clone(),
                     !self.files_loaded,
                     &query,
                 ));
+                self.file_menu = handle;
+                self.overlay = Overlay::Screen(Box::new(screen));
             }
             return;
         }
-        if matches!(self.overlay, Overlay::Files(_)) {
+        if self.file_menu.upgrade().is_some() {
             self.overlay = Overlay::None;
         }
         let text = self.composer.text();
@@ -860,18 +870,21 @@ impl App {
                 empty_hint: "no models yet — run /config to connect a provider",
             },
         ];
-        let cmd_ctx = CommandMenuContext { choices: &groups };
+        let context = CommandMenuContext { choices: &groups };
         if trimmed.starts_with('/')
             && slash_command_name(trimmed).is_none_or(|name| !name.contains('/'))
         {
-            match &mut self.overlay {
-                Overlay::Commands(menu) => menu.update(&self.commands, trimmed, &cmd_ctx),
-                _ => {
-                    self.overlay =
-                        Overlay::Commands(CommandMenu::new(&self.commands, trimmed, &cmd_ctx));
-                }
+            if let Some(menu) = self.command_menu.upgrade() {
+                menu.lock()
+                    .unwrap()
+                    .update(&self.commands, trimmed, &context);
+            } else {
+                let (screen, handle) =
+                    CommandMenuScreen::new(CommandMenu::new(&self.commands, trimmed, &context));
+                self.command_menu = handle;
+                self.overlay = Overlay::Screen(Box::new(screen));
             }
-        } else if matches!(self.overlay, Overlay::Commands(_)) {
+        } else if self.command_menu.upgrade().is_some() {
             self.overlay = Overlay::None;
         }
     }
@@ -900,10 +913,9 @@ impl App {
     }
 
     pub(crate) fn wheel_scroll_allowed(&self) -> bool {
-        matches!(
-            self.overlay,
-            Overlay::None | Overlay::Commands(_) | Overlay::Files(_) | Overlay::Runs(_)
-        )
+        matches!(self.overlay, Overlay::None | Overlay::Runs(_))
+            || self.command_menu.upgrade().is_some()
+            || self.file_menu.upgrade().is_some()
     }
 
     pub(crate) fn overlay_captures_text(&self) -> bool {
@@ -1108,7 +1120,7 @@ impl App {
         self.turn.compacting = false;
     }
     pub(crate) fn promote_pending_ask(&mut self) {
-        if matches!(self.overlay, Overlay::None | Overlay::Commands(_))
+        if (matches!(self.overlay, Overlay::None) || self.command_menu.upgrade().is_some())
             && let Some(screen) = self.pending.ask.take()
         {
             self.overlay = Overlay::Screen(Box::new(screen));
@@ -2351,7 +2363,7 @@ mod tests {
         let mut app = App::new(Theme::dark(), &test_origin());
         app.on_key(press(KeyCode::Char('!'), KeyModifiers::NONE));
         app.on_key(press(KeyCode::Char('/'), KeyModifiers::NONE));
-        assert!(!matches!(app.overlay, Overlay::Commands(_)));
+        assert!(matches!(app.overlay, Overlay::None));
         app.composer.insert_str("usr/bin/true");
         let ops = app.submit();
         assert!(

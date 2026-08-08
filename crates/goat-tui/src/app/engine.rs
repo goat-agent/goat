@@ -53,9 +53,9 @@ impl App {
             EngineEvent::FilesListed { entries } => {
                 self.files = entries;
                 self.files_loaded = true;
-                if let Overlay::Files(menu) = &mut self.overlay {
+                if let Some(menu) = self.file_menu.upgrade() {
                     let query = self.composer.at_query().unwrap_or_default();
-                    menu.fill(self.files.clone(), &query);
+                    menu.lock().unwrap().fill(self.files.clone(), &query);
                 }
             }
             EngineEvent::ConversationRestored {
@@ -421,7 +421,7 @@ impl App {
                     self.queue_notification(crate::notification::Notification::Attention);
                 }
                 let screen = AskScreen::new(AskPicker::new(questions), id, call);
-                if matches!(self.overlay, Overlay::None | Overlay::Commands(_)) {
+                if matches!(self.overlay, Overlay::None) || self.command_menu.upgrade().is_some() {
                     self.overlay = Overlay::Screen(Box::new(screen));
                 } else {
                     self.pending.ask = Some(screen);

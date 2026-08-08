@@ -66,8 +66,6 @@ enum Panel {
         hints: Option<Vec<goat_command::KeyHint>>,
         composer_focused: bool,
     },
-    Commands,
-    Files,
     Runs(usize),
 }
 
@@ -87,8 +85,6 @@ fn active_panel(app: &App) -> Panel {
             },
             _ => Panel::None,
         },
-        Overlay::Commands(_) => Panel::Commands,
-        Overlay::Files(_) => Panel::Files,
         Overlay::Runs(cursor) => Panel::Runs(*cursor),
         _ => Panel::None,
     }
@@ -109,14 +105,6 @@ fn panel_desired_height(app: &App, panel: &Panel) -> u16 {
     match panel {
         Panel::None => 0,
         Panel::Screen { height, .. } => *height,
-        Panel::Commands => match app.overlay() {
-            Overlay::Commands(menu) => menu.desired_height(),
-            _ => 0,
-        },
-        Panel::Files => match app.overlay() {
-            Overlay::Files(menu) => menu.desired_height(),
-            _ => 0,
-        },
         Panel::Runs(_) => u16::try_from(app.run_targets().len() + 1)
             .unwrap_or(1)
             .clamp(1, u16::try_from(LIST_MAX).unwrap_or(10)),
@@ -194,21 +182,8 @@ fn render_hint(frame: &mut Frame, area: Rect, app: &App, theme: Theme, panel: &P
                 render_footer(frame, area, app, theme);
             }
         }
-        Panel::Commands => frame.render_widget(
-            Paragraph::new(overlay::hint_line(
-                &[
-                    (symbols::key::TAB, "complete"),
-                    (symbols::key::ENTER, "run"),
-                ],
-                theme,
-            )),
-            area.inner(Margin {
-                horizontal: PAD_X,
-                vertical: 0,
-            }),
-        ),
         Panel::Runs(_) => render_run_footer(frame, area, theme),
-        Panel::None | Panel::Files => {
+        Panel::None => {
             if footer_visible(app) {
                 render_footer(frame, area, app, theme);
             }
@@ -246,16 +221,6 @@ fn render_panel(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme, pane
         Panel::Screen { .. } => {
             if let Overlay::Screen(screen) = app.overlay_mut() {
                 screen.render(frame, area, &theme);
-            }
-        }
-        Panel::Commands => {
-            if let Overlay::Commands(menu) = app.overlay() {
-                menu.render(frame, area, theme);
-            }
-        }
-        Panel::Files => {
-            if let Overlay::Files(menu) = app.overlay() {
-                menu.render(frame, area, theme);
             }
         }
         Panel::Runs(cursor) => render_run_panel(frame, area, app, theme, *cursor),
