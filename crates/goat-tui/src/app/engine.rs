@@ -44,8 +44,7 @@ impl App {
             EngineEvent::ThreadsListed { threads } => {
                 self.threads = threads;
             }
-            EngineEvent::RewindPointsListed { points } => {
-                self.overlay = Overlay::Rewind(crate::picker::RewindPicker::new(points));
+            EngineEvent::RewindPointsListed { .. } => {
                 self.rewind_arm = None;
                 self.dirty = true;
             }

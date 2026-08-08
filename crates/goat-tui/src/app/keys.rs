@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use goat_protocol::Op;
 
 use super::{App, CLEAR_ARM_TICKS, Overlay, QUIT_ARM_TICKS};
-use crate::{ask::AskOutcome, config::ConfigOutcome, keymap, picker::RewindOutcome};
+use crate::{ask::AskOutcome, config::ConfigOutcome, keymap};
 
 impl App {
     pub(crate) fn on_key(&mut self, key: KeyEvent) -> Vec<Op> {
@@ -16,7 +16,6 @@ impl App {
         }
         match &self.overlay {
             Overlay::Screen(_) => {}
-            Overlay::Rewind(_) => return self.on_rewind_picker_key(key),
             Overlay::Config(_) => return self.on_config_key(key),
             Overlay::Runs(_) => return self.on_run_selector_key(key),
             Overlay::Ask(_, _) => return self.on_ask_picker_key(key),
@@ -389,57 +388,6 @@ impl App {
             }
             _ => Vec::new(),
         }
-    }
-
-    pub(crate) fn on_rewind_picker_key(&mut self, key: KeyEvent) -> Vec<Op> {
-        self.dirty = true;
-        if let Some(ch) = keymap::ctrl_key(&key) {
-            if ch == 'c' {
-                self.overlay = Overlay::None;
-            }
-            return Vec::new();
-        }
-        match key.code {
-            KeyCode::Esc => {
-                if let Overlay::Rewind(picker) = &mut self.overlay
-                    && matches!(picker.escape(), RewindOutcome::Close)
-                {
-                    self.overlay = Overlay::None;
-                }
-            }
-            KeyCode::Up => {
-                if let Overlay::Rewind(picker) = &mut self.overlay {
-                    picker.move_up();
-                }
-            }
-            KeyCode::Down => {
-                if let Overlay::Rewind(picker) = &mut self.overlay {
-                    picker.move_down();
-                }
-            }
-            KeyCode::Enter => {
-                let outcome = match &mut self.overlay {
-                    Overlay::Rewind(picker) => picker.enter(),
-                    _ => RewindOutcome::NoOp,
-                };
-                match outcome {
-                    RewindOutcome::NoOp => {}
-                    RewindOutcome::Close => self.overlay = Overlay::None,
-                    RewindOutcome::Selected {
-                        checkpoint_id,
-                        scope,
-                    } => {
-                        self.overlay = Overlay::None;
-                        return vec![Op::Rewind {
-                            checkpoint_id,
-                            scope,
-                        }];
-                    }
-                }
-            }
-            _ => {}
-        }
-        Vec::new()
     }
 
     pub(crate) fn on_config_key(&mut self, key: KeyEvent) -> Vec<Op> {

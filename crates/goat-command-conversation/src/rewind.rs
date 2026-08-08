@@ -1,4 +1,9 @@
-use goat_command::{Command, CommandEffect, CommandInvocation};
+mod screen;
+
+use goat_command::{Command, CommandEffect, CommandInvocation, Session};
+use goat_protocol::NotifyKind;
+
+pub use screen::RewindScreen;
 
 pub struct Rewind;
 
@@ -15,12 +20,16 @@ impl Command for Rewind {
         &["checkpoint", "undo"]
     }
 
-    fn run(
-        &self,
-        _invocation: CommandInvocation,
-        _session: &mut dyn goat_command::Session,
-    ) -> CommandEffect {
-        CommandEffect::OpenRewind
+    fn run(&self, _invocation: CommandInvocation, session: &mut dyn Session) -> CommandEffect {
+        if session.is_busy() || session.queued_len() > 0 {
+            session.notify(
+                NotifyKind::Info,
+                "finish or interrupt the current task before rewinding".to_owned(),
+            );
+            CommandEffect::Noop
+        } else {
+            CommandEffect::Show(Box::new(RewindScreen::new(Vec::new())))
+        }
     }
 }
 
@@ -31,7 +40,7 @@ mod tests {
     use super::Rewind;
 
     #[test]
-    fn opens_rewind_picker() {
+    fn opens_rewind_screen() {
         let effect = Rewind.run(
             CommandInvocation {
                 name: "rewind".to_owned(),
@@ -42,6 +51,6 @@ mod tests {
             },
             &mut goat_command::EmptySession::default(),
         );
-        assert!(matches!(effect, CommandEffect::OpenRewind));
+        assert!(matches!(effect, CommandEffect::Show(_)));
     }
 }

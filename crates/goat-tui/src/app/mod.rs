@@ -24,7 +24,6 @@ use crate::{
     config::{Config, ConfigOutcome},
     files::FileMenu,
     highlight::SyntectHighlighter,
-    picker::RewindPicker,
     symbols,
     theme::Theme,
     transcript::Transcript,
@@ -80,7 +79,6 @@ impl RunTarget {
 pub(crate) enum Overlay {
     None,
     Screen(Box<dyn Screen>),
-    Rewind(RewindPicker),
     Config(Config),
     Commands(CommandMenu),
     Files(FileMenu),
@@ -535,7 +533,6 @@ impl App {
                 self.dirty = true;
                 vec![Op::SetMode { mode }]
             }
-            CommandEffect::OpenRewind => self.request_rewind(),
             CommandEffect::OpenConfig => {
                 self.overlay = Overlay::Config(Config::new(
                     self.account_entries.clone(),
@@ -676,7 +673,9 @@ impl App {
             );
             Vec::new()
         } else {
-            vec![Op::ListRewindPoints {}]
+            self.apply_command_effect(CommandEffect::Show(Box::new(
+                goat_commands::RewindScreen::new(Vec::new()),
+            )))
         }
     }
 
@@ -2801,15 +2800,17 @@ mod tests {
     #[test]
     fn rewind_picker_selects_code_and_conversation() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        app.on_engine(EngineEvent::RewindPointsListed {
+        let listed = app.dispatch_slash_command("/rewind");
+        assert_eq!(listed, vec![Op::ListRewindPoints {}]);
+        app.update(AppEvent::Engine(EngineEvent::RewindPointsListed {
             points: vec![RewindPoint {
                 checkpoint_id: 7,
                 prompt: "change it".into(),
                 created_at: 1,
                 code_changes: true,
             }],
-        });
-        assert!(matches!(app.overlay, Overlay::Rewind(_)));
+        }));
+        assert!(matches!(app.overlay, Overlay::Screen(_)));
 
         let choose_point = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
         assert!(choose_point.is_empty());
