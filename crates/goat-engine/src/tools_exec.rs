@@ -1,7 +1,8 @@
 use goat_protocol::{Event, ToolCall, ToolCallId, ToolDisplay, ToolImageData, ToolOutcome};
 use goat_provider::{ContentBlock, Provider, ToolDefinition};
 use goat_tool::{
-    ToolContent, ToolContext, ToolDefinitionContext, ToolInvocation, ToolOutput, ToolRegistry,
+    ToolBatchCall, ToolBatchInvocation, ToolContent, ToolContext, ToolDefinitionContext,
+    ToolInvocation, ToolOutput, ToolRegistry,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -224,11 +225,34 @@ async fn execute_tool(
     }
 }
 
-fn groups_into_one_row(prepared: &[Prepared<'_>]) -> bool {
-    prepared.len() > 1
-        && prepared
-            .iter()
-            .all(|prep| prep.name == goat_tool_delegate::DELEGATE_TOOL_NAME)
+async fn announce_batch(ctx: &Ctx, run: &Run<'_>, env: &LoopEnv, prepared: &[Prepared<'_>]) {
+    let Some(first) = prepared.first().filter(|_| prepared.len() > 1) else {
+        return;
+    };
+    if prepared.iter().any(|prep| prep.name != first.name) {
+        return;
+    }
+    let context = ToolDefinitionContext {
+        interactive: env.interactive,
+        top_level: env.allow_delegate,
+        planning: env.plan,
+    };
+    let Some(tool) = ctx
+        .tools
+        .get(first.name)
+        .filter(|tool| tool.enabled(context))
+    else {
+        return;
+    };
+    let calls: Vec<ToolBatchCall<'_>> = prepared
+        .iter()
+        .map(|prep| ToolBatchCall {
+            call: ToolCallId(prep.tui_id),
+            input: prep.input_json,
+        })
+        .collect();
+    tool.batch_started(&calls, ToolBatchInvocation { task: run.id })
+        .await;
 }
 
 pub(crate) async fn run_tool_batch(
@@ -251,23 +275,7 @@ pub(crate) async fn run_tool_batch(
             db_id: None,
         });
     }
-    if env.allow_delegate
-        && groups_into_one_row(&prepared)
-        && let Some(first) = prepared.first()
-    {
-        let members = prepared
-            .iter()
-            .map(|prep| goat_tool_delegate::group_member(ToolCallId(prep.tui_id), prep.input_json))
-            .collect();
-        let _ = ctx
-            .events
-            .send(Event::SubagentGroupStarted {
-                id: run.id,
-                group: ToolCallId(first.tui_id),
-                members,
-            })
-            .await;
-    }
+    announce_batch(ctx, run, env, &prepared).await;
     for prep in &mut prepared {
         let _ = ctx
             .events
@@ -366,30 +374,5 @@ mod tests {
         let outcome = tool_outcome(&Err("boom".to_owned()));
         assert!(!outcome.ok);
         assert!(outcome.image.is_none());
-    }
-
-    fn prep<'a>(name: &'a str, input: &'a str) -> super::Prepared<'a> {
-        super::Prepared {
-            vendor_id: "v",
-            name,
-            input_json: input,
-            tui_id: 1,
-            db_id: None,
-        }
-    }
-
-    const BLOCKING: &str = r#"{"subagent_type":"explore","name":"n","prompt":"p"}"#;
-
-    #[test]
-    fn a_parallel_blocking_batch_collapses_into_one_row() {
-        let batch = vec![prep("Subagent", BLOCKING), prep("Subagent", BLOCKING)];
-        assert!(super::groups_into_one_row(&batch));
-    }
-
-    #[test]
-    fn a_lone_call_and_a_foreign_tool_never_group() {
-        assert!(!super::groups_into_one_row(&[prep("Subagent", BLOCKING)]));
-        let mixed = vec![prep("Subagent", BLOCKING), prep("Bash", "{}")];
-        assert!(!super::groups_into_one_row(&mixed));
     }
 }

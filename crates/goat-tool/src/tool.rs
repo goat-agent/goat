@@ -1,6 +1,6 @@
 use std::{any::Any, future::Future, pin::Pin};
 
-use goat_protocol::{TaskId, ToolCallId, ToolDisplay, ToolOutcome};
+use goat_protocol::{TaskId, ToolCallId, ToolDisplay, ToolOutcome, TranscriptEntry};
 use tokio_util::sync::CancellationToken;
 
 use crate::{context::ToolContext, display, error::ToolError};
@@ -90,6 +90,20 @@ impl ToolOutput {
 }
 
 pub type ToolFuture<'a> = Pin<Box<dyn Future<Output = Result<ToolOutput, ToolError>> + Send + 'a>>;
+pub type ToolBatchFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+pub struct ToolBatchCall<'a> {
+    pub call: ToolCallId,
+    pub input: &'a str,
+}
+
+pub struct ToolBatchInvocation {
+    pub task: TaskId,
+}
+
+pub trait ToolHistoryGroup: Send + Sync {
+    fn entry(&self, outcomes: Vec<ToolOutcome>) -> TranscriptEntry;
+}
 
 #[derive(Clone, Copy, Default)]
 pub struct ToolDefinitionContext {
@@ -137,6 +151,16 @@ pub trait Tool: Send + Sync {
     }
     fn handles_cancellation(&self) -> bool {
         false
+    }
+    fn batch_started<'a>(
+        &'a self,
+        _calls: &'a [ToolBatchCall<'a>],
+        _invocation: ToolBatchInvocation,
+    ) -> ToolBatchFuture<'a> {
+        Box::pin(async {})
+    }
+    fn history_group(&self, _calls: &[ToolBatchCall<'_>]) -> Option<Box<dyn ToolHistoryGroup>> {
+        None
     }
     fn summary_kind(&self) -> ToolSummaryKind {
         ToolSummaryKind::Summary

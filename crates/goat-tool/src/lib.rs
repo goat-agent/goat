@@ -14,8 +14,9 @@ pub use policy::SandboxPolicy;
 pub use registry::ToolRegistry;
 pub use spec::ToolSpec;
 pub use tool::{
-    Tool, ToolContent, ToolDefinitionContext, ToolFuture, ToolImage, ToolInvocation,
-    ToolOutcomeExtension, ToolOutput, ToolSummaryKind,
+    Tool, ToolBatchCall, ToolBatchFuture, ToolBatchInvocation, ToolContent, ToolDefinitionContext,
+    ToolFuture, ToolHistoryGroup, ToolImage, ToolInvocation, ToolOutcomeExtension, ToolOutput,
+    ToolSummaryKind,
 };
 
 pub const TRUNCATION_NOTICE: &str = "\n[output truncated]";

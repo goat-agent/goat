@@ -70,6 +70,15 @@ impl DelegationService for UnavailableDelegation {
     fn kill<'a>(&'a self, _run: goat_protocol::RunId) -> DelegateFuture<'a, ()> {
         Box::pin(async { Err("delegation service unavailable".to_owned()) })
     }
+
+    fn group_started<'a>(
+        &'a self,
+        _parent: goat_protocol::TaskId,
+        _group: goat_protocol::ToolCallId,
+        _members: Vec<goat_protocol::SubagentGroupMember>,
+    ) -> DelegateFuture<'a, ()> {
+        Box::pin(async { Err("delegation service unavailable".to_owned()) })
+    }
 }
 
 impl NativeSearchService for UnavailableNativeSearch {

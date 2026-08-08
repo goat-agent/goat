@@ -156,6 +156,26 @@ impl DelegationService for EngineDelegationService {
                 .await
         })
     }
+
+    fn group_started<'a>(
+        &'a self,
+        parent: TaskId,
+        group: ToolCallId,
+        members: Vec<goat_protocol::SubagentGroupMember>,
+    ) -> DelegateFuture<'a, ()> {
+        Box::pin(async move {
+            let _ = self
+                .context()?
+                .events
+                .send(Event::SubagentGroupStarted {
+                    id: parent,
+                    group,
+                    members,
+                })
+                .await;
+            Ok(())
+        })
+    }
 }
 
 async fn detach(

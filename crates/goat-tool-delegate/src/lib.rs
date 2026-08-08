@@ -1,9 +1,12 @@
 use std::{any::Any, future::Future, pin::Pin, sync::Arc};
 
-use goat_protocol::{RunId, SubagentGroupMember, TaskId, ToolCallId, ToolDisplay};
+use goat_protocol::{
+    RunId, SubagentGroupEntry, SubagentGroupMember, TaskId, ToolCallId, ToolDisplay, ToolOutcome,
+    TranscriptEntry,
+};
 use goat_tool::{
-    Tool, ToolContext, ToolDefinitionContext, ToolError, ToolFuture, ToolInvocation, ToolOutput,
-    ToolSpec,
+    Tool, ToolBatchCall, ToolBatchFuture, ToolBatchInvocation, ToolContext, ToolDefinitionContext,
+    ToolError, ToolFuture, ToolHistoryGroup, ToolInvocation, ToolOutput, ToolSpec,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -53,6 +56,13 @@ pub trait DelegationService: Send + Sync {
     ) -> DelegateFuture<'a, DelegateResult>;
 
     fn kill<'a>(&'a self, run: RunId) -> DelegateFuture<'a, ()>;
+
+    fn group_started<'a>(
+        &'a self,
+        parent: TaskId,
+        group: ToolCallId,
+        members: Vec<SubagentGroupMember>,
+    ) -> DelegateFuture<'a, ()>;
 }
 
 pub struct DelegateTool {
@@ -152,6 +162,31 @@ impl Tool for DelegateTool {
             Err(_) => goat_tool::display::generic_named(DELEGATE_TOOL_NAME, input),
         }
     }
+
+    fn batch_started<'a>(
+        &'a self,
+        calls: &'a [ToolBatchCall<'a>],
+        invocation: ToolBatchInvocation,
+    ) -> ToolBatchFuture<'a> {
+        Box::pin(async move {
+            let Some(members) = group_members(calls) else {
+                return;
+            };
+            let group = members[0].call;
+            let _ = self
+                .service
+                .group_started(invocation.task, group, members)
+                .await;
+        })
+    }
+
+    fn history_group(&self, calls: &[ToolBatchCall<'_>]) -> Option<Box<dyn ToolHistoryGroup>> {
+        let members = group_members(calls)?;
+        Some(Box::new(DelegateHistoryGroup {
+            group: members[0].call,
+            members,
+        }))
+    }
 }
 
 pub struct KillDelegateTool {
@@ -218,7 +253,7 @@ pub fn tools(agents: Vec<AgentSpec>, service: Arc<dyn DelegationService>) -> Vec
     ]
 }
 
-pub fn group_member(call: ToolCallId, input: &str) -> SubagentGroupMember {
+fn group_member(call: ToolCallId, input: &str) -> SubagentGroupMember {
     match serde_json::from_str::<DelegateRequest>(input) {
         Ok(args) => SubagentGroupMember {
             call,
@@ -232,6 +267,39 @@ pub fn group_member(call: ToolCallId, input: &str) -> SubagentGroupMember {
             label: "subagent".to_owned(),
             background: false,
         },
+    }
+}
+
+fn group_members(calls: &[ToolBatchCall<'_>]) -> Option<Vec<SubagentGroupMember>> {
+    if calls.len() < 2 {
+        return None;
+    }
+    Some(
+        calls
+            .iter()
+            .map(|call| group_member(call.call, call.input))
+            .collect(),
+    )
+}
+
+struct DelegateHistoryGroup {
+    group: ToolCallId,
+    members: Vec<SubagentGroupMember>,
+}
+
+impl ToolHistoryGroup for DelegateHistoryGroup {
+    fn entry(&self, outcomes: Vec<ToolOutcome>) -> TranscriptEntry {
+        let members = self
+            .members
+            .iter()
+            .cloned()
+            .zip(outcomes)
+            .map(|(member, outcome)| SubagentGroupEntry { member, outcome })
+            .collect();
+        TranscriptEntry::SubagentGroup {
+            group: self.group,
+            members,
+        }
     }
 }
 
@@ -272,4 +340,41 @@ fn delegate_parameters(agents: &[AgentSpec]) -> serde_json::Value {
         },
         "required": ["subagent_type", "name", "prompt"]
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use goat_protocol::ToolCallId;
+    use goat_tool::ToolBatchCall;
+
+    use super::group_members;
+
+    const BLOCKING: &str = r#"{"subagent_type":"explore","name":"n","prompt":"p"}"#;
+
+    #[test]
+    fn a_parallel_batch_builds_one_group() {
+        let calls = [
+            ToolBatchCall {
+                call: ToolCallId(1),
+                input: BLOCKING,
+            },
+            ToolBatchCall {
+                call: ToolCallId(2),
+                input: BLOCKING,
+            },
+        ];
+        let members = group_members(&calls).unwrap();
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].call, ToolCallId(1));
+        assert_eq!(members[1].call, ToolCallId(2));
+    }
+
+    #[test]
+    fn a_lone_call_never_builds_a_group() {
+        let calls = [ToolBatchCall {
+            call: ToolCallId(1),
+            input: BLOCKING,
+        }];
+        assert!(group_members(&calls).is_none());
+    }
 }
