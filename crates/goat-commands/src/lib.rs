@@ -43,7 +43,7 @@ impl CommandRegistry {
     ) -> CommandEffect {
         let line = match parse_line(raw) {
             Ok(line) => line,
-            Err(error) => return CommandEffect::Error(error.message()),
+            Err(error) => return command_error(session, error.message()),
         };
         if let Some(command) = self.builtins.iter().find(|command| {
             command.name() == line.name || command.aliases().contains(&line.name.as_str())
@@ -51,13 +51,13 @@ impl CommandRegistry {
             let spec = command.spec();
             return match spec.parse(raw, &line.args) {
                 Ok(invocation) => command.run(invocation, session),
-                Err(error) => CommandEffect::Error(error.message()),
+                Err(error) => command_error(session, error.message()),
             };
         }
         if let Some(skill) = self.skills.iter().find(|skill| skill.name == line.name) {
-            return resolve_skill(skill, raw, &line.args);
+            return resolve_skill(skill, raw, &line.args, session);
         }
-        CommandEffect::Error(format!("unknown command: /{}", line.name))
+        command_error(session, format!("unknown command: /{}", line.name))
     }
 
     pub fn resolve(
@@ -103,20 +103,30 @@ impl CommandRegistry {
     }
 }
 
-fn resolve_skill(skill: &SkillInfo, raw: &str, args: &str) -> CommandEffect {
+fn command_error(session: &mut dyn goat_command::Session, message: String) -> CommandEffect {
+    session.notify(goat_protocol::NotifyKind::Error, message);
+    CommandEffect::Noop
+}
+
+fn resolve_skill(
+    skill: &SkillInfo,
+    raw: &str,
+    args: &str,
+    session: &mut dyn goat_command::Session,
+) -> CommandEffect {
     if skill.command.is_none() {
-        return CommandEffect::SubmitCommand {
+        return CommandEffect::Submit {
             display: skill_display(&skill.name, args),
             prompt: skill_invocation(&skill.name, args),
         };
     }
     let spec = skill_spec(skill);
     match spec.parse(raw, args) {
-        Ok(invocation) => CommandEffect::SubmitCommand {
+        Ok(invocation) => CommandEffect::Submit {
             display: invocation.raw.clone(),
             prompt: structured_skill_invocation(&skill.name, invocation),
         },
-        Err(error) => CommandEffect::Error(error.message()),
+        Err(error) => command_error(session, error.message()),
     }
 }
 
@@ -261,27 +271,27 @@ mod tests {
         let registry = CommandRegistry::builtin();
         assert!(matches!(
             resolve(&registry, "/model"),
-            CommandEffect::OpenModelPicker
+            CommandEffect::Show(_)
         ));
         assert!(matches!(
             resolve(&registry, "/config"),
-            CommandEffect::OpenConfig
+            CommandEffect::Show(_)
         ));
         assert!(matches!(
             resolve(&registry, "/provider"),
-            CommandEffect::OpenConfig
+            CommandEffect::Show(_)
         ));
         assert!(matches!(
             resolve(&registry, "/clear"),
-            CommandEffect::ClearConversation
+            CommandEffect::Dispatch(_)
         ));
         assert!(matches!(
             resolve(&registry, "/usage"),
-            CommandEffect::OpenUsage
+            CommandEffect::Show(_)
         ));
         assert!(matches!(
             resolve(&registry, "/status"),
-            CommandEffect::OpenStatus
+            CommandEffect::Show(_)
         ));
         assert!(matches!(
             resolve(&registry, "/help"),
@@ -300,7 +310,7 @@ mod tests {
     fn unknown_command_is_error() {
         assert!(matches!(
             resolve(&CommandRegistry::builtin(), "/nope"),
-            CommandEffect::Error(_)
+            CommandEffect::Noop
         ));
     }
 
@@ -309,7 +319,7 @@ mod tests {
         let mut registry = CommandRegistry::builtin();
         registry.set_skills(&[skill("demo")]);
         match resolve(&registry, "/demo with args") {
-            CommandEffect::SubmitCommand { display, prompt } => {
+            CommandEffect::Submit { display, prompt } => {
                 assert_eq!(display, "/demo with args");
                 assert_eq!(prompt, "/demo with args");
             }
@@ -330,13 +340,10 @@ mod tests {
             description: "y".to_owned(),
             command: None,
         }]);
-        assert!(matches!(
-            resolve(&registry, "/old"),
-            CommandEffect::Error(_)
-        ));
+        assert!(matches!(resolve(&registry, "/old"), CommandEffect::Noop));
         assert!(matches!(
             resolve(&registry, "/new"),
-            CommandEffect::SubmitCommand { .. }
+            CommandEffect::Submit { .. }
         ));
     }
 
@@ -398,8 +405,7 @@ mod tests {
                 }],
             }),
         }]);
-        let CommandEffect::SubmitCommand { display, prompt } =
-            resolve(&registry, "/review src/lib.rs")
+        let CommandEffect::Submit { display, prompt } = resolve(&registry, "/review src/lib.rs")
         else {
             panic!("expected submit command");
         };
@@ -429,7 +435,7 @@ mod tests {
                 }],
             }),
         }]);
-        let CommandEffect::SubmitCommand { display, prompt } =
+        let CommandEffect::Submit { display, prompt } =
             resolve(&registry, "/review security auth flow")
         else {
             panic!("expected submit command");
@@ -457,7 +463,7 @@ mod tests {
         }]);
         assert!(matches!(
             resolve(&registry, "/review nope"),
-            CommandEffect::Error(_)
+            CommandEffect::Noop
         ));
     }
 }

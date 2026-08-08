@@ -16,6 +16,6 @@ impl Command for Clear {
         _invocation: CommandInvocation,
         _session: &mut dyn goat_command::Session,
     ) -> CommandEffect {
-        CommandEffect::ClearConversation
+        CommandEffect::Dispatch(vec![goat_protocol::Op::Clear {}])
     }
 }

@@ -25,8 +25,17 @@ impl Command for Compact {
     fn run(
         &self,
         invocation: CommandInvocation,
-        _session: &mut dyn goat_command::Session,
+        session: &mut dyn goat_command::Session,
     ) -> CommandEffect {
-        CommandEffect::CompactConversation(invocation.text("focus").map(str::to_owned))
+        if session.is_busy() {
+            session.notify(
+                goat_protocol::NotifyKind::Info,
+                "will compact after the current task".to_owned(),
+            );
+        }
+        CommandEffect::Dispatch(vec![goat_protocol::Op::Compact {
+            id: session.allocate_task(),
+            instructions: invocation.text("focus").map(str::to_owned),
+        }])
     }
 }

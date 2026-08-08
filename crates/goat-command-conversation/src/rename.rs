@@ -27,6 +27,8 @@ impl Command for Rename {
         invocation: CommandInvocation,
         _session: &mut dyn goat_command::Session,
     ) -> CommandEffect {
-        CommandEffect::RenameConversation(invocation.text("title").unwrap_or_default().to_owned())
+        CommandEffect::Dispatch(vec![goat_protocol::Op::RenameThread {
+            title: invocation.text("title").unwrap_or_default().to_owned(),
+        }])
     }
 }

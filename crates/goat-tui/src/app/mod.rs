@@ -506,51 +506,22 @@ impl App {
             }
             CommandEffect::Dispatch(ops) => {
                 for op in &ops {
-                    if let Op::SetMode { mode } = op {
-                        self.mode = *mode;
+                    match op {
+                        Op::SetMode { mode } => self.mode = *mode,
+                        Op::Clear {} => {
+                            self.transcript.clear();
+                            self.reset_subagents();
+                            self.turn = TurnStatus::default();
+                            self.clear_ctx_indicator();
+                            self.scroll = 0;
+                            self.follow = true;
+                        }
+                        _ => {}
                     }
                 }
                 ops
             }
             CommandEffect::Submit { display, prompt } => self.submit_command(display, prompt),
-            CommandEffect::Notify(kind, message) => {
-                self.push_toast(kind, message);
-                Vec::new()
-            }
-            CommandEffect::ShowHelp => Vec::new(),
-            CommandEffect::RenameConversation(title) => vec![Op::RenameThread { title }],
-            CommandEffect::ClearConversation => {
-                self.transcript.clear();
-                self.reset_subagents();
-                self.turn = TurnStatus::default();
-                self.clear_ctx_indicator();
-                self.scroll = 0;
-                self.follow = true;
-                vec![Op::Clear {}]
-            }
-            CommandEffect::CompactConversation(instructions) => {
-                let id = TaskId(self.next_task);
-                self.next_task += 1;
-                if self.turn.active.is_some() {
-                    self.push_toast(
-                        NotifyKind::Info,
-                        "will compact after the current task".to_owned(),
-                    );
-                }
-                vec![Op::Compact { id, instructions }]
-            }
-            CommandEffect::SubmitText(text) => self.submit_text(text),
-            CommandEffect::SubmitCommand { display, prompt } => {
-                self.submit_command(display, prompt)
-            }
-            CommandEffect::Notice(message) => {
-                self.push_toast(NotifyKind::Info, message);
-                Vec::new()
-            }
-            CommandEffect::Error(message) => {
-                self.push_toast(NotifyKind::Error, message);
-                Vec::new()
-            }
             CommandEffect::Noop => Vec::new(),
             CommandEffect::Quit => {
                 self.exit_requested = true;
@@ -695,10 +666,6 @@ impl App {
         self.transcript.push_shell(id, command.clone());
         self.follow = true;
         vec![Op::SubmitShell { id, command }]
-    }
-
-    pub(crate) fn submit_text(&mut self, text: String) -> Vec<Op> {
-        self.submit_text_with_attachments(text, Vec::new())
     }
 
     pub(crate) fn submit_text_with_attachments(
@@ -2171,7 +2138,7 @@ mod tests {
     #[test]
     fn sender_first_message_renders_once_on_echo() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        let ops = app.submit_text("hello".to_owned());
+        let ops = app.submit_text_with_attachments("hello".to_owned(), Vec::new());
         let id = submit_id(&ops);
         assert_eq!(user_lines(&app), 0, "no optimistic render");
         assert_eq!(app.turn.active, Some(id));
@@ -2221,7 +2188,7 @@ mod tests {
     #[test]
     fn in_flight_first_message_excluded_from_queued_labels() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        let ops = app.submit_text("hello".to_owned());
+        let ops = app.submit_text_with_attachments("hello".to_owned(), Vec::new());
         let _ = submit_id(&ops);
         assert!(app.queued_labels().is_empty());
     }
@@ -2230,14 +2197,14 @@ mod tests {
     fn queued_steering_message_shows_label() {
         let mut app = App::new(Theme::dark(), &test_origin());
         app.on_engine(EngineEvent::TaskStarted { id: TaskId(100) });
-        let _ = app.submit_text("next up".to_owned());
+        let _ = app.submit_text_with_attachments("next up".to_owned(), Vec::new());
         assert_eq!(app.queued_labels(), vec!["next up".to_owned()]);
     }
 
     #[test]
     fn first_message_then_immediate_interrupt_does_not_double_render() {
         let mut app = App::new(Theme::dark(), &test_origin());
-        let ops = app.submit_text("hello".to_owned());
+        let ops = app.submit_text_with_attachments("hello".to_owned(), Vec::new());
         let id = submit_id(&ops);
         app.on_engine(EngineEvent::UserMessage {
             id,
