@@ -114,6 +114,17 @@ pub(crate) struct TranscriptViewport {
     pub(crate) selection: Option<crate::select::Selection>,
     pub(crate) selection_version: u64,
     pub(crate) last_click: Option<(std::time::Instant, usize, u16)>,
+    run_cursor: Option<usize>,
+    run_count: usize,
+    action: Option<ViewportAction>,
+    dirty: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ViewportAction {
+    MoveRunCursor(usize),
+    OpenRun(usize),
+    CloseRunSelector,
 }
 
 struct HostActions {
@@ -143,6 +154,8 @@ struct SettingsState {
     mouse_capture: bool,
     computer_use: bool,
     browser: bool,
+    theme_changed: bool,
+    save_failed: bool,
 }
 
 #[derive(Default)]
@@ -296,6 +309,8 @@ impl App {
                 mouse_capture: cfg.mouse_capture_enabled,
                 computer_use: cfg.computer_use_enabled,
                 browser: cfg.browser_enabled,
+                theme_changed: false,
+                save_failed: false,
             },
             viewport: TranscriptViewport {
                 transcript: Transcript::default(),
@@ -306,6 +321,10 @@ impl App {
                 selection: None,
                 selection_version: 0,
                 last_click: None,
+                run_cursor: None,
+                run_count: 1,
+                action: None,
+                dirty: false,
             },
             host_actions: HostActions {
                 pending_copy: None,
@@ -518,6 +537,7 @@ impl App {
         let commands = std::mem::take(&mut self.commands);
         let effect = commands.resolve_line(raw, self);
         self.commands = commands;
+        self.apply_collaborator_changes();
         self.apply_command_effect(effect)
     }
 
@@ -589,7 +609,11 @@ impl App {
                 return None;
             }
         };
-        match screen.handle_input(event, self) {
+        self.viewport.run_cursor = self.run_selector();
+        self.viewport.run_count = self.run_row_count();
+        let input = screen.handle_input(event, self);
+        self.apply_collaborator_changes();
+        match input {
             InputOutcome::Ignored => {
                 self.overlay = PendingScreen::Screen(screen);
                 None
@@ -1238,9 +1262,22 @@ impl App {
         self.dirty = true;
     }
 
-    fn persist_config(&mut self, cfg: &goat_config::Config) {
-        if let Err(err) = cfg.save() {
-            tracing::warn!(error = %err, "failed to save config");
+    fn apply_collaborator_changes(&mut self) {
+        if let Some(action) = self.viewport.action.take() {
+            match action {
+                ViewportAction::MoveRunCursor(cursor) => self.move_run_cursor(cursor),
+                ViewportAction::OpenRun(cursor) => self.open_run(cursor),
+                ViewportAction::CloseRunSelector => self.close_run_selector(),
+            }
+        }
+        self.dirty |= std::mem::take(&mut self.viewport.dirty);
+        if std::mem::take(&mut self.settings.theme_changed) {
+            self.viewport.transcript.invalidate();
+            for run in &mut self.subagent_runs {
+                run.transcript.invalidate();
+            }
+        }
+        if std::mem::take(&mut self.settings.save_failed) {
             self.push_toast(
                 NotifyKind::Error,
                 "could not save settings; change may not persist".to_owned(),
@@ -1586,17 +1623,23 @@ impl App {
     }
 }
 
-impl Settings for App {
+impl SettingsState {
+    fn persist_config(&mut self, cfg: &goat_config::Config) {
+        if let Err(err) = cfg.save() {
+            tracing::warn!(error = %err, "failed to save config");
+            self.save_failed = true;
+        }
+    }
+}
+
+impl Settings for SettingsState {
     fn theme(&self) -> Theme {
-        self.settings.theme
+        self.theme
     }
 
     fn set_theme(&mut self, theme: Theme) {
-        self.settings.theme = theme.with_base(self.settings.terminal_bg);
-        self.viewport.transcript.invalidate();
-        for run in &mut self.subagent_runs {
-            run.transcript.invalidate();
-        }
+        self.theme = theme.with_base(self.terminal_bg);
+        self.theme_changed = true;
         let mut cfg = goat_config::Config::load();
         cfg.theme = if theme.is_dark() {
             goat_config::ThemeChoice::Dark
@@ -1607,11 +1650,11 @@ impl Settings for App {
     }
 
     fn mouse_capture(&self) -> bool {
-        self.settings.mouse_capture
+        self.mouse_capture
     }
 
     fn set_mouse_capture(&mut self, enabled: bool) {
-        self.settings.mouse_capture = enabled;
+        self.mouse_capture = enabled;
         tui::set_mouse_capture(enabled);
         let mut cfg = goat_config::Config::load();
         cfg.mouse_capture_enabled = enabled;
@@ -1619,69 +1662,69 @@ impl Settings for App {
     }
 
     fn computer_use(&self) -> bool {
-        self.settings.computer_use
+        self.computer_use
     }
 
     fn set_computer_use(&mut self, enabled: bool) {
-        self.settings.computer_use = enabled;
+        self.computer_use = enabled;
         let mut cfg = goat_config::Config::load();
         cfg.computer_use_enabled = enabled;
         self.persist_config(&cfg);
     }
 
     fn browser(&self) -> bool {
-        self.settings.browser
+        self.browser
     }
 
     fn set_browser(&mut self, enabled: bool) {
-        self.settings.browser = enabled;
+        self.browser = enabled;
         let mut cfg = goat_config::Config::load();
         cfg.browser_enabled = enabled;
         self.persist_config(&cfg);
     }
 }
 
-impl Viewport for App {
+impl Viewport for TranscriptViewport {
     fn scroll(&self) -> usize {
-        self.viewport.scroll
+        self.scroll
     }
 
     fn set_scroll(&mut self, scroll: usize) {
-        self.viewport.scroll = scroll;
+        self.scroll = scroll;
         self.dirty = true;
     }
 
     fn follow(&self) -> bool {
-        self.viewport.follow
+        self.follow
     }
 
     fn set_follow(&mut self, follow: bool) {
-        self.viewport.follow = follow;
+        self.follow = follow;
         self.dirty = true;
     }
 
     fn page_rows(&self) -> usize {
-        App::page_rows(self)
+        usize::from(self.rows.saturating_sub(1)).max(1)
     }
 
     fn run_cursor(&self) -> Option<usize> {
-        self.run_selector()
+        self.run_cursor
     }
 
     fn run_count(&self) -> usize {
-        self.run_row_count()
+        self.run_count
     }
 
     fn move_run_cursor(&mut self, cursor: usize) {
-        App::move_run_cursor(self, cursor);
+        self.action = Some(ViewportAction::MoveRunCursor(cursor));
     }
 
     fn open_run(&mut self, cursor: usize) {
-        App::open_run(self, cursor);
+        self.action = Some(ViewportAction::OpenRun(cursor));
     }
 
     fn close_run_selector(&mut self) {
-        App::close_run_selector(self);
+        self.action = Some(ViewportAction::CloseRunSelector);
     }
 }
 
@@ -1747,7 +1790,7 @@ impl Session for App {
     }
 
     fn settings(&mut self) -> &mut dyn Settings {
-        self
+        &mut self.settings
     }
 
     fn composer(&mut self) -> &mut dyn goat_command::Composer {
@@ -1755,7 +1798,7 @@ impl Session for App {
     }
 
     fn viewport(&mut self) -> &mut dyn Viewport {
-        self
+        &mut self.viewport
     }
 
     fn notify(&mut self, kind: NotifyKind, message: String) {
