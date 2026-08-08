@@ -59,56 +59,45 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_toasts(frame, area, app, theme);
 }
 
-enum Panel {
-    None,
-    Screen {
-        height: u16,
-        hints: Option<Vec<goat_command::KeyHint>>,
-        composer_focused: bool,
-    },
+struct PanelLayout {
+    height: u16,
+    hints: Option<Vec<goat_command::KeyHint>>,
+    composer_focused: bool,
 }
 
 const HEADER_H: u16 = 2;
 
-fn active_panel(app: &App) -> Panel {
-    match app.overlay() {
-        PendingScreen::Screen(screen) => match screen.placement() {
-            Placement::Panel {
-                height,
-                hints,
-                composer_focused,
-            } => Panel::Screen {
-                height,
-                hints,
-                composer_focused,
-            },
-            _ => Panel::None,
-        },
-        PendingScreen::None => Panel::None,
-    }
+fn active_panel(app: &App) -> Option<PanelLayout> {
+    let PendingScreen::Screen(screen) = app.overlay() else {
+        return None;
+    };
+    let Placement::Panel {
+        height,
+        hints,
+        composer_focused,
+    } = screen.placement()
+    else {
+        return None;
+    };
+    Some(PanelLayout {
+        height,
+        hints,
+        composer_focused,
+    })
 }
 
-fn composer_focused(app: &App, panel: &Panel) -> bool {
-    !is_full_body_overlay(app)
-        && match panel {
-            Panel::Screen {
-                composer_focused, ..
-            } => *composer_focused,
-            Panel::None => true,
-        }
+fn composer_focused(app: &App, panel: Option<&PanelLayout>) -> bool {
+    !is_full_body_overlay(app) && panel.is_none_or(|panel| panel.composer_focused)
 }
 
-fn panel_desired_height(panel: &Panel) -> u16 {
-    match panel {
-        Panel::None => 0,
-        Panel::Screen { height, .. } => *height,
-    }
+fn panel_desired_height(panel: Option<&PanelLayout>) -> u16 {
+    panel.map_or(0, |panel| panel.height)
 }
 
 fn render_main(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
     let composer_h = app.composer_height(area.width);
     let panel = active_panel(app);
-    let focused = composer_focused(app, &panel);
+    let focused = composer_focused(app, panel.as_ref());
     let full_body = is_full_body_overlay(app);
 
     let footer_h = 1u16;
@@ -119,7 +108,7 @@ fn render_main(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
         .saturating_add(footer_h);
     let stack_budget = area.height.saturating_sub(reserved);
 
-    let panel_want = panel_desired_height(&panel);
+    let panel_want = panel_desired_height(panel.as_ref());
     let preview_want = if full_body {
         0
     } else {
@@ -147,35 +136,34 @@ fn render_main(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
     render_header(frame, header, app, theme);
     render_transcript(frame, body, app, theme);
     render_full_body_overlay(frame, body, app, theme);
-    render_panel(frame, panel_area, app, theme, &panel);
+    render_panel(frame, panel_area, app, theme, panel.as_ref());
     render_composer_preview(frame, preview_area, app, theme);
     app.composer()
         .render(frame, composer_area, theme, focused, app.plan_mode());
-    render_hint(frame, footer_area, app, theme, &panel);
+    render_hint(frame, footer_area, app, theme, panel.as_ref());
 }
 
-fn render_hint(frame: &mut Frame, area: Rect, app: &App, theme: Theme, panel: &Panel) {
+fn render_hint(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    theme: Theme,
+    panel: Option<&PanelLayout>,
+) {
     if area.height == 0 {
         return;
     }
-    match panel {
-        Panel::Screen {
-            hints: Some(hints), ..
-        } => {
-            let pairs: Vec<_> = hints.iter().map(|hint| (hint.key, hint.label)).collect();
-            frame.render_widget(
-                Paragraph::new(overlay::hint_line(&pairs, theme)),
-                area.inner(Margin {
-                    horizontal: PAD_X,
-                    vertical: 0,
-                }),
-            );
-        }
-        Panel::Screen { hints: None, .. } | Panel::None => {
-            if footer_visible(app) {
-                render_footer(frame, area, app, theme);
-            }
-        }
+    if let Some(hints) = panel.and_then(|panel| panel.hints.as_ref()) {
+        let pairs: Vec<_> = hints.iter().map(|hint| (hint.key, hint.label)).collect();
+        frame.render_widget(
+            Paragraph::new(overlay::hint_line(&pairs, theme)),
+            area.inner(Margin {
+                horizontal: PAD_X,
+                vertical: 0,
+            }),
+        );
+    } else if footer_visible(app) {
+        render_footer(frame, area, app, theme);
     }
 }
 
@@ -200,17 +188,18 @@ fn render_full_body_overlay(frame: &mut Frame, body: Rect, app: &mut App, theme:
     }
 }
 
-fn render_panel(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme, panel: &Panel) {
-    if area.height == 0 {
+fn render_panel(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    theme: Theme,
+    panel: Option<&PanelLayout>,
+) {
+    if area.height == 0 || panel.is_none() {
         return;
     }
-    match panel {
-        Panel::None => {}
-        Panel::Screen { .. } => {
-            if let PendingScreen::Screen(screen) = app.overlay_mut() {
-                screen.render(frame, area, &theme);
-            }
-        }
+    if let PendingScreen::Screen(screen) = app.overlay_mut() {
+        screen.render(frame, area, &theme);
     }
 }
 

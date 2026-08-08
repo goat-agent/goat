@@ -61,21 +61,6 @@ pub(crate) enum MainView {
     Process(goat_protocol::RunId),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RunTarget {
-    Subagent(TaskId),
-    Process(goat_protocol::RunId),
-}
-
-impl RunTarget {
-    fn view(self) -> MainView {
-        match self {
-            RunTarget::Subagent(id) => MainView::Subagent(id),
-            RunTarget::Process(id) => MainView::Process(id),
-        }
-    }
-}
-
 pub(crate) enum PendingScreen {
     None,
     Screen(Box<dyn Screen>),
@@ -1371,13 +1356,13 @@ impl App {
         }
     }
 
-    pub(crate) fn run_targets(&self) -> Vec<RunTarget> {
-        let mut targets: Vec<RunTarget> = self
+    pub(crate) fn run_targets(&self) -> Vec<MainView> {
+        let mut targets: Vec<MainView> = self
             .subagent_runs
             .iter()
-            .map(|r| RunTarget::Subagent(r.id))
+            .map(|r| MainView::Subagent(r.id))
             .collect();
-        targets.extend(self.process_runs.iter().map(|r| RunTarget::Process(r.id)));
+        targets.extend(self.process_runs.iter().map(|r| MainView::Process(r.id)));
         targets
     }
 
@@ -1403,9 +1388,7 @@ impl App {
         let view = if cursor == 0 {
             Some(MainView::Live)
         } else {
-            self.run_targets()
-                .get(cursor - 1)
-                .map(|target| target.view())
+            self.run_targets().get(cursor - 1).copied()
         };
         if let Some(view) = view {
             self.set_main_view(view);
@@ -3529,8 +3512,8 @@ mod tests {
         process_started(&mut app, 1, "pnpm dev");
         let targets = app.run_targets();
         assert_eq!(targets.len(), 2);
-        assert!(matches!(targets[0], super::RunTarget::Subagent(_)));
-        assert!(matches!(targets[1], super::RunTarget::Process(_)));
+        assert!(matches!(targets[0], super::MainView::Subagent(_)));
+        assert!(matches!(targets[1], super::MainView::Process(_)));
     }
 
     #[test]
