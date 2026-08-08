@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 use crate::ID;
 use crate::api::SlackApi;
 use crate::socket::{self, Incoming};
-use crate::{mrkdwn, thread};
+use crate::{conversation, mrkdwn};
 
 const MAX_BACKOFF_SECS: u64 = 60;
 
@@ -233,16 +233,17 @@ fn to_incoming(
 ) -> Option<IncomingMessage> {
     let user = event.user.clone()?;
     let raw_text = event.text.clone().unwrap_or_default();
-    let in_thread = thread::is_thread_reply(event.thread_ts.as_deref(), &event.ts);
-    let surface = thread::surface_of(event.channel_type.as_deref(), &event.channel, in_thread);
+    let in_thread = conversation::is_thread_reply(event.thread_ts.as_deref(), &event.ts);
+    let surface =
+        conversation::surface_of(event.channel_type.as_deref(), &event.channel, in_thread);
 
     let anchor = if in_thread {
         event.thread_ts.as_deref()
     } else {
         None
     };
-    let external = thread::external(&event.channel, anchor);
-    let parent = in_thread.then(|| thread::external(&event.channel, None));
+    let external = conversation::external(&event.channel, anchor);
+    let parent = in_thread.then(|| conversation::external(&event.channel, None));
 
     let addressed = mrkdwn::mentions(&raw_text, bot_user_id)
         || event.parent_user_id.as_deref() == Some(bot_user_id)

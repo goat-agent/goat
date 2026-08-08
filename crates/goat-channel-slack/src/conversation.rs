@@ -19,7 +19,7 @@ pub(crate) fn external(channel: &str, thread_ts: Option<&str>) -> String {
 
 pub(crate) fn parse(external: &str) -> ChannelResult<Coords> {
     let body = external.strip_prefix(CHANNEL_PREFIX).ok_or_else(|| {
-        ChannelError::BadRequest(format!("slack: unrecognised thread key `{external}`"))
+        ChannelError::BadRequest(format!("slack: unrecognised conversation key `{external}`"))
     })?;
     let (channel, thread_ts) = match body.split_once(THREAD_MARKER) {
         Some((channel, ts)) => (channel, Some(ts)),
@@ -27,7 +27,7 @@ pub(crate) fn parse(external: &str) -> ChannelResult<Coords> {
     };
     if channel.is_empty() || thread_ts.is_some_and(str::is_empty) {
         return Err(ChannelError::BadRequest(format!(
-            "slack: incomplete thread key `{external}`"
+            "slack: incomplete conversation key `{external}`"
         )));
     }
     Ok(Coords {

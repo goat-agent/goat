@@ -79,7 +79,7 @@ async fn drain_steering(ctx: &SessionContext, run: &Run<'_>, conversation: &mut 
         if input.checkpoint
             && let (Some(created), Some(conversation_id)) = (
                 created.as_ref(),
-                run.ids().and_then(|ids| ids.stored_thread),
+                run.ids().and_then(|ids| ids.stored_conversation),
             )
         {
             let draft = input.display.as_deref().unwrap_or(&input.text).to_owned();

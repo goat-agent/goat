@@ -219,14 +219,14 @@ impl CodeSessionHub {
             .to_string()
     }
 
-    async fn register_thread(&self, conversation_id: i64, session: SessionId) {
+    async fn register_conversation(&self, conversation_id: i64, session: SessionId) {
         let mut conversations = self.inner.conversations.lock().await;
-        thread_register(&mut conversations, conversation_id, session);
+        conversation_register(&mut conversations, conversation_id, session);
     }
 
-    async fn unregister_thread_if_owner(&self, session: SessionId) {
+    async fn unregister_conversation_if_owner(&self, session: SessionId) {
         let mut conversations = self.inner.conversations.lock().await;
-        thread_unregister_owner(&mut conversations, session);
+        conversation_unregister_owner(&mut conversations, session);
     }
 
     pub(crate) async fn open_or_attach(
@@ -235,7 +235,7 @@ impl CodeSessionHub {
         resume: ResumeMode,
     ) -> Result<(SessionId, String), String> {
         let normalized = Self::normalize_cwd(&cwd);
-        let conversation_id = self.resolve_thread_id(&normalized, resume).await;
+        let conversation_id = self.resolve_conversation_id(&normalized, resume).await;
         if let Some(tid) = conversation_id {
             let existing = {
                 let conversations = self.inner.conversations.lock().await;
@@ -262,14 +262,14 @@ impl CodeSessionHub {
         }
     }
 
-    async fn resolve_thread_id(&self, normalized: &str, resume: ResumeMode) -> Option<i64> {
+    async fn resolve_conversation_id(&self, normalized: &str, resume: ResumeMode) -> Option<i64> {
         match resume {
             ResumeMode::New {} => None,
             ResumeMode::Conversation { conversation_id } => Some(conversation_id),
             ResumeMode::Latest {} => {
                 let store = Store::open(&self.inner.db_path).await.ok()?;
                 store
-                    .latest_thread_in(normalized.to_owned())
+                    .latest_conversation_in(normalized.to_owned())
                     .await
                     .ok()
                     .flatten()
@@ -484,7 +484,7 @@ impl CodeSessionHub {
             table.remove(&session);
             ops
         };
-        self.unregister_thread_if_owner(session).await;
+        self.unregister_conversation_if_owner(session).await;
         let _ = ops.send(Op::Shutdown {}).await;
         tracing::info!(session = session.0, "evicted idle session with no windows");
     }
@@ -715,7 +715,7 @@ impl CodeSessionHub {
         name.starts_with('.') || name == "target" || name == "node_modules"
     }
 
-    pub(crate) async fn list_threads(&self, cwd: &str) -> Vec<goat_wire::ConversationInfo> {
+    pub(crate) async fn list_conversations(&self, cwd: &str) -> Vec<goat_wire::ConversationInfo> {
         let normalized = Self::normalize_cwd(std::path::Path::new(cwd));
         let live: HashMap<i64, SessionId> = {
             let conversations = self.inner.conversations.lock().await;
@@ -734,12 +734,12 @@ impl CodeSessionHub {
         let Ok(store) = Store::open(&self.inner.db_path).await else {
             return Vec::new();
         };
-        let Ok(conversations) = store.list_threads_in(normalized, 100).await else {
+        let Ok(conversations) = store.list_conversations_in(normalized, 100).await else {
             return Vec::new();
         };
         conversations
             .into_iter()
-            .map(|t| thread_info(t, &live, &states))
+            .map(|t| conversation_info(t, &live, &states))
             .collect()
     }
 
@@ -770,7 +770,7 @@ impl CodeSessionHub {
             table.remove(&session)
         };
         let live = live.ok_or("unknown session")?;
-        self.unregister_thread_if_owner(session).await;
+        self.unregister_conversation_if_owner(session).await;
         let ops = {
             let inner = live.inner.lock().await;
             inner.ops.clone()
@@ -784,7 +784,7 @@ impl CodeSessionHub {
             let mut table = self.inner.sessions.lock().await;
             table.remove(&session);
         }
-        self.unregister_thread_if_owner(session).await;
+        self.unregister_conversation_if_owner(session).await;
     }
 }
 
@@ -876,7 +876,7 @@ fn spawn_pump(
                 }
                 if bound {
                     manager
-                        .register_thread(persist.conversation_id, session)
+                        .register_conversation(persist.conversation_id, session)
                         .await;
                     resurrect_open_prompts(&inner, &store, persist.conversation_id).await;
                 }
@@ -937,8 +937,8 @@ async fn resurrect_open_prompts(
     }
 }
 
-fn thread_info(
-    t: goat_code_store::Thread,
+fn conversation_info(
+    t: goat_code_store::Conversation,
     live: &HashMap<i64, SessionId>,
     states: &HashMap<SessionId, goat_wire::SessionLiveState>,
 ) -> goat_wire::ConversationInfo {
@@ -955,7 +955,7 @@ fn thread_info(
     }
 }
 
-fn thread_register(
+fn conversation_register(
     conversations: &mut HashMap<i64, SessionId>,
     conversation_id: i64,
     session: SessionId,
@@ -963,15 +963,15 @@ fn thread_register(
     conversations.entry(conversation_id).or_insert(session);
 }
 
-fn thread_unregister_owner(conversations: &mut HashMap<i64, SessionId>, session: SessionId) {
+fn conversation_unregister_owner(conversations: &mut HashMap<i64, SessionId>, session: SessionId) {
     conversations.retain(|_, owner| *owner != session);
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CodeSessionHub, HashMap, SessionId, spawn_subscriber_bridge, thread_register,
-        thread_unregister_owner,
+        CodeSessionHub, HashMap, SessionId, conversation_register, conversation_unregister_owner,
+        spawn_subscriber_bridge,
     };
     use goat_wire::ServerFrame;
     use tokio::sync::mpsc;
@@ -1026,8 +1026,8 @@ mod tests {
     #[test]
     fn register_is_first_writer_wins() {
         let mut conversations: HashMap<i64, SessionId> = HashMap::new();
-        thread_register(&mut conversations, 42, SessionId(1));
-        thread_register(&mut conversations, 42, SessionId(2));
+        conversation_register(&mut conversations, 42, SessionId(1));
+        conversation_register(&mut conversations, 42, SessionId(2));
         assert_eq!(conversations.get(&42), Some(&SessionId(1)));
     }
 
@@ -1036,7 +1036,7 @@ mod tests {
         let mut conversations: HashMap<i64, SessionId> = HashMap::new();
         conversations.insert(7, SessionId(1));
         conversations.insert(8, SessionId(2));
-        thread_unregister_owner(&mut conversations, SessionId(1));
+        conversation_unregister_owner(&mut conversations, SessionId(1));
         assert_eq!(conversations.get(&7), None);
         assert_eq!(conversations.get(&8), Some(&SessionId(2)));
     }
@@ -1045,12 +1045,12 @@ mod tests {
     fn unregister_keeps_entry_reassigned_to_other_session() {
         let mut conversations: HashMap<i64, SessionId> = HashMap::new();
         conversations.insert(7, SessionId(2));
-        thread_unregister_owner(&mut conversations, SessionId(1));
+        conversation_unregister_owner(&mut conversations, SessionId(1));
         assert_eq!(conversations.get(&7), Some(&SessionId(2)));
     }
 
-    fn sample_thread(id: i64) -> goat_code_store::Thread {
-        goat_code_store::Thread {
+    fn sample_conversation(id: i64) -> goat_code_store::Conversation {
+        goat_code_store::Conversation {
             id,
             cwd: "/tmp".to_owned(),
             title: Some("t".to_owned()),
@@ -1064,23 +1064,23 @@ mod tests {
     }
 
     #[test]
-    fn thread_info_marks_live_threads() {
+    fn conversation_info_marks_live_conversations() {
         let mut live: HashMap<i64, SessionId> = HashMap::new();
         live.insert(5, SessionId(9));
         let mut states: HashMap<SessionId, goat_wire::SessionLiveState> = HashMap::new();
         states.insert(SessionId(9), goat_wire::SessionLiveState::Active {});
 
-        let info = super::thread_info(sample_thread(5), &live, &states);
+        let info = super::conversation_info(sample_conversation(5), &live, &states);
         assert_eq!(info.live, Some(SessionId(9)));
         assert_eq!(info.state, Some(goat_wire::SessionLiveState::Active {}));
     }
 
     #[test]
-    fn thread_info_marks_dead_threads_with_no_live_session() {
+    fn conversation_info_marks_dead_conversations_with_no_live_session() {
         let live: HashMap<i64, SessionId> = HashMap::new();
         let states: HashMap<SessionId, goat_wire::SessionLiveState> = HashMap::new();
 
-        let info = super::thread_info(sample_thread(5), &live, &states);
+        let info = super::conversation_info(sample_conversation(5), &live, &states);
         assert_eq!(info.live, None);
         assert_eq!(info.state, None);
         assert_eq!(info.conversation_id, 5);

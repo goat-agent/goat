@@ -120,9 +120,9 @@ impl ChannelHandle for DiscordHandle {
         CAPABILITIES
     }
 
-    async fn surface(&self, stored_thread: &ConversationId) -> ChannelResult<Surface> {
-        let channel_id = parse_channel_id(&stored_thread.external)?;
-        if stored_thread.external.starts_with("dm:") {
+    async fn surface(&self, stored_conversation: &ConversationId) -> ChannelResult<Surface> {
+        let channel_id = parse_channel_id(&stored_conversation.external)?;
+        if stored_conversation.external.starts_with("dm:") {
             return Ok(Surface::Dm);
         }
         let channel = self
@@ -441,8 +441,8 @@ mod tests {
             Arc::new(http),
             Arc::new(InteractionState::default()),
         );
-        let stored_thread = ConversationId::new(ID.clone(), handle.instance, "g:123:c:456");
-        let surface = handle.surface(&stored_thread).await.unwrap();
+        let stored_conversation = ConversationId::new(ID.clone(), handle.instance, "g:123:c:456");
+        let surface = handle.surface(&stored_conversation).await.unwrap();
         server.await.unwrap();
         surface
     }
@@ -457,10 +457,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_stored_thread_surface_is_an_error() {
+    async fn malformed_stored_conversation_surface_is_an_error() {
         let handle = handle(Arc::new(InteractionState::default()));
-        let stored_thread = ConversationId::new(ID.clone(), handle.instance, "unknown");
-        assert!(handle.surface(&stored_thread).await.is_err());
+        let stored_conversation = ConversationId::new(ID.clone(), handle.instance, "unknown");
+        assert!(handle.surface(&stored_conversation).await.is_err());
     }
 
     #[test]

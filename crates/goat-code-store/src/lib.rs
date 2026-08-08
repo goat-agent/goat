@@ -22,7 +22,7 @@ pub enum CodeStoreError {
 pub type CodeResult<T> = Result<T, CodeStoreError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
-pub struct Thread {
+pub struct Conversation {
     pub id: i64,
     pub cwd: String,
     pub title: Option<String>,
@@ -35,7 +35,7 @@ pub struct Thread {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NewThread {
+pub struct NewConversation {
     pub cwd: String,
     pub title: Option<String>,
     pub provider: String,
@@ -275,9 +275,9 @@ impl CodeStore {
         Ok(Self { writer, readers })
     }
 
-    pub async fn create_thread(&self, conversation: NewThread) -> CodeResult<i64> {
+    pub async fn create_conversation(&self, conversation: NewConversation) -> CodeResult<i64> {
         let id = sqlx::query(
-            "INSERT INTO code_threads (cwd, title, provider, model, account, effort, created_at, updated_at)
+            "INSERT INTO code_conversations (cwd, title, provider, model, account, effort, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(conversation.cwd)
@@ -294,32 +294,36 @@ impl CodeStore {
         Ok(id)
     }
 
-    pub async fn get_thread(&self, id: i64) -> CodeResult<Option<Thread>> {
-        let thread = sqlx::query_as::<_, Thread>(
+    pub async fn get_conversation(&self, id: i64) -> CodeResult<Option<Conversation>> {
+        let conversation = sqlx::query_as::<_, Conversation>(
             "SELECT id, cwd, title, provider, model, account, effort, created_at, updated_at
-             FROM code_threads WHERE id = ?",
+             FROM code_conversations WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&self.readers)
         .await?;
-        Ok(thread)
+        Ok(conversation)
     }
 
-    pub async fn latest_thread_in(&self, cwd: String) -> CodeResult<Option<Thread>> {
-        let thread = sqlx::query_as::<_, Thread>(
+    pub async fn latest_conversation_in(&self, cwd: String) -> CodeResult<Option<Conversation>> {
+        let conversation = sqlx::query_as::<_, Conversation>(
             "SELECT id, cwd, title, provider, model, account, effort, created_at, updated_at
-             FROM code_threads WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
+             FROM code_conversations WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
         )
         .bind(cwd)
         .fetch_optional(&self.readers)
         .await?;
-        Ok(thread)
+        Ok(conversation)
     }
 
-    pub async fn list_threads_in(&self, cwd: String, limit: i64) -> CodeResult<Vec<Thread>> {
-        let conversations = sqlx::query_as::<_, Thread>(
+    pub async fn list_conversations_in(
+        &self,
+        cwd: String,
+        limit: i64,
+    ) -> CodeResult<Vec<Conversation>> {
+        let conversations = sqlx::query_as::<_, Conversation>(
             "SELECT id, cwd, title, provider, model, account, effort, created_at, updated_at
-             FROM code_threads WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT ?",
+             FROM code_conversations WHERE cwd = ? ORDER BY updated_at DESC, id DESC LIMIT ?",
         )
         .bind(cwd)
         .bind(limit)
@@ -401,7 +405,7 @@ impl CodeStore {
             "WITH RECURSIVE active(id, parent_message_id, turn_id, role, body, created_at) AS (
                  SELECT m.id, m.parent_message_id, m.turn_id, m.role, m.body, m.created_at
                  FROM code_messages m
-                 JOIN code_threads t ON t.head_message_id = m.id
+                 JOIN code_conversations t ON t.head_message_id = m.id
                  WHERE t.id = ?
                  UNION ALL
                  SELECT m.id, m.parent_message_id, m.turn_id, m.role, m.body, m.created_at
@@ -417,7 +421,7 @@ impl CodeStore {
         Ok(messages)
     }
 
-    pub async fn update_thread_model(
+    pub async fn update_conversation_model(
         &self,
         id: i64,
         provider: String,
@@ -427,7 +431,7 @@ impl CodeStore {
         updated_at: i64,
     ) -> CodeResult<()> {
         sqlx::query(
-            "UPDATE code_threads SET provider = ?, model = ?, account = ?, effort = ?, updated_at = ?
+            "UPDATE code_conversations SET provider = ?, model = ?, account = ?, effort = ?, updated_at = ?
              WHERE id = ?",
         )
         .bind(provider)
@@ -441,8 +445,8 @@ impl CodeStore {
         Ok(())
     }
 
-    pub async fn update_thread_title(&self, id: i64, title: String) -> CodeResult<()> {
-        sqlx::query("UPDATE code_threads SET title = ? WHERE id = ?")
+    pub async fn update_conversation_title(&self, id: i64, title: String) -> CodeResult<()> {
+        sqlx::query("UPDATE code_conversations SET title = ? WHERE id = ?")
             .bind(title)
             .bind(id)
             .execute(&self.writer)
@@ -541,7 +545,7 @@ impl CodeStore {
     pub async fn create_message(&self, message: NewMessage) -> CodeResult<CreatedMessage> {
         let mut tx = self.writer.begin().await?;
         let parent_message_id: Option<i64> =
-            sqlx::query_scalar("SELECT head_message_id FROM code_threads WHERE id = ?")
+            sqlx::query_scalar("SELECT head_message_id FROM code_conversations WHERE id = ?")
                 .bind(message.conversation_id)
                 .fetch_one(&mut *tx)
                 .await?;
@@ -559,12 +563,14 @@ impl CodeStore {
         .execute(&mut *tx)
         .await?
         .last_insert_rowid();
-        sqlx::query("UPDATE code_threads SET head_message_id = ?, updated_at = ? WHERE id = ?")
-            .bind(id)
-            .bind(message.created_at)
-            .bind(message.conversation_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE code_conversations SET head_message_id = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(id)
+        .bind(message.created_at)
+        .bind(message.conversation_id)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(CreatedMessage {
             id,
@@ -630,7 +636,7 @@ impl CodeStore {
             "WITH RECURSIVE active_messages(id, parent_message_id) AS (
                  SELECT m.id, m.parent_message_id
                  FROM code_messages m
-                 JOIN code_threads t ON t.head_message_id = m.id
+                 JOIN code_conversations t ON t.head_message_id = m.id
                  WHERE t.id = ?
                  UNION ALL
                  SELECT m.id, m.parent_message_id
@@ -731,7 +737,7 @@ impl CodeStore {
             "WITH RECURSIVE active_messages(id, parent_message_id) AS (
                  SELECT m.id, m.parent_message_id
                  FROM code_messages m
-                 JOIN code_threads t ON t.head_message_id = m.id
+                 JOIN code_conversations t ON t.head_message_id = m.id
                  WHERE t.id = ?
                  UNION ALL
                  SELECT m.id, m.parent_message_id
@@ -768,18 +774,20 @@ impl CodeStore {
             .collect())
     }
 
-    pub async fn set_thread_head(
+    pub async fn set_conversation_head(
         &self,
         conversation_id: i64,
         head_message_id: Option<i64>,
         updated_at: i64,
     ) -> CodeResult<()> {
-        sqlx::query("UPDATE code_threads SET head_message_id = ?, updated_at = ? WHERE id = ?")
-            .bind(head_message_id)
-            .bind(updated_at)
-            .bind(conversation_id)
-            .execute(&self.writer)
-            .await?;
+        sqlx::query(
+            "UPDATE code_conversations SET head_message_id = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(head_message_id)
+        .bind(updated_at)
+        .bind(conversation_id)
+        .execute(&self.writer)
+        .await?;
         Ok(())
     }
 
@@ -841,7 +849,7 @@ impl CodeStore {
         Ok(id)
     }
 
-    pub async fn tool_call_summaries_for_thread(
+    pub async fn tool_call_summaries_for_conversation(
         &self,
         conversation_id: i64,
     ) -> CodeResult<Vec<StoredToolCallSummary>> {
@@ -855,7 +863,7 @@ impl CodeStore {
         Ok(rows)
     }
 
-    pub async fn compactions_for_thread(
+    pub async fn compactions_for_conversation(
         &self,
         conversation_id: i64,
     ) -> CodeResult<Vec<Compaction>> {
@@ -891,8 +899,8 @@ impl CodeStore {
 mod tests {
     use super::*;
 
-    fn sample_thread() -> NewThread {
-        NewThread {
+    fn sample_conversation() -> NewConversation {
+        NewConversation {
             cwd: "/tmp/project".into(),
             title: Some("first".into()),
             provider: "openai".into(),
@@ -905,18 +913,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migrates_and_roundtrips_thread() {
+    async fn migrates_and_roundtrips_conversation() {
         let store = CodeStore::open_in_memory().await.unwrap();
-        let id = store.create_thread(sample_thread()).await.unwrap();
-        let thread = store.get_thread(id).await.unwrap().unwrap();
-        assert_eq!(thread.provider, "openai");
-        assert_eq!(thread.title.as_deref(), Some("first"));
+        let id = store
+            .create_conversation(sample_conversation())
+            .await
+            .unwrap();
+        let conversation = store.get_conversation(id).await.unwrap().unwrap();
+        assert_eq!(conversation.provider, "openai");
+        assert_eq!(conversation.title.as_deref(), Some("first"));
     }
 
     #[tokio::test]
-    async fn latest_thread_in_is_scoped_to_cwd_and_recency() {
+    async fn latest_conversation_in_is_scoped_to_cwd_and_recency() {
         let store = CodeStore::open_in_memory().await.unwrap();
-        let make = |cwd: &str, model: &str, updated: i64| NewThread {
+        let make = |cwd: &str, model: &str, updated: i64| NewConversation {
             cwd: cwd.into(),
             title: None,
             provider: "openai".into(),
@@ -926,14 +937,27 @@ mod tests {
             created_at: updated,
             updated_at: updated,
         };
-        store.create_thread(make("/a", "old", 100)).await.unwrap();
-        store.create_thread(make("/a", "new", 200)).await.unwrap();
-        store.create_thread(make("/b", "other", 300)).await.unwrap();
-        let latest = store.latest_thread_in("/a".into()).await.unwrap().unwrap();
+        store
+            .create_conversation(make("/a", "old", 100))
+            .await
+            .unwrap();
+        store
+            .create_conversation(make("/a", "new", 200))
+            .await
+            .unwrap();
+        store
+            .create_conversation(make("/b", "other", 300))
+            .await
+            .unwrap();
+        let latest = store
+            .latest_conversation_in("/a".into())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(latest.model, "new");
         assert!(
             store
-                .latest_thread_in("/missing".into())
+                .latest_conversation_in("/missing".into())
                 .await
                 .unwrap()
                 .is_none()
@@ -943,7 +967,10 @@ mod tests {
     #[tokio::test]
     async fn persists_turn_message_tool_call_and_compaction() {
         let store = CodeStore::open_in_memory().await.unwrap();
-        let conversation_id = store.create_thread(sample_thread()).await.unwrap();
+        let conversation_id = store
+            .create_conversation(sample_conversation())
+            .await
+            .unwrap();
         let turn_id = store
             .create_turn(NewTurn {
                 conversation_id,
@@ -998,15 +1025,21 @@ mod tests {
             .await
             .unwrap();
         assert!(comp > 0);
-        let comps = store.compactions_for_thread(conversation_id).await.unwrap();
+        let comps = store
+            .compactions_for_conversation(conversation_id)
+            .await
+            .unwrap();
         assert_eq!(comps[0].preserved_message_ids, vec![1, 2, 3]);
         assert_eq!(comps[0].after_message_id, 0);
     }
 
     #[tokio::test]
-    async fn tool_call_summaries_for_thread_returns_only_summarized_calls() {
+    async fn tool_call_summaries_for_conversation_returns_only_summarized_calls() {
         let store = CodeStore::open_in_memory().await.unwrap();
-        let conversation_id = store.create_thread(sample_thread()).await.unwrap();
+        let conversation_id = store
+            .create_conversation(sample_conversation())
+            .await
+            .unwrap();
         let turn_id = store
             .create_turn(NewTurn {
                 conversation_id,
@@ -1054,7 +1087,7 @@ mod tests {
             .await
             .unwrap();
         let summaries = store
-            .tool_call_summaries_for_thread(conversation_id)
+            .tool_call_summaries_for_conversation(conversation_id)
             .await
             .unwrap();
         assert_eq!(
@@ -1070,7 +1103,10 @@ mod tests {
     #[tokio::test]
     async fn message_head_selects_one_conversation_branch() {
         let store = CodeStore::open_in_memory().await.unwrap();
-        let conversation_id = store.create_thread(sample_thread()).await.unwrap();
+        let conversation_id = store
+            .create_conversation(sample_conversation())
+            .await
+            .unwrap();
         let first = store
             .create_message(NewMessage {
                 conversation_id,
@@ -1092,7 +1128,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .set_thread_head(conversation_id, Some(first.id), 103)
+            .set_conversation_head(conversation_id, Some(first.id), 103)
             .await
             .unwrap();
         let replacement = store
@@ -1116,7 +1152,10 @@ mod tests {
     #[tokio::test]
     async fn checkpoints_follow_the_active_conversation_branch() {
         let store = CodeStore::open_in_memory().await.unwrap();
-        let conversation_id = store.create_thread(sample_thread()).await.unwrap();
+        let conversation_id = store
+            .create_conversation(sample_conversation())
+            .await
+            .unwrap();
         let first = store
             .create_message(NewMessage {
                 conversation_id,
@@ -1160,7 +1199,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .set_thread_head(conversation_id, Some(first.id), 103)
+            .set_conversation_head(conversation_id, Some(first.id), 103)
             .await
             .unwrap();
 

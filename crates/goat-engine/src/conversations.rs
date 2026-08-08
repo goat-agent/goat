@@ -31,31 +31,31 @@ pub(crate) fn parse_content_blocks(body: &str) -> Vec<ContentBlock> {
     })
 }
 
-pub(crate) async fn resolve_thread_cwd(
+pub(crate) async fn resolve_conversation_cwd(
     ctx: &SessionContext,
-    stored_thread: Option<i64>,
+    stored_conversation: Option<i64>,
 ) -> std::path::PathBuf {
-    match stored_thread {
+    match stored_conversation {
         Some(tid) => ctx
             .store
-            .get_thread(tid)
+            .get_conversation(tid)
             .await
             .ok()
             .flatten()
-            .map(|thread| thread.cwd)
+            .map(|conversation| conversation.cwd)
             .filter(|cwd| !cwd.is_empty())
             .map_or_else(|| ctx.cwd.clone(), std::path::PathBuf::from),
         None => ctx.cwd.clone(),
     }
 }
 
-pub(crate) async fn handle_list_threads(
+pub(crate) async fn handle_list_conversations(
     store: &Store,
     cwd: &std::path::Path,
     events: &mpsc::Sender<Event>,
 ) {
     let cwd = cwd.display().to_string();
-    let conversations = match store.list_threads_in(cwd, 50).await {
+    let conversations = match store.list_conversations_in(cwd, 50).await {
         Ok(conversations) => conversations,
         Err(err) => {
             tracing::warn!(error = %err, "failed to list conversations for picker");
@@ -64,14 +64,14 @@ pub(crate) async fn handle_list_threads(
     };
     let summaries = conversations
         .into_iter()
-        .map(|thread| ConversationSummary {
-            model: format!("{}/{}", thread.provider, thread.model),
-            title: thread
+        .map(|conversation| ConversationSummary {
+            model: format!("{}/{}", conversation.provider, conversation.model),
+            title: conversation
                 .title
                 .filter(|title| !title.is_empty())
-                .unwrap_or_else(|| format!("{}/{}", thread.provider, thread.model)),
-            id: thread.id,
-            updated_at: thread.updated_at,
+                .unwrap_or_else(|| format!("{}/{}", conversation.provider, conversation.model)),
+            id: conversation.id,
+            updated_at: conversation.updated_at,
             live: false,
         })
         .collect();
@@ -97,7 +97,7 @@ pub(crate) async fn handle_rename(
             .await;
         return;
     };
-    match store.update_thread_title(tid, title.clone()).await {
+    match store.update_conversation_title(tid, title.clone()).await {
         Ok(()) => {
             let _ = events
                 .send(Event::Notify {
@@ -107,7 +107,7 @@ pub(crate) async fn handle_rename(
                 .await;
         }
         Err(err) => {
-            tracing::warn!(%err, "failed to rename thread");
+            tracing::warn!(%err, "failed to rename conversation");
             let _ = events
                 .send(Event::Notify {
                     kind: NotifyKind::Error,
@@ -193,7 +193,13 @@ pub(crate) async fn handle_rewind(
     );
     let mut report = None;
     if restore_code {
-        let Some(thread) = ctx.store.get_thread(conversation_id).await.ok().flatten() else {
+        let Some(conversation) = ctx
+            .store
+            .get_conversation(conversation_id)
+            .await
+            .ok()
+            .flatten()
+        else {
             rewind_error(events, "could not resolve the checkpoint workspace").await;
             return;
         };
@@ -202,7 +208,7 @@ pub(crate) async fn handle_rewind(
             .restore(
                 conversation_id,
                 checkpoint_id,
-                std::path::Path::new(&thread.cwd),
+                std::path::Path::new(&conversation.cwd),
             )
             .await
         {
@@ -217,7 +223,7 @@ pub(crate) async fn handle_rewind(
     if restore_conversation {
         if let Err(err) = ctx
             .store
-            .set_thread_head(
+            .set_conversation_head(
                 conversation_id,
                 checkpoint.parent_message_id,
                 crate::persist::now_ms(),
@@ -489,10 +495,13 @@ pub(crate) async fn handle_resume(
     let instructions = ctx.instructions.as_deref();
     let date = ctx.date.as_str();
     let events = &ctx.events;
-    let thread = match store.get_thread(tid).await {
-        Ok(Some(thread)) => thread,
+    let conversation = match store.get_conversation(tid).await {
+        Ok(Some(conversation)) => conversation,
         Ok(None) => {
-            tracing::warn!(conversation_id = tid, "resume requested for unknown thread");
+            tracing::warn!(
+                conversation_id = tid,
+                "resume requested for unknown conversation"
+            );
             let _ = events
                 .send(Event::Notify {
                     kind: NotifyKind::Error,
@@ -502,7 +511,7 @@ pub(crate) async fn handle_resume(
             return;
         }
         Err(err) => {
-            tracing::warn!(conversation_id = tid, error = %err, "failed to read thread for resume");
+            tracing::warn!(conversation_id = tid, error = %err, "failed to read conversation for resume");
             let _ = events
                 .send(Event::Notify {
                     kind: NotifyKind::Error,
@@ -513,10 +522,10 @@ pub(crate) async fn handle_resume(
         }
     };
     let new_target = ModelTarget {
-        provider: thread.provider.clone(),
-        model: thread.model.clone(),
-        account: thread.account.clone(),
-        effort: thread.effort.as_deref().and_then(Effort::parse),
+        provider: conversation.provider.clone(),
+        model: conversation.model.clone(),
+        account: conversation.account.clone(),
+        effort: conversation.effort.as_deref().and_then(Effort::parse),
     };
     let messages = match store.get_messages(tid).await {
         Ok(messages) => messages,
@@ -531,7 +540,7 @@ pub(crate) async fn handle_resume(
             return;
         }
     };
-    let compactions = match store.compactions_for_thread(tid).await {
+    let compactions = match store.compactions_for_conversation(tid).await {
         Ok(compactions) => compactions,
         Err(err) => {
             tracing::warn!(conversation_id = tid, error = %err, "failed to read compactions for resume");
@@ -554,7 +563,7 @@ pub(crate) async fn handle_resume(
         })
         .collect();
     let tool_summaries: std::collections::HashMap<(i64, String), String> = match store
-        .tool_call_summaries_for_thread(tid)
+        .tool_call_summaries_for_conversation(tid)
         .await
     {
         Ok(rows) => rows
@@ -571,7 +580,7 @@ pub(crate) async fn handle_resume(
         Message::text(
             MessageRole::System,
             build_system_prompt(
-                std::path::Path::new(&thread.cwd),
+                std::path::Path::new(&conversation.cwd),
                 skills,
                 instructions,
                 date,
@@ -633,9 +642,9 @@ pub(crate) async fn handle_resume_latest(
     let store = &ctx.store;
     let events = &ctx.events;
     let cwd_key = ctx.cwd.display().to_string();
-    match store.latest_thread_in(cwd_key).await {
-        Ok(Some(thread)) => {
-            handle_resume(ctx, thread.id, state).await;
+    match store.latest_conversation_in(cwd_key).await {
+        Ok(Some(conversation)) => {
+            handle_resume(ctx, conversation.id, state).await;
         }
         Ok(None) => {
             let _ = events
@@ -646,7 +655,7 @@ pub(crate) async fn handle_resume_latest(
                 .await;
         }
         Err(err) => {
-            tracing::warn!(error = %err, "failed to look up latest thread for resume");
+            tracing::warn!(error = %err, "failed to look up latest conversation for resume");
             let _ = events
                 .send(Event::Notify {
                     kind: NotifyKind::Info,

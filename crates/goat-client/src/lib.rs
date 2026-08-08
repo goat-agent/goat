@@ -289,7 +289,7 @@ enum Outbound {
 
 struct Shared {
     current: Mutex<SessionId>,
-    current_thread: Mutex<Option<i64>>,
+    current_conversation: Mutex<Option<i64>>,
     idmap: Mutex<IdMap>,
     cwd: String,
 }
@@ -310,7 +310,7 @@ fn spawn_pumps(
     let opened_cwd = cwd.clone();
     let shared = Arc::new(Shared {
         current: Mutex::new(session),
-        current_thread: Mutex::new(None),
+        current_conversation: Mutex::new(None),
         idmap: Mutex::new(IdMap::new()),
         cwd,
     });
@@ -373,7 +373,7 @@ async fn reconnect(
             report_incompatible(events_tx).await;
             return None;
         }
-        let resume = match *shared.current_thread.lock().await {
+        let resume = match *shared.current_conversation.lock().await {
             Some(conversation_id) => ResumeMode::Conversation { conversation_id },
             None => ResumeMode::New {},
         };
@@ -468,7 +468,7 @@ async fn run_connection(
                 match &frame {
                     ServerFrame::SessionOpened { session: new, .. } => {
                         *shared.current.lock().await = *new;
-                        *shared.current_thread.lock().await = None;
+                        *shared.current_conversation.lock().await = None;
                         continue;
                     }
                     ServerFrame::Detached { .. } => {
@@ -504,7 +504,7 @@ async fn run_connection(
                     ..
                 } = &frame
                 {
-                    *shared.current_thread.lock().await = Some(*conversation_id);
+                    *shared.current_conversation.lock().await = Some(*conversation_id);
                 }
                 for mut event in frame_to_events(frame) {
                     shared.idmap.lock().await.translate_inbound(&mut event);
@@ -684,7 +684,7 @@ pub async fn status(link: &Link) -> Result<Vec<goat_wire::SessionInfo>, ClientEr
     }
 }
 
-pub async fn list_threads(
+pub async fn list_conversations(
     link: &Link,
     cwd: &Path,
 ) -> Result<Vec<goat_wire::ConversationInfo>, ClientError> {

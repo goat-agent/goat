@@ -117,7 +117,7 @@ async fn submit_message_flows_back_as_events() {
 }
 
 #[tokio::test]
-async fn same_thread_id_returns_same_session() {
+async fn same_conversation_id_returns_same_session() {
     let dir = tempfile::tempdir().unwrap();
     let socket = start_daemon(dir.path()).await;
 
@@ -151,12 +151,12 @@ async fn same_thread_id_returns_same_session() {
 
     assert_eq!(
         first, second,
-        "opening the same thread must converge on the one live session"
+        "opening the same conversation must converge on the one live session"
     );
 }
 
 #[tokio::test]
-async fn distinct_thread_ids_get_distinct_sessions() {
+async fn distinct_conversation_ids_get_distinct_sessions() {
     let dir = tempfile::tempdir().unwrap();
     let socket = start_daemon(dir.path()).await;
 
@@ -252,7 +252,7 @@ async fn rebind_moves_one_window_leaving_others() {
     };
     assert_eq!(
         first, shared,
-        "both windows share the live session for thread 1"
+        "both windows share the live session for conversation 1"
     );
 
     b.send(&ClientFrame::Submit {
@@ -285,7 +285,7 @@ async fn rebind_moves_one_window_leaving_others() {
 }
 
 #[tokio::test]
-async fn list_threads_returns_a_frame() {
+async fn list_conversations_returns_a_frame() {
     let dir = tempfile::tempdir().unwrap();
     let socket = start_daemon(dir.path()).await;
     let mut conn = connect(&socket).await;
@@ -302,7 +302,7 @@ async fn list_threads_returns_a_frame() {
                 "no conversations exist yet in a fresh cwd"
             );
         }
-        other => panic!("expected Threads, got {other:?}"),
+        other => panic!("expected Conversations, got {other:?}"),
     }
 }
 

@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use goat_code_store::{
-    CodeStore as Store, CreatedMessage, NewMessage, NewThread, NewToolCall, NewTurn,
+    CodeStore as Store, CreatedMessage, NewConversation, NewMessage, NewToolCall, NewTurn,
 };
 use goat_protocol::{Effort, Event, ModelTarget, TaskId, ToolOutcome};
 use goat_provider::{ContentBlock, Message, MessageRole};
@@ -29,7 +29,7 @@ pub(crate) async fn create_tool_call_record(
     name: &str,
     input_json: &str,
 ) -> Option<i64> {
-    let (Some(tid), Some(turn)) = (ids.stored_thread, ids.turn_db_id) else {
+    let (Some(tid), Some(turn)) = (ids.stored_conversation, ids.turn_db_id) else {
         return None;
     };
     match ctx
@@ -71,7 +71,7 @@ pub(crate) async fn finish_tool_db(
     }
 }
 
-pub(crate) fn thread_title(text: &str) -> Option<String> {
+pub(crate) fn conversation_title(text: &str) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return None;
@@ -80,7 +80,7 @@ pub(crate) fn thread_title(text: &str) -> Option<String> {
     Some(title)
 }
 
-pub(crate) async fn ensure_thread(
+pub(crate) async fn ensure_conversation(
     store: &Store,
     cwd: &std::path::Path,
     conversation_id: &mut Option<i64>,
@@ -93,7 +93,7 @@ pub(crate) async fn ensure_thread(
     let timestamp = now_ms();
     let cwd = cwd.display().to_string();
     match store
-        .create_thread(NewThread {
+        .create_conversation(NewConversation {
             cwd,
             title,
             provider: target.provider.clone(),
@@ -110,7 +110,7 @@ pub(crate) async fn ensure_thread(
             Some(id)
         }
         Err(err) => {
-            tracing::warn!(%err, "failed to create thread");
+            tracing::warn!(%err, "failed to create conversation");
             None
         }
     }
@@ -133,10 +133,11 @@ pub(crate) async fn init_db_turn(
             .first()
             .map(|attachment| format!("Image: {}", attachment.label))
     } else {
-        thread_title(text)
+        conversation_title(text)
     };
-    let stored_thread = ensure_thread(&ctx.store, &ctx.cwd, conversation_id, target, title).await;
-    if let Some(tid) = stored_thread {
+    let stored_conversation =
+        ensure_conversation(&ctx.store, &ctx.cwd, conversation_id, target, title).await;
+    if let Some(tid) = stored_conversation {
         let _ = ctx
             .events
             .send(Event::ConversationBound {
@@ -144,7 +145,7 @@ pub(crate) async fn init_db_turn(
             })
             .await;
     }
-    let (turn_db_id, user_message_db_id) = if let Some(tid) = stored_thread {
+    let (turn_db_id, user_message_db_id) = if let Some(tid) = stored_conversation {
         let body = serde_json::to_string(&message.content).unwrap_or_else(|_| text.to_owned());
         let created_message = match ctx
             .store
@@ -200,7 +201,7 @@ pub(crate) async fn init_db_turn(
         (None, None)
     };
     TurnIds {
-        stored_thread,
+        stored_conversation,
         turn_db_id,
         user_message_db_id,
     }
@@ -216,7 +217,7 @@ pub(crate) async fn persist_message(
         MessageRole::User => "user",
         MessageRole::Assistant => "assistant",
     };
-    let tid = ids.stored_thread?;
+    let tid = ids.stored_conversation?;
     let Ok(body) = serde_json::to_string(&message.content) else {
         return None;
     };

@@ -8,7 +8,7 @@ use goat_auth::{
     Credential, CredentialKey, CredentialKind, CredentialService, CredentialStore, SecretString,
     TokenSet,
 };
-use goat_code_store::{CodeStore as Store, Thread};
+use goat_code_store::{CodeStore as Store, Conversation};
 use goat_config::UserProviders;
 use goat_protocol::{
     AccountChoice, AccountEntry, AccountInfo, AuthMethod, Effort, Event, LoginCredential,
@@ -28,28 +28,29 @@ pub(crate) async fn restore_target(
     user: &UserProviders,
     cwd: &std::path::Path,
 ) -> Option<ModelTarget> {
-    let thread = latest_thread_or_seed(store, cwd).await?;
-    let provider = Registry::load(credentials, user, &thread.account)
-        .get(&goat_provider::ProviderId::from(thread.provider.as_str()))?;
+    let conversation = latest_conversation_or_seed(store, cwd).await?;
+    let provider = Registry::load(credentials, user, &conversation.account).get(
+        &goat_provider::ProviderId::from(conversation.provider.as_str()),
+    )?;
     if !provider.authenticated() {
         return None;
     }
     Some(ModelTarget {
-        provider: thread.provider,
-        model: thread.model,
-        account: thread.account,
-        effort: thread.effort.as_deref().and_then(Effort::parse),
+        provider: conversation.provider,
+        model: conversation.model,
+        account: conversation.account,
+        effort: conversation.effort.as_deref().and_then(Effort::parse),
     })
 }
 
-async fn latest_thread_or_seed(store: &Store, cwd: &std::path::Path) -> Option<Thread> {
+async fn latest_conversation_or_seed(store: &Store, cwd: &std::path::Path) -> Option<Conversation> {
     let key = cwd.display().to_string();
-    if let Some(thread) = store.latest_thread_in(key).await.ok().flatten() {
-        return Some(thread);
+    if let Some(conversation) = store.latest_conversation_in(key).await.ok().flatten() {
+        return Some(conversation);
     }
     let owner = worktree_owner_root(cwd)?;
     store
-        .latest_thread_in(owner.display().to_string())
+        .latest_conversation_in(owner.display().to_string())
         .await
         .ok()
         .flatten()
@@ -601,8 +602,8 @@ mod tests {
     use goat_auth::{Credential, CredentialStore, SecretString};
     use goat_provider::{ModelListSource, Provider, ProviderId};
 
-    use super::{catalog_only, latest_thread_or_seed, models_for_provider};
-    use goat_code_store::{CodeStore as Store, NewThread};
+    use super::{catalog_only, latest_conversation_or_seed, models_for_provider};
+    use goat_code_store::{CodeStore as Store, NewConversation};
     use goat_config::UserProviders;
     use goat_providers::Registry;
 
@@ -765,8 +766,8 @@ mod tests {
             .to_string()
     }
 
-    fn seeded_thread(cwd: &str, model: &str) -> NewThread {
-        NewThread {
+    fn seeded_conversation(cwd: &str, model: &str) -> NewConversation {
+        NewConversation {
             cwd: cwd.to_owned(),
             title: None,
             provider: "anthropic".to_owned(),
@@ -790,17 +791,22 @@ mod tests {
 
         let store = Store::open(&dir.path().join("db.sqlite")).await.unwrap();
         store
-            .create_thread(seeded_thread(&owner_key(&worktree), "claude-opus-4-8"))
+            .create_conversation(seeded_conversation(
+                &owner_key(&worktree),
+                "claude-opus-4-8",
+            ))
             .await
             .unwrap();
 
-        let seeded = latest_thread_or_seed(&store, &worktree).await.unwrap();
+        let seeded = latest_conversation_or_seed(&store, &worktree)
+            .await
+            .unwrap();
         assert_eq!(seeded.model, "claude-opus-4-8");
         assert_eq!(seeded.effort.as_deref(), Some("xhigh"));
     }
 
     #[tokio::test]
-    async fn worktree_own_thread_wins_over_owner_seed() {
+    async fn worktree_own_conversation_wins_over_owner_seed() {
         if !git_available() {
             return;
         }
@@ -811,18 +817,23 @@ mod tests {
 
         let store = Store::open(&dir.path().join("db.sqlite")).await.unwrap();
         store
-            .create_thread(seeded_thread(&owner_key(&worktree), "claude-opus-4-8"))
+            .create_conversation(seeded_conversation(
+                &owner_key(&worktree),
+                "claude-opus-4-8",
+            ))
             .await
             .unwrap();
         store
-            .create_thread(seeded_thread(
+            .create_conversation(seeded_conversation(
                 &worktree.display().to_string(),
                 "claude-haiku-4-8",
             ))
             .await
             .unwrap();
 
-        let resolved = latest_thread_or_seed(&store, &worktree).await.unwrap();
+        let resolved = latest_conversation_or_seed(&store, &worktree)
+            .await
+            .unwrap();
         assert_eq!(resolved.model, "claude-haiku-4-8");
     }
 
@@ -837,7 +848,7 @@ mod tests {
 
         let store = Store::open(&dir.path().join("db.sqlite")).await.unwrap();
         store
-            .create_thread(seeded_thread(
+            .create_conversation(seeded_conversation(
                 &repo.display().to_string(),
                 "claude-opus-4-8",
             ))
@@ -846,6 +857,6 @@ mod tests {
 
         let fresh = repo.join("sub");
         std::fs::create_dir(&fresh).unwrap();
-        assert!(latest_thread_or_seed(&store, &fresh).await.is_none());
+        assert!(latest_conversation_or_seed(&store, &fresh).await.is_none());
     }
 }

@@ -341,14 +341,14 @@ mod tests {
     }
 
     #[test]
-    fn thread_key_parse_round_trip() {
+    fn conversation_key_parse_round_trip() {
         let id = ConversationId::new(ChannelId::new("discord"), InstanceId::new(), "chat:123");
         let parsed = ConversationId::parse_key(&id.to_key()).unwrap();
         assert_eq!(parsed, id);
     }
 
     #[test]
-    fn thread_key_parse_rejects_garbage() {
+    fn conversation_key_parse_rejects_garbage() {
         assert!(ConversationId::parse_key("").is_none());
         assert!(ConversationId::parse_key("discord").is_none());
         assert!(ConversationId::parse_key("discord:not-a-uuid:chat:1").is_none());

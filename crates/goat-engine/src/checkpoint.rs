@@ -309,7 +309,7 @@ async fn set_file_mode(_path: &Path, _mode: Option<u32>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use goat_code_store::{CodeStore, NewMessage, NewThread};
+    use goat_code_store::{CodeStore, NewConversation, NewMessage};
     use goat_tool::ToolSandbox;
 
     use super::CheckpointTracker;
@@ -319,7 +319,7 @@ mod tests {
     ) -> (CheckpointTracker, i64, goat_code_store::CreatedMessage) {
         let store = CodeStore::open_in_memory().await.unwrap();
         let conversation_id = store
-            .create_thread(NewThread {
+            .create_conversation(NewConversation {
                 cwd: root.display().to_string(),
                 title: None,
                 provider: "openai".into(),

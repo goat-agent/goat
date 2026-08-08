@@ -229,7 +229,7 @@ async fn dispatch(
             Disposition::Continue
         }
         ClientFrame::ListConversations { cwd } => {
-            let conversations = manager.list_threads(&cwd).await;
+            let conversations = manager.list_conversations(&cwd).await;
             let _ = out_tx
                 .send(ServerFrame::Conversations { conversations })
                 .await;

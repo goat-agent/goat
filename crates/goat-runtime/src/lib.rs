@@ -234,11 +234,11 @@ async fn run_consolidation(
                 continue;
             }
         };
-        let conv = match store.latest_thread(*agent).await {
+        let conv = match store.latest_conversation(*agent).await {
             Ok(Some(c)) => c,
             Ok(None) => continue,
             Err(e) => {
-                warn!(agent = %agent, error = ?e, "sleep: latest_thread failed");
+                warn!(agent = %agent, error = ?e, "sleep: latest_conversation failed");
                 continue;
             }
         };

@@ -205,7 +205,7 @@ impl SessionState {
 }
 
 pub(crate) struct TurnIds {
-    pub(crate) stored_thread: Option<i64>,
+    pub(crate) stored_conversation: Option<i64>,
     pub(crate) turn_db_id: Option<i64>,
     pub(crate) user_message_db_id: Option<i64>,
 }
@@ -517,7 +517,7 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
                 accounts::clear_account_registries(&ctx.account_registries);
             }
             Op::ListConversations {} => {
-                conversations::handle_list_threads(&ctx.store, &ctx.cwd, &ctx.events).await;
+                conversations::handle_list_conversations(&ctx.store, &ctx.cwd, &ctx.events).await;
             }
             Op::ListRewindPoints {} => {
                 conversations::handle_list_rewind_points(&ctx, state.conversation_id).await;
@@ -1136,7 +1136,7 @@ mod tests {
             "the in-flight user prompt must survive verbatim"
         );
 
-        let compactions = store.compactions_for_thread(1).await.unwrap();
+        let compactions = store.compactions_for_conversation(1).await.unwrap();
         assert_eq!(compactions.len(), 1, "compaction must be persisted");
         assert!(compactions[0].summary.contains("## Task"));
     }
@@ -1931,8 +1931,12 @@ mod tests {
         .unwrap();
         drain_until_task_done(&mut events).await;
 
-        let thread = store.get_thread(1).await.unwrap().expect("thread created");
-        assert_eq!(thread.title.as_deref(), Some("! echo persisted"));
+        let conversation = store
+            .get_conversation(1)
+            .await
+            .unwrap()
+            .expect("conversation created");
+        assert_eq!(conversation.title.as_deref(), Some("! echo persisted"));
         let messages = store.get_messages(1).await.unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, "shell");
@@ -1962,7 +1966,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_latest_restores_most_recent_thread() {
+    async fn resume_latest_restores_most_recent_conversation() {
         let provider = MockProvider {
             id: "mock".to_owned(),
             reply: "ok".to_owned(),
@@ -2104,6 +2108,6 @@ mod tests {
         .unwrap();
         drain_until_task_done(&mut events).await;
 
-        assert!(store.get_thread(1).await.unwrap().is_some());
+        assert!(store.get_conversation(1).await.unwrap().is_some());
     }
 }

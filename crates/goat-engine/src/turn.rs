@@ -9,10 +9,10 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     Flow, Run, SessionContext, SessionState,
     accounts::provider_for,
-    conversations::resolve_thread_cwd,
+    conversations::resolve_conversation_cwd,
     persist::{
-        effort_string, ensure_thread, finalize_turn, init_db_turn, now_ms, persist_shell_message,
-        thread_title,
+        conversation_title, effort_string, ensure_conversation, finalize_turn, init_db_turn,
+        now_ms, persist_shell_message,
     },
     prompt::build_system_prompt,
     rounds::{LoopOutcome, core_loop},
@@ -134,7 +134,7 @@ pub(crate) async fn handle_idle_op(op: Op, ctx: &SessionContext, state: &mut Ses
         Op::SelectModel { target: chosen } => {
             if let Some(tid) = conversation_id
                 && let Err(err) = store
-                    .update_thread_model(
+                    .update_conversation_model(
                         tid,
                         chosen.provider.clone(),
                         chosen.model.clone(),
@@ -144,7 +144,7 @@ pub(crate) async fn handle_idle_op(op: Op, ctx: &SessionContext, state: &mut Ses
                     )
                     .await
             {
-                tracing::warn!(%err, "failed to update thread model");
+                tracing::warn!(%err, "failed to update conversation model");
             }
             state.target = Some(chosen.clone());
             let _ = events.send(Event::ModelSelected { target: chosen }).await;
@@ -156,7 +156,7 @@ pub(crate) async fn handle_idle_op(op: Op, ctx: &SessionContext, state: &mut Ses
             crate::conversations::handle_rename(store, conversation_id, title, events).await;
         }
         Op::ListConversations {} => {
-            crate::conversations::handle_list_threads(store, &ctx.cwd, events).await;
+            crate::conversations::handle_list_conversations(store, &ctx.cwd, events).await;
         }
         Op::Login { .. }
         | Op::AddAccount { .. }
@@ -512,20 +512,20 @@ pub(crate) async fn handle_shell(
     if ctx.events.send(Event::TaskStarted { id }).await.is_err() {
         return Flow::Shutdown;
     }
-    let stored_thread = match state.target.as_ref() {
+    let stored_conversation = match state.target.as_ref() {
         Some(resolved) => {
-            ensure_thread(
+            ensure_conversation(
                 &ctx.store,
                 &ctx.cwd,
                 &mut state.conversation_id,
                 resolved,
-                thread_title(&format!("! {command}")),
+                conversation_title(&format!("! {command}")),
             )
             .await
         }
         None => None,
     };
-    let cwd = resolve_thread_cwd(ctx, stored_thread).await;
+    let cwd = resolve_conversation_cwd(ctx, stored_conversation).await;
     let steering: crate::SteeringQueue = std::sync::Mutex::new(std::collections::VecDeque::new());
     let mut deferred: Vec<Op> = Vec::new();
     let outcome = {
@@ -566,7 +566,7 @@ pub(crate) async fn handle_shell(
             None,
         );
     }
-    let db_id = match stored_thread {
+    let db_id = match stored_conversation {
         Some(tid) => persist_shell_message(ctx, tid, &encoded).await,
         None => None,
     };
@@ -652,7 +652,7 @@ pub(crate) async fn handle_compact(
     if ctx.events.send(Event::TaskStarted { id }).await.is_err() {
         return Flow::Shutdown;
     }
-    let cwd = resolve_thread_cwd(ctx, state.conversation_id).await;
+    let cwd = resolve_conversation_cwd(ctx, state.conversation_id).await;
     let tool_defs = top_regime(
         ctx,
         provider.as_ref(),
@@ -663,7 +663,7 @@ pub(crate) async fn handle_compact(
         },
     );
     let ids = crate::TurnIds {
-        stored_thread: state.conversation_id,
+        stored_conversation: state.conversation_id,
         turn_db_id: None,
         user_message_db_id: None,
     };
@@ -819,7 +819,7 @@ async fn run_one_turn(
         checkpoint,
     )
     .await;
-    bind_plan_path(ctx, state, ids.stored_thread, &text).await;
+    bind_plan_path(ctx, state, ids.stored_conversation, &text).await;
     let system = build_system_prompt(
         &ctx.cwd,
         &ctx.skills,
@@ -854,7 +854,7 @@ async fn run_one_turn(
         return (TurnFlow::Shutdown, Vec::new());
     }
 
-    let cwd = resolve_thread_cwd(ctx, ids.stored_thread).await;
+    let cwd = resolve_conversation_cwd(ctx, ids.stored_conversation).await;
     let tool_defs = top_regime(
         ctx,
         provider.as_ref(),

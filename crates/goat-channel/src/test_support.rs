@@ -108,7 +108,7 @@ impl ChannelHandle for MockChannelHandle {
         self.capabilities
     }
 
-    async fn surface(&self, _thread: &ConversationId) -> ChannelResult<Surface> {
+    async fn surface(&self, _conversation: &ConversationId) -> ChannelResult<Surface> {
         Err(ChannelError::Unsupported("mock surface is unspecified"))
     }
 

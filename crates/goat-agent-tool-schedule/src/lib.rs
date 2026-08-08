@@ -438,7 +438,7 @@ mod tests {
         let agent = AgentId::new();
         store.ensure_agent(agent, "dev", "dev").await.unwrap();
         let conv = ConversationId::new(ChannelId::new("discord"), InstanceId::new(), "chat:1");
-        store.ensure_thread(&conv, agent).await.unwrap();
+        store.ensure_conversation(&conv, agent).await.unwrap();
         let ctx = ToolCaller {
             agent,
             conversation: conv,

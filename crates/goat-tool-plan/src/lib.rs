@@ -121,7 +121,7 @@ pub fn rejected_input(feedback: &str) -> String {
 }
 
 pub fn resolve_path(dir: &Path, conversation_id: i64, seed: &str) -> PathBuf {
-    if let Some(found) = existing_for_thread(dir, conversation_id) {
+    if let Some(found) = existing_for_conversation(dir, conversation_id) {
         return found;
     }
     let slug = slugify(seed);
@@ -132,7 +132,7 @@ pub fn resolve_path(dir: &Path, conversation_id: i64, seed: &str) -> PathBuf {
     }
 }
 
-fn existing_for_thread(dir: &Path, conversation_id: i64) -> Option<PathBuf> {
+fn existing_for_conversation(dir: &Path, conversation_id: i64) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     let exact = format!("{conversation_id}.md");
     let prefix = format!("{conversation_id}-");
@@ -196,14 +196,14 @@ mod tests {
     }
 
     #[test]
-    fn path_uses_thread_id_and_slug() {
+    fn path_uses_conversation_id_and_slug() {
         let dir = tempfile::tempdir().unwrap();
         let path = resolve_path(dir.path(), 42, "Add plan mode");
         assert_eq!(path, dir.path().join("42-add-plan-mode.md"));
     }
 
     #[test]
-    fn path_reuses_existing_file_for_thread() {
+    fn path_reuses_existing_file_for_conversation() {
         let dir = tempfile::tempdir().unwrap();
         let existing = dir.path().join("7-earlier-title.md");
         std::fs::write(&existing, "plan").unwrap();
@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn path_falls_back_to_thread_id_when_slug_is_empty() {
+    fn path_falls_back_to_conversation_id_when_slug_is_empty() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(resolve_path(dir.path(), 9, "!!!"), dir.path().join("9.md"));
     }
