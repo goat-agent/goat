@@ -238,19 +238,18 @@ impl goat_command::Screen for ResumeScreen {
         self.loading = false;
         if let Some(index) = self.index {
             self.done = true;
-            return match threads.get(index) {
-                Some(thread) => goat_command::ScreenOutcome::Effect(
-                    goat_command::CommandEffect::Dispatch(vec![goat_protocol::Op::Resume {
+            return if let Some(thread) = threads.get(index) {
+                goat_command::ScreenOutcome::Effect(goat_command::CommandEffect::Dispatch(vec![
+                    goat_protocol::Op::Resume {
                         thread_id: thread.id,
-                    }]),
-                ),
-                None => {
-                    session.notify(
-                        goat_protocol::NotifyKind::Error,
-                        format!("no conversation #{}", index + 1),
-                    );
-                    goat_command::ScreenOutcome::Close
-                }
+                    },
+                ]))
+            } else {
+                session.notify(
+                    goat_protocol::NotifyKind::Error,
+                    format!("no conversation #{}", index + 1),
+                );
+                goat_command::ScreenOutcome::Close
             };
         }
         self.threads.clone_from(threads);

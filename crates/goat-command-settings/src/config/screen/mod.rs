@@ -681,7 +681,6 @@ impl ConfigScreen {
 
 impl ConfigScreen {
     fn apply_outcome(
-        &mut self,
         outcome: ConfigOutcome,
         session: &mut dyn goat_command::Session,
     ) -> goat_command::ScreenOutcome {
@@ -788,7 +787,7 @@ impl goat_command::Screen for ConfigScreen {
             KeyCode::Backspace => {
                 if matches!(self.stage_kind(), StageKind::List) {
                     let outcome = self.remove_selected();
-                    self.apply_outcome(outcome, session)
+                    Self::apply_outcome(outcome, session)
                 } else {
                     self.backspace();
                     ScreenOutcome::Continue
@@ -796,11 +795,11 @@ impl goat_command::Screen for ConfigScreen {
             }
             KeyCode::Delete => {
                 let outcome = self.remove_selected();
-                self.apply_outcome(outcome, session)
+                Self::apply_outcome(outcome, session)
             }
             KeyCode::Enter => {
                 let outcome = self.enter();
-                self.apply_outcome(outcome, session)
+                Self::apply_outcome(outcome, session)
             }
             KeyCode::Char(ch) => {
                 self.on_char(ch);

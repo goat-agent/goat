@@ -14,10 +14,6 @@ impl App {
         if let Some(ops) = self.handle_screen_input(&crossterm::event::Event::Key(key)) {
             return ops;
         }
-        match &self.overlay {
-            PendingScreen::Screen(_) => {}
-            PendingScreen::None => {}
-        }
         if let Some(ch) = keymap::ctrl_key(&key) {
             if ch == 'c' {
                 return self.on_ctrl_c();

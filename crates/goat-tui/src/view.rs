@@ -30,7 +30,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Placement::Full { reserve_bottom } => Some(reserve_bottom),
             _ => None,
         },
-        _ => None,
+        PendingScreen::None => None,
     };
     if let Some(reserve_bottom) = full_reserve {
         if let Some(panel_h) = reserve_bottom {
@@ -84,7 +84,7 @@ fn active_panel(app: &App) -> Panel {
             },
             _ => Panel::None,
         },
-        _ => Panel::None,
+        PendingScreen::None => Panel::None,
     }
 }
 
@@ -94,7 +94,7 @@ fn composer_focused(app: &App, panel: &Panel) -> bool {
             Panel::Screen {
                 composer_focused, ..
             } => *composer_focused,
-            _ => true,
+            Panel::None => true,
         }
 }
 
@@ -171,12 +171,7 @@ fn render_hint(frame: &mut Frame, area: Rect, app: &App, theme: Theme, panel: &P
                 }),
             );
         }
-        Panel::Screen { hints: None, .. } => {
-            if footer_visible(app) {
-                render_footer(frame, area, app, theme);
-            }
-        }
-        Panel::None => {
+        Panel::Screen { hints: None, .. } | Panel::None => {
             if footer_visible(app) {
                 render_footer(frame, area, app, theme);
             }
@@ -187,7 +182,7 @@ fn render_hint(frame: &mut Frame, area: Rect, app: &App, theme: Theme, panel: &P
 fn is_full_body_overlay(app: &App) -> bool {
     match app.overlay() {
         PendingScreen::Screen(screen) => matches!(screen.placement(), Placement::Overlay),
-        _ => false,
+        PendingScreen::None => false,
     }
 }
 

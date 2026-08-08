@@ -98,7 +98,7 @@ impl Composer for EmptySession {
     }
 
     fn set_plain_text(&mut self, text: &str) {
-        self.text = text.to_owned();
+        text.clone_into(&mut self.text);
     }
 
     fn replace_at_query(&mut self, replacement: &str) {

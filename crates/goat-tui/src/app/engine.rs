@@ -127,7 +127,7 @@ impl App {
                     self.transcript.push_thinking_delta(&chunk);
                 }
             }
-            EngineEvent::LoginProviders { .. } => {}
+            EngineEvent::LoginProviders { .. } | EngineEvent::LoginStatus { .. } => {}
             EngineEvent::ThreadBound { thread_id } => {
                 self.thread_id = Some(thread_id);
             }
@@ -288,7 +288,6 @@ impl App {
             EngineEvent::SkillsChanged { skills } => {
                 self.commands.set_skills(&skills);
             }
-            EngineEvent::LoginStatus { .. } => {}
             EngineEvent::TextDelta { id, chunk } => {
                 self.turn.thinking = false;
                 if self.subagent_index(id).is_none() {

@@ -409,21 +409,17 @@ impl App {
                 if let Some(ops) = self.handle_screen_input(&CtEvent::Paste(text.clone())) {
                     return ops;
                 }
-                match &mut self.overlay {
-                    _ => {
-                        match crate::attachment::attachments_from_paste(&text) {
-                            Ok(attachments) => self.composer.push_attachments(attachments),
-                            Err(
-                                crate::attachment::AttachError::NotImages
-                                | crate::attachment::AttachError::Empty,
-                            ) => {
-                                self.composer.insert_str(&text);
-                            }
-                            Err(err) => self.push_toast(NotifyKind::Error, err.to_string()),
-                        }
-                        self.update_command_menu();
+                match crate::attachment::attachments_from_paste(&text) {
+                    Ok(attachments) => self.composer.push_attachments(attachments),
+                    Err(
+                        crate::attachment::AttachError::NotImages
+                        | crate::attachment::AttachError::Empty,
+                    ) => {
+                        self.composer.insert_str(&text);
                     }
+                    Err(err) => self.push_toast(NotifyKind::Error, err.to_string()),
                 }
+                self.update_command_menu();
                 self.dirty = true;
                 Vec::new()
             }
@@ -561,7 +557,7 @@ impl App {
     fn handle_screen_input(&mut self, event: &CtEvent) -> Option<Vec<Op>> {
         let mut screen = match std::mem::replace(&mut self.overlay, PendingScreen::None) {
             PendingScreen::Screen(screen) => screen,
-            overlay => {
+            overlay @ PendingScreen::None => {
                 self.overlay = overlay;
                 return None;
             }
@@ -584,7 +580,7 @@ impl App {
     fn tick_screen(&mut self) -> Vec<Op> {
         let mut screen = match std::mem::replace(&mut self.overlay, PendingScreen::None) {
             PendingScreen::Screen(screen) => screen,
-            overlay => {
+            overlay @ PendingScreen::None => {
                 self.overlay = overlay;
                 return Vec::new();
             }
@@ -596,7 +592,7 @@ impl App {
     fn notify_screen(&mut self, event: &EngineEvent) -> Vec<Op> {
         let mut screen = match std::mem::replace(&mut self.overlay, PendingScreen::None) {
             PendingScreen::Screen(screen) => screen,
-            overlay => {
+            overlay @ PendingScreen::None => {
                 self.overlay = overlay;
                 return Vec::new();
             }
@@ -926,7 +922,7 @@ impl App {
     pub(crate) fn overlay_captures_text(&self) -> bool {
         match &self.overlay {
             PendingScreen::Screen(screen) => screen.captures_text(),
-            _ => false,
+            PendingScreen::None => false,
         }
     }
 
