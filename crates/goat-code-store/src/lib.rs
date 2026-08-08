@@ -1223,7 +1223,7 @@ mod tests {
     #[tokio::test]
     async fn migration_0022_backfills_kind_and_strips_language_reminder() {
         let reminder = "[Reminder: write your prose to the user in the language they used in their request. Keep code, identifiers, file paths, shell commands, tool arguments, and quoted file or output excerpts exactly as they are. Text stored in the repository stays in the project's prevailing language.]";
-        crate::register_sqlite_vec();
+        goat_sqlite_vec::register();
         let opts = "sqlite::memory:"
             .parse::<SqliteConnectOptions>()
             .unwrap()
@@ -1256,7 +1256,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        for statement in include_str!("../migrations/0022_message_kind.sql").split(';') {
+        for statement in include_str!("../migrations/0026_message_kind.sql").split(';') {
             let statement = statement.trim();
             if statement.is_empty() {
                 continue;

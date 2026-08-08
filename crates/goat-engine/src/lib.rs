@@ -2046,7 +2046,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-resume-kind.json"));
-        let agent = GoatAgent::new(
+        let agent = CodingEngine::new(
             registry,
             store.clone(),
             credentials,
@@ -2069,7 +2069,7 @@ mod tests {
         .unwrap();
         drain_until_task_done(&mut events).await;
         let tid = store
-            .get_thread(1)
+            .get_conversation(1)
             .await
             .unwrap()
             .expect("thread 1 created by the submit")
@@ -2095,8 +2095,8 @@ mod tests {
             ("user", Some("user"), user_body.as_str()),
         ] {
             store
-                .create_message(goat_store::NewMessage {
-                    thread_id: tid,
+                .create_message(goat_code_store::NewMessage {
+                    conversation_id: tid,
                     turn_id: None,
                     role: role.to_owned(),
                     kind: kind.map(str::to_owned),
@@ -2107,7 +2107,11 @@ mod tests {
                 .unwrap();
         }
 
-        ops.send(Op::Resume { thread_id: tid }).await.unwrap();
+        ops.send(Op::Resume {
+            conversation_id: tid,
+        })
+        .await
+        .unwrap();
         while let Some(event) = events.recv().await {
             if let Event::ConversationRestored { entries, .. } = event {
                 let user_texts: Vec<&str> = entries

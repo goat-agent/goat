@@ -2270,7 +2270,7 @@ mod tests {
     }
 
     fn system_lines(app: &App) -> usize {
-        app.transcript
+        app.transcript()
             .items
             .iter()
             .filter(|item| matches!(item, crate::transcript::Item::System { .. }))

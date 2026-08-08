@@ -706,6 +706,7 @@ mod tests {
 
     fn stored(id: i64, turn_id: Option<i64>, role: &str, body: String) -> StoredMessage {
         StoredMessage {
+            kind: None,
             id,
             parent_message_id: None,
             turn_id,
