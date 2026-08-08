@@ -8,7 +8,7 @@ mod usage;
 
 use goat_command::Command;
 
-pub use config::Config;
+pub use config::{Config, ConfigScreen};
 pub use effort::Effort;
 pub use model::{AccountScreen, Model, ModelScreen};
 pub use provider::Provider;

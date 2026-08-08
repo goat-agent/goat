@@ -3,7 +3,6 @@ mod ask;
 mod attachment;
 mod command;
 mod composer;
-mod config;
 mod files;
 pub mod highlight;
 mod keymap;

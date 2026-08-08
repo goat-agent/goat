@@ -21,7 +21,6 @@ use crate::{
     ask::AskPicker,
     command::{CommandMenu, CommandMenuContext, RuntimeChoice, RuntimeChoiceGroup},
     composer::Composer,
-    config::{Config, ConfigOutcome},
     files::FileMenu,
     highlight::SyntectHighlighter,
     symbols,
@@ -79,7 +78,6 @@ impl RunTarget {
 pub(crate) enum Overlay {
     None,
     Screen(Box<dyn Screen>),
-    Config(Config),
     Commands(CommandMenu),
     Files(FileMenu),
     Runs(usize),
@@ -412,11 +410,6 @@ impl App {
                     return ops;
                 }
                 match &mut self.overlay {
-                    Overlay::Config(config) => {
-                        for ch in text.chars() {
-                            config.on_char(ch);
-                        }
-                    }
                     Overlay::Ask(picker, _) => {
                         picker.insert_str(&text);
                     }
@@ -526,16 +519,6 @@ impl App {
             CommandEffect::Submit { display, prompt } => self.submit_command(display, prompt),
             CommandEffect::Notify(kind, message) => {
                 self.push_toast(kind, message);
-                Vec::new()
-            }
-            CommandEffect::OpenConfig => {
-                self.overlay = Overlay::Config(Config::new(
-                    self.account_entries.clone(),
-                    self.theme.is_dark(),
-                    self.mouse_capture,
-                    self.computer_use,
-                    self.browser,
-                ));
                 Vec::new()
             }
             CommandEffect::ShowHelp => Vec::new(),
@@ -671,67 +654,6 @@ impl App {
             self.apply_command_effect(CommandEffect::Show(Box::new(
                 goat_commands::RewindScreen::new(Vec::new()),
             )))
-        }
-    }
-
-    pub(crate) fn apply_config_outcome(&mut self, outcome: ConfigOutcome) -> Vec<Op> {
-        match outcome {
-            ConfigOutcome::Pending => Vec::new(),
-            ConfigOutcome::AddAccount {
-                provider,
-                name,
-                credential,
-            } => {
-                vec![Op::AddAccount {
-                    provider,
-                    name,
-                    credential,
-                }]
-            }
-            ConfigOutcome::RemoveAccount { provider, name } => {
-                vec![Op::RemoveAccount { provider, name }]
-            }
-            ConfigOutcome::SetTheme { dark } => {
-                let chosen = if dark { Theme::dark() } else { Theme::light() };
-                self.theme = chosen.with_base(self.terminal_bg);
-                self.transcript.invalidate();
-                for run in &mut self.subagent_runs {
-                    run.transcript.invalidate();
-                }
-                if let Overlay::Config(config) = &mut self.overlay {
-                    config.set_providers(self.account_entries.clone());
-                }
-                let mut cfg = goat_config::Config::load();
-                cfg.theme = if dark {
-                    goat_config::ThemeChoice::Dark
-                } else {
-                    goat_config::ThemeChoice::Light
-                };
-                self.persist_config(&cfg);
-                Vec::new()
-            }
-            ConfigOutcome::SetMouseCapture { enabled } => {
-                self.mouse_capture = enabled;
-                tui::set_mouse_capture(enabled);
-                let mut cfg = goat_config::Config::load();
-                cfg.mouse_capture_enabled = enabled;
-                self.persist_config(&cfg);
-                Vec::new()
-            }
-            ConfigOutcome::SetComputerUse { enabled } => {
-                self.computer_use = enabled;
-                let mut cfg = goat_config::Config::load();
-                cfg.computer_use_enabled = enabled;
-                self.persist_config(&cfg);
-                Vec::new()
-            }
-            ConfigOutcome::SetBrowser { enabled } => {
-                self.browser = enabled;
-                let mut cfg = goat_config::Config::load();
-                cfg.browser_enabled = enabled;
-                self.persist_config(&cfg);
-                Vec::new()
-            }
         }
     }
 
@@ -1040,7 +962,7 @@ impl App {
     pub(crate) fn overlay_captures_text(&self) -> bool {
         match &self.overlay {
             Overlay::Screen(screen) => screen.captures_text(),
-            Overlay::Config(_) | Overlay::Ask(_, _) => true,
+            Overlay::Ask(_, _) => true,
             _ => false,
         }
     }

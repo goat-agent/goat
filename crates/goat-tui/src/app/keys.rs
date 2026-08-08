@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use goat_protocol::Op;
 
 use super::{App, CLEAR_ARM_TICKS, Overlay, QUIT_ARM_TICKS};
-use crate::{ask::AskOutcome, config::ConfigOutcome, keymap};
+use crate::{ask::AskOutcome, keymap};
 
 impl App {
     pub(crate) fn on_key(&mut self, key: KeyEvent) -> Vec<Op> {
@@ -16,7 +16,6 @@ impl App {
         }
         match &self.overlay {
             Overlay::Screen(_) => {}
-            Overlay::Config(_) => return self.on_config_key(key),
             Overlay::Runs(_) => return self.on_run_selector_key(key),
             Overlay::Ask(_, _) => return self.on_ask_picker_key(key),
             Overlay::Commands(_) => {
@@ -317,73 +316,6 @@ impl App {
             }
             _ => Vec::new(),
         }
-    }
-
-    pub(crate) fn on_config_key(&mut self, key: KeyEvent) -> Vec<Op> {
-        self.dirty = true;
-        if let Some(ch) = keymap::ctrl_key(&key) {
-            if ch == 'c' {
-                self.overlay = Overlay::None;
-            }
-            return Vec::new();
-        }
-        match key.code {
-            KeyCode::Esc => {
-                if let Overlay::Config(config) = &mut self.overlay {
-                    config.cancel_stage();
-                    if matches!(config.stage_kind(), crate::config::StageKind::List) {
-                        self.overlay = Overlay::None;
-                    }
-                }
-            }
-            KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
-                if let Overlay::Config(config) = &mut self.overlay {
-                    config.tab();
-                }
-            }
-            KeyCode::Up => {
-                if let Overlay::Config(config) = &mut self.overlay {
-                    config.move_up();
-                }
-            }
-            KeyCode::Down => {
-                if let Overlay::Config(config) = &mut self.overlay {
-                    config.move_down();
-                }
-            }
-            KeyCode::Backspace => {
-                if let Overlay::Config(config) = &mut self.overlay {
-                    if matches!(config.stage_kind(), crate::config::StageKind::List) {
-                        let outcome = config.remove_selected();
-                        return self.apply_config_outcome(outcome);
-                    }
-                    config.backspace();
-                }
-            }
-            KeyCode::Delete => {
-                let outcome = if let Overlay::Config(config) = &mut self.overlay {
-                    config.remove_selected()
-                } else {
-                    ConfigOutcome::Pending
-                };
-                return self.apply_config_outcome(outcome);
-            }
-            KeyCode::Enter => {
-                let outcome = if let Overlay::Config(config) = &mut self.overlay {
-                    config.enter()
-                } else {
-                    ConfigOutcome::Pending
-                };
-                return self.apply_config_outcome(outcome);
-            }
-            KeyCode::Char(c) => {
-                if let Overlay::Config(config) = &mut self.overlay {
-                    config.on_char(c);
-                }
-            }
-            _ => {}
-        }
-        Vec::new()
     }
 
     pub(crate) fn on_ask_picker_key(&mut self, key: KeyEvent) -> Vec<Op> {

@@ -1,4 +1,6 @@
-use goat_command::{Command, CommandEffect, CommandInvocation};
+use goat_command::{Command, CommandEffect, CommandInvocation, Session};
+
+use crate::config::open_config;
 
 pub struct Provider;
 
@@ -11,11 +13,7 @@ impl Command for Provider {
         "manage model providers"
     }
 
-    fn run(
-        &self,
-        _invocation: CommandInvocation,
-        _session: &mut dyn goat_command::Session,
-    ) -> CommandEffect {
-        CommandEffect::OpenConfig
+    fn run(&self, _invocation: CommandInvocation, session: &mut dyn Session) -> CommandEffect {
+        open_config(session)
     }
 }

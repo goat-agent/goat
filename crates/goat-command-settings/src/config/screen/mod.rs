@@ -9,11 +9,11 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::{
+use goat_command::{
+    Theme,
     layout::{OVERLAY_CHROME, OVERLAY_W},
     overlay::{centered_rect, clamp_u16, hint_line, overlay_frame, overlay_layout, selection_row},
     symbols,
-    theme::Theme,
 };
 
 use render::{
@@ -23,7 +23,7 @@ use state::{Field, InputStage, Row, RowKind, Section};
 
 pub use state::{ConfigOutcome, StageKind};
 
-pub struct Config {
+pub struct ConfigScreen {
     section: Section,
     providers: Vec<AccountEntry>,
     cursor: usize,
@@ -35,7 +35,7 @@ pub struct Config {
     error: Option<String>,
 }
 
-impl Config {
+impl ConfigScreen {
     pub fn new(
         providers: Vec<AccountEntry>,
         dark_theme: bool,
@@ -679,11 +679,165 @@ impl Config {
     }
 }
 
+impl ConfigScreen {
+    fn apply_outcome(
+        &mut self,
+        outcome: ConfigOutcome,
+        session: &mut dyn goat_command::Session,
+    ) -> goat_command::ScreenOutcome {
+        use goat_command::{CommandEffect, ScreenOutcome};
+        match outcome {
+            ConfigOutcome::Pending => ScreenOutcome::Continue,
+            ConfigOutcome::AddAccount {
+                provider,
+                name,
+                credential,
+            } => ScreenOutcome::Effect(CommandEffect::Dispatch(vec![
+                goat_protocol::Op::AddAccount {
+                    provider,
+                    name,
+                    credential,
+                },
+            ])),
+            ConfigOutcome::RemoveAccount { provider, name } => {
+                ScreenOutcome::Effect(CommandEffect::Dispatch(vec![
+                    goat_protocol::Op::RemoveAccount { provider, name },
+                ]))
+            }
+            ConfigOutcome::SetTheme { dark } => {
+                session.settings().set_theme(if dark {
+                    goat_command::Theme::dark()
+                } else {
+                    goat_command::Theme::light()
+                });
+                ScreenOutcome::Continue
+            }
+            ConfigOutcome::SetMouseCapture { enabled } => {
+                session.settings().set_mouse_capture(enabled);
+                ScreenOutcome::Continue
+            }
+            ConfigOutcome::SetComputerUse { enabled } => {
+                session.settings().set_computer_use(enabled);
+                ScreenOutcome::Continue
+            }
+            ConfigOutcome::SetBrowser { enabled } => {
+                session.settings().set_browser(enabled);
+                ScreenOutcome::Continue
+            }
+        }
+    }
+}
+
+impl goat_command::Screen for ConfigScreen {
+    fn placement(&self) -> goat_command::Placement {
+        goat_command::Placement::Overlay
+    }
+
+    fn captures_text(&self) -> bool {
+        true
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        ConfigScreen::render(self, frame, area, *theme);
+    }
+
+    fn handle_input(
+        &mut self,
+        event: &crossterm::event::Event,
+        session: &mut dyn goat_command::Session,
+    ) -> goat_command::InputOutcome {
+        use crossterm::event::{Event as InputEvent, KeyCode};
+        use goat_command::{InputOutcome, ScreenOutcome};
+        if let InputEvent::Paste(text) = event {
+            for ch in text.chars() {
+                self.on_char(ch);
+            }
+            return InputOutcome::Handled(ScreenOutcome::Continue);
+        }
+        let InputEvent::Key(key) = event else {
+            return InputOutcome::Ignored;
+        };
+        if goat_command::keymap::ctrl_key(key).is_some() {
+            return InputOutcome::Handled(if goat_command::keymap::ctrl_key(key) == Some('c') {
+                ScreenOutcome::Close
+            } else {
+                ScreenOutcome::Continue
+            });
+        }
+        let outcome = match key.code {
+            KeyCode::Esc => {
+                self.cancel_stage();
+                if matches!(self.stage_kind(), StageKind::List) {
+                    ScreenOutcome::Close
+                } else {
+                    ScreenOutcome::Continue
+                }
+            }
+            KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
+                self.tab();
+                ScreenOutcome::Continue
+            }
+            KeyCode::Up => {
+                self.move_up();
+                ScreenOutcome::Continue
+            }
+            KeyCode::Down => {
+                self.move_down();
+                ScreenOutcome::Continue
+            }
+            KeyCode::Backspace => {
+                if matches!(self.stage_kind(), StageKind::List) {
+                    let outcome = self.remove_selected();
+                    self.apply_outcome(outcome, session)
+                } else {
+                    self.backspace();
+                    ScreenOutcome::Continue
+                }
+            }
+            KeyCode::Delete => {
+                let outcome = self.remove_selected();
+                self.apply_outcome(outcome, session)
+            }
+            KeyCode::Enter => {
+                let outcome = self.enter();
+                self.apply_outcome(outcome, session)
+            }
+            KeyCode::Char(ch) => {
+                self.on_char(ch);
+                ScreenOutcome::Continue
+            }
+            _ => ScreenOutcome::Continue,
+        };
+        InputOutcome::Handled(outcome)
+    }
+
+    fn on_event(
+        &mut self,
+        event: &goat_protocol::Event,
+        _session: &mut dyn goat_command::Session,
+    ) -> goat_command::ScreenOutcome {
+        match event {
+            goat_protocol::Event::AccountsChanged { providers } => {
+                self.set_providers(providers.clone());
+            }
+            goat_protocol::Event::LoginStatus {
+                message, done, ok, ..
+            } => match (*done, *ok) {
+                (false, _) => self.set_account_status(message.clone()),
+                (true, true) => self.cancel_stage(),
+                (true, false) => self.set_error(message.clone()),
+            },
+            _ => {}
+        }
+        goat_command::ScreenOutcome::Continue
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use goat_protocol::{AccountEntry, AccountInfo, AuthMethod, LoginCredential};
 
-    use super::{Config, ConfigOutcome, Field};
+    use super::{ConfigOutcome, ConfigScreen, Field};
 
     fn make_providers() -> Vec<AccountEntry> {
         vec![
@@ -719,7 +873,7 @@ mod tests {
 
     #[test]
     fn oauth_choice_then_browser_flow() {
-        let mut config = Config::new(oauth_provider(), true, true, false, false);
+        let mut config = ConfigScreen::new(oauth_provider(), true, true, false, false);
         config.enter();
         assert!(matches!(config.stage, super::InputStage::Choosing { .. }));
         config.move_down();
@@ -745,7 +899,7 @@ mod tests {
 
     #[test]
     fn oauth_choice_api_key_branch() {
-        let mut config = Config::new(oauth_provider(), true, true, false, false);
+        let mut config = ConfigScreen::new(oauth_provider(), true, true, false, false);
         config.enter();
         config.enter();
         assert!(matches!(
@@ -759,7 +913,7 @@ mod tests {
 
     #[test]
     fn tab_switches_section() {
-        let mut config = Config::new(make_providers(), true, true, false, false);
+        let mut config = ConfigScreen::new(make_providers(), true, true, false, false);
         assert_eq!(config.section, super::Section::Providers);
         config.tab();
         assert_eq!(config.section, super::Section::Appearance);
@@ -769,7 +923,7 @@ mod tests {
 
     #[test]
     fn move_down_skips_provider_headers() {
-        let config_rows = Config::new(make_providers(), true, true, false, false);
+        let config_rows = ConfigScreen::new(make_providers(), true, true, false, false);
         assert_eq!(config_rows.cursor, 1);
         let mut config = config_rows;
         config.move_down();
@@ -780,7 +934,7 @@ mod tests {
 
     #[test]
     fn add_account_flow_api_key() {
-        let mut config = Config::new(make_providers(), true, true, false, false);
+        let mut config = ConfigScreen::new(make_providers(), true, true, false, false);
         config.move_down();
         let out = config.enter();
         assert!(matches!(out, ConfigOutcome::Pending));
@@ -810,7 +964,7 @@ mod tests {
 
     #[test]
     fn remove_account_row() {
-        let mut config = Config::new(make_providers(), true, true, false, false);
+        let mut config = ConfigScreen::new(make_providers(), true, true, false, false);
         let out = config.remove_selected();
         assert!(matches!(
             out,
@@ -821,7 +975,7 @@ mod tests {
 
     #[test]
     fn theme_toggle_in_appearance() {
-        let mut config = Config::new(make_providers(), true, true, false, false);
+        let mut config = ConfigScreen::new(make_providers(), true, true, false, false);
         config.tab();
         let out = config.enter();
         assert!(matches!(out, ConfigOutcome::SetTheme { dark: false }));
@@ -830,7 +984,7 @@ mod tests {
 
     #[test]
     fn backspace_clears_input() {
-        let mut config = Config::new(make_providers(), true, true, false, false);
+        let mut config = ConfigScreen::new(make_providers(), true, true, false, false);
         config.move_down();
         config.enter();
         for _ in 0.."default".len() {
@@ -848,7 +1002,7 @@ mod tests {
 
     #[test]
     fn tab_switches_field_in_adding() {
-        let mut config = Config::new(make_providers(), true, true, false, false);
+        let mut config = ConfigScreen::new(make_providers(), true, true, false, false);
         config.move_down();
         config.enter();
         if let super::InputStage::Adding { field, .. } = &config.stage {

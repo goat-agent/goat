@@ -7,7 +7,6 @@ pub enum CommandEffect {
     Dispatch(Vec<Op>),
     Submit { display: String, prompt: String },
     Notify(NotifyKind, String),
-    OpenConfig,
     ShowHelp,
     ClearConversation,
     CompactConversation(Option<String>),

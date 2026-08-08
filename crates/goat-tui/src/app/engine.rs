@@ -282,25 +282,12 @@ impl App {
                 self.dirty = true;
             }
             EngineEvent::AccountsChanged { providers } => {
-                if let Overlay::Config(config) = &mut self.overlay {
-                    config.set_providers(providers.clone());
-                }
                 self.account_entries = providers;
             }
             EngineEvent::SkillsChanged { skills } => {
                 self.commands.set_skills(&skills);
             }
-            EngineEvent::LoginStatus {
-                message, done, ok, ..
-            } => {
-                if let Overlay::Config(config) = &mut self.overlay {
-                    match (done, ok) {
-                        (false, _) => config.set_account_status(message),
-                        (true, true) => config.cancel_stage(),
-                        (true, false) => config.set_error(message),
-                    }
-                }
-            }
+            EngineEvent::LoginStatus { .. } => {}
             EngineEvent::TextDelta { id, chunk } => {
                 self.turn.thinking = false;
                 if self.subagent_index(id).is_none() {
