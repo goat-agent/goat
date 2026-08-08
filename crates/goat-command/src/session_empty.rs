@@ -228,6 +228,7 @@ impl Session for EmptySession {
             thread_id: None,
             daemon: None,
             model: self.current_model.clone(),
+            models_loaded: !self.models.is_empty(),
             mode: self.mode,
             plan_path: None,
             cwd: String::new(),

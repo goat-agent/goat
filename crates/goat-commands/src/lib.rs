@@ -5,6 +5,7 @@ pub use goat_command::{
     ParameterValue,
 };
 use goat_command::{CommandInvocation, ParsedValue, parse_line};
+pub use goat_command_settings::AccountScreen;
 use goat_protocol::{
     SkillBranchInfo, SkillCommandShape, SkillInfo, SkillParameterInfo, SkillParameterValue,
 };

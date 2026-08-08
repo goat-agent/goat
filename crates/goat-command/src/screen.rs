@@ -72,6 +72,7 @@ pub struct SessionSnapshot {
     pub thread_id: Option<i64>,
     pub daemon: Option<Identity>,
     pub model: Option<ModelTarget>,
+    pub models_loaded: bool,
     pub mode: Mode,
     pub plan_path: Option<String>,
     pub cwd: String,

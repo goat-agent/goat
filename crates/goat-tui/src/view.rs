@@ -98,7 +98,6 @@ enum Panel {
         composer_focused: bool,
     },
     Commands,
-    Account,
     Files,
     Runs(usize),
 }
@@ -120,7 +119,6 @@ fn active_panel(app: &App) -> Panel {
             _ => Panel::None,
         },
         Overlay::Commands(_) => Panel::Commands,
-        Overlay::Account(_) => Panel::Account,
         Overlay::Files(_) => Panel::Files,
         Overlay::Runs(cursor) => Panel::Runs(*cursor),
         _ => Panel::None,
@@ -144,10 +142,6 @@ fn panel_desired_height(app: &App, panel: &Panel) -> u16 {
         Panel::Screen { height, .. } => *height,
         Panel::Commands => match app.overlay() {
             Overlay::Commands(menu) => menu.desired_height(),
-            _ => 0,
-        },
-        Panel::Account => match app.overlay() {
-            Overlay::Account(menu) => menu.desired_height(),
             _ => 0,
         },
         Panel::Files => match app.overlay() {
@@ -245,20 +239,6 @@ fn render_hint(frame: &mut Frame, area: Rect, app: &App, theme: Theme, panel: &P
             }),
         ),
         Panel::Runs(_) => render_run_footer(frame, area, theme),
-        Panel::Account => frame.render_widget(
-            Paragraph::new(overlay::hint_line(
-                &[
-                    (symbols::key::ARROWS_UPDOWN, "navigate"),
-                    (symbols::key::ENTER, "select"),
-                    (symbols::key::ESC, "cancel"),
-                ],
-                theme,
-            )),
-            area.inner(Margin {
-                horizontal: PAD_X,
-                vertical: 0,
-            }),
-        ),
         Panel::None | Panel::Files => {
             if footer_visible(app) {
                 render_footer(frame, area, app, theme);
@@ -271,7 +251,6 @@ fn is_full_body_overlay(app: &App) -> bool {
     match app.overlay() {
         Overlay::Screen(screen) => matches!(screen.placement(), Placement::Overlay),
         Overlay::Config(_)
-        | Overlay::Model(_)
         | Overlay::Thread(_)
         | Overlay::Rewind(_)
         | Overlay::Usage
@@ -290,7 +269,6 @@ fn fit_stack(panel_want: u16, preview_want: u16, budget: u16) -> (u16, u16) {
 fn render_full_body_overlay(frame: &mut Frame, body: Rect, app: &mut App, theme: Theme) {
     match app.overlay() {
         Overlay::Config(config) => config.render(frame, body, theme),
-        Overlay::Model(picker) => picker.render(frame, body, theme),
         Overlay::Thread(picker) => picker.render(frame, body, theme),
         Overlay::Rewind(picker) => picker.render(frame, body, theme),
         Overlay::Usage => {
@@ -327,11 +305,6 @@ fn render_panel(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme, pane
         }
         Panel::Commands => {
             if let Overlay::Commands(menu) = app.overlay() {
-                menu.render(frame, area, theme);
-            }
-        }
-        Panel::Account => {
-            if let Overlay::Account(menu) = app.overlay() {
                 menu.render(frame, area, theme);
             }
         }

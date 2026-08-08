@@ -18,9 +18,6 @@ impl App {
                 self.usage.turn_tokens = 0;
             }
             EngineEvent::ModelListChanged { entries } => {
-                if let Overlay::Model(picker) = &mut self.overlay {
-                    picker.set_entries(entries.clone());
-                }
                 self.models = entries;
                 self.models_loaded = true;
             }

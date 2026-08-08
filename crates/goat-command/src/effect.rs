@@ -7,8 +7,6 @@ pub enum CommandEffect {
     Dispatch(Vec<Op>),
     Submit { display: String, prompt: String },
     Notify(NotifyKind, String),
-    OpenModelPicker,
-    SelectModelNamed(String),
     OpenThreadPicker,
     ResumeIndex(usize),
     OpenRewind,

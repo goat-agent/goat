@@ -10,7 +10,7 @@ use goat_command::Command;
 
 pub use config::Config;
 pub use effort::Effort;
-pub use model::Model;
+pub use model::{AccountScreen, Model, ModelScreen};
 pub use provider::Provider;
 pub use search::Search;
 pub use status::Status;

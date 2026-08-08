@@ -18,14 +18,13 @@ use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::{
-    account::AccountMenu,
     ask::AskPicker,
     command::{CommandMenu, CommandMenuContext, RuntimeChoice, RuntimeChoiceGroup},
     composer::Composer,
     config::{Config, ConfigOutcome},
     files::FileMenu,
     highlight::SyntectHighlighter,
-    picker::{Picker, RewindPicker, ThreadPicker},
+    picker::{RewindPicker, ThreadPicker},
     symbols,
     theme::Theme,
     transcript::Transcript,
@@ -86,8 +85,6 @@ impl RunTarget {
 pub(crate) enum Overlay {
     None,
     Screen(Box<dyn Screen>),
-    Model(Picker),
-    Account(AccountMenu),
     Thread(ThreadPicker),
     Rewind(RewindPicker),
     Config(Config),
@@ -425,11 +422,6 @@ impl App {
                     return ops;
                 }
                 match &mut self.overlay {
-                    Overlay::Model(picker) => {
-                        for ch in text.chars() {
-                            picker.on_char(ch);
-                        }
-                    }
                     Overlay::Config(config) => {
                         for ch in text.chars() {
                             config.on_char(ch);
@@ -544,15 +536,6 @@ impl App {
                 self.push_toast(kind, message);
                 Vec::new()
             }
-            CommandEffect::OpenModelPicker => {
-                self.overlay = Overlay::Model(Picker::new(
-                    self.models.clone(),
-                    self.model.clone(),
-                    self.models.is_empty() && !self.models_loaded,
-                ));
-                Vec::new()
-            }
-            CommandEffect::SelectModelNamed(query) => self.select_model_named(&query),
             CommandEffect::TogglePlanMode => {
                 let mode = self.mode.toggled();
                 self.mode = mode;
@@ -659,9 +642,12 @@ impl App {
     }
 
     fn handle_screen_input(&mut self, event: &CtEvent) -> Option<Vec<Op>> {
-        let Overlay::Screen(mut screen) = std::mem::replace(&mut self.overlay, Overlay::None)
-        else {
-            return None;
+        let mut screen = match std::mem::replace(&mut self.overlay, Overlay::None) {
+            Overlay::Screen(screen) => screen,
+            overlay => {
+                self.overlay = overlay;
+                return None;
+            }
         };
         match screen.handle_input(event, self) {
             InputOutcome::Ignored => {
@@ -673,18 +659,24 @@ impl App {
     }
 
     fn tick_screen(&mut self) -> Vec<Op> {
-        let Overlay::Screen(mut screen) = std::mem::replace(&mut self.overlay, Overlay::None)
-        else {
-            return Vec::new();
+        let mut screen = match std::mem::replace(&mut self.overlay, Overlay::None) {
+            Overlay::Screen(screen) => screen,
+            overlay => {
+                self.overlay = overlay;
+                return Vec::new();
+            }
         };
         let outcome = screen.tick();
         self.apply_screen_outcome(screen, outcome)
     }
 
     fn notify_screen(&mut self, event: &EngineEvent) -> Vec<Op> {
-        let Overlay::Screen(mut screen) = std::mem::replace(&mut self.overlay, Overlay::None)
-        else {
-            return Vec::new();
+        let mut screen = match std::mem::replace(&mut self.overlay, Overlay::None) {
+            Overlay::Screen(screen) => screen,
+            overlay => {
+                self.overlay = overlay;
+                return Vec::new();
+            }
         };
         let outcome = screen.on_event(event);
         self.apply_screen_outcome(screen, outcome)
@@ -973,42 +965,6 @@ impl App {
             .collect()
     }
 
-    pub(crate) fn select_model_named(&mut self, query: &str) -> Vec<Op> {
-        let needle = query.trim().to_lowercase();
-        let exact: Vec<&ModelEntry> = self
-            .models
-            .iter()
-            .filter(|entry| {
-                entry.model.to_lowercase() == needle
-                    || format!("{}/{}", entry.provider, entry.model).to_lowercase() == needle
-            })
-            .collect();
-        if let [entry] = exact.as_slice() {
-            match entry.accounts.as_slice() {
-                [account] => {
-                    return vec![Op::SelectModel {
-                        target: account.target.clone(),
-                    }];
-                }
-                [] => {}
-                accounts => {
-                    self.overlay = Overlay::Account(AccountMenu::new(accounts.to_vec()));
-                    return Vec::new();
-                }
-            }
-        }
-        let mut picker = Picker::new(
-            self.models.clone(),
-            self.model.clone(),
-            self.models.is_empty() && !self.models_loaded,
-        );
-        for ch in query.trim().chars() {
-            picker.on_char(ch);
-        }
-        self.overlay = Overlay::Model(picker);
-        Vec::new()
-    }
-
     pub(crate) fn update_command_menu(&mut self) {
         if self.composer.shell() {
             if matches!(self.overlay, Overlay::Commands(_) | Overlay::Files(_)) {
@@ -1105,9 +1061,7 @@ impl App {
     pub(crate) fn overlay_captures_text(&self) -> bool {
         match &self.overlay {
             Overlay::Screen(screen) => screen.captures_text(),
-            Overlay::Model(_) | Overlay::Account(_) | Overlay::Config(_) | Overlay::Ask(_, _) => {
-                true
-            }
+            Overlay::Config(_) | Overlay::Ask(_, _) => true,
             Overlay::Plan(sheet) => sheet.rejecting(),
             _ => false,
         }
@@ -1978,6 +1932,7 @@ impl Session for App {
             thread_id: self.thread_id,
             daemon: self.daemon.clone(),
             model: self.model.clone(),
+            models_loaded: self.models_loaded,
             mode: self.mode,
             plan_path: self.plan_path.clone(),
             cwd: self.cwd.clone(),
@@ -3041,7 +2996,7 @@ mod tests {
         app.composer.insert_str("/model");
         let ops = app.submit();
         assert!(ops.is_empty());
-        assert!(matches!(app.overlay, Overlay::Model(_)));
+        assert!(matches!(app.overlay, Overlay::Screen(_)));
     }
 
     #[test]
@@ -3093,7 +3048,7 @@ mod tests {
         app.submit();
         let ops = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
         assert!(ops.is_empty());
-        assert!(matches!(app.overlay, Overlay::Model(_)));
+        assert!(matches!(app.overlay, Overlay::Screen(_)));
     }
 
     #[test]
@@ -3254,7 +3209,7 @@ mod tests {
         });
         let ops = app.dispatch_slash_command("/model claude");
         assert!(matches!(ops.as_slice(), [Op::SelectModel { target }] if target.model == "claude"));
-        assert!(!matches!(app.overlay, Overlay::Model(_)));
+        assert!(matches!(app.overlay, Overlay::None));
     }
 
     #[test]
@@ -3312,7 +3267,7 @@ mod tests {
         let ops = app.on_key(press(KeyCode::Enter, KeyModifiers::NONE));
         assert!(ops.is_empty(), "account choice defers selection");
         assert!(
-            matches!(app.overlay, Overlay::Account(_)),
+            matches!(app.overlay, Overlay::Screen(_)),
             "expected light account panel, not a heavy picker"
         );
         app.on_key(press(KeyCode::Down, KeyModifiers::NONE));
