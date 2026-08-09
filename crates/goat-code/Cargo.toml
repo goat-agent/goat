@@ -36,6 +36,8 @@ goat-agent-command-skill = { workspace = true }
 goat-agent-tool-fs = { workspace = true }
 goat-agent-tool-shell = { workspace = true }
 goat-agent-tool-skill = { workspace = true }
+goat-channel = { workspace = true }
+goat-integration = { workspace = true }
 goat-channel-discord = { workspace = true }
 goat-channel-slack   = { workspace = true }
 goat-integration-asana = { workspace = true }

@@ -854,3 +854,45 @@ fn print_pairing_qr(info: &goat_client::PairingInfo) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    const CHANNELS: &[&str] = &["discord", "slack"];
+
+    const INTEGRATIONS: &[&str] = &[
+        "asana",
+        "atlassian",
+        "datadog",
+        "gcalendar",
+        "gdrive",
+        "github",
+        "gmail",
+        "intercom",
+        "langfuse",
+        "linear",
+        "notion",
+        "pagerduty",
+        "posthog",
+        "sentry",
+        "slack",
+        "stripe",
+        "supabase",
+        "tiro",
+        "vercel",
+    ];
+
+    #[test]
+    fn every_linked_leaf_reaches_the_inventory() {
+        let integrations = goat_integration::registry_from_inventory();
+        for id in INTEGRATIONS {
+            assert!(
+                integrations.contains_key(*id),
+                "{id} is missing from the integration registry; \
+                 add `use goat_integration_{id} as _;` to this file"
+            );
+        }
+        assert_eq!(integrations.len(), INTEGRATIONS.len());
+
+        assert_eq!(goat_channel::registered_ids(), CHANNELS);
+    }
+}
