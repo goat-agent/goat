@@ -11,3 +11,6 @@ src/.omc/
 .claude/
 .claire/
 /docs/
+.omo/
+/local/
+daemon-design-trimmed.md

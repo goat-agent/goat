@@ -278,6 +278,7 @@ fn plan_decision_input(
         display: Some(display),
         attachments: Vec::new(),
         checkpoint: false,
+        kind: crate::UserInputKind::PlanDecision,
     })
 }
 
@@ -316,6 +317,7 @@ async fn pump_op(
                     display,
                     attachments,
                     checkpoint: true,
+                    kind: crate::UserInputKind::User,
                 });
             PumpAction::Continue
         }
@@ -336,6 +338,7 @@ async fn pump_op(
                         id: queued.id,
                         text: queued.text,
                         display: queued.display,
+                        system: false,
                         attachments: queued.attachments,
                     })
                     .await;
@@ -404,6 +407,7 @@ pub(crate) async fn handle_wake(
             display: Some("(background activity)".to_owned()),
             attachments: Vec::new(),
             checkpoint: false,
+            kind: crate::UserInputKind::Wake,
         },
         std::collections::VecDeque::new(),
         state,
@@ -430,6 +434,7 @@ pub(crate) async fn handle_turn(
             display,
             attachments,
             checkpoint: true,
+            kind: crate::UserInputKind::User,
         },
         std::collections::VecDeque::new(),
         state,
@@ -780,6 +785,7 @@ async fn run_one_turn(
     let draft = input.display.as_deref().unwrap_or(&text).to_owned();
     let attachments = input.attachments;
     let checkpoint = input.checkpoint;
+    let kind = input.kind;
     let Some(resolved) = state.target.clone() else {
         emit_task_error(
             ctx,
@@ -817,6 +823,7 @@ async fn run_one_turn(
         &resolved,
         &mut state.conversation_id,
         checkpoint,
+        kind,
     )
     .await;
     bind_plan_path(ctx, state, ids.stored_conversation, &text).await;
@@ -841,6 +848,7 @@ async fn run_one_turn(
             id,
             text: text.clone(),
             display: input.display.clone(),
+            system: kind.is_system(),
             attachments: attachments.clone(),
         })
         .await

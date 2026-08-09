@@ -172,10 +172,13 @@ impl LiveTranscript {
             Event::UserMessage {
                 text,
                 display,
+                system,
                 attachments,
                 ..
             } => self.entries.push(TranscriptEntry::User {
                 text: display.clone().unwrap_or_else(|| text.clone()),
+                display: display.clone(),
+                system: *system,
                 attachments: attachments.clone(),
             }),
             Event::TextDelta { id, chunk } => self.append_text(*id, chunk),
@@ -829,6 +832,8 @@ mod tests {
             },
             entries: vec![goat_protocol::TranscriptEntry::User {
                 text: "restored".to_owned(),
+                display: None,
+                system: false,
                 attachments: Vec::new(),
             }],
             context_tokens: Some(1),
@@ -873,6 +878,7 @@ mod tests {
             id: TaskId(1),
             text: "hello".to_owned(),
             display: None,
+            system: false,
             attachments: Vec::new(),
         });
         inner.record_and_fanout(Event::TextDone {
@@ -917,6 +923,7 @@ mod tests {
                 id: TaskId(1),
                 text: "hello".to_owned(),
                 display: None,
+                system: false,
                 attachments: Vec::new(),
             },
             Event::TextDelta {
@@ -935,19 +942,27 @@ mod tests {
         let expected = [
             vec![goat_protocol::TranscriptEntry::User {
                 text: "hello".to_owned(),
+                display: None,
+                system: false,
                 attachments: Vec::new(),
             }],
             vec![goat_protocol::TranscriptEntry::User {
                 text: "hello".to_owned(),
+                display: None,
+                system: false,
                 attachments: Vec::new(),
             }],
             vec![goat_protocol::TranscriptEntry::User {
                 text: "hello".to_owned(),
+                display: None,
+                system: false,
                 attachments: Vec::new(),
             }],
             vec![
                 goat_protocol::TranscriptEntry::User {
                     text: "hello".to_owned(),
+                    display: None,
+                    system: false,
                     attachments: Vec::new(),
                 },
                 goat_protocol::TranscriptEntry::Assistant {

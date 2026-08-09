@@ -2726,7 +2726,7 @@ mod tests {
             ("_sqlx_migrations", 23_i64),
             ("_sqlx_migrations_agent", 21),
             ("_sqlx_migrations_memory", 2),
-            ("_sqlx_migrations_code", 3),
+            ("_sqlx_migrations_code", 4),
             ("_sqlx_migrations_proxy", 1),
         ] {
             let sql = sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}"));

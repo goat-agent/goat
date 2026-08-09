@@ -216,6 +216,28 @@ pub(crate) struct UserInput {
     pub(crate) display: Option<String>,
     pub(crate) attachments: Vec<goat_protocol::InputAttachment>,
     pub(crate) checkpoint: bool,
+    pub(crate) kind: UserInputKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UserInputKind {
+    User,
+    Wake,
+    PlanDecision,
+}
+
+impl UserInputKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Wake => "wake",
+            Self::PlanDecision => "plan_decision",
+        }
+    }
+
+    pub(crate) fn is_system(self) -> bool {
+        !matches!(self, Self::User)
+    }
 }
 
 pub(crate) type SteeringQueue = std::sync::Mutex<std::collections::VecDeque<UserInput>>;
@@ -2006,6 +2028,138 @@ mod tests {
                     entry,
                     goat_protocol::TranscriptEntry::User { text, .. } if text == "hello there"
                 )));
+                return;
+            }
+        }
+        panic!("expected ConversationRestored");
+    }
+
+    #[tokio::test]
+    async fn resume_classifies_stored_messages_by_kind() {
+        let reminder = crate::prompt::LANGUAGE_REMINDER;
+        let provider = MockProvider {
+            id: "mock".to_owned(),
+            reply: "ok".to_owned(),
+            delay_ms: 0,
+        };
+        let registry = Registry::from_providers(vec![Arc::new(provider)]);
+        let store = Store::open_in_memory().await.unwrap();
+        let credentials =
+            CredentialStore::new(std::env::temp_dir().join("goat-agent-resume-kind.json"));
+        let agent = CodingEngine::new(
+            registry,
+            store.clone(),
+            credentials,
+            test_user_providers(),
+            Some(target("mock")),
+            std::env::temp_dir(),
+            None,
+        )
+        .await;
+        let session = Session::spawn(agent);
+        let (ops, mut events, _handle) = session.into_parts();
+
+        ops.send(Op::SubmitMessage {
+            id: TaskId(1),
+            text: "hello".to_owned(),
+            display: None,
+            attachments: Vec::new(),
+        })
+        .await
+        .unwrap();
+        drain_until_task_done(&mut events).await;
+        let tid = store
+            .get_conversation(1)
+            .await
+            .unwrap()
+            .expect("thread 1 created by the submit")
+            .id;
+        let tool_result_body = serde_json::json!([
+            {"type": "tool_result", "tool_use_id": "x", "content": [{"type": "text", "text": "out"}], "is_error": false},
+            {"type": "text", "text": reminder},
+        ])
+        .to_string();
+        let wake_body = serde_json::json!([
+            {"type": "text", "text": "<environment-notice>\nsome background output"},
+        ])
+        .to_string();
+        let plan_body = serde_json::json!([
+            {"type": "text", "text": "The plan at /p is approved. Implement it now."},
+        ])
+        .to_string();
+        let user_body = serde_json::json!([{"type": "text", "text": "real user text"}]).to_string();
+        for (role, kind, body) in [
+            ("user", None, tool_result_body.as_str()),
+            ("user", Some("wake"), wake_body.as_str()),
+            ("user", Some("plan_decision"), plan_body.as_str()),
+            ("user", Some("user"), user_body.as_str()),
+        ] {
+            store
+                .create_message(goat_code_store::NewMessage {
+                    conversation_id: tid,
+                    turn_id: None,
+                    role: role.to_owned(),
+                    kind: kind.map(str::to_owned),
+                    body: body.to_owned(),
+                    created_at: crate::persist::now_ms(),
+                })
+                .await
+                .unwrap();
+        }
+
+        ops.send(Op::Resume {
+            conversation_id: tid,
+        })
+        .await
+        .unwrap();
+        while let Some(event) = events.recv().await {
+            if let Event::ConversationRestored { entries, .. } = event {
+                let user_texts: Vec<&str> = entries
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        goat_protocol::TranscriptEntry::User { text, system, .. } => {
+                            (!*system).then_some(text.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert!(
+                    user_texts.iter().all(|t| !t.contains("[Reminder")),
+                    "reminder block must not appear: {user_texts:?}"
+                );
+                assert!(
+                    user_texts.iter().all(|t| !t.contains("tool_use_id")),
+                    "tool-result must not appear as user: {user_texts:?}"
+                );
+                assert!(
+                    user_texts.contains(&"real user text"),
+                    "real user text kept: {user_texts:?}"
+                );
+                let system: Vec<(&str, &str)> = entries
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        goat_protocol::TranscriptEntry::User {
+                            text,
+                            display,
+                            system,
+                            ..
+                        } => (*system).then_some((text.as_str(), display.as_deref().unwrap_or(""))),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(
+                    system
+                        .iter()
+                        .any(|(t, d)| t.contains("<environment-notice>")
+                            && *d == "(background activity)"),
+                    "wake entry: {system:?}"
+                );
+                assert!(
+                    system
+                        .iter()
+                        .any(|(t, d)| t.contains("is approved") && *d == "(plan approved)"),
+                    "plan entry: {system:?}"
+                );
                 return;
             }
         }

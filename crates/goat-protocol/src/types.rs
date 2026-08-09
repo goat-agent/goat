@@ -410,6 +410,10 @@ pub struct RewindDraft {
 pub enum TranscriptEntry {
     User {
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        system: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<InputAttachment>,
     },

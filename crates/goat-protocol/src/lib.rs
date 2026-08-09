@@ -152,12 +152,43 @@ mod tests {
     fn transcript_entry_user_serializes_with_type() {
         let entry = TranscriptEntry::User {
             text: "hello".to_owned(),
+            display: None,
+            system: false,
             attachments: Vec::new(),
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert_eq!(json, r#"{"type":"User","text":"hello"}"#);
         let back: TranscriptEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(back, entry);
+    }
+
+    #[test]
+    fn transcript_entry_user_system_roundtrip_and_legacy_default() {
+        let entry = TranscriptEntry::User {
+            text: "wake".to_owned(),
+            display: Some("(background activity)".to_owned()),
+            system: true,
+            attachments: Vec::new(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"User","text":"wake","display":"(background activity)","system":true}"#
+        );
+        let back: TranscriptEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, entry);
+
+        let legacy: TranscriptEntry =
+            serde_json::from_str(r#"{"type":"User","text":"old"}"#).unwrap();
+        assert_eq!(
+            legacy,
+            TranscriptEntry::User {
+                text: "old".to_owned(),
+                display: None,
+                system: false,
+                attachments: Vec::new(),
+            }
+        );
     }
 
     #[test]

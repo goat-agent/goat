@@ -2269,6 +2269,63 @@ mod tests {
             .count()
     }
 
+    fn system_lines(app: &App) -> usize {
+        app.transcript()
+            .items
+            .iter()
+            .filter(|item| matches!(item, crate::transcript::Item::System { .. }))
+            .count()
+    }
+
+    #[test]
+    fn system_user_message_renders_as_marker_not_bubble() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        app.on_engine(EngineEvent::UserMessage {
+            id: TaskId(7),
+            text: "The plan at /p is approved. Implement it now.".to_owned(),
+            display: Some("(plan approved)".to_owned()),
+            system: true,
+            attachments: Vec::new(),
+        });
+        assert_eq!(
+            user_lines(&app),
+            0,
+            "system input must not be a user bubble"
+        );
+        assert_eq!(system_lines(&app), 1, "system input must be a marker");
+    }
+
+    #[test]
+    fn restored_system_entry_renders_as_marker_not_bubble() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        app.on_engine(EngineEvent::ConversationRestored {
+            target: goat_protocol::ModelTarget {
+                provider: "p".to_owned(),
+                model: "m".to_owned(),
+                account: "a".to_owned(),
+                effort: None,
+            },
+            context_tokens: None,
+            compaction_threshold: None,
+            entries: vec![
+                goat_protocol::TranscriptEntry::User {
+                    text: "real".to_owned(),
+                    display: None,
+                    system: false,
+                    attachments: Vec::new(),
+                },
+                goat_protocol::TranscriptEntry::User {
+                    text: "<environment-notice>\nx".to_owned(),
+                    display: Some("(background activity)".to_owned()),
+                    system: true,
+                    attachments: Vec::new(),
+                },
+            ],
+        });
+        assert_eq!(user_lines(&app), 1, "real user text is a bubble");
+        assert_eq!(system_lines(&app), 1, "system entry is a marker");
+    }
+
     fn submit_id(ops: &[Op]) -> TaskId {
         match ops {
             [Op::SubmitMessage { id, .. }] => *id,
@@ -2288,6 +2345,7 @@ mod tests {
             id,
             text: "hello".to_owned(),
             display: None,
+            system: false,
             attachments: Vec::new(),
         });
         assert_eq!(user_lines(&app), 1);
@@ -2305,6 +2363,7 @@ mod tests {
             id: TaskId(42),
             text: "from another window".to_owned(),
             display: None,
+            system: false,
             attachments: Vec::new(),
         });
         assert_eq!(user_lines(&app), 1);
@@ -2320,6 +2379,7 @@ mod tests {
             id: TaskId(2),
             text: "mid turn".to_owned(),
             display: None,
+            system: false,
             attachments: Vec::new(),
         });
         assert_eq!(user_lines(&app), 1);
@@ -2351,6 +2411,7 @@ mod tests {
             id,
             text: "hello".to_owned(),
             display: None,
+            system: false,
             attachments: Vec::new(),
         });
         app.on_engine(EngineEvent::TaskStarted { id });
@@ -3196,6 +3257,8 @@ mod tests {
             entries: vec![
                 TranscriptEntry::User {
                     text: "hello".to_owned(),
+                    display: None,
+                    system: false,
                     attachments: Vec::new(),
                 },
                 TranscriptEntry::Assistant {
@@ -3243,6 +3306,7 @@ mod tests {
             id: top,
             text: "go".to_owned(),
             display: None,
+            system: false,
             attachments: Vec::new(),
         });
         app.on_engine(EngineEvent::ToolStarted {

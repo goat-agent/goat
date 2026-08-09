@@ -102,9 +102,11 @@ impl Tool for ProposePlanTool {
     }
 }
 
+pub const APPROVED_PREFIX: &str = "The plan at ";
+
 pub fn approved_input(path: &Path) -> String {
     format!(
-        "The plan at {} is approved. Implement it now. Re-read the file if you need the details.",
+        "{APPROVED_PREFIX}{} is approved. Implement it now. Re-read the file if you need the details.",
         path.display()
     )
 }

@@ -319,6 +319,8 @@ fn rebuild_entries(
                     }
                     None => entries.push(TranscriptEntry::User {
                         text: text.clone(),
+                        display: None,
+                        system: false,
                         attachments: Vec::new(),
                     }),
                 }
@@ -332,6 +334,10 @@ fn rebuild_entries(
             _ => continue,
         };
         let content = parse_content_blocks(&stored.body);
+        let is_tool_result_message = role == MessageRole::User
+            && content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { .. }));
         let uses: Vec<(&str, String)> = content
             .iter()
             .filter_map(|block| match block {
@@ -370,29 +376,51 @@ fn rebuild_entries(
             None
         };
         let mut group_index = 0usize;
+        let (system, display) = match stored.kind.as_deref() {
+            Some("wake") => (true, Some("(background activity)".to_owned())),
+            Some("plan_decision") => {
+                let first_text = content.iter().find_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                });
+                let label = if first_text
+                    .is_some_and(|text| text.starts_with(goat_tool_plan::APPROVED_PREFIX))
+                {
+                    "(plan approved)"
+                } else {
+                    "(plan rejected)"
+                };
+                (true, Some(label.to_owned()))
+            }
+            _ => (false, None),
+        };
         for block in &content {
             match block {
                 ContentBlock::Text { text } => match role {
-                    MessageRole::User => entries.push(TranscriptEntry::User {
-                        text: text.clone(),
-                        attachments: content
-                            .iter()
-                            .filter_map(|block| match block {
-                                ContentBlock::Image { media_type, data } => {
-                                    Some(goat_protocol::InputAttachment {
-                                        media_type: media_type.clone(),
-                                        data: data.clone(),
-                                        label: "image".to_owned(),
-                                    })
-                                }
-                                _ => None,
-                            })
-                            .collect(),
-                    }),
+                    MessageRole::User if !is_tool_result_message => {
+                        entries.push(TranscriptEntry::User {
+                            text: text.clone(),
+                            display: display.clone(),
+                            system,
+                            attachments: content
+                                .iter()
+                                .filter_map(|block| match block {
+                                    ContentBlock::Image { media_type, data } => {
+                                        Some(goat_protocol::InputAttachment {
+                                            media_type: media_type.clone(),
+                                            data: data.clone(),
+                                            label: "image".to_owned(),
+                                        })
+                                    }
+                                    _ => None,
+                                })
+                                .collect(),
+                        });
+                    }
+                    MessageRole::User | MessageRole::System => {}
                     MessageRole::Assistant => {
                         entries.push(TranscriptEntry::Assistant { text: text.clone() });
                     }
-                    MessageRole::System => {}
                 },
                 ContentBlock::ToolUse { id, name, input } => {
                     tool_seq += 1;
@@ -678,6 +706,7 @@ mod tests {
 
     fn stored(id: i64, turn_id: Option<i64>, role: &str, body: String) -> StoredMessage {
         StoredMessage {
+            kind: None,
             id,
             parent_message_id: None,
             turn_id,

@@ -127,6 +127,7 @@ pub(crate) async fn init_db_turn(
     target: &ModelTarget,
     conversation_id: &mut Option<i64>,
     checkpoint: bool,
+    kind: crate::UserInputKind,
 ) -> TurnIds {
     let title = if text.trim().is_empty() {
         attachments
@@ -153,6 +154,7 @@ pub(crate) async fn init_db_turn(
                 conversation_id: tid,
                 turn_id: None,
                 role: "user".to_owned(),
+                kind: Some(kind.as_str().to_owned()),
                 body,
                 created_at: now_ms(),
             })
@@ -218,7 +220,15 @@ pub(crate) async fn persist_message(
         MessageRole::Assistant => "assistant",
     };
     let tid = ids.stored_conversation?;
-    let Ok(body) = serde_json::to_string(&message.content) else {
+    let content: Vec<ContentBlock> = message
+        .content
+        .iter()
+        .filter(|block| {
+            !matches!(block, ContentBlock::Text { text } if text == crate::prompt::LANGUAGE_REMINDER)
+        })
+        .cloned()
+        .collect();
+    let Ok(body) = serde_json::to_string(&content) else {
         return None;
     };
     match ctx
@@ -227,6 +237,7 @@ pub(crate) async fn persist_message(
             conversation_id: tid,
             turn_id: ids.turn_db_id,
             role: role.to_owned(),
+            kind: None,
             body,
             created_at: now_ms(),
         })
@@ -255,6 +266,7 @@ pub(crate) async fn persist_shell_message(
             conversation_id,
             turn_id: None,
             role: "shell".to_owned(),
+            kind: None,
             body,
             created_at: now_ms(),
         })
