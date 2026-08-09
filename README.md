@@ -64,9 +64,12 @@ it holds a resident connection under its own bot identity, and people talk to it
 two tokens (a `xoxb-` bot token to speak, a `xapp-` app-level token to open the socket); the setup
 text printed by `goat agent channel add slack` carries the app manifest.
 
-Integrations: GitHub, Langfuse, Linear, Notion, PostHog, Sentry, Slack, Tiro — connect with
+Integrations: Asana, Atlassian, Datadog, GitHub, Gmail, Google Calendar, Google Drive, Intercom,
+Langfuse, Linear, Notion, PagerDuty, PostHog, Sentry, Slack, Stripe, Supabase, Tiro, Vercel — connect with
 `goat integration add`, bind per agent with `goat agent integration add`. GitHub reads its
-credential from the `gh` cli, so run `gh auth login` first. Langfuse takes the project's public and
+credential from the `gh` cli, so run `gh auth login` first. The three Google servers are in
+Google's Workspace Developer Preview and do not register clients dynamically, so `goat integration
+add` asks for an OAuth client id and secret you create in a Google Cloud project. Langfuse takes the project's public and
 secret key joined by a colon, and a `host` in its binding reaches a cloud region or a self-hosted
 instance.
 
