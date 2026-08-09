@@ -1,3 +1,4 @@
+use goat_integration::shape;
 use goat_integration::{IntegrationError, IntegrationResult};
 use serde_json::Value;
 
@@ -18,28 +19,14 @@ impl AssignedIssue {
 }
 
 pub fn has_next_page(data: &Value) -> bool {
-    data.get("hasNextPage")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+    shape::more(data)
 }
 
 pub fn parse_assigned_issues(data: &Value) -> IntegrationResult<Vec<AssignedIssue>> {
-    issue_array(data)
-        .ok_or_else(|| {
-            IntegrationError::Service(format!("linear response has no issue list: {data}"))
-        })?
+    shape::items("linear", data, &[])?
         .iter()
         .map(parse_issue_node)
         .collect()
-}
-
-fn issue_array(data: &Value) -> Option<&Vec<Value>> {
-    if let Some(array) = data.as_array() {
-        return Some(array);
-    }
-    ["issues", "nodes", "results", "items"]
-        .iter()
-        .find_map(|key| data.get(key).and_then(Value::as_array))
 }
 
 fn parse_issue_node(node: &Value) -> IntegrationResult<AssignedIssue> {
