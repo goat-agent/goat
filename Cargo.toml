@@ -154,6 +154,10 @@ goat-render             = { path = "crates/goat-render" }
 goat-mcp-tools          = { path = "crates/goat-mcp-tools" }
 goat-integration        = { path = "crates/goat-integration" }
 goat-integration-mcp    = { path = "crates/goat-integration-mcp" }
+goat-integration-asana = { path = "crates/goat-integration-asana" }
+goat-integration-intercom = { path = "crates/goat-integration-intercom" }
+goat-integration-stripe = { path = "crates/goat-integration-stripe" }
+goat-integration-supabase = { path = "crates/goat-integration-supabase" }
 goat-integration-github = { path = "crates/goat-integration-github" }
 goat-integration-langfuse = { path = "crates/goat-integration-langfuse" }
 goat-integration-linear = { path = "crates/goat-integration-linear" }
