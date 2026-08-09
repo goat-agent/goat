@@ -5,12 +5,16 @@ use thiserror::Error;
 
 mod agent;
 mod atomic;
+mod document;
+mod migrate;
 mod paths;
 mod settings;
+mod value;
 
 pub use atomic::write_atomic;
+pub use document::ConfigDocument;
 
-pub use agent::AGENT_DEFINITION_FILE;
+pub use agent::{AGENT_CONFIG_FILE, AGENT_DEFINITION_FILE, AgentDocument};
 pub use paths::{
     GoatPaths, HOME_NOT_FOUND, INSTRUCTIONS_MAX_BYTES, PROJECT_INSTRUCTIONS_FILE,
     PROJECT_INSTRUCTIONS_OVERRIDE_FILE, PROJECT_SKILLS_SUBDIR, PROJECT_SUBAGENTS_SUBDIR,

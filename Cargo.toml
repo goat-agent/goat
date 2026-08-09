@@ -184,7 +184,7 @@ tokio-stream            = { version = "0.1" }
 pty-process             = { version = "0.5", features = ["async"] }
 inventory               = "0.3"
 anyhow                  = "1"
-toml                    = "0.8"
+toml_edit               = { version = "0.25", features = ["serde"] }
 sqlx                    = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate", "chrono", "uuid", "json"] }
 sqlite-vec              = "0.1"
 libsqlite3-sys          = "0.37"
