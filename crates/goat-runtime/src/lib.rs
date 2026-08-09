@@ -760,6 +760,18 @@ async fn build_shared(base: &RuntimeBase, agents: &[AgentConfig]) -> RuntimeShar
         }
     }
 
+    let user_mcp = goat_mcp::load_user_manager(
+        Some(base.paths.mcp_json.as_path()),
+        &base.credentials,
+        &base.paths.root,
+    )
+    .await;
+    let user_mcp_tools =
+        goat_mcp_tools::install(&mut tools_reg, goat_mcp_tools::from_manager(&user_mcp));
+    if !user_mcp_tools.is_empty() {
+        info!(count = user_mcp_tools.len(), "registered user mcp tools");
+    }
+
     let tools = Arc::new(tools_reg);
     info!(
         default_tools = tools.default_specs().len(),
