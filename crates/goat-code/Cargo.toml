@@ -46,6 +46,9 @@ goat-integration-pagerduty = { workspace = true }
 goat-integration-stripe = { workspace = true }
 goat-integration-supabase = { workspace = true }
 goat-integration-vercel = { workspace = true }
+goat-integration-gcalendar = { workspace = true }
+goat-integration-gdrive = { workspace = true }
+goat-integration-gmail = { workspace = true }
 goat-integration-github = { workspace = true }
 goat-integration-langfuse = { workspace = true }
 goat-integration-linear = { workspace = true }

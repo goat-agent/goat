@@ -162,6 +162,9 @@ goat-integration-pagerduty = { path = "crates/goat-integration-pagerduty" }
 goat-integration-stripe = { path = "crates/goat-integration-stripe" }
 goat-integration-supabase = { path = "crates/goat-integration-supabase" }
 goat-integration-vercel = { path = "crates/goat-integration-vercel" }
+goat-integration-gcalendar = { path = "crates/goat-integration-gcalendar" }
+goat-integration-gdrive = { path = "crates/goat-integration-gdrive" }
+goat-integration-gmail = { path = "crates/goat-integration-gmail" }
 goat-integration-github = { path = "crates/goat-integration-github" }
 goat-integration-langfuse = { path = "crates/goat-integration-langfuse" }
 goat-integration-linear = { path = "crates/goat-integration-linear" }
