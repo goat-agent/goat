@@ -29,7 +29,7 @@ mod conversation;
 mod conversations;
 mod delegate;
 mod instructions;
-mod mcp_tools;
+mod integration_tools;
 mod persist;
 mod plan;
 mod prompt;
@@ -93,9 +93,14 @@ impl CodingEngine {
             &cwd,
         )
         .await;
-        let mcp_tools = mcp_tools::adapt(&mcp);
-        let tool_count = mcp_tools.len();
-        let mut tools = mcp_tools;
+        let mut resolved = goat_mcp_tools::from_manager(&mcp);
+        let (integration_tools, failures) = integration_tools::resolve(&config, &credentials).await;
+        for failure in &failures {
+            tracing::warn!(failure, "integration tool discovery failed");
+        }
+        resolved.extend(integration_tools);
+        let mut tools = goat_mcp_tools::adapt(resolved);
+        let tool_count = tools.len();
         if tool_count > 0 {
             tracing::info!(tool_count, "registered mcp tools");
         }
