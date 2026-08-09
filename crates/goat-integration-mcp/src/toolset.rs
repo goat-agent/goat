@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use goat_agent_tool::{
-    ToolCall, ToolCaller, ToolHandler, ToolName, ToolOutput, ToolRegistry, ToolSpec,
-};
+use goat_agent_tool::{ToolName, ToolRegistry};
 use goat_auth::CredentialStore;
-use goat_integration::{BindingMap, IntegrationBinding, IntegrationRuntime, drop_placeholder_args};
+use goat_integration::{
+    BindingMap, IntegrationBinding, IntegrationResult, IntegrationRuntime, drop_placeholder_args,
+};
+use goat_mcp_tools::{McpCallFuture, McpOutcome, McpToolSource, ResolvedTool};
 use goat_types::AgentId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -85,13 +85,45 @@ pub async fn register(
         return Vec::new();
     };
     let discovered = discover(service, runtime, agent, binding).await;
-    let deny = DenyRules::effective(&service.tools, &binding.config);
-    let mut names = Vec::new();
+    let source: Arc<dyn McpToolSource> = Arc::new(HostedSource {
+        service: service.clone(),
+        credentials: runtime.credentials.clone(),
+        binding: HostedBinding::PerAgent(bindings.clone()),
+    });
+    let planned = plan(service, &discovered, &binding.config, &source);
+    warn_about_missing_tools(service, &discovered);
+    goat_mcp_tools::install(registry, planned)
+}
+
+pub async fn code_tools(
+    service: &Arc<McpService>,
+    credentials: &CredentialStore,
+    binding: &IntegrationBinding,
+) -> IntegrationResult<Vec<ResolvedTool>> {
+    let discovered = fetch_live(service, credentials, binding).await?;
+    let source: Arc<dyn McpToolSource> = Arc::new(HostedSource {
+        service: service.clone(),
+        credentials: credentials.clone(),
+        binding: HostedBinding::Fixed(binding.clone()),
+    });
+    let planned = plan(service, &discovered, &binding.config, &source);
+    warn_about_missing_tools(service, &discovered);
+    Ok(planned)
+}
+
+fn plan(
+    service: &Arc<McpService>,
+    discovered: &[CachedTool],
+    config: &Value,
+    source: &Arc<dyn McpToolSource>,
+) -> Vec<ResolvedTool> {
+    let deny = DenyRules::effective(&service.tools, config);
+    let mut planned = Vec::new();
     let mut enabled = 0usize;
     let mut deferred = 0usize;
     let mut skipped = 0usize;
 
-    for tool in &discovered {
+    for tool in discovered {
         let disposition = disposition(service, &service.tools, &deny, tool);
         if disposition == ToolDisposition::Skip {
             skipped += 1;
@@ -107,32 +139,24 @@ pub async fn register(
         } else {
             deferred += 1;
         }
-        registry.insert_handler(
-            ToolSpec::new(
-                name.clone(),
-                tool.description.clone(),
-                tool.input_schema.clone(),
-            ),
-            Arc::new(McpPassthrough {
-                service: service.clone(),
-                credentials: runtime.credentials.clone(),
-                bindings: bindings.clone(),
-                tool: tool.name.clone(),
-            }),
-            is_enabled,
-        );
-        names.push(name);
+        planned.push(ResolvedTool {
+            exposed_name: name.as_str().to_owned(),
+            original_name: tool.name.clone(),
+            description: tool.description.clone(),
+            input_schema: tool.input_schema.clone(),
+            enabled: is_enabled,
+            source: source.clone(),
+        });
     }
 
-    warn_about_missing_tools(service, &discovered);
     tracing::info!(
         integration = service.id.as_str(),
         enabled,
         deferred,
         skipped,
-        "registered mcp tools",
+        "planned mcp tools",
     );
-    names
+    planned
 }
 
 fn disposition(
@@ -319,35 +343,58 @@ async fn fetch_live(
         .collect())
 }
 
-struct McpPassthrough {
-    service: Arc<McpService>,
-    credentials: CredentialStore,
-    bindings: Arc<BindingMap>,
-    tool: String,
+enum HostedBinding {
+    PerAgent(Arc<BindingMap>),
+    Fixed(IntegrationBinding),
 }
 
-#[async_trait]
-impl ToolHandler for McpPassthrough {
-    async fn call(&self, ctx: ToolCaller, call: ToolCall) -> ToolOutput {
-        let name = self.service.id.as_str();
-        let Some(binding) = self.bindings.get(&ctx.agent) else {
-            return ToolOutput::error(format!(
-                "{name} is not configured for this agent; run `goat agent integration add {name}`"
-            ));
-        };
-        let session = match self.service.connect(&self.credentials, binding).await {
-            Ok(session) => session,
-            Err(e) => return ToolOutput::error(e.to_string()),
-        };
-        let result = self
-            .service
-            .call(&session, &self.tool, drop_placeholder_args(call.arguments))
-            .await;
-        session.close().await;
-        match result {
-            Ok(value) => ToolOutput::structured(value),
-            Err(e) => ToolOutput::error(e.to_string()),
+struct HostedSource {
+    service: Arc<McpService>,
+    credentials: CredentialStore,
+    binding: HostedBinding,
+}
+
+impl HostedSource {
+    fn binding_for(&self, caller: Option<AgentId>) -> Option<&IntegrationBinding> {
+        match &self.binding {
+            HostedBinding::PerAgent(bindings) => caller.and_then(|agent| bindings.get(&agent)),
+            HostedBinding::Fixed(binding) => Some(binding),
         }
+    }
+}
+
+impl McpToolSource for HostedSource {
+    fn label(&self) -> &str {
+        self.service.id.as_str()
+    }
+
+    fn call<'a>(
+        &'a self,
+        tool: &'a str,
+        arguments: Value,
+        caller: Option<AgentId>,
+    ) -> McpCallFuture<'a> {
+        Box::pin(async move {
+            let name = self.service.id.as_str();
+            let Some(binding) = self.binding_for(caller) else {
+                return Err(format!(
+                    "{name} is not configured for this agent; run `goat agent integration add {name}`"
+                ));
+            };
+            let session = self
+                .service
+                .connect(&self.credentials, binding)
+                .await
+                .map_err(|e| e.to_string())?;
+            let result = self
+                .service
+                .call(&session, tool, drop_placeholder_args(arguments))
+                .await;
+            session.close().await;
+            result
+                .map(McpOutcome::structured)
+                .map_err(|e| e.to_string())
+        })
     }
 }
 

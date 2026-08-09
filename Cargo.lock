@@ -2364,6 +2364,7 @@ dependencies = [
  "goat-config",
  "goat-console",
  "goat-integration",
+ "goat-integration-mcp",
  "goat-model",
  "goat-provider",
  "goat-providers",
@@ -2726,6 +2727,7 @@ dependencies = [
  "goat-agent-tool-shell",
  "goat-agent-tool-skill",
  "goat-auth",
+ "goat-channel",
  "goat-channel-discord",
  "goat-channel-slack",
  "goat-client",
@@ -2733,14 +2735,26 @@ dependencies = [
  "goat-console",
  "goat-daemon",
  "goat-git",
+ "goat-integration",
+ "goat-integration-asana",
+ "goat-integration-atlassian",
+ "goat-integration-datadog",
+ "goat-integration-gcalendar",
+ "goat-integration-gdrive",
  "goat-integration-github",
+ "goat-integration-gmail",
+ "goat-integration-intercom",
  "goat-integration-langfuse",
  "goat-integration-linear",
  "goat-integration-notion",
+ "goat-integration-pagerduty",
  "goat-integration-posthog",
  "goat-integration-sentry",
  "goat-integration-slack",
+ "goat-integration-stripe",
+ "goat-integration-supabase",
  "goat-integration-tiro",
+ "goat-integration-vercel",
  "goat-mcp",
  "goat-protocol",
  "goat-provider",
@@ -2947,7 +2961,10 @@ dependencies = [
  "goat-code-store",
  "goat-config",
  "goat-core",
+ "goat-integration",
+ "goat-integration-mcp",
  "goat-mcp",
+ "goat-mcp-tools",
  "goat-process",
  "goat-protocol",
  "goat-provider",
@@ -2964,6 +2981,7 @@ dependencies = [
  "goat-tool-search",
  "goat-tool-shell",
  "goat-tools",
+ "goat-types",
  "goat-worktree",
  "rand 0.10.2",
  "serde",
@@ -3017,6 +3035,95 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-integration-asana"
+version = "0.1.0"
+dependencies = [
+ "goat-auth",
+ "goat-integration",
+ "goat-integration-mcp",
+ "goat-mcp",
+ "goat-types",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "goat-integration-atlassian"
+version = "0.1.0"
+dependencies = [
+ "goat-auth",
+ "goat-integration",
+ "goat-integration-mcp",
+ "goat-mcp",
+ "goat-types",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "goat-integration-datadog"
+version = "0.1.0"
+dependencies = [
+ "goat-auth",
+ "goat-integration",
+ "goat-integration-mcp",
+ "goat-mcp",
+ "goat-types",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "goat-integration-gcalendar"
+version = "0.1.0"
+dependencies = [
+ "goat-auth",
+ "goat-integration",
+ "goat-integration-mcp",
+ "goat-mcp",
+ "goat-types",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "goat-integration-gdrive"
+version = "0.1.0"
+dependencies = [
+ "goat-auth",
+ "goat-integration",
+ "goat-integration-mcp",
+ "goat-mcp",
+ "goat-types",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "goat-integration-github"
 version = "0.1.0"
 dependencies = [
@@ -3031,6 +3138,41 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "goat-integration-gmail"
+version = "0.1.0"
+dependencies = [
+ "goat-auth",
+ "goat-integration",
+ "goat-integration-mcp",
+ "goat-mcp",
+ "goat-types",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "goat-integration-intercom"
+version = "0.1.0"
+dependencies = [
+ "goat-auth",
+ "goat-integration",
+ "goat-integration-mcp",
+ "goat-mcp",
+ "goat-types",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -3076,6 +3218,7 @@ dependencies = [
  "goat-auth",
  "goat-integration",
  "goat-mcp",
+ "goat-mcp-tools",
  "goat-types",
  "serde",
  "serde_json",
@@ -3087,6 +3230,24 @@ dependencies = [
 
 [[package]]
 name = "goat-integration-notion"
+version = "0.1.0"
+dependencies = [
+ "goat-auth",
+ "goat-integration",
+ "goat-integration-mcp",
+ "goat-mcp",
+ "goat-types",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "goat-integration-pagerduty"
 version = "0.1.0"
 dependencies = [
  "goat-auth",
@@ -3155,6 +3316,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-integration-stripe"
+version = "0.1.0"
+dependencies = [
+ "goat-auth",
+ "goat-integration",
+ "goat-integration-mcp",
+ "goat-mcp",
+ "goat-types",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "goat-integration-supabase"
+version = "0.1.0"
+dependencies = [
+ "goat-auth",
+ "goat-integration",
+ "goat-integration-mcp",
+ "goat-mcp",
+ "goat-types",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "goat-integration-tiro"
 version = "0.1.0"
 dependencies = [
@@ -3166,6 +3361,24 @@ dependencies = [
  "inventory",
  "serde",
  "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "goat-integration-vercel"
+version = "0.1.0"
+dependencies = [
+ "goat-auth",
+ "goat-integration",
+ "goat-integration-mcp",
+ "goat-mcp",
+ "goat-types",
+ "inventory",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
@@ -3207,6 +3420,19 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "goat-mcp-tools"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "goat-agent-tool",
+ "goat-mcp",
+ "goat-protocol",
+ "goat-tool",
+ "goat-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -3493,6 +3719,8 @@ dependencies = [
  "goat-embedding",
  "goat-integration",
  "goat-loop",
+ "goat-mcp",
+ "goat-mcp-tools",
  "goat-memory",
  "goat-model",
  "goat-provider",

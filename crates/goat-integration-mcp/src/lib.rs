@@ -18,7 +18,10 @@ mod auth;
 mod toolset;
 
 pub use auth::{ResolvedAuth, header_value};
-pub use toolset::{CachedTool, normalized, pick_tool};
+pub use toolset::{CachedTool, code_tools, normalized, pick_tool};
+
+pub const CLIENT_ID_SLOT: &str = "client_id";
+pub const CLIENT_SECRET_SLOT: &str = "client_secret";
 
 pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_mins(2);
 pub const MAX_RESULT_BYTES: usize = 96 * 1024;
@@ -84,6 +87,7 @@ pub struct CredentialSpec {
     pub label: &'static str,
     pub env_var: Option<&'static str>,
     pub scopes: &'static [&'static str],
+    pub preregistered: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -168,6 +172,7 @@ impl McpService {
                 label: "",
                 env_var: None,
                 scopes: &[],
+                preregistered: false,
             },
             headers: None,
             call_timeout: DEFAULT_CALL_TIMEOUT,
@@ -192,6 +197,12 @@ impl McpService {
     pub const fn oauth(mut self, scopes: &'static [&'static str]) -> Self {
         self.credential.auth = IntegrationAuth::OAuth;
         self.credential.scopes = scopes;
+        self
+    }
+
+    #[must_use]
+    pub const fn preregistered(mut self) -> Self {
+        self.credential.preregistered = true;
         self
     }
 
@@ -478,6 +489,35 @@ impl McpIntegration {
     pub fn service(&self) -> &Arc<McpService> {
         &self.service
     }
+
+    fn client_identity(
+        &self,
+        credentials: &CredentialStore,
+        account: &str,
+    ) -> IntegrationResult<goat_mcp::auth::ClientIdentity> {
+        if !self.service.credential.preregistered {
+            return Ok(goat_mcp::auth::ClientIdentity::default());
+        }
+        let name = self.service.id.as_str();
+        let read = |slot: &str| match credentials.get(&goat_auth::CredentialKey::integration_slot(
+            name, account, slot,
+        )) {
+            Some(Credential::ApiKey(secret)) => Some(secret),
+            _ => None,
+        };
+        let client_id = read(CLIENT_ID_SLOT).ok_or_else(|| {
+            IntegrationError::Auth(format!(
+                "{name} needs an oauth client of its own; run `goat integration add {name}` \
+                 and paste the client id it asks for"
+            ))
+        })?;
+        Ok(goat_mcp::auth::ClientIdentity {
+            preregistered: Some(goat_mcp::auth::Preregistered {
+                client_id: client_id.expose().to_owned(),
+                client_secret: read(CLIENT_SECRET_SLOT),
+            }),
+        })
+    }
 }
 
 #[async_trait]
@@ -498,6 +538,7 @@ impl Integration for McpIntegration {
             secret_label: self.service.credential.label,
             env_var: self.service.credential.env_var,
             setup: self.service.setup,
+            preregistered: self.service.credential.preregistered,
         }
     }
 
@@ -564,8 +605,9 @@ impl Integration for McpIntegration {
         present_url: &(dyn for<'a> Fn(&'a str) + Send + Sync),
     ) -> IntegrationResult<Value> {
         let url = self.service.url.resolve(&Value::Null)?;
+        let identity = self.client_identity(credentials, account)?;
         let authorization =
-            goat_mcp::auth::run_login(&url, self.service.credential.scopes, present_url)
+            goat_mcp::auth::run_login(&url, self.service.credential.scopes, &identity, present_url)
                 .await
                 .map_err(|e| IntegrationError::Auth(e.to_string()))?;
         credentials

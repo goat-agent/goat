@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use goat_auth::{Credential, CredentialKey, CredentialStore as GoatCredentialStore, TokenSet};
+use goat_auth::{
+    Credential, CredentialKey, CredentialStore as GoatCredentialStore, SecretString, TokenSet,
+};
 use rmcp::transport::auth::{
     AuthClient, AuthError, AuthorizationManager, AuthorizationRequest, CredentialStore, OAuthState,
     OAuthTokenResponse, StoredCredentials,
@@ -141,9 +143,21 @@ pub struct Authorization {
     pub tokens: TokenSet,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ClientIdentity {
+    pub preregistered: Option<Preregistered>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Preregistered {
+    pub client_id: String,
+    pub client_secret: Option<SecretString>,
+}
+
 pub async fn run_login(
     url: &str,
     scopes: &[&str],
+    identity: &ClientIdentity,
     present_url: &(dyn for<'a> Fn(&'a str) + Send + Sync),
 ) -> Result<Authorization, McpError> {
     let issuer = AuthorizationManager::new(url)
@@ -163,6 +177,12 @@ pub async fn run_login(
     let mut request = AuthorizationRequest::new(&redirect)
         .with_client_name("goat")
         .with_application_type("native");
+    if let Some(client) = &identity.preregistered {
+        request = request.with_preregistered_client(client.client_id.clone());
+        if let Some(secret) = &client.client_secret {
+            request = request.with_client_secret(secret.expose());
+        }
+    }
     if !scopes.is_empty() {
         request = request.with_scopes(scopes.iter().copied());
     }

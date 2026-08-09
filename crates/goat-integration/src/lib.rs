@@ -1,6 +1,7 @@
 pub mod diff;
 pub mod query;
 pub mod schema;
+pub mod shape;
 pub mod watch;
 
 #[cfg(feature = "test-support")]
@@ -164,6 +165,7 @@ pub struct IntegrationMetadata {
     pub secret_label: &'static str,
     pub env_var: Option<&'static str>,
     pub setup: &'static str,
+    pub preregistered: bool,
 }
 
 #[async_trait]

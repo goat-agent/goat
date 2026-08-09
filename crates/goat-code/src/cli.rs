@@ -179,7 +179,10 @@ pub enum McpCommand {
     },
     #[command(
         about = "Add an MCP server",
-        after_help = "Examples:
+        after_help = "User-scope servers reach both code sessions and the agent.
+Project-scope servers reach code sessions only, because the agent has no working directory.
+
+Examples:
   goat mcp add context7 -- npx -y @upstash/context7-mcp
   goat mcp add remote --url https://example.com/mcp
   goat mcp add local --scope project --env TOKEN=value -- command"

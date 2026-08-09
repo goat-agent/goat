@@ -19,6 +19,10 @@ goat-auth = { workspace = true }
 goat-code-store = { workspace = true }
 goat-config = { workspace = true }
 goat-mcp = { workspace = true }
+goat-mcp-tools = { workspace = true }
+goat-types = { workspace = true }
+goat-integration = { workspace = true }
+goat-integration-mcp = { workspace = true }
 goat-tool = { workspace = true }
 goat-tool-ask = { workspace = true }
 goat-tool-delegate = { workspace = true }

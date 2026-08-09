@@ -1,7 +1,6 @@
+use goat_integration::shape;
 use goat_integration::{IntegrationError, IntegrationResult};
 use serde_json::Value;
-
-const ENVELOPE_KEYS: [&str; 5] = ["issues", "results", "items", "nodes", "data"];
 
 #[derive(Clone, Debug)]
 pub struct Issue {
@@ -47,36 +46,10 @@ impl Issue {
 }
 
 pub fn parse_issues(data: &Value) -> IntegrationResult<Vec<Issue>> {
-    issue_array(data)
-        .ok_or_else(|| {
-            IntegrationError::Service(format!(
-                "sentry response has no issue list: {}",
-                squeeze(&data.to_string(), 400)
-            ))
-        })?
+    shape::items("sentry", data, &[])?
         .iter()
         .map(parse_issue)
         .collect()
-}
-
-fn issue_array(data: &Value) -> Option<&Vec<Value>> {
-    if let Some(array) = data.as_array() {
-        return Some(array);
-    }
-    if let Some(array) = ENVELOPE_KEYS
-        .iter()
-        .find_map(|key| data.get(key).and_then(Value::as_array))
-    {
-        return Some(array);
-    }
-    ENVELOPE_KEYS
-        .iter()
-        .filter_map(|key| data.get(key))
-        .find_map(|nested| {
-            ENVELOPE_KEYS
-                .iter()
-                .find_map(|key| nested.get(key).and_then(Value::as_array))
-        })
 }
 
 fn parse_issue(node: &Value) -> IntegrationResult<Issue> {
@@ -163,8 +136,8 @@ mod tests {
     fn parses_bare_array_and_wrapper_envelopes() {
         let bare = json!([issue_node("BACKEND-1A", "2026-07-28T00:00:00Z")]);
         assert_eq!(parse_issues(&bare).unwrap().len(), 1);
-        for key in ENVELOPE_KEYS {
-            let wrapped = json!({ key: [issue_node("BACKEND-2B", "2026-07-28T00:00:00Z")] });
+        for key in shape::ENVELOPE_KEYS {
+            let wrapped = json!({ (*key): [issue_node("BACKEND-2B", "2026-07-28T00:00:00Z")] });
             assert_eq!(parse_issues(&wrapped).unwrap()[0].key, "BACKEND-2B");
         }
     }

@@ -115,25 +115,7 @@ pub async fn load_scoped_manager(
 ) -> Arc<McpManager> {
     let mut configured = BTreeMap::new();
     let mut failed = Vec::new();
-    if let Some(path) = user_path {
-        match ConfigFile::open(path.to_path_buf()) {
-            Ok(file) => {
-                for (name, config) in file.config.servers {
-                    configured.insert(
-                        name,
-                        LocatedServer {
-                            config,
-                            scope: Scope::User,
-                        },
-                    );
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%error, "failed to load user mcp config");
-                failed.push("user config unavailable".to_owned());
-            }
-        }
-    }
+    collect_user_servers(user_path, &mut configured, &mut failed);
 
     let project_path = project_config_path(project_root);
     if project_path.exists() {
@@ -176,6 +158,44 @@ pub async fn load_scoped_manager(
     }
 
     McpManager::start_located(configured, credentials, project_root, cwd, failed).await
+}
+
+pub async fn load_user_manager(
+    user_path: Option<&Path>,
+    credentials: &CredentialStore,
+    root: &Path,
+) -> Arc<McpManager> {
+    let mut configured = BTreeMap::new();
+    let mut failed = Vec::new();
+    collect_user_servers(user_path, &mut configured, &mut failed);
+    McpManager::start_located(configured, credentials, root, root, failed).await
+}
+
+fn collect_user_servers(
+    user_path: Option<&Path>,
+    configured: &mut BTreeMap<String, LocatedServer>,
+    failed: &mut Vec<String>,
+) {
+    let Some(path) = user_path else {
+        return;
+    };
+    match ConfigFile::open(path.to_path_buf()) {
+        Ok(file) => {
+            for (name, config) in file.config.servers {
+                configured.insert(
+                    name,
+                    LocatedServer {
+                        config,
+                        scope: Scope::User,
+                    },
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "failed to load user mcp config");
+            failed.push("user config unavailable".to_owned());
+        }
+    }
 }
 
 pub struct McpServer {
