@@ -39,9 +39,13 @@ goat-agent-tool-skill = { workspace = true }
 goat-channel-discord = { workspace = true }
 goat-channel-slack   = { workspace = true }
 goat-integration-asana = { workspace = true }
+goat-integration-atlassian = { workspace = true }
+goat-integration-datadog = { workspace = true }
 goat-integration-intercom = { workspace = true }
+goat-integration-pagerduty = { workspace = true }
 goat-integration-stripe = { workspace = true }
 goat-integration-supabase = { workspace = true }
+goat-integration-vercel = { workspace = true }
 goat-integration-github = { workspace = true }
 goat-integration-langfuse = { workspace = true }
 goat-integration-linear = { workspace = true }

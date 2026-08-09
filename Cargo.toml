@@ -155,9 +155,13 @@ goat-mcp-tools          = { path = "crates/goat-mcp-tools" }
 goat-integration        = { path = "crates/goat-integration" }
 goat-integration-mcp    = { path = "crates/goat-integration-mcp" }
 goat-integration-asana = { path = "crates/goat-integration-asana" }
+goat-integration-atlassian = { path = "crates/goat-integration-atlassian" }
+goat-integration-datadog = { path = "crates/goat-integration-datadog" }
 goat-integration-intercom = { path = "crates/goat-integration-intercom" }
+goat-integration-pagerduty = { path = "crates/goat-integration-pagerduty" }
 goat-integration-stripe = { path = "crates/goat-integration-stripe" }
 goat-integration-supabase = { path = "crates/goat-integration-supabase" }
+goat-integration-vercel = { path = "crates/goat-integration-vercel" }
 goat-integration-github = { path = "crates/goat-integration-github" }
 goat-integration-langfuse = { path = "crates/goat-integration-langfuse" }
 goat-integration-linear = { path = "crates/goat-integration-linear" }

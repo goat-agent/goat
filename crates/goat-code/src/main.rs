@@ -28,17 +28,21 @@ use goat_agent_tool_skill as _;
 use goat_channel_discord as _;
 use goat_channel_slack as _;
 use goat_integration_asana as _;
+use goat_integration_atlassian as _;
+use goat_integration_datadog as _;
 use goat_integration_github as _;
 use goat_integration_intercom as _;
 use goat_integration_langfuse as _;
 use goat_integration_linear as _;
 use goat_integration_notion as _;
+use goat_integration_pagerduty as _;
 use goat_integration_posthog as _;
 use goat_integration_sentry as _;
 use goat_integration_slack as _;
 use goat_integration_stripe as _;
 use goat_integration_supabase as _;
 use goat_integration_tiro as _;
+use goat_integration_vercel as _;
 
 fn into_eyre(err: &anyhow::Error) -> color_eyre::Report {
     eyre!(err.to_string())
