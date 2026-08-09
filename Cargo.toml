@@ -151,6 +151,7 @@ goat-channel            = { path = "crates/goat-channel" }
 goat-channel-discord    = { path = "crates/goat-channel-discord" }
 goat-channel-slack      = { path = "crates/goat-channel-slack" }
 goat-render             = { path = "crates/goat-render" }
+goat-mcp-tools          = { path = "crates/goat-mcp-tools" }
 goat-integration        = { path = "crates/goat-integration" }
 goat-integration-mcp    = { path = "crates/goat-integration-mcp" }
 goat-integration-github = { path = "crates/goat-integration-github" }
