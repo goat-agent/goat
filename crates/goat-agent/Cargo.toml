@@ -23,6 +23,7 @@ sqlx            = { workspace = true }
 goat-model      = { workspace = true }
 goat-auth   = { workspace = true }
 goat-integration = { workspace = true }
+goat-integration-mcp = { workspace = true }
 open        = { workspace = true }
 goat-provider = { workspace = true }
 goat-providers = { workspace = true }

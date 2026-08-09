@@ -118,6 +118,15 @@ fn connect_remove(paths: &GoatPaths, kind: &str) -> Result<()> {
             return Ok(Footer::Cancel);
         }
         store.remove(&CredentialKey::integration(kind, DEFAULT_ACCOUNT))?;
+        for slot in [
+            goat_integration_mcp::CLIENT_ID_SLOT,
+            goat_integration_mcp::CLIENT_SECRET_SLOT,
+        ] {
+            let key = CredentialKey::integration_slot(kind, DEFAULT_ACCOUNT, slot);
+            if store.get(&key).is_some() {
+                store.remove(&key)?;
+            }
+        }
         if config.integrations.remove(kind).is_some() {
             config.save()?;
         }
@@ -126,6 +135,36 @@ fn connect_remove(paths: &GoatPaths, kind: &str) -> Result<()> {
         ));
         Ok(Footer::Ok("Disconnected"))
     })
+}
+
+fn store_oauth_client(store: &CredentialStore, kind: &str) -> Result<()> {
+    let id_key = CredentialKey::integration_slot(
+        kind,
+        DEFAULT_ACCOUNT,
+        goat_integration_mcp::CLIENT_ID_SLOT,
+    );
+    if store.get(&id_key).is_some() {
+        return Ok(());
+    }
+    let Some(client_id) = ui::secret(&format!("{kind} OAuth client id"))? else {
+        return Err(anyhow!("cancelled"));
+    };
+    store.store(
+        &id_key,
+        Credential::ApiKey(SecretString::from(client_id.as_str())),
+    )?;
+    let secret = ui::secret(&format!("{kind} OAuth client secret (blank if none)"))?;
+    if let Some(secret) = secret.filter(|s| !s.trim().is_empty()) {
+        store.store(
+            &CredentialKey::integration_slot(
+                kind,
+                DEFAULT_ACCOUNT,
+                goat_integration_mcp::CLIENT_SECRET_SLOT,
+            ),
+            Credential::ApiKey(SecretString::from(secret.as_str())),
+        )?;
+    }
+    Ok(())
 }
 
 async fn connect_flow(paths: &GoatPaths, kind: &str) -> Result<String> {
@@ -143,6 +182,9 @@ async fn connect_flow(paths: &GoatPaths, kind: &str) -> Result<String> {
             )?;
         }
         IntegrationAuth::OAuth => {
+            if metadata.preregistered {
+                store_oauth_client(&store, kind)?;
+            }
             let patch = integration
                 .oauth_login(&store, DEFAULT_ACCOUNT, &|url: &str| {
                     ui::pair("approve in browser", url);

@@ -66,6 +66,7 @@ impl Integration for GithubIntegration {
             secret_label: "",
             env_var: None,
             setup: SETUP,
+            preregistered: false,
         }
     }
 

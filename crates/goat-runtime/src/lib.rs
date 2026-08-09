@@ -1251,6 +1251,7 @@ mod tests {
                 secret_label: "key",
                 env_var: None,
                 setup: "none",
+                preregistered: false,
             }
         }
 

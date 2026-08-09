@@ -103,6 +103,19 @@ impl CredentialKey {
         }
     }
 
+    pub fn integration_slot(
+        provider: impl Into<String>,
+        account: impl Into<String>,
+        slot: impl Into<String>,
+    ) -> Self {
+        Self {
+            service: CredentialService::Integration,
+            provider: provider.into(),
+            account: account.into(),
+            slot: Some(slot.into()),
+        }
+    }
+
     pub fn channel(
         provider: impl Into<String>,
         account: impl Into<String>,
