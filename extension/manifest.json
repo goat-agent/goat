@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "goat",
+  "version": "0.1.0",
+  "description": "Chat with goat beside the page, and let goat drive this browser under your own login.",
+  "minimum_chrome_version": "116",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "action": {
+    "default_title": "goat"
+  },
+  "permissions": [
+    "debugger",
+    "nativeMessaging",
+    "sidePanel",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": ["<all_urls>"]
+}
