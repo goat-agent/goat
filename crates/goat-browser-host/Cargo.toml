@@ -1,5 +1,5 @@
 [package]
-name = "goat-wire"
+name = "goat-browser-host"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,19 +9,16 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
-goat-protocol = { workspace = true }
+goat-wire = { workspace = true }
+goat-api = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-schemars = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 async-trait = { workspace = true }
-futures = { workspace = true }
-bytes = { workspace = true }
-thiserror = { workspace = true }
 
 [dev-dependencies]
-sha2 = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

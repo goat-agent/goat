@@ -1,0 +1,7 @@
+{
+  "name": "com.goat.browser_host",
+  "description": "goat browser host",
+  "path": "/usr/local/bin/goat-browser-host",
+  "type": "stdio",
+  "allowed_origins": []
+}

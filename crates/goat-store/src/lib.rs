@@ -477,6 +477,17 @@ pub trait Store: Send + Sync + 'static {
         external_ref: &str,
         limit: i64,
     ) -> StoreResult<Vec<ObservationRecord>>;
+
+    async fn record_activity(&self, new: NewActivity) -> StoreResult<i64>;
+
+    async fn activity_since(
+        &self,
+        agents: &[AgentId],
+        after: i64,
+        limit: i64,
+    ) -> StoreResult<Vec<ActivityRecord>>;
+
+    async fn activity_watermark(&self) -> StoreResult<i64>;
 }
 
 #[derive(Clone, Debug)]
@@ -487,6 +498,59 @@ pub struct NewObservation {
     pub external_ref: String,
     pub kind: String,
     pub payload: serde_json::Value,
+}
+
+pub const ACTIVITY_RETAINED_PER_AGENT: i64 = 2000;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ActivityKind {
+    TurnStarted,
+    TurnFinished,
+    ToolStarted,
+    ScheduleFired,
+}
+
+impl ActivityKind {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::TurnStarted => "turn_started",
+            Self::TurnFinished => "turn_finished",
+            Self::ToolStarted => "tool_started",
+            Self::ScheduleFired => "schedule_fired",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "turn_started" => Some(Self::TurnStarted),
+            "turn_finished" => Some(Self::TurnFinished),
+            "tool_started" => Some(Self::ToolStarted),
+            "schedule_fired" => Some(Self::ScheduleFired),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct NewActivity {
+    pub agent: AgentId,
+    pub kind: ActivityKind,
+    pub run_id: i64,
+    pub detail: Option<String>,
+    pub ok: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActivityRecord {
+    pub id: i64,
+    pub agent: AgentId,
+    pub kind: ActivityKind,
+    pub run_id: i64,
+    pub detail: Option<String>,
+    pub ok: Option<bool>,
+    pub at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug)]
@@ -1526,6 +1590,102 @@ impl Store for SqliteStore {
             })
             .collect()
     }
+
+    async fn record_activity(&self, new: NewActivity) -> StoreResult<i64> {
+        let agent = new.agent.to_string();
+        let row: (i64,) = sqlx::query_as(
+            r"INSERT INTO agent_activity (agent_id, kind, run_id, detail, ok, at)
+               VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+        )
+        .bind(&agent)
+        .bind(new.kind.as_str())
+        .bind(new.run_id)
+        .bind(new.detail.as_deref())
+        .bind(new.ok.map(i64::from))
+        .bind(Utc::now().to_rfc3339())
+        .fetch_one(&*self.pool)
+        .await?;
+
+        sqlx::query(
+            r"DELETE FROM agent_activity
+               WHERE agent_id = ?
+                 AND id <= (
+                   SELECT id FROM agent_activity
+                    WHERE agent_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1 OFFSET ?
+                 )",
+        )
+        .bind(&agent)
+        .bind(&agent)
+        .bind(ACTIVITY_RETAINED_PER_AGENT)
+        .execute(&*self.pool)
+        .await?;
+
+        Ok(row.0)
+    }
+
+    async fn activity_since(
+        &self,
+        agents: &[AgentId],
+        after: i64,
+        limit: i64,
+    ) -> StoreResult<Vec<ActivityRecord>> {
+        let wanted: std::collections::HashSet<String> =
+            agents.iter().map(ToString::to_string).collect();
+        let scan = if wanted.is_empty() {
+            limit.max(1)
+        } else {
+            limit
+                .max(1)
+                .saturating_mul(4)
+                .min(ACTIVITY_RETAINED_PER_AGENT * 8)
+        };
+
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(
+            i64,
+            String,
+            String,
+            i64,
+            Option<String>,
+            Option<i64>,
+            String,
+        )> = sqlx::query_as(
+            r"SELECT id, agent_id, kind, run_id, detail, ok, at
+                   FROM agent_activity
+                   WHERE id > ?
+                   ORDER BY id ASC
+                   LIMIT ?",
+        )
+        .bind(after)
+        .bind(scan)
+        .fetch_all(&*self.pool)
+        .await?;
+
+        rows.into_iter()
+            .filter(|row| wanted.is_empty() || wanted.contains(&row.1))
+            .take(usize::try_from(limit.max(1)).unwrap_or(usize::MAX))
+            .map(|row| {
+                Ok(ActivityRecord {
+                    id: row.0,
+                    agent: AgentId(Uuid::parse_str(&row.1)?),
+                    kind: ActivityKind::parse(&row.2).unwrap_or(ActivityKind::TurnStarted),
+                    run_id: row.3,
+                    detail: row.4,
+                    ok: row.5.map(|value| value != 0),
+                    at: parse_ts(&row.6)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn activity_watermark(&self) -> StoreResult<i64> {
+        let row: (Option<i64>,) = sqlx::query_as("SELECT MAX(id) FROM agent_activity")
+            .fetch_one(&*self.pool)
+            .await?;
+        Ok(row.0.unwrap_or(0))
+    }
 }
 
 async fn load_schedule(pool: &SqlitePool, id: i64) -> StoreResult<Schedule> {
@@ -1726,6 +1886,137 @@ mod tests {
         let p = AgentId::new();
         store.ensure_agent(p, "dev", "dev").await.unwrap();
         p
+    }
+
+    #[tokio::test]
+    async fn activity_is_a_monotonic_feed_readable_by_cursor() {
+        let s = fresh().await;
+        let agent = fixture_agent(&s).await;
+
+        assert_eq!(s.activity_watermark().await.unwrap(), 0);
+        assert!(s.activity_since(&[], 0, 10).await.unwrap().is_empty());
+
+        let first = s
+            .record_activity(NewActivity {
+                agent,
+                kind: ActivityKind::TurnStarted,
+                run_id: 41,
+                detail: Some("discord".to_owned()),
+                ok: None,
+            })
+            .await
+            .unwrap();
+        let second = s
+            .record_activity(NewActivity {
+                agent,
+                kind: ActivityKind::TurnFinished,
+                run_id: 41,
+                detail: None,
+                ok: Some(true),
+            })
+            .await
+            .unwrap();
+        assert!(second > first);
+        assert_eq!(s.activity_watermark().await.unwrap(), second);
+
+        let all = s.activity_since(&[], 0, 10).await.unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].kind, ActivityKind::TurnStarted);
+        assert_eq!(all[0].run_id, 41);
+        assert_eq!(all[0].detail.as_deref(), Some("discord"));
+        assert_eq!(all[1].kind, ActivityKind::TurnFinished);
+        assert_eq!(all[1].ok, Some(true));
+
+        let resumed = s.activity_since(&[], first, 10).await.unwrap();
+        assert_eq!(resumed.len(), 1);
+        assert_eq!(resumed[0].id, second);
+
+        assert!(s.activity_since(&[], second, 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn activity_can_be_filtered_to_one_agent() {
+        let s = fresh().await;
+        let mine = fixture_agent(&s).await;
+        let other = AgentId::new();
+        s.ensure_agent(other, "other", "other").await.unwrap();
+
+        for agent in [mine, other, mine] {
+            s.record_activity(NewActivity {
+                agent,
+                kind: ActivityKind::ToolStarted,
+                run_id: 1,
+                detail: Some("shell".to_owned()),
+                ok: None,
+            })
+            .await
+            .unwrap();
+        }
+
+        let filtered = s.activity_since(&[mine], 0, 10).await.unwrap();
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|record| record.agent == mine));
+        assert_eq!(s.activity_since(&[], 0, 10).await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_limit_bounds_the_page() {
+        let s = fresh().await;
+        let agent = fixture_agent(&s).await;
+        for _ in 0..5 {
+            s.record_activity(NewActivity {
+                agent,
+                kind: ActivityKind::ScheduleFired,
+                run_id: 9,
+                detail: None,
+                ok: None,
+            })
+            .await
+            .unwrap();
+        }
+        let page = s.activity_since(&[], 0, 2).await.unwrap();
+        assert_eq!(page.len(), 2);
+        let next = s.activity_since(&[], page[1].id, 2).await.unwrap();
+        assert_eq!(next.len(), 2);
+        assert!(next[0].id > page[1].id);
+    }
+
+    #[tokio::test]
+    async fn the_feed_stays_bounded_per_agent() {
+        let s = fresh().await;
+        let agent = fixture_agent(&s).await;
+        let overflow = ACTIVITY_RETAINED_PER_AGENT + 25;
+        for _ in 0..overflow {
+            s.record_activity(NewActivity {
+                agent,
+                kind: ActivityKind::TurnStarted,
+                run_id: 1,
+                detail: None,
+                ok: None,
+            })
+            .await
+            .unwrap();
+        }
+        let kept = s.activity_since(&[], 0, overflow * 2).await.unwrap().len();
+        let retained = i64::try_from(kept).unwrap_or(i64::MAX);
+        assert!(
+            retained <= ACTIVITY_RETAINED_PER_AGENT + 1,
+            "the activity feed must not grow without bound, kept {retained}"
+        );
+        assert!(retained > 0);
+    }
+
+    #[test]
+    fn activity_kinds_round_trip_through_their_wire_names() {
+        for kind in [
+            ActivityKind::TurnStarted,
+            ActivityKind::TurnFinished,
+            ActivityKind::ToolStarted,
+            ActivityKind::ScheduleFired,
+        ] {
+            assert_eq!(ActivityKind::parse(kind.as_str()), Some(kind.clone()));
+        }
+        assert_eq!(ActivityKind::parse("nonsense"), None);
     }
 
     #[tokio::test]
@@ -2724,7 +3015,7 @@ mod tests {
 
         for (table, expected) in [
             ("_sqlx_migrations", 23_i64),
-            ("_sqlx_migrations_agent", 21),
+            ("_sqlx_migrations_agent", 22),
             ("_sqlx_migrations_memory", 2),
             ("_sqlx_migrations_code", 4),
             ("_sqlx_migrations_proxy", 1),

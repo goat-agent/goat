@@ -12,8 +12,10 @@ use crate::link::Conn;
 
 mod idmap;
 mod link;
+mod session;
 
-pub use link::{LOCAL, Link};
+pub use link::{EnvelopeConn, LOCAL, Link};
+pub use session::{ApiSession, open as open_api, open_serving};
 
 pub const GREET_TIMEOUT: Duration = Duration::from_secs(2);
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -84,9 +86,21 @@ pub enum Attached {
 
 #[must_use]
 pub fn mine() -> Identity {
+    identity_of(BuildId::current())
+}
+
+#[must_use]
+pub fn mine_for(daemon_exe: Option<&Path>) -> Identity {
+    identity_of(match daemon_exe {
+        Some(path) => BuildId::of(path),
+        None => BuildId::current(),
+    })
+}
+
+fn identity_of(build: Option<BuildId>) -> Identity {
     Identity {
         wire: goat_wire::wire_fingerprint().to_owned(),
-        build: BuildId::current(),
+        build,
         version: env!("CARGO_PKG_VERSION").to_owned(),
         pid: std::process::id(),
         started_at: 0,
@@ -214,7 +228,7 @@ async fn request(conn: &mut Conn) -> Result<ServerFrame, ClientError> {
 }
 
 async fn ensure(link: &Link) -> Result<(Conn, Identity, u64, Attached), ClientError> {
-    let ours = mine();
+    let ours = mine_for(link.local_parts().map(|(_, daemon_exe)| daemon_exe));
     let opened = open(link).await;
     if link.local_parts().is_none() {
         let (conn, identity, client_id) = opened?;
@@ -809,6 +823,50 @@ mod tests {
             ready: true,
             busy,
         }
+    }
+
+    #[test]
+    fn a_second_client_binary_reports_the_daemon_exe_not_its_own() {
+        let dir = std::env::temp_dir().join(format!("goat-buildid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let daemon_exe = dir.join("goat");
+        std::fs::write(&daemon_exe, b"daemon binary").unwrap();
+
+        let desktop = super::mine_for(Some(&daemon_exe));
+        let cli = super::mine_for(Some(&daemon_exe));
+        assert_eq!(
+            desktop.build, cli.build,
+            "two different client binaries must agree on the daemon build"
+        );
+
+        let daemon = Identity {
+            build: goat_wire::BuildId::of(&daemon_exe),
+            ..desktop.clone()
+        };
+        assert_eq!(
+            decide(&desktop, &daemon),
+            Action::Attach,
+            "a desktop client must attach to the daemon it would have spawned"
+        );
+
+        let own_exe = super::mine();
+        assert_ne!(
+            own_exe.build, desktop.build,
+            "the fix only matters because the two differ"
+        );
+        assert_eq!(
+            decide(&own_exe, &daemon),
+            Action::Replace,
+            "reporting its own exe is what used to replace an idle daemon every launch"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_daemon_exe_falls_back_without_claiming_a_build() {
+        let absent = std::path::Path::new("/definitely/not/a/goat/binary");
+        assert_eq!(super::mine_for(Some(absent)).build, None);
     }
 
     #[test]

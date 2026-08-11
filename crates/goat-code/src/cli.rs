@@ -111,6 +111,16 @@ when it does not check out nothing is replaced and the running agents keep their
         #[arg(long)]
         force: bool,
     },
+    #[command(
+        name = "browser-host",
+        about = "Bridge a Chrome extension to the daemon over native messaging"
+    )]
+    BrowserHost {
+        #[arg(long, help = "Stable identity of this browser profile")]
+        instance: Option<String>,
+        #[arg(long, help = "Human label shown when choosing a browser")]
+        label: Option<String>,
+    },
     #[command(subcommand, about = "Manage the local daemon")]
     Daemon(DaemonCommand),
     #[command(

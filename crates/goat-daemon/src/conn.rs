@@ -10,7 +10,7 @@ use crate::manager::CodeSessionHub;
 const CLIENT_QUEUE: usize = 1024;
 
 #[derive(Debug, Clone)]
-pub(crate) enum ClientOrigin {
+pub enum ClientOrigin {
     Local,
     Remote { device: String },
 }

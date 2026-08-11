@@ -4,7 +4,7 @@ mod devices;
 mod pairing;
 mod server;
 mod verify;
-mod ws;
+pub mod ws;
 
 use std::future::Future;
 use std::path::PathBuf;

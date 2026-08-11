@@ -1,5 +1,10 @@
+mod api;
 mod conn;
+mod envelope_conn;
+mod files;
 mod manager;
+mod pty;
+mod pty_spawn;
 mod remote;
 mod session;
 
@@ -8,6 +13,9 @@ use std::path::{Path, PathBuf};
 use goat_wire::transport;
 use tokio_util::sync::CancellationToken;
 
+pub use crate::api::{LOCAL_GRANTS, REMOTE_GRANTS, build as build_router};
+pub use crate::conn::ClientOrigin;
+pub use crate::envelope_conn::{EnvelopeHost, device_for, grants_for, serve_envelope};
 pub use crate::manager::{CodeSessionHub, ReloadRequest};
 
 #[derive(Debug, thiserror::Error)]
