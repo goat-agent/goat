@@ -35,6 +35,8 @@ pub(crate) struct SessionInner {
     pub(crate) compaction_threshold: Option<u32>,
     pub(crate) tokens: u64,
     pub(crate) open_asks: usize,
+    pub(crate) ask_revision: i64,
+    pub(crate) ask_revisions: std::collections::HashMap<goat_protocol::ToolCallId, i64>,
     pub(crate) live_processes: usize,
     pub(crate) conversation_id: Option<i64>,
     pub(crate) awaits_restore: bool,
@@ -387,10 +389,13 @@ impl SessionInner {
             Event::AskStarted { call, .. } => {
                 self.open_asks += 1;
                 self.asks.insert(*call, event.clone());
+                self.ask_revision = self.ask_revision.saturating_add(1);
+                self.ask_revisions.insert(*call, self.ask_revision);
             }
             Event::AskDismissed { call, .. } => {
                 self.open_asks = self.open_asks.saturating_sub(1);
                 self.asks.remove(call);
+                self.ask_revisions.remove(call);
             }
             Event::SubagentStarted { id, .. } => {
                 self.subagents.insert(*id, event.clone());
@@ -560,6 +565,37 @@ impl SessionInner {
         }
     }
 
+    pub(crate) fn open_ask_revision(&self, call: goat_protocol::ToolCallId) -> Option<i64> {
+        self.ask_revisions.get(&call).copied()
+    }
+
+    pub(crate) fn settle_ask(
+        &mut self,
+        call: goat_protocol::ToolCallId,
+        revision: i64,
+    ) -> AskSettlement {
+        let Some(current) = self.ask_revisions.get(&call).copied() else {
+            return AskSettlement::AlreadyAnswered;
+        };
+        if current != revision {
+            return AskSettlement::StaleRevision { current };
+        }
+        self.ask_revisions.remove(&call);
+        AskSettlement::Accepted
+    }
+
+    pub(crate) fn retained(&self) -> goat_api::Retained {
+        goat_api::Retained::new(self.log.front().map(|(seq, _)| *seq), self.next_seq)
+    }
+
+    pub(crate) fn replay_from(&self, from_seq: u64) -> Vec<(u64, Event)> {
+        self.log
+            .iter()
+            .filter(|(seq, _)| *seq >= from_seq)
+            .cloned()
+            .collect()
+    }
+
     pub(crate) fn evictable(&self) -> bool {
         self.subscribers.is_empty()
             && self.pending_attaches == 0
@@ -601,6 +637,13 @@ fn prompt_action(event: &Event) -> Option<PromptAction> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AskSettlement {
+    Accepted,
+    AlreadyAnswered,
+    StaleRevision { current: i64 },
+}
+
 pub(crate) fn subscriber_map_remove(subs: &mut Vec<Subscriber>, client: ClientId) {
     subs.retain(|s| s.client != client);
 }
@@ -628,14 +671,150 @@ pub(crate) type SessionTable = HashMap<SessionId, LiveSession>;
 #[cfg(test)]
 mod tests {
     use super::{
-        PromptAction, SessionInner, Subscriber, prompt_action, subscriber_map_remove,
-        subscriber_upsert,
+        AskSettlement, PromptAction, SessionInner, Subscriber, prompt_action,
+        subscriber_map_remove, subscriber_upsert,
     };
     use std::collections::HashMap;
 
     use goat_protocol::{AskQuestion, Event, TaskId, ToolCallId};
     use goat_wire::{ClientId, ServerFrame, SessionId, SessionLiveState};
     use tokio::sync::mpsc;
+
+    #[test]
+    fn answering_a_prompt_twice_is_refused_by_the_daemon() {
+        let mut inner = blank_inner();
+        let call = goat_protocol::ToolCallId(7);
+        inner.record_and_fanout(Event::AskStarted {
+            id: TaskId(1),
+            call,
+            questions: Vec::new(),
+        });
+        let revision = inner.open_ask_revision(call).expect("an open prompt");
+
+        assert_eq!(inner.settle_ask(call, revision), AskSettlement::Accepted);
+        assert_eq!(
+            inner.settle_ask(call, revision),
+            AskSettlement::AlreadyAnswered
+        );
+        assert_eq!(inner.open_ask_revision(call), None);
+    }
+
+    #[test]
+    fn answering_with_a_stale_revision_reports_the_current_one() {
+        let mut inner = blank_inner();
+        let call = goat_protocol::ToolCallId(7);
+        inner.record_and_fanout(Event::AskStarted {
+            id: TaskId(1),
+            call,
+            questions: Vec::new(),
+        });
+        let revision = inner.open_ask_revision(call).expect("an open prompt");
+        assert_eq!(
+            inner.settle_ask(call, revision - 1),
+            AskSettlement::StaleRevision { current: revision }
+        );
+        assert_eq!(inner.settle_ask(call, revision), AskSettlement::Accepted);
+    }
+
+    #[test]
+    fn a_reasked_prompt_gets_a_fresh_revision() {
+        let mut inner = blank_inner();
+        let call = goat_protocol::ToolCallId(7);
+        inner.record_and_fanout(Event::AskStarted {
+            id: TaskId(1),
+            call,
+            questions: Vec::new(),
+        });
+        let first = inner.open_ask_revision(call).expect("an open prompt");
+        inner.record_and_fanout(Event::AskDismissed {
+            id: TaskId(1),
+            call,
+        });
+        inner.record_and_fanout(Event::AskStarted {
+            id: TaskId(1),
+            call,
+            questions: Vec::new(),
+        });
+        let second = inner.open_ask_revision(call).expect("a reopened prompt");
+        assert!(second > first, "a reasked prompt must not reuse a revision");
+        assert_eq!(
+            inner.settle_ask(call, first),
+            AskSettlement::StaleRevision { current: second }
+        );
+    }
+
+    #[test]
+    fn answering_a_prompt_that_was_never_asked_is_already_answered() {
+        let mut inner = blank_inner();
+        assert_eq!(
+            inner.settle_ask(goat_protocol::ToolCallId(9), 1),
+            AskSettlement::AlreadyAnswered
+        );
+    }
+
+    #[test]
+    fn an_empty_session_reports_no_retained_window() {
+        let inner = blank_inner();
+        let retained = inner.retained();
+        assert_eq!(retained.oldest, None);
+        assert_eq!(retained.next_seq, 0);
+        assert!(inner.replay_from(0).is_empty());
+    }
+
+    #[test]
+    fn the_retained_window_tracks_the_oldest_surviving_event() {
+        let mut inner = blank_inner();
+        for _ in 0..3 {
+            inner.record_and_fanout(Event::TaskDone {
+                id: TaskId(1),
+                interrupted: false,
+            });
+        }
+        let retained = inner.retained();
+        assert_eq!(retained.oldest, Some(0));
+        assert_eq!(retained.next_seq, 3);
+    }
+
+    #[test]
+    fn replay_returns_only_events_at_or_after_the_cursor() {
+        let mut inner = blank_inner();
+        for _ in 0..5 {
+            inner.record_and_fanout(Event::TaskDone {
+                id: TaskId(1),
+                interrupted: false,
+            });
+        }
+        let replayed = inner.replay_from(3);
+        let seqs: Vec<u64> = replayed.iter().map(|(seq, _)| *seq).collect();
+        assert_eq!(seqs, vec![3, 4]);
+        assert!(inner.replay_from(5).is_empty());
+        assert_eq!(inner.replay_from(0).len(), 5);
+    }
+
+    #[test]
+    fn an_evicted_cursor_falls_outside_the_retained_window() {
+        let mut inner = blank_inner();
+        for _ in 0..(super::MAX_RETAINED_EVENTS + 10) {
+            inner.record_and_fanout(Event::TaskDone {
+                id: TaskId(1),
+                interrupted: false,
+            });
+        }
+        let retained = inner.retained();
+        let oldest = retained.oldest.expect("a full log has an oldest event");
+        assert!(oldest > 0, "the log must have dropped its front");
+        let start = goat_api::decide_watch_start(
+            "e1",
+            retained,
+            &goat_api::WatchFrom::Cursor {
+                cursor: goat_api::Cursor::new("e1", oldest - 1),
+            },
+        );
+        assert!(
+            start.resets(),
+            "an evicted cursor must force a reset snapshot"
+        );
+    }
 
     fn blank_inner() -> SessionInner {
         let (ops, _ops_rx) = mpsc::channel(8);
@@ -655,6 +834,8 @@ mod tests {
             compaction_threshold: None,
             tokens: 0,
             open_asks: 0,
+            ask_revision: 0,
+            ask_revisions: std::collections::HashMap::new(),
             live_processes: 0,
             conversation_id: None,
             awaits_restore: false,
