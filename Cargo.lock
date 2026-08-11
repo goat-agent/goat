@@ -2578,6 +2578,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "goat-protocol",
+ "goat-wire",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "goat-auth"
 version = "0.1.0"
 dependencies = [
@@ -2623,6 +2639,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-browser-host"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "goat-api",
+ "goat-wire",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "goat-bus"
 version = "0.1.0"
 dependencies = [
@@ -2632,6 +2662,19 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "goat-capability"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "goat-api",
+ "goat-wire",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -2700,12 +2743,14 @@ name = "goat-client"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "goat-api",
  "goat-process",
  "goat-protocol",
  "goat-remote",
  "goat-wire",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -2726,6 +2771,7 @@ dependencies = [
  "goat-agent-tool-shell",
  "goat-agent-tool-skill",
  "goat-auth",
+ "goat-browser-host",
  "goat-channel-discord",
  "goat-channel-slack",
  "goat-client",
@@ -2901,8 +2947,11 @@ name = "goat-daemon"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "chrono",
  "futures",
+ "goat-api",
  "goat-auth",
+ "goat-capability",
  "goat-code-store",
  "goat-config",
  "goat-core",
@@ -2912,7 +2961,10 @@ dependencies = [
  "goat-providers",
  "goat-proxy",
  "goat-remote",
+ "goat-store",
+ "goat-types",
  "goat-wire",
+ "pty-process",
  "rustls",
  "serde_json",
  "tempfile",
@@ -3891,6 +3943,7 @@ dependencies = [
 name = "goat-wire"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "futures",
  "goat-protocol",
