@@ -13,6 +13,8 @@ goat-process = { workspace = true }
 goat-protocol = { workspace = true }
 goat-remote = { workspace = true }
 goat-wire = { workspace = true }
+goat-api = { workspace = true }
+tokio-util = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 tracing = { workspace = true }

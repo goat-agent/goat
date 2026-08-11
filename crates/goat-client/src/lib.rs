@@ -12,8 +12,10 @@ use crate::link::Conn;
 
 mod idmap;
 mod link;
+mod session;
 
-pub use link::{LOCAL, Link};
+pub use link::{EnvelopeConn, LOCAL, Link};
+pub use session::{ApiSession, open as open_api, open_serving};
 
 pub const GREET_TIMEOUT: Duration = Duration::from_secs(2);
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
