@@ -1,5 +1,7 @@
 mod conn;
 mod files;
+mod pty;
+mod pty_spawn;
 mod manager;
 mod remote;
 mod session;
