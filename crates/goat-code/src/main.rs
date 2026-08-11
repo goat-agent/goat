@@ -1,4 +1,5 @@
 mod auth;
+mod browser_host;
 mod cli;
 mod headless;
 mod logging;
@@ -66,6 +67,7 @@ async fn main() -> color_eyre::Result<()> {
         Some(Command::Update { force }) => update::run(force).await,
         Some(Command::Provider(command)) => auth::run_provider(command).await,
         Some(Command::Mcp(command)) => mcp::run(command).await,
+        Some(Command::BrowserHost { instance, label }) => browser_host::run(instance, label).await,
         Some(Command::Daemon(command)) => run_daemon_command(command).await,
         Some(Command::Device(command)) => run_device_command(command).await,
         Some(Command::Remote(command)) => run_remote_command(command).await,
