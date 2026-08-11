@@ -1,8 +1,13 @@
 mod codec;
+pub mod envelope;
 mod protocol;
 pub mod transport;
 
 pub use codec::{WireConn, WireError};
+pub use envelope::{
+    CallError, ErrorCode, Execution, Frame, Hello, Id, IdAllocator, Outcome, Role, StreamClass,
+    envelope_fingerprint,
+};
 pub use protocol::{
     BuildId, Busy, ClientFrame, ClientId, ConversationInfo, DeviceInfo, DirEntry, DirEntryKind,
     ModeEntry, RateLimitEntry, ReloadFailure, ReloadReport, ResumeMode, RetryEntry, ServerFrame,
@@ -11,7 +16,6 @@ pub use protocol::{
 
 pub type ServerConn<S> = WireConn<S, ServerFrame, ClientFrame>;
 pub type ClientConn<S> = WireConn<S, ClientFrame, ServerFrame>;
-
 #[cfg(test)]
 mod tests {
     use super::*;
