@@ -122,16 +122,40 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
   validator resolves a query against the vocabulary alone, so it needs no store, bus, or network and
   runs anywhere (`goat doctor`, the config-writing CLIs, `goat reload`); `compile_watch` stays
   authoritative and runs only when a plan is actually built.
-  `Residue::Keep` leaves (github, slack, langfuse) forward unrecognized tokens verbatim to the
+  `Residue::Keep` leaves (github, slack, langfuse, atlassian) forward unrecognized tokens verbatim to the
   service's native search language — including bare terms, so their `TermPolicy` never fires;
   Sentry uses `Residue::KeepTerms`, which forwards bare search text but rejects unknown key-value
-  tokens against its documented issue properties; `Residue::Reject` leaves (linear, notion, tiro)
+  tokens against its documented issue properties; `Residue::Reject` leaves (linear, notion, tiro,
+  datadog, pagerduty, vercel)
   hard-error on unknown keys, and only there does `TermPolicy::Reject` refuse free text. `limit:` is
   resolver-reserved, `@me` is the one
   self-reference, and stream names key persisted `WatchState`, so default stream names never change.
 - Connections are global; `IntegrationAuth` decides how one is established — a pasted `Secret`, an
   `OAuth` round trip, or `External`, meaning a host tool such as `gh` owns the credential and the
-  `config.json` entry is itself the connection marker. Per-agent binding lives in the agent's
+  `config.json` entry is itself the connection marker.
+- **OAuth picks one of two rungs on rmcp's registration ladder, and skips the third on purpose.**
+  `goat-mcp`'s `run_login` takes a `ClientIdentity`: a `preregistered` client wins, and with none set
+  rmcp falls back to Dynamic Client Registration — which is what every leaf but the Google trio uses,
+  and what writes `integrations.<kind>.client_id` back into `config.json`. A leaf that declares
+  `.preregistered()` is saying its authorization server has no `registration_endpoint`, so
+  `goat integration add` prompts for a client id and secret first; the pair lives in
+  `credentials.json` under the `client_id` / `client_secret` slots of the same integration key and is
+  removed together on disconnect.
+- **The third rung, Client ID Metadata Documents, is deferred on purpose — not because it cannot
+  work.** DCR is deprecated in the 2026-07-28 MCP spec and CIMD replaces it, and `mcp.linear.app`,
+  `mcp.sentry.dev` and `mcp.notion.com` already advertise `client_id_metadata_document_supported`
+  (`mcp.atlassian.com` does not). All three still expose a `registration_endpoint`, so nothing is
+  forced yet. Turning it on needs three things in this order, and the order is a hard gate because
+  rmcp picks the CIMD rung whenever the server advertises it and does **not** fall back to DCR when
+  it fails — a document that 404s breaks those three servers' next login:
+  1. a callback port pool for MCP logins only. Add a `bind_loopback_in(ports)` beside
+     `goat_auth::bind_loopback` rather than changing it — `bind_loopback` binds port 0 and cannot
+     fail, and `goat-provider-gemini` and `goat-provider-anthropic` depend on that. Owning a fixed
+     port is already the idiom for a caller that needs one (`goat-provider-openai-codex`,
+     `goat-provider-xai`).
+  2. a test binding the document's `redirect_uris` to that port list and its `client_id` to the URL
+     verbatim, so the pair cannot drift silently.
+  3. the document actually served at that HTTPS URL before the constant naming it lands. Per-agent binding lives in the agent's
   `integrations` config map and now carries only connection-scoped keys (`account`,
   `organization_slug`, `user_id`, `host`, …) — watch policy keys moved to the `watch` section, and
   a stale one fails validation with a pointer there. Raw observations persist losslessly in
@@ -147,7 +171,7 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
 
 ## Where things live
 
-`crates/` is flat, 95 crates, every one prefixed `goat-`. The prefix tells you the family:
+`crates/` is flat, 107 crates, every one prefixed `goat-`. The prefix tells you the family:
 `goat-agent*` is the autonomous actor, `goat-code`/`goat-core`/`goat-engine`/`goat-tui` and the
 `goat-tool-*`/`goat-command-*` families are coding, and `goat-provider*`/`goat-store`/`goat-config`/
 `goat-auth`/`goat-console`/`goat-protocol`/`goat-proxy` are shared. `ls crates/` beats any list
@@ -191,11 +215,29 @@ Placements that contradict the naming:
   serves remote clients through the same `serve_connection` as the local socket, and that is what
   keeps the two from drifting.
 - `goat-mcp` is the **protocol** crate: transports (stdio and streamable HTTP), session lifecycle,
-  result extraction, error classification, OAuth. It knows neither tool system — `goat-engine` owns
-  the `goat_tool::Tool` adapter for local stdio servers, `goat-integration-mcp` owns the
-  `goat_agent_tool::ToolHandler` passthrough for hosted ones. Do not put a tool adapter in it.
-  Its `handshake` module is the only place that names a protocol revision or decides which one to
-  speak; no other crate mentions an MCP version.
+  result extraction, error classification, OAuth. It knows neither tool system and no tool adapter
+  belongs in it. Its `handshake` module is the only place that names a protocol revision or decides
+  which one to speak; no other crate mentions an MCP version.
+- `goat-mcp-tools` owns **both** tool shells over one neutral pair, `ResolvedTool` and
+  `McpToolSource`: `install` builds `goat_agent_tool::ToolHandler`s for the agent, `adapt` builds
+  `goat_tool::Tool`s for code. Sources plug in and apply their own policy before the shell sees a
+  tool — `goat-integration-mcp`'s `code_tools`/`register` for hosted integrations,
+  `goat-mcp-tools::from_manager` for `goat mcp` servers. Add a source, not a pair of adapters; the
+  shells stay at two however many sources there are. `McpToolSource::call` takes an optional
+  `AgentId` because a hosted integration resolves its binding per calling agent; sources that have
+  no such axis ignore it.
+- **Both tool sources reach both consumers, but not on the same terms.** Registration is global and
+  selection is per-consumer: an agent gets the integrations bound in its own `config.json` plus
+  every user-scope `goat mcp` server, filtered by its `tools` selectors; a code session gets every
+  connected integration and every user-scope server, unfiltered, because a person is driving it.
+  Project-scope `goat mcp` servers stay code-only — the agent has no working directory, so
+  `goat_mcp::load_user_manager` cannot even see them.
+- `goat-integration`'s `shape` module is the shared parser skeleton every watch leaf maps through:
+  `envelope`/`items` unwrap whichever key a server wraps its list in (one level of nesting included),
+  `more` reads whichever pagination flag it sends, `text`/`required` pluck a field by a list of
+  candidate names with dotted paths for nested objects, and `squeeze` clamps a summary. A leaf that
+  needs no per-service shaping beyond that needs no `parse.rs` at all — atlassian, datadog,
+  pagerduty and vercel each map inline in `watch.rs`. Do not re-derive an envelope key list in a leaf.
 - `goat-integration`'s `watch` module is the one polling driver (`run_workflow`), and it does not
   know rmcp — that is why `goat-integration-github`, which shells out to `gh`, uses it too. Diff
   state stays per source under the unchanged `(agent, integration, account, stream)` key even

@@ -13,6 +13,7 @@ goat-agent-tool  = { workspace = true }
 goat-auth        = { workspace = true }
 goat-integration = { workspace = true }
 goat-mcp         = { workspace = true }
+goat-mcp-tools   = { workspace = true }
 goat-types       = { workspace = true }
 async-trait = { workspace = true }
 base64      = { workspace = true }

@@ -401,7 +401,8 @@ async fn login(context: &Context, name: &str, scope: Option<McpScope>) -> color_
             "OAuth login is only available for HTTP MCP servers",
         ));
     };
-    let authorization = goat_mcp::auth::run_login(&server.url, &[], &|url| {
+    let identity = goat_mcp::auth::ClientIdentity::default();
+    let authorization = goat_mcp::auth::run_login(&server.url, &[], &identity, &|url| {
         ui::pair("approve in browser", url);
         let _ = open::that(url);
     })

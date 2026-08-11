@@ -1,5 +1,6 @@
 use std::fmt::Write as _;
 
+use goat_integration::shape;
 use goat_integration::{IntegrationError, IntegrationResult};
 use serde_json::Value;
 
@@ -34,29 +35,14 @@ impl ViewRow {
 }
 
 pub fn has_more(data: &Value) -> bool {
-    ["has_more", "hasMore"]
-        .iter()
-        .find_map(|key| data.get(key).and_then(Value::as_bool))
-        .unwrap_or(false)
+    shape::more(data)
 }
 
 pub fn parse_rows(data: &Value) -> IntegrationResult<Vec<ViewRow>> {
-    row_array(data)
-        .ok_or_else(|| {
-            IntegrationError::Service(format!("notion response has no row list: {data}"))
-        })?
+    shape::items("notion", data, &[])?
         .iter()
         .map(parse_row)
         .collect()
-}
-
-fn row_array(data: &Value) -> Option<&Vec<Value>> {
-    if let Some(array) = data.as_array() {
-        return Some(array);
-    }
-    ["results", "rows", "data", "items", "nodes"]
-        .iter()
-        .find_map(|key| data.get(key).and_then(Value::as_array))
 }
 
 fn parse_row(node: &Value) -> IntegrationResult<ViewRow> {

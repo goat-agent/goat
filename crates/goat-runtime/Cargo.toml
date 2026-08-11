@@ -23,6 +23,8 @@ goat-providers    = { workspace = true }
 goat-proxy        = { workspace = true }
 goat-channel          = { workspace = true }
 goat-integration      = { workspace = true }
+goat-mcp              = { workspace = true }
+goat-mcp-tools        = { workspace = true }
 goat-render           = { workspace = true }
 goat-agent-tool             = { workspace = true }
 goat-agent-tool-schedule    = { workspace = true }

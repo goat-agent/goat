@@ -154,8 +154,20 @@ goat-channel            = { path = "crates/goat-channel" }
 goat-channel-discord    = { path = "crates/goat-channel-discord" }
 goat-channel-slack      = { path = "crates/goat-channel-slack" }
 goat-render             = { path = "crates/goat-render" }
+goat-mcp-tools          = { path = "crates/goat-mcp-tools" }
 goat-integration        = { path = "crates/goat-integration" }
 goat-integration-mcp    = { path = "crates/goat-integration-mcp" }
+goat-integration-asana = { path = "crates/goat-integration-asana" }
+goat-integration-atlassian = { path = "crates/goat-integration-atlassian" }
+goat-integration-datadog = { path = "crates/goat-integration-datadog" }
+goat-integration-intercom = { path = "crates/goat-integration-intercom" }
+goat-integration-pagerduty = { path = "crates/goat-integration-pagerduty" }
+goat-integration-stripe = { path = "crates/goat-integration-stripe" }
+goat-integration-supabase = { path = "crates/goat-integration-supabase" }
+goat-integration-vercel = { path = "crates/goat-integration-vercel" }
+goat-integration-gcalendar = { path = "crates/goat-integration-gcalendar" }
+goat-integration-gdrive = { path = "crates/goat-integration-gdrive" }
+goat-integration-gmail = { path = "crates/goat-integration-gmail" }
 goat-integration-github = { path = "crates/goat-integration-github" }
 goat-integration-langfuse = { path = "crates/goat-integration-langfuse" }
 goat-integration-linear = { path = "crates/goat-integration-linear" }
@@ -187,7 +199,7 @@ tokio-stream            = { version = "0.1" }
 pty-process             = { version = "0.5", features = ["async"] }
 inventory               = "0.3"
 anyhow                  = "1"
-toml                    = "0.8"
+toml_edit               = { version = "0.25", features = ["serde"] }
 sqlx                    = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate", "chrono", "uuid", "json"] }
 sqlite-vec              = "0.1"
 libsqlite3-sys          = "0.37"
