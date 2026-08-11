@@ -72,6 +72,17 @@ pub async fn connect(
     host: &str,
     credentials: &DeviceCredentials,
 ) -> Result<(DeviceSink, DeviceStream), RemoteError> {
+    connect_as::<ClientFrame, ServerFrame>(host, credentials).await
+}
+
+pub async fn connect_as<Out, In>(
+    host: &str,
+    credentials: &DeviceCredentials,
+) -> Result<(ws::FrameSink<Out>, ws::FrameStream<In>), RemoteError>
+where
+    Out: serde::Serialize + Send + 'static,
+    In: serde::de::DeserializeOwned + Send + 'static,
+{
     let certs = load_certs(&credentials.cert_pem)?;
     let key = load_key(&credentials.key_pem)?;
     let tls = dial(host, &credentials.server_fingerprint, Some((certs, key))).await?;
@@ -82,7 +93,7 @@ pub async fn connect(
     )
     .await
     .map_err(|err| RemoteError::Handshake(err.to_string()))?;
-    Ok(ws::adapt::<_, ClientFrame, ServerFrame>(ws))
+    Ok(ws::adapt::<_, Out, In>(ws))
 }
 
 async fn dial(
