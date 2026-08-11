@@ -147,7 +147,7 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
 
 ## Where things live
 
-`crates/` is flat, 92 crates, every one prefixed `goat-`. The prefix tells you the family:
+`crates/` is flat, 95 crates, every one prefixed `goat-`. The prefix tells you the family:
 `goat-agent*` is the autonomous actor, `goat-code`/`goat-core`/`goat-engine`/`goat-tui` and the
 `goat-tool-*`/`goat-command-*` families are coding, and `goat-provider*`/`goat-store`/`goat-config`/
 `goat-auth`/`goat-console`/`goat-protocol`/`goat-proxy` are shared. `ls crates/` beats any list
@@ -162,6 +162,29 @@ Placements that contradict the naming:
   provider, covering thirteen hosted providers plus the local trio (ollama, lmstudio, llama-cpp).
 - `goat-integration-mcp` registers nothing either — same idea, one family over. It is the shared base
   every hosted-MCP integration builds on, so a leaf is a `McpService` descriptor plus its parser.
+- `goat-wire` holds two surfaces that do not know each other. `protocol.rs` is the original
+  `ClientFrame`/`ServerFrame` pair, hashed into `wire_fingerprint` together with `Op` and `Event` —
+  which is why adding one `Event` variant refuses every older client. `envelope.rs` + `peer.rs` are
+  the replacement: six frame kinds (`hello`, `req`, `res`, `data`, `end`, `cancel`) whose payloads
+  are opaque JSON, so `envelope_fingerprint` moves only when the envelope itself changes. A test
+  asserts the envelope schema never mentions engine vocabulary; keep it that way or the whole point
+  is lost. `peer.rs` is the duplex state machine: one reader task that never awaits a handler, three
+  outbound lanes (control > data > requests) so a flooding stream cannot starve a response, and an
+  id space split by parity — odd is client-originated, even is daemon-originated.
+- `goat-api` is the method surface: `Method` contracts with per-method versions, a `Grant`, a
+  `Direction`, and a `Shape`. `methods_fingerprint.txt` freezes every contract, so changing a param
+  type without bumping its version fails CI — that is the only thing making "hash the envelope, not
+  the payload" safe. Its `Router` is built from *grants*, not from the transport: a router without
+  `Grant::Admin` does not contain the admin routes at all, so a peer calling one gets
+  `unknown_method` rather than a check someone can forget.
+- `goat-capability` is the daemon-side broker for capabilities that live on the human's machine
+  (`host.browser`, later `host.simulator`). Routing is a **lease** keyed by device, provider
+  instance and boot epoch, not a permanent pin: a disconnected provider pauses the lease instead of
+  killing the session, and the same instance returning with a new boot epoch (a different browser
+  profile) requires an explicit rebind. Side-effecting calls never fail over to another machine, and
+  every error carries an execution disposition (`NotStarted` / `KnownFailed` / `OutcomeUnknown`) so
+  a model is told whether retrying is safe. Human decisions do **not** go through this path — an
+  answer is a durable resource settled by a compare-and-set, never a connection-scoped reverse call.
 - `goat-remote` holds **both halves** of the mTLS surface: `server` (accept, pair, verify) and
   `client` (enroll, connect). `ws::adapt` is the one WebSocket↔frame adapter, used in both
   directions. Keep new transport work here rather than growing a second remote path — the daemon
