@@ -1,4 +1,5 @@
 mod conn;
+mod files;
 mod manager;
 mod remote;
 mod session;
