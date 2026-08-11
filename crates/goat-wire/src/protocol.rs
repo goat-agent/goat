@@ -18,8 +18,11 @@ pub struct BuildId {
 
 impl BuildId {
     pub fn current() -> Option<Self> {
-        let path = std::env::current_exe().ok()?;
-        let meta = std::fs::metadata(&path).ok()?;
+        Self::of(&std::env::current_exe().ok()?)
+    }
+
+    pub fn of(path: &std::path::Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
         let mtime = meta
             .modified()
             .ok()?
