@@ -57,6 +57,31 @@ impl Link {
         }
     }
 
+    pub async fn dial_envelope(&self) -> Result<EnvelopeConn, ClientError> {
+        match self {
+            Self::Local { socket_path, .. } => {
+                let stream = transport::connect(socket_path).await?;
+                let conn: goat_wire::EnvelopeConn<transport::Stream> =
+                    goat_wire::EnvelopeConn::new(stream);
+                let (sink, source) = conn.split();
+                Ok(EnvelopeConn {
+                    sink: Box::pin(sink),
+                    source: Box::pin(source),
+                })
+            }
+            Self::Remote {
+                host, credentials, ..
+            } => {
+                let (sink, source) = goat_remote::client::connect_as::<
+                    goat_wire::envelope::Frame,
+                    goat_wire::envelope::Frame,
+                >(host, credentials)
+                .await?;
+                Ok(EnvelopeConn { sink, source })
+            }
+        }
+    }
+
     pub async fn dial(&self) -> Result<Conn, ClientError> {
         match self {
             Self::Local { socket_path, .. } => {
@@ -93,6 +118,22 @@ impl Link {
             } => Some((socket_path, daemon_exe)),
             Self::Remote { .. } => None,
         }
+    }
+}
+
+pub type EnvelopeSink = Pin<Box<dyn Sink<goat_wire::envelope::Frame, Error = WireError> + Send>>;
+pub type EnvelopeSource =
+    Pin<Box<dyn Stream<Item = Result<goat_wire::envelope::Frame, WireError>> + Send>>;
+
+pub struct EnvelopeConn {
+    pub sink: EnvelopeSink,
+    pub source: EnvelopeSource,
+}
+
+impl EnvelopeConn {
+    #[must_use]
+    pub fn split(self) -> (EnvelopeSink, EnvelopeSource) {
+        (self.sink, self.source)
     }
 }
 
