@@ -1,5 +1,6 @@
 mod codec;
 pub mod envelope;
+pub mod peer;
 mod protocol;
 pub mod transport;
 
@@ -16,6 +17,8 @@ pub use protocol::{
 
 pub type ServerConn<S> = WireConn<S, ServerFrame, ClientFrame>;
 pub type ClientConn<S> = WireConn<S, ClientFrame, ServerFrame>;
+pub type EnvelopeConn<S> = WireConn<S, Frame, Frame>;
+
 #[cfg(test)]
 mod tests {
     use super::*;

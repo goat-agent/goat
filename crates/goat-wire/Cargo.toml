@@ -15,12 +15,14 @@ serde_json = { workspace = true }
 schemars = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+async-trait = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 sha2 = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
