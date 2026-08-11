@@ -1,3 +1,4 @@
+mod api;
 mod conn;
 mod files;
 mod pty;
@@ -11,6 +12,8 @@ use std::path::{Path, PathBuf};
 use goat_wire::transport;
 use tokio_util::sync::CancellationToken;
 
+pub use crate::api::{DaemonApi, LOCAL_GRANTS, REMOTE_GRANTS, build as build_router};
+pub use crate::conn::ClientOrigin;
 pub use crate::manager::{CodeSessionHub, ReloadRequest};
 
 #[derive(Debug, thiserror::Error)]

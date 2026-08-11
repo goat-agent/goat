@@ -14,7 +14,12 @@ goat-protocol = { workspace = true }
 goat-core = { workspace = true }
 goat-config = { workspace = true }
 goat-wire = { workspace = true }
+goat-api = { workspace = true }
+goat-store = { workspace = true }
+goat-types = { workspace = true }
+chrono = { workspace = true }
 pty-process = { workspace = true }
+goat-capability = { workspace = true }
 goat-remote = { workspace = true }
 goat-engine = { workspace = true }
 goat-auth = { workspace = true }
