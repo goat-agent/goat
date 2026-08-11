@@ -515,13 +515,11 @@ impl CodeSessionHub {
             .await
     }
 
-    pub(crate) async fn submit(
+    async fn prepare_submit(
         &self,
         session: SessionId,
-        client_sender: &mpsc::Sender<ServerFrame>,
-        correlation: u64,
-        mut op: Op,
-    ) -> Result<(), String> {
+        op: &mut Op,
+    ) -> Result<(mpsc::Sender<Op>, goat_protocol::TaskId), String> {
         let live = {
             let table = self.inner.sessions.lock().await;
             table.get(&session).cloned()
@@ -530,15 +528,26 @@ impl CodeSessionHub {
         let (ops, task) = {
             let mut inner = live.inner.lock().await;
             let task = inner.allocate_task();
-            inner.record_op(task, &op);
+            inner.record_op(task, op);
             (inner.ops.clone(), task)
         };
-        match &mut op {
+        match op {
             Op::SubmitMessage { id, .. } | Op::SubmitShell { id, .. } | Op::Compact { id, .. } => {
                 *id = task;
             }
             _ => {}
         }
+        Ok((ops, task))
+    }
+
+    pub(crate) async fn submit(
+        &self,
+        session: SessionId,
+        client_sender: &mpsc::Sender<ServerFrame>,
+        correlation: u64,
+        mut op: Op,
+    ) -> Result<(), String> {
+        let (ops, task) = self.prepare_submit(session, &mut op).await?;
         let _ = client_sender
             .send(ServerFrame::CorrelationAssigned {
                 session,
@@ -547,6 +556,16 @@ impl CodeSessionHub {
             })
             .await;
         ops.send(op).await.map_err(|_| "engine closed".to_owned())
+    }
+
+    pub(crate) async fn submit_task(
+        &self,
+        session: SessionId,
+        mut op: Op,
+    ) -> Result<goat_protocol::TaskId, String> {
+        let (ops, task) = self.prepare_submit(session, &mut op).await?;
+        ops.send(op).await.map_err(|_| "engine closed".to_owned())?;
+        Ok(task)
     }
 
     pub async fn delegate_code(
