@@ -392,28 +392,7 @@ impl CodeSessionHub {
             live
         };
         let live = live.ok_or("unknown session")?;
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            let notified = {
-                let inner = live.inner.lock().await;
-                if inner.subscribe_ready() {
-                    break;
-                }
-                inner.ready.clone()
-            };
-            let wait = notified.notified();
-            tokio::pin!(wait);
-            wait.as_mut().enable();
-            {
-                let inner = live.inner.lock().await;
-                if inner.subscribe_ready() {
-                    break;
-                }
-            }
-            if tokio::time::timeout_at(deadline, wait).await.is_err() {
-                break;
-            }
-        }
+        wait_subscribe_ready(&live).await;
         let (snapshot, live_rx) = {
             let mut inner = live.inner.lock().await;
             let snapshot = inner.build_snapshot();
@@ -785,6 +764,31 @@ impl CodeSessionHub {
             table.remove(&session);
         }
         self.unregister_conversation_if_owner(session).await;
+    }
+}
+
+async fn wait_subscribe_ready(live: &LiveSession) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let notified = {
+            let inner = live.inner.lock().await;
+            if inner.subscribe_ready() {
+                return;
+            }
+            inner.ready.clone()
+        };
+        let wait = notified.notified();
+        tokio::pin!(wait);
+        wait.as_mut().enable();
+        {
+            let inner = live.inner.lock().await;
+            if inner.subscribe_ready() {
+                return;
+            }
+        }
+        if tokio::time::timeout_at(deadline, wait).await.is_err() {
+            return;
+        }
     }
 }
 
