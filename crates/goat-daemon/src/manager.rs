@@ -311,6 +311,8 @@ impl CodeSessionHub {
         let id = SessionId(self.inner.next_session.fetch_add(1, Ordering::Relaxed));
         let ready = Arc::new(tokio::sync::Notify::new());
         let inner = Arc::new(Mutex::new(SessionInner {
+            ask_revision: 0,
+            ask_revisions: std::collections::HashMap::new(),
             id,
             cwd: normalized,
             created_at: Self::now_ms(),
@@ -406,6 +408,93 @@ impl CodeSessionHub {
         let replay_sent = spawn_subscriber_bridge(sender, vec![snapshot], live_rx);
         let _ = replay_sent.await;
         Ok(())
+    }
+
+    pub(crate) async fn watch_open(
+        &self,
+        session: SessionId,
+        client: ClientId,
+        epoch: &str,
+        from: &goat_api::WatchFrom,
+        sender: mpsc::Sender<ServerFrame>,
+        lagged: tokio_util::sync::CancellationToken,
+    ) -> Result<(Vec<goat_api::WatchItem>, String), String> {
+        let live = {
+            let table = self.inner.sessions.lock().await;
+            let live = table.get(&session).cloned();
+            if let Some(live) = &live {
+                live.inner.lock().await.pending_attaches += 1;
+            }
+            live
+        };
+        let live = live.ok_or("unknown session")?;
+        wait_subscribe_ready(&live).await;
+        let (backlog, cwd, live_rx) = {
+            let mut inner = live.inner.lock().await;
+            let start = goat_api::decide_watch_start(epoch, inner.retained(), from);
+            let backlog = match start {
+                goat_api::WatchStart::Snapshot { reset } => {
+                    let watermark = inner.retained().next_seq;
+                    vec![crate::api::snapshot_item(
+                        inner.build_snapshot(),
+                        inner.cwd.clone(),
+                        epoch,
+                        watermark,
+                        reset,
+                    )]
+                }
+                goat_api::WatchStart::Replay { from_seq } => inner
+                    .replay_from(from_seq)
+                    .into_iter()
+                    .map(|(seq, event)| goat_api::WatchItem::Event {
+                        cursor: goat_api::cursor_for(epoch, seq),
+                        event: Box::new(event),
+                    })
+                    .collect(),
+            };
+            let (bridge_tx, bridge_rx) = mpsc::channel(SUBSCRIBER_QUEUE);
+            crate::session::subscriber_upsert(&mut inner.subscribers, client, bridge_tx, lagged);
+            inner.pending_attaches = inner.pending_attaches.saturating_sub(1);
+            let clients = inner.presence();
+            let cwd = inner.cwd.clone();
+            broadcast_presence(&mut inner, clients);
+            (backlog, cwd, bridge_rx)
+        };
+        let replay_sent = spawn_subscriber_bridge(sender, Vec::new(), live_rx);
+        let _ = replay_sent.await;
+        Ok((backlog, cwd))
+    }
+
+    pub(crate) async fn settle_ask(
+        &self,
+        session: SessionId,
+        call: goat_protocol::ToolCallId,
+        revision: i64,
+        answers: Vec<String>,
+    ) -> Result<crate::session::AskSettlement, String> {
+        let live = {
+            let table = self.inner.sessions.lock().await;
+            table.get(&session).cloned()
+        };
+        let live = live.ok_or("unknown session")?;
+        let (settlement, ops) = {
+            let mut inner = live.inner.lock().await;
+            if revision == 0
+                && let Some(current) = inner.open_ask_revision(call)
+            {
+                return Ok(crate::session::AskSettlement::StaleRevision { current });
+            }
+            (inner.settle_ask(call, revision), inner.ops.clone())
+        };
+        if settlement == crate::session::AskSettlement::Accepted {
+            let op = Op::Answer {
+                id: goat_protocol::TaskId(0),
+                call,
+                answers,
+            };
+            ops.send(op).await.map_err(|_| "engine closed".to_owned())?;
+        }
+        Ok(settlement)
     }
 
     pub(crate) async fn unsubscribe(&self, session: SessionId, client: ClientId) {
