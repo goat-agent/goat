@@ -63,6 +63,7 @@ goat-daemon = { path = "crates/goat-daemon" }
 goat-client = { path = "crates/goat-client" }
 goat-remote = { path = "crates/goat-remote" }
 goat-api = { path = "crates/goat-api" }
+goat-capability = { path = "crates/goat-capability" }
 
 tokio                   = { version = "1.47", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt", "codec"] }
