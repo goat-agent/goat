@@ -209,6 +209,20 @@ Placements that contradict the naming:
   every error carries an execution disposition (`NotStarted` / `KnownFailed` / `OutcomeUnknown`) so
   a model is told whether retrying is safe. Human decisions do **not** go through this path — an
   answer is a durable resource settled by a compare-and-set, never a connection-scoped reverse call.
+- **Desktop control is `host.computer`, provided by a signed client app — never by this binary.**
+  There was a `goat-tool-computer` that drove the desktop in-process with synthetic input and
+  pixel coordinates. It was deleted because three things were wrong at once and none could be fixed
+  here: the `goat` binary is ad-hoc signed (`TeamIdentifier=not set`), and macOS keys Accessibility
+  and Screen Recording grants to the code signature, so every rebuild forced the human to re-grant;
+  `DesktopBackend` acted on the *daemon* host, which is the wrong machine for `goat code --remote`;
+  and driving Terminal.app sidesteps the Seatbelt profile `goat-sandbox` puts on every shell call,
+  voiding the sandbox. A capability provider is a signed `.app` with a stable identity, so it holds
+  its grants across updates. The contract is element tree plus refs plus named actions — not pixel
+  coordinates, with screenshots as a secondary channel — and the provider must refuse to automate
+  terminal apps, which is what keeps the shell sandbox meaningful. Note the split differs from
+  `host.browser` on purpose: CDP is already a wire protocol, so the browser vocabulary stays in
+  Rust and only commands cross, whereas `AXUIElement` handles are process-local opaque pointers, so
+  tree walking and ref minting happen inside the provider.
 - `goat-remote` holds **both halves** of the mTLS surface: `server` (accept, pair, verify) and
   `client` (enroll, connect). `ws::adapt` is the one WebSocket↔frame adapter, used in both
   directions. Keep new transport work here rather than growing a second remote path — the daemon
