@@ -129,11 +129,7 @@ async fn run_loop(
                 }
             }
             () = tokio::time::sleep_until(deadline) => {
-                if store.is_paused().await.unwrap_or(false) {
-                    tokio::time::sleep(StdDuration::from_secs(30)).await;
-                } else {
-                    drain_due(&store, &bus, &mut heap).await;
-                }
+                drain_due(&store, &bus, &mut heap).await;
             }
             _ = reclaim_ticker.tick() => {
                 let stale_before = Utc::now() - chrono::Duration::minutes(30);

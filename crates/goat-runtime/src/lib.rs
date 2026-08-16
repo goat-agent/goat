@@ -165,9 +165,6 @@ impl AgentRuntime {
                     let store = store.clone();
                     let models = models.clone();
                     async move {
-                        if store.is_paused().await.unwrap_or(false) {
-                            return;
-                        }
                         let agent_models = models.lock().map(|m| m.clone()).unwrap_or_default();
                         run_consolidation(&engine, &providers, &store, &agent_models).await;
                     }

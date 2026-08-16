@@ -339,10 +339,6 @@ pub trait Store: Send + Sync + 'static {
 
     async fn recent_tool_invocations(&self, limit: usize) -> StoreResult<Vec<ToolLogRow>>;
 
-    async fn set_paused(&self, paused: bool) -> StoreResult<()>;
-
-    async fn is_paused(&self) -> StoreResult<bool>;
-
     async fn recent(
         &self,
         agent: AgentId,
@@ -861,27 +857,6 @@ impl Store for SqliteStore {
         .execute(&*self.pool)
         .await?;
         Ok(())
-    }
-
-    async fn set_paused(&self, paused: bool) -> StoreResult<()> {
-        sqlx::query(
-            r"INSERT INTO runtime_flags (key, value, updated_at)
-               VALUES ('paused', ?, ?)
-               ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-        )
-        .bind(if paused { "1" } else { "0" })
-        .bind(Utc::now().to_rfc3339())
-        .execute(&*self.pool)
-        .await?;
-        Ok(())
-    }
-
-    async fn is_paused(&self) -> StoreResult<bool> {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT value FROM runtime_flags WHERE key = 'paused'")
-                .fetch_optional(&*self.pool)
-                .await?;
-        Ok(row.is_some_and(|(v,)| v == "1"))
     }
 
     async fn recent_tool_invocations(&self, limit: usize) -> StoreResult<Vec<ToolLogRow>> {
