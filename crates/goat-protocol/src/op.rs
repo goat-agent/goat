@@ -34,10 +34,6 @@ pub enum Op {
         call: ToolCallId,
         decision: PlanDecision,
     },
-    Login {
-        provider: String,
-        credential: LoginCredential,
-    },
     AddAccount {
         provider: String,
         name: String,

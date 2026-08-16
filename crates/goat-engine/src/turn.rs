@@ -158,8 +158,7 @@ pub(crate) async fn handle_idle_op(op: Op, ctx: &SessionContext, state: &mut Ses
         Op::ListConversations {} => {
             crate::conversations::handle_list_conversations(store, &ctx.cwd, events).await;
         }
-        Op::Login { .. }
-        | Op::AddAccount { .. }
+        Op::AddAccount { .. }
         | Op::RemoveAccount { .. }
         | Op::ListRewindPoints { .. }
         | Op::Rewind { .. }
