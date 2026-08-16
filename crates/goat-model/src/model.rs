@@ -20,18 +20,6 @@ impl Model {
         }
     }
 
-    pub fn with_account(
-        provider: ProviderId,
-        account: Option<String>,
-        id: impl Into<String>,
-    ) -> Self {
-        Self {
-            provider,
-            account,
-            id: id.into(),
-        }
-    }
-
     pub fn id(&self) -> &str {
         &self.id
     }
