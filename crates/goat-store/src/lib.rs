@@ -2925,7 +2925,7 @@ mod tests {
 
         for (table, expected) in [
             ("_sqlx_migrations", 23_i64),
-            ("_sqlx_migrations_agent", 22),
+            ("_sqlx_migrations_agent", 23),
             ("_sqlx_migrations_memory", 2),
             ("_sqlx_migrations_code", 4),
             ("_sqlx_migrations_proxy", 1),
