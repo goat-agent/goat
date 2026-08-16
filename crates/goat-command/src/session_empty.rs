@@ -13,7 +13,6 @@ pub struct EmptySession {
     pub accounts: Vec<AccountEntry>,
     theme: Theme,
     mouse_capture: bool,
-    computer_use: bool,
     browser: bool,
     text: String,
     scroll: usize,
@@ -33,7 +32,6 @@ impl Default for EmptySession {
             accounts: Vec::new(),
             theme: Theme::default(),
             mouse_capture: false,
-            computer_use: false,
             browser: false,
             text: String::new(),
             scroll: 0,
@@ -65,14 +63,6 @@ impl Settings for EmptySession {
 
     fn set_mouse_capture(&mut self, enabled: bool) {
         self.mouse_capture = enabled;
-    }
-
-    fn computer_use(&self) -> bool {
-        self.computer_use
-    }
-
-    fn set_computer_use(&mut self, enabled: bool) {
-        self.computer_use = enabled;
     }
 
     fn browser(&self) -> bool {
@@ -241,7 +231,6 @@ impl Session for EmptySession {
             skill_count: 0,
             transcript_entries: 0,
             mouse_capture: self.mouse_capture,
-            computer_use: self.computer_use,
             browser: self.browser,
             dark_theme: self.theme.is_dark(),
             log_path: None,

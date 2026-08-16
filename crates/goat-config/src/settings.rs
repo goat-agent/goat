@@ -18,7 +18,6 @@ pub enum ThemeChoice {
 #[serde(default)]
 pub struct Config {
     pub theme: ThemeChoice,
-    pub computer_use_enabled: bool,
     pub browser_enabled: bool,
     pub mouse_capture_enabled: bool,
     #[serde(alias = "remote")]
@@ -144,7 +143,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             theme: ThemeChoice::default(),
-            computer_use_enabled: false,
             browser_enabled: false,
             mouse_capture_enabled: true,
             devices: DeviceConfig::default(),
@@ -321,7 +319,6 @@ mod tests {
     fn round_trips_through_json() {
         let cfg = Config {
             theme: ThemeChoice::Light,
-            computer_use_enabled: false,
             browser_enabled: true,
             mouse_capture_enabled: false,
             devices: DeviceConfig::default(),

@@ -151,7 +151,6 @@ struct SettingsState {
     theme: Theme,
     terminal_bg: Option<ratatui::style::Color>,
     mouse_capture: bool,
-    computer_use: bool,
     browser: bool,
     theme_changed: bool,
     save_failed: bool,
@@ -311,7 +310,6 @@ impl App {
                 theme,
                 terminal_bg: None,
                 mouse_capture: cfg.mouse_capture_enabled,
-                computer_use: cfg.computer_use_enabled,
                 browser: cfg.browser_enabled,
                 theme_changed: false,
                 save_failed: false,
@@ -1695,17 +1693,6 @@ impl Settings for SettingsState {
         self.persist_config(&cfg);
     }
 
-    fn computer_use(&self) -> bool {
-        self.computer_use
-    }
-
-    fn set_computer_use(&mut self, enabled: bool) {
-        self.computer_use = enabled;
-        let mut cfg = goat_config::Config::load();
-        cfg.computer_use_enabled = enabled;
-        self.persist_config(&cfg);
-    }
-
     fn browser(&self) -> bool {
         self.browser
     }
@@ -1807,7 +1794,6 @@ impl Session for App {
             skill_count: self.commands.specs().len(),
             transcript_entries: self.viewport.transcript.entry_count(),
             mouse_capture: self.settings.mouse_capture,
-            computer_use: self.settings.computer_use,
             browser: self.settings.browser,
             dark_theme: self.settings.theme.is_dark(),
             log_path: goat_config::log_dir().map(|dir| format!("{}/goat.log", dir.display())),

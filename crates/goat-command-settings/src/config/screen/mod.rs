@@ -27,7 +27,6 @@ pub use state::{ConfigOutcome, StageKind};
 pub struct ConfigScreenSettings {
     pub dark_theme: bool,
     pub mouse_capture: bool,
-    pub computer_use: bool,
     pub browser: bool,
 }
 
@@ -38,7 +37,6 @@ pub struct ConfigScreen {
     stage: InputStage,
     dark_theme: bool,
     mouse_capture: bool,
-    computer_use: bool,
     browser: bool,
     error: Option<String>,
 }
@@ -52,7 +50,6 @@ impl ConfigScreen {
             stage: InputStage::List,
             dark_theme: settings.dark_theme,
             mouse_capture: settings.mouse_capture,
-            computer_use: settings.computer_use,
             browser: settings.browser,
             error: None,
         };
@@ -130,7 +127,7 @@ impl ConfigScreen {
                 .provider_rows()
                 .get(index)
                 .is_some_and(|row| row.kind != RowKind::ProviderHeader),
-            Section::Appearance => index <= 3,
+            Section::Appearance => index <= 2,
         }
     }
 
@@ -191,7 +188,7 @@ impl ConfigScreen {
                 }
             }
             Section::Appearance => {
-                if self.cursor < 3 {
+                if self.cursor < 2 {
                     self.cursor += 1;
                 }
             }
@@ -298,11 +295,6 @@ impl ConfigScreen {
                     ConfigOutcome::SetMouseCapture { enabled }
                 }
                 2 => {
-                    let enabled = !self.computer_use;
-                    self.computer_use = enabled;
-                    ConfigOutcome::SetComputerUse { enabled }
-                }
-                3 => {
                     let enabled = !self.browser;
                     self.browser = enabled;
                     ConfigOutcome::SetBrowser { enabled }
@@ -422,7 +414,7 @@ impl ConfigScreen {
                     Section::Providers => {
                         self.provider_rows().len() + self.providers.len().saturating_sub(1)
                     }
-                    Section::Appearance => 4,
+                    Section::Appearance => 3,
                 };
                 clamp_u16(rows.max(1))
                     .saturating_add(OVERLAY_CHROME)
@@ -662,15 +654,6 @@ impl ConfigScreen {
                 theme,
                 width,
                 self.cursor == 2,
-                "computer use",
-                self.computer_use,
-                "on",
-                "off",
-            ),
-            appearance_row(
-                theme,
-                width,
-                self.cursor == 3,
                 "browser",
                 self.browser,
                 "on",
@@ -715,10 +698,6 @@ impl ConfigScreen {
             }
             ConfigOutcome::SetMouseCapture { enabled } => {
                 session.settings().set_mouse_capture(enabled);
-                ScreenOutcome::Continue
-            }
-            ConfigOutcome::SetComputerUse { enabled } => {
-                session.settings().set_computer_use(enabled);
                 ScreenOutcome::Continue
             }
             ConfigOutcome::SetBrowser { enabled } => {
@@ -878,7 +857,6 @@ mod tests {
             ConfigScreenSettings {
                 dark_theme: true,
                 mouse_capture: true,
-                computer_use: false,
                 browser: false,
             },
         )

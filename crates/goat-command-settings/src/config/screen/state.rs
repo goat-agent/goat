@@ -58,9 +58,6 @@ pub enum ConfigOutcome {
     SetMouseCapture {
         enabled: bool,
     },
-    SetComputerUse {
-        enabled: bool,
-    },
     SetBrowser {
         enabled: bool,
     },

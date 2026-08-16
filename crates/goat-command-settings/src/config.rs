@@ -13,7 +13,6 @@ pub(crate) fn open_config(session: &mut dyn Session) -> CommandEffect {
         ConfigScreenSettings {
             dark_theme: snapshot.dark_theme,
             mouse_capture: snapshot.mouse_capture,
-            computer_use: snapshot.computer_use,
             browser: snapshot.browser,
         },
     )))

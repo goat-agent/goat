@@ -46,7 +46,6 @@ goat-tool-shell = { path = "crates/goat-tool-shell" }
 goat-tool-search = { path = "crates/goat-tool-search" }
 goat-tool-skill = { path = "crates/goat-tool-skill" }
 goat-tools = { path = "crates/goat-tools" }
-goat-tool-computer = { path = "crates/goat-tool-computer" }
 goat-tool-browser = { path = "crates/goat-tool-browser" }
 goat-skill = { path = "crates/goat-skill" }
 goat-command = { path = "crates/goat-command" }
@@ -108,8 +107,6 @@ tar = "0.4"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 base64 = "0.22"
 percent-encoding = "2"
-enigo = "0.6"
-xcap = "0.9"
 image = { version = "0.25", default-features = false, features = [
     "png",
     "jpeg",
