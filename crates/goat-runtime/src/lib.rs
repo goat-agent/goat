@@ -1186,9 +1186,7 @@ fn build_command_registry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goat_agent_config::{
-        AgentCard, AgentConfig, AutonomyConfig, EmbeddingSettings, MemoryConfig,
-    };
+    use goat_agent_config::{AgentCard, AgentConfig, EmbeddingSettings, MemoryConfig};
     use goat_model::{Model, ProviderId};
 
     fn paths_in(dir: &Path) -> GoatPaths {
@@ -1212,7 +1210,6 @@ mod tests {
             integrations: vec![],
             watch: None,
             memory: MemoryConfig::default(),
-            autonomy: AutonomyConfig::default(),
             intake_debounce: std::time::Duration::from_secs(1),
             intake_ceiling: std::time::Duration::from_secs(5),
         }
@@ -1438,7 +1435,6 @@ mod tests {
                 provider: "openai".into(),
                 model: "text-embedding-3-small".into(),
             }),
-            episodic_k: 8,
             summarize: false,
         };
         let cfg = LoadedConfig {

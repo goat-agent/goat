@@ -4,8 +4,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 use goat_agent_config::{
-    AgentBinding, AgentCard, AgentConfig, AgentIntegration, AutonomyConfig, EmbeddingSettings,
-    MemoryConfig, WatchSourceEntry, WatchWorkflow,
+    AgentBinding, AgentCard, AgentConfig, AgentIntegration, EmbeddingSettings, MemoryConfig,
+    WatchSourceEntry, WatchWorkflow,
 };
 use goat_model::Model;
 use goat_types::AgentId;
@@ -15,7 +15,6 @@ use tracing::warn;
 use crate::ConfigError;
 
 const DEFAULT_HISTORY_WINDOW: usize = 20;
-const DEFAULT_EPISODIC_K: usize = 5;
 const DEFAULT_INTAKE_DEBOUNCE_MS: u64 = 1000;
 const DEFAULT_INTAKE_CEILING_MS: u64 = 5000;
 
@@ -80,11 +79,6 @@ fn load_agent(dir: &Path, slug: &str) -> Result<AgentConfig> {
         .memory
         .map(MemoryRuntimeConfig::into_config)
         .unwrap_or_default();
-    let autonomy = runtime
-        .autonomy
-        .map(|a| AutonomyConfig { enabled: a.enabled })
-        .unwrap_or_default();
-
     Ok(AgentConfig {
         id: AgentId::from_slug(slug),
         slug: slug.to_string(),
@@ -98,7 +92,6 @@ fn load_agent(dir: &Path, slug: &str) -> Result<AgentConfig> {
         integrations,
         watch,
         memory,
-        autonomy,
         intake_debounce: std::time::Duration::from_millis(
             runtime
                 .intake_debounce_ms
@@ -205,8 +198,6 @@ struct AgentRuntimeConfig {
     #[serde(default)]
     memory: Option<MemoryRuntimeConfig>,
     #[serde(default)]
-    autonomy: Option<AutonomyRuntimeConfig>,
-    #[serde(default)]
     intake_debounce_ms: Option<u64>,
     #[serde(default)]
     intake_ceiling_ms: Option<u64>,
@@ -220,21 +211,12 @@ struct MemoryRuntimeConfig {
     #[serde(default)]
     embedding: Option<EmbeddingRuntimeConfig>,
     #[serde(default)]
-    recall: Option<RecallRuntimeConfig>,
-    #[serde(default)]
     summarization: Option<SummarizationRuntimeConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SummarizationRuntimeConfig {
-    #[serde(default)]
-    enabled: bool,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AutonomyRuntimeConfig {
     #[serde(default)]
     enabled: bool,
 }
@@ -246,26 +228,14 @@ struct EmbeddingRuntimeConfig {
     model: String,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RecallRuntimeConfig {
-    #[serde(default)]
-    episodic_k: Option<usize>,
-}
-
 impl MemoryRuntimeConfig {
     fn into_config(self) -> MemoryConfig {
-        let episodic_k = self
-            .recall
-            .and_then(|r| r.episodic_k)
-            .unwrap_or(DEFAULT_EPISODIC_K);
         MemoryConfig {
             enabled: self.enabled,
             embedding: self.embedding.map(|e| EmbeddingSettings {
                 provider: e.provider,
                 model: e.model,
             }),
-            episodic_k,
             summarize: self.summarization.is_some_and(|s| s.enabled),
         }
     }
