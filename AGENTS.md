@@ -94,8 +94,8 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
     (constructor-injected like `CredentialStore`, re-read on every registry build).
     `goat-search-providers::metadata` stays a hardcoded list.
   - code tools: `ToolRegistry::builtin()` aggregates fs, shell, search, skill, and web.
-    `goat-tool-browser` and `goat-tool-computer` bypass it and are wired directly into
-    `CodingEngine::new` behind `config.browser_enabled` / `config.computer_use_enabled`.
+    `goat-tool-browser` bypasses it and is wired directly into `CodingEngine::new` behind
+    `config.browser_enabled`.
 - **A channel owes no tools.** It is a presence, not a reach: it holds a resident connection under a
   bot identity and turns inbound traffic into `IncomingMessage`. Workspace-wide search and posting
   where the bot is not a member belong to the matching integration. `slack` is deliberately both —

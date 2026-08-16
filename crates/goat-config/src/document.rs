@@ -51,10 +51,6 @@ impl ConfigDocument {
         section(&mut self.document, &["tools"])["browser"] = value(enabled);
     }
 
-    pub fn set_computer_use(&mut self, enabled: bool) {
-        section(&mut self.document, &["tools"])["computer_use"] = value(enabled);
-    }
-
     pub fn set_default_remote(&mut self, name: Option<&str>) {
         match name {
             Some(name) => self.document["default_remote"] = value(name),

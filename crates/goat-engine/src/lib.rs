@@ -104,12 +104,6 @@ impl CodingEngine {
         if tool_count > 0 {
             tracing::info!(tool_count, "registered mcp tools");
         }
-        if config.computer_use_enabled {
-            match goat_tool_computer::desktop_tool() {
-                Ok(ct) => tools.push(Box::new(ct)),
-                Err(err) => tracing::warn!("computer use unavailable: {err}"),
-            }
-        }
         if config.browser_enabled {
             tools.push(Box::new(goat_tool_browser::browser_tool()));
         }

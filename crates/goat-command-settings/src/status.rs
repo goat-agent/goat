@@ -113,9 +113,8 @@ fn status_rows(
     rows.push(StatusRow {
         label: "toggles",
         value: format!(
-            "mouse {} · computer {} · browser {}",
+            "mouse {} · browser {}",
             toggle_label(snapshot.mouse_capture),
-            toggle_label(snapshot.computer_use),
             toggle_label(snapshot.browser)
         ),
     });
@@ -228,7 +227,6 @@ mod tests {
             skill_count: 0,
             transcript_entries: 0,
             mouse_capture: false,
-            computer_use: false,
             browser: false,
             dark_theme: true,
             log_path: None,
