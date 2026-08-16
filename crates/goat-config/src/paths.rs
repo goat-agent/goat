@@ -13,7 +13,6 @@ pub struct GoatPaths {
     pub agents_dir: PathBuf,
     pub subagents_dir: PathBuf,
     pub plans_dir: PathBuf,
-    pub memory_dir: PathBuf,
     pub skills_dir: PathBuf,
     pub logs_dir: PathBuf,
     pub remote_dir: PathBuf,
@@ -40,7 +39,6 @@ impl GoatPaths {
             agents_dir: root.join("agents"),
             subagents_dir: root.join("subagents"),
             plans_dir: root.join("plans"),
-            memory_dir: root.join("memory"),
             skills_dir: root.join("skills"),
             logs_dir: root.join("logs"),
             remote_dir: root.join("remote"),
@@ -52,10 +50,6 @@ impl GoatPaths {
             state_db: root.join("goat.db"),
             root,
         }
-    }
-
-    pub fn agent_dir(&self, slug: &str) -> PathBuf {
-        self.agents_dir.join(slug)
     }
 
     pub fn browser_profile_dir(&self) -> PathBuf {

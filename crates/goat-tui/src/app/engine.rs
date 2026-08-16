@@ -187,9 +187,6 @@ impl App {
                 }
                 self.dirty = true;
             }
-            EngineEvent::ProcessObserved { .. } => {
-                self.dirty = true;
-            }
             EngineEvent::CompactionStarted { id } => {
                 if self.subagent_index(id).is_none() {
                     self.turn.compacting = true;

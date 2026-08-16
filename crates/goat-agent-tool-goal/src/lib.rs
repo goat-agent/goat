@@ -62,7 +62,6 @@ impl GoalTool {
                     agent: ctx.agent,
                     title: title.trim().to_string(),
                     detail,
-                    parent: None,
                     priority: priority.unwrap_or(3).clamp(1, 5),
                     origin: if self_formed {
                         GoalOrigin::SelfFormed

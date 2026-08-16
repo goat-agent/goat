@@ -206,12 +206,6 @@ pub enum Event {
         code: Option<i32>,
         reason: ProcessExitReason,
     },
-    ProcessObserved {
-        id: TaskId,
-        process: RunId,
-        command: String,
-        output: String,
-    },
     ProcessListChanged {
         processes: Vec<ProcessInfo>,
     },

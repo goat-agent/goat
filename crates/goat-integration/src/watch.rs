@@ -228,9 +228,6 @@ pub async fn run_workflow(
             () = tokio::time::sleep_until(next_tick) => {}
         }
         next_tick = tokio::time::Instant::now() + tick_jitter(workflow.poll, random_sample());
-        if runtime.paused().await {
-            continue;
-        }
         let mut items: Vec<WorkflowItem> = Vec::new();
         for (source, health) in workflow.sources.iter().zip(health.iter_mut()) {
             if health.skip_ticks > 0 {

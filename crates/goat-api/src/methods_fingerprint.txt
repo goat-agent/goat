@@ -19,8 +19,8 @@ host.notify@1 unary any to_client 5b2209de91ca04e3
 pty.open@1 stream:lossy any to_daemon fd9da051b9d0df69
 pty.resize@1 unary any to_daemon 26417e560a49647f
 pty.write@1 unary any to_daemon ab3c4f2b905bc65d
-session.control@1 unary any to_daemon ca6d68878bea3415
+session.control@1 unary any to_daemon 4f15772ed5ff5921
 session.list@1 unary any to_daemon cb99dd0327a76825
 session.open@1 unary any to_daemon ed6f0ae5a1f5d57f
-session.submit@1 unary any to_daemon a96de5cbaf931974
-session.watch@1 stream:reliable any to_daemon f1dcb9768f471277
+session.submit@1 unary any to_daemon 914d120f36f8071c
+session.watch@1 stream:reliable any to_daemon 3b5e98e6610908d1

@@ -140,10 +140,6 @@ impl IntegrationRuntime {
     pub fn publish(&self, event: Event) {
         self.bus.publish(event);
     }
-
-    pub async fn paused(&self) -> bool {
-        self.store.is_paused().await.unwrap_or(false)
-    }
 }
 
 fn store_err(e: &StoreError) -> IntegrationError {

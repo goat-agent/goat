@@ -10,7 +10,7 @@ use goat_code_store::CodeStore as Store;
 use goat_core::Engine;
 use goat_protocol::{Event, ModelTarget, Op, SkillInfo, TaskId, ToolCallId};
 use goat_provider::{Provider, ToolDefinition};
-use goat_providers::{DEFAULT_ACCOUNT, Registry};
+use goat_providers::Registry;
 use goat_tool::{SandboxPolicy, Tool, ToolRegistry};
 use tokio::{
     sync::{Mutex, Semaphore, mpsc, oneshot},
@@ -504,33 +504,12 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
                     break;
                 }
             }
-            Op::Login {
-                provider,
-                credential,
-            } => {
-                accounts::handle_login(
-                    &ctx,
-                    provider,
-                    DEFAULT_ACCOUNT.to_owned(),
-                    credential,
-                    accounts::AccountCollisionPolicy::Replace,
-                )
-                .await;
-                accounts::clear_account_registries(&ctx.account_registries);
-            }
             Op::AddAccount {
                 provider,
                 name,
                 credential,
             } => {
-                accounts::handle_login(
-                    &ctx,
-                    provider,
-                    name,
-                    credential,
-                    accounts::AccountCollisionPolicy::Reject,
-                )
-                .await;
+                accounts::handle_login(&ctx, provider, name, credential).await;
                 accounts::clear_account_registries(&ctx.account_registries);
             }
             Op::RemoveAccount { provider, name } => {

@@ -35,7 +35,6 @@ pub struct AgentConfig {
     pub integrations: Vec<AgentIntegration>,
     pub watch: Option<Vec<WatchWorkflow>>,
     pub memory: MemoryConfig,
-    pub autonomy: AutonomyConfig,
     pub intake_debounce: std::time::Duration,
     pub intake_ceiling: std::time::Duration,
 }
@@ -55,15 +54,9 @@ pub struct WatchSourceEntry {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct AutonomyConfig {
-    pub enabled: bool,
-}
-
-#[derive(Clone, Debug, Default)]
 pub struct MemoryConfig {
     pub enabled: bool,
     pub embedding: Option<EmbeddingSettings>,
-    pub episodic_k: usize,
     pub summarize: bool,
 }
 

@@ -273,7 +273,6 @@ pub struct NewGoal {
     pub agent: AgentId,
     pub title: String,
     pub detail: Option<String>,
-    pub parent: Option<i64>,
     pub priority: i64,
     pub origin: GoalOrigin,
     pub origin_conv: Option<ConversationId>,
@@ -286,7 +285,6 @@ pub struct GoalRecord {
     pub agent: AgentId,
     pub title: String,
     pub detail: Option<String>,
-    pub parent: Option<i64>,
     pub status: GoalStatus,
     pub priority: i64,
     pub origin: GoalOrigin,
@@ -338,10 +336,6 @@ pub trait Store: Send + Sync + 'static {
     async fn append_tool_invocation(&self, record: ToolInvocationRecord) -> StoreResult<()>;
 
     async fn recent_tool_invocations(&self, limit: usize) -> StoreResult<Vec<ToolLogRow>>;
-
-    async fn set_paused(&self, paused: bool) -> StoreResult<()>;
-
-    async fn is_paused(&self) -> StoreResult<bool>;
 
     async fn recent(
         &self,
@@ -435,8 +429,6 @@ pub trait Store: Send + Sync + 'static {
     ) -> StoreResult<()>;
 
     async fn active_goals(&self, agent: AgentId) -> StoreResult<Vec<GoalRecord>>;
-
-    async fn goals_due_for_review(&self, now: DateTime<Utc>) -> StoreResult<Vec<GoalRecord>>;
 
     async fn get_goal(&self, id: i64) -> StoreResult<Option<GoalRecord>>;
 
@@ -861,27 +853,6 @@ impl Store for SqliteStore {
         .execute(&*self.pool)
         .await?;
         Ok(())
-    }
-
-    async fn set_paused(&self, paused: bool) -> StoreResult<()> {
-        sqlx::query(
-            r"INSERT INTO runtime_flags (key, value, updated_at)
-               VALUES ('paused', ?, ?)
-               ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-        )
-        .bind(if paused { "1" } else { "0" })
-        .bind(Utc::now().to_rfc3339())
-        .execute(&*self.pool)
-        .await?;
-        Ok(())
-    }
-
-    async fn is_paused(&self) -> StoreResult<bool> {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT value FROM runtime_flags WHERE key = 'paused'")
-                .fetch_optional(&*self.pool)
-                .await?;
-        Ok(row.is_some_and(|(v,)| v == "1"))
     }
 
     async fn recent_tool_invocations(&self, limit: usize) -> StoreResult<Vec<ToolLogRow>> {
@@ -1329,15 +1300,14 @@ impl Store for SqliteStore {
         let now = Utc::now().to_rfc3339();
         let row: (i64,) = sqlx::query_as(
             r"INSERT INTO goals
-               (agent_id, title, detail, parent, status, priority, origin,
+               (agent_id, title, detail, status, priority, origin,
                 origin_conv, next_review_at, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
                RETURNING id",
         )
         .bind(new.agent.to_string())
         .bind(&new.title)
         .bind(new.detail)
-        .bind(new.parent)
         .bind(new.priority)
         .bind(new.origin.as_str())
         .bind(
@@ -1390,24 +1360,6 @@ impl Store for SqliteStore {
                ORDER BY priority ASC, id ASC",
         )
         .bind(agent.to_string())
-        .fetch_all(&*self.pool)
-        .await?;
-        let mut out = Vec::with_capacity(ids.len());
-        for (id,) in ids {
-            out.push(load_goal(&self.pool, id).await?);
-        }
-        Ok(out)
-    }
-
-    async fn goals_due_for_review(&self, now: DateTime<Utc>) -> StoreResult<Vec<GoalRecord>> {
-        let ids: Vec<(i64,)> = sqlx::query_as(
-            r"SELECT id FROM goals
-               WHERE status = 'active'
-                 AND next_review_at IS NOT NULL
-                 AND next_review_at <= ?
-               ORDER BY next_review_at",
-        )
-        .bind(now.to_rfc3339())
         .fetch_all(&*self.pool)
         .await?;
         let mut out = Vec::with_capacity(ids.len());
@@ -1812,7 +1764,6 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
         String,
         String,
         Option<String>,
-        Option<i64>,
         String,
         i64,
         String,
@@ -1824,7 +1775,7 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
         Option<String>,
         Option<String>,
     ) = sqlx::query_as(
-        r"SELECT g.id, g.agent_id, g.title, g.detail, g.parent, g.status,
+        r"SELECT g.id, g.agent_id, g.title, g.detail, g.status,
                   g.priority, g.origin, g.next_review_at,
                   g.last_reviewed_at, g.created_at, g.updated_at,
                   c.channel, c.instance, c.external
@@ -1837,7 +1788,7 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
     .await?;
 
     let agent = AgentId(Uuid::parse_str(&row.1)?);
-    let origin_conv = match (&row.12, &row.13, &row.14) {
+    let origin_conv = match (&row.11, &row.12, &row.13) {
         (Some(channel), Some(instance), Some(external)) => Some(ConversationId::new(
             ChannelId::new(channel.clone()),
             InstanceId(Uuid::parse_str(instance)?),
@@ -1845,23 +1796,22 @@ async fn load_goal(pool: &SqlitePool, id: i64) -> StoreResult<GoalRecord> {
         )),
         _ => None,
     };
-    let next_review_at = row.8.as_deref().map(parse_ts).transpose()?;
-    let last_reviewed_at = row.9.as_deref().map(parse_ts).transpose()?;
+    let next_review_at = row.7.as_deref().map(parse_ts).transpose()?;
+    let last_reviewed_at = row.8.as_deref().map(parse_ts).transpose()?;
 
     Ok(GoalRecord {
         id: row.0,
         agent,
         title: row.2,
         detail: row.3,
-        parent: row.4,
-        status: GoalStatus::parse(&row.5)?,
-        priority: row.6,
-        origin: GoalOrigin::parse(&row.7)?,
+        status: GoalStatus::parse(&row.4)?,
+        priority: row.5,
+        origin: GoalOrigin::parse(&row.6)?,
         origin_conv,
         next_review_at,
         last_reviewed_at,
-        created_at: parse_ts(&row.10)?,
-        updated_at: parse_ts(&row.11)?,
+        created_at: parse_ts(&row.9)?,
+        updated_at: parse_ts(&row.10)?,
     })
 }
 
@@ -2491,7 +2441,6 @@ mod tests {
             agent: p,
             title: "ship goals".into(),
             detail: Some("acceptance criteria".into()),
-            parent: None,
             priority: 3,
             origin: GoalOrigin::Owner,
             origin_conv: None,
@@ -2550,45 +2499,6 @@ mod tests {
 
         let g = s.get_goal(id).await.unwrap().unwrap();
         assert_eq!(g.status, GoalStatus::Done);
-    }
-
-    #[tokio::test]
-    async fn goals_due_for_review_returns_only_due_active() {
-        let s = fresh().await;
-        let p = fixture_agent(&s).await;
-        let now = Utc::now();
-
-        let due_past = s
-            .create_goal(NewGoal {
-                title: "past".into(),
-                next_review_at: Some(now - Duration::hours(1)),
-                ..new_goal(p)
-            })
-            .await
-            .unwrap();
-
-        s.create_goal(NewGoal {
-            title: "future".into(),
-            next_review_at: Some(now + Duration::hours(1)),
-            ..new_goal(p)
-        })
-        .await
-        .unwrap();
-
-        let done = s
-            .create_goal(NewGoal {
-                title: "done".into(),
-                next_review_at: Some(now - Duration::hours(2)),
-                ..new_goal(p)
-            })
-            .await
-            .unwrap();
-        s.update_goal_status(done, GoalStatus::Done).await.unwrap();
-
-        let due = s.goals_due_for_review(now).await.unwrap();
-        assert_eq!(due.len(), 1);
-        assert_eq!(due[0].id, due_past);
-        assert_eq!(due[0].title, "past");
     }
 
     #[tokio::test]
@@ -3015,7 +2925,7 @@ mod tests {
 
         for (table, expected) in [
             ("_sqlx_migrations", 23_i64),
-            ("_sqlx_migrations_agent", 22),
+            ("_sqlx_migrations_agent", 23),
             ("_sqlx_migrations_memory", 2),
             ("_sqlx_migrations_code", 4),
             ("_sqlx_migrations_proxy", 1),
