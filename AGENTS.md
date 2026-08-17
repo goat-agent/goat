@@ -216,6 +216,9 @@ Placements that contradict the naming:
   every error carries an execution disposition (`NotStarted` / `KnownFailed` / `OutcomeUnknown`) so
   a model is told whether retrying is safe. Human decisions do **not** go through this path — an
   answer is a durable resource settled by a compare-and-set, never a connection-scoped reverse call.
+  One browser is one connection: `extension/background.js` owns the single native-messaging port and
+  the side panel asks it over `chrome.runtime` rather than opening a second one, because two ports
+  would advertise `host.browser` twice and the lease would read them as two browsers.
 - **Desktop control is `host.computer`, provided by a signed client app — never by this binary.**
   There was a `goat-tool-computer` that drove the desktop in-process with synthetic input and
   pixel coordinates. It was deleted because three things were wrong at once and none could be fixed

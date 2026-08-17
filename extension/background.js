@@ -156,6 +156,12 @@ async function onMessage(raw) {
   }
 }
 
+chrome.runtime.onMessage.addListener((message, _sender, respond) => {
+  if (message?.t !== "status") return false;
+  respond({ connected: port !== null, driving: attached !== null });
+  return false;
+});
+
 chrome.action.onClicked.addListener(async (tab) => {
   await chrome.sidePanel.open({ windowId: tab.windowId });
 });

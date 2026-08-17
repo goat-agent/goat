@@ -38,6 +38,8 @@ thiserror = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 goat-client = { workspace = true }
+goat-browser-host = { workspace = true }
+async-trait = { workspace = true }
 goat-remote = { workspace = true }
 rustls = { workspace = true }
 futures = { workspace = true }
