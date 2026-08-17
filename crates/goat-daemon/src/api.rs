@@ -140,6 +140,7 @@ fn resume_mode(mode: goat_api::ResumeMode) -> crate::wire::ResumeMode {
 pub struct DaemonApi {
     pub manager: CodeSessionHub,
     pub broker: Arc<Broker>,
+    pub browser_events: Arc<crate::browser::BrowserEvents>,
     pub device: String,
     pub epoch: String,
     pub shutdown: CancellationToken,
@@ -151,6 +152,7 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
     let DaemonApi {
         manager,
         broker,
+        browser_events,
         device,
         epoch,
         shutdown,
@@ -558,7 +560,8 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
             })
         });
 
-    goat_capability::routes(router, broker, device)
+    let router = goat_capability::routes(router, broker.clone(), device);
+    crate::browser::routes(router, broker, browser_events)
 }
 
 pub(crate) fn watch_item(
@@ -640,7 +643,6 @@ mod tests {
     use goat_api::{
         DaemonStatus2, FsListOutput, Grant, Router, SessionListOutput, SessionLiveState,
     };
-    use goat_capability::Broker;
     use goat_wire::WireConn;
     use goat_wire::envelope::{ErrorCode, Frame, Role};
     use goat_wire::peer::{Handler, Peer, RejectAll, spawn};
@@ -661,9 +663,11 @@ mod tests {
     }
 
     fn daemon_api(shutdown: CancellationToken) -> super::DaemonApi {
+        let manager = manager();
         super::DaemonApi {
-            manager: manager(),
-            broker: Arc::new(Broker::new()),
+            broker: manager.broker(),
+            browser_events: manager.browser_events(),
+            manager,
             device: "device".to_owned(),
             epoch: "e1".to_owned(),
             shutdown,

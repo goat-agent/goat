@@ -1,10 +1,8 @@
 use std::time::{Duration, Instant};
 
-use chromiumoxide::Page;
-use chromiumoxide::cdp::browser_protocol::page::StopLoadingParams;
-use chromiumoxide::cdp::js_protocol::runtime::EvaluateParams;
 use tokio::time::sleep;
 
+use crate::cdp::Cdp;
 use crate::error::BrowserError;
 use crate::resilience::{OP_META, with_timeout};
 
@@ -56,9 +54,9 @@ fn readiness_decision(
     }
 }
 
-async fn read_state(page: &Page) -> ReadyState {
-    match with_timeout(OP_META, "read_state", page.evaluate("document.readyState")).await {
-        Ok(result) => match result.value().and_then(serde_json::Value::as_str) {
+async fn read_state(cdp: &Cdp) -> ReadyState {
+    match with_timeout(OP_META, "read_state", cdp.eval("document.readyState")).await {
+        Ok(result) => match result.as_ref().and_then(serde_json::Value::as_str) {
             Some("complete") => ReadyState::Complete,
             Some("interactive") => ReadyState::Interactive,
             _ => ReadyState::Loading,
@@ -67,11 +65,11 @@ async fn read_state(page: &Page) -> ReadyState {
     }
 }
 
-pub async fn await_navigation_ready(page: &Page) -> &'static str {
+pub async fn await_navigation_ready(cdp: &Cdp) -> &'static str {
     let deadline = Instant::now() + NAV_READY_SOFTCAP;
     let mut interactive_since: Option<Instant> = None;
     loop {
-        let state = read_state(page).await;
+        let state = read_state(cdp).await;
         if state == ReadyState::Interactive {
             interactive_since.get_or_insert_with(Instant::now);
         } else {
@@ -81,12 +79,7 @@ pub async fn await_navigation_ready(page: &Page) -> &'static str {
         match readiness_decision(state, elapsed, Instant::now() >= deadline) {
             ReadyDecision::Done(label) => return label,
             ReadyDecision::Capped => {
-                let _ = with_timeout(
-                    OP_META,
-                    "stop_loading",
-                    page.execute(StopLoadingParams::default()),
-                )
-                .await;
+                let _ = with_timeout(OP_META, "stop_loading", cdp.stop_loading()).await;
                 return "stopped_capped";
             }
             ReadyDecision::Continue => sleep(READY_POLL_INTERVAL).await,
@@ -94,21 +87,20 @@ pub async fn await_navigation_ready(page: &Page) -> &'static str {
     }
 }
 
-pub async fn settle_after_action(page: &Page) -> &'static str {
+pub async fn settle_after_action(cdp: &Cdp) -> &'static str {
     sleep(POST_ACTION_PRE_DELAY).await;
-    let load = await_navigation_ready(page).await;
-    let _ = mutation_quiet(page).await;
+    let load = await_navigation_ready(cdp).await;
+    let _ = mutation_quiet(cdp).await;
     load
 }
 
-async fn mutation_quiet(page: &Page) -> Result<(), BrowserError> {
-    let params = EvaluateParams::builder()
-        .expression(MUTATION_QUIET_JS)
-        .await_promise(true)
-        .return_by_value(true)
-        .build()
-        .map_err(|err| BrowserError::Message(format!("settle eval build: {err}")))?;
-    with_timeout(MUTATION_SETTLE_CAP, "mutation_quiet", page.evaluate(params)).await?;
+async fn mutation_quiet(cdp: &Cdp) -> Result<(), BrowserError> {
+    with_timeout(
+        MUTATION_SETTLE_CAP,
+        "mutation_quiet",
+        cdp.eval(MUTATION_QUIET_JS),
+    )
+    .await?;
     Ok(())
 }
 

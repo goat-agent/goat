@@ -26,6 +26,8 @@ struct ManagerInner {
     auth_path: PathBuf,
     user_providers: goat_config::UserProviders,
     db_path: PathBuf,
+    broker: Arc<goat_capability::Broker>,
+    browser_events: Arc<crate::browser::BrowserEvents>,
     sessions: Mutex<SessionTable>,
     conversations: Mutex<HashMap<i64, SessionId>>,
     attach_holds: Mutex<std::collections::HashSet<(ClientId, SessionId)>>,
@@ -63,6 +65,8 @@ impl CodeSessionHub {
                 auth_path,
                 user_providers,
                 db_path,
+                broker: Arc::new(goat_capability::Broker::new()),
+                browser_events: Arc::new(crate::browser::BrowserEvents::new()),
                 sessions: Mutex::new(HashMap::new()),
                 conversations: Mutex::new(HashMap::new()),
                 attach_holds: Mutex::new(std::collections::HashSet::new()),
@@ -77,6 +81,16 @@ impl CodeSessionHub {
                 agent_turns: std::sync::OnceLock::new(),
             }),
         }
+    }
+
+    #[must_use]
+    pub fn broker(&self) -> Arc<goat_capability::Broker> {
+        self.inner.broker.clone()
+    }
+
+    #[must_use]
+    pub fn browser_events(&self) -> Arc<crate::browser::BrowserEvents> {
+        self.inner.browser_events.clone()
     }
 
     pub fn set_meter(&self, meter: goat_proxy::Meter) {
@@ -362,20 +376,26 @@ impl CodeSessionHub {
             goat_providers::DEFAULT_ACCOUNT,
             self.inner.meter.get().cloned(),
         );
-        let agent = CodingEngine::new(
+        let id = SessionId(self.inner.next_session.fetch_add(1, Ordering::Relaxed));
+        let browser = Arc::new(crate::browser::BrowserRelay::new(
+            self.inner.broker.clone(),
+            self.inner.browser_events.clone(),
+            goat_api::Holder::session(goat_api::SessionId(id.0)),
+        ));
+        let agent = CodingEngine::new(goat_engine::EngineDeps {
             registry,
             store,
             credentials,
-            self.inner.user_providers.clone(),
-            None,
-            cwd.clone(),
-            self.inner.meter.get().cloned(),
-        )
+            user_providers: self.inner.user_providers.clone(),
+            target: None,
+            cwd: cwd.clone(),
+            meter: self.inner.meter.get().cloned(),
+            browser: Some(browser),
+        })
         .await;
         let session = Session::spawn(agent);
         let (ops, events, handle) = session.into_parts();
 
-        let id = SessionId(self.inner.next_session.fetch_add(1, Ordering::Relaxed));
         let ready = Arc::new(tokio::sync::Notify::new());
         let inner = Arc::new(Mutex::new(SessionInner {
             ask_revision: 0,
@@ -871,6 +891,10 @@ impl CodeSessionHub {
         };
         let live = live.ok_or("unknown session")?;
         self.unregister_conversation_if_owner(session).await;
+        self.inner
+            .broker
+            .release_holder(&goat_api::Holder::session(goat_api::SessionId(session.0)))
+            .await;
         let ops = {
             let inner = live.inner.lock().await;
             inner.ops.clone()
@@ -1131,9 +1155,6 @@ fn apply_edit(config: &mut goat_config::Config, edit: goat_api::ConfigEdit) {
         }
         ConfigEdit::IntegrationRemove { kind } => {
             config.integrations.remove(&kind);
-        }
-        ConfigEdit::BrowserSet { enabled } => {
-            config.browser_enabled = enabled;
         }
     }
 }

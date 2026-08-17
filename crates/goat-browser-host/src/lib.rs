@@ -12,6 +12,7 @@ use tokio::sync::{Mutex, oneshot};
 
 pub const CAPABILITY: &str = "host.browser";
 pub const CAPABILITY_VERSION: u16 = 1;
+pub const MAX_IN_FLIGHT: usize = 8;
 
 #[async_trait::async_trait]
 pub trait BrowserPort: Send + Sync {
@@ -128,7 +129,7 @@ pub fn advertisement(
         offers: vec![CapabilityOffer {
             id: CAPABILITY.to_owned(),
             version: CAPABILITY_VERSION,
-            max_in_flight: 1,
+            max_in_flight: MAX_IN_FLIGHT,
         }],
     }
 }
@@ -343,11 +344,11 @@ mod tests {
     }
 
     #[test]
-    fn the_advertisement_offers_one_serial_browser() {
+    fn the_advertisement_leaves_room_for_a_dialog_while_an_evaluate_is_blocked() {
         let params = advertisement("chrome-a".to_owned(), "Work Chrome".to_owned(), 7);
         assert_eq!(params.offers.len(), 1);
         assert_eq!(params.offers[0].id, CAPABILITY);
-        assert_eq!(params.offers[0].max_in_flight, 1);
+        assert!(params.offers[0].max_in_flight > 1);
         assert_eq!(params.boot_epoch, 7);
     }
 

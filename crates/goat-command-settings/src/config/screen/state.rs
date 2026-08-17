@@ -58,9 +58,6 @@ pub enum ConfigOutcome {
     SetMouseCapture {
         enabled: bool,
     },
-    SetBrowser {
-        enabled: bool,
-    },
 }
 
 #[derive(Clone)]

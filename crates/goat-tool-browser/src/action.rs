@@ -47,7 +47,7 @@ struct Input {
     #[serde(default)]
     op: Option<String>,
     #[serde(default)]
-    index: Option<usize>,
+    tab_id: Option<i64>,
     #[serde(default)]
     level: Option<String>,
     #[serde(default)]
@@ -127,7 +127,7 @@ pub enum Action {
     },
     Tab {
         op: TabOp,
-        index: Option<usize>,
+        tab_id: Option<i64>,
         url: Option<String>,
     },
     WaitFor {
@@ -235,7 +235,7 @@ pub fn parse(input: &str) -> Result<Action, BrowserError> {
         },
         "tab" => Action::Tab {
             op: require_tab_op(raw.op)?,
-            index: raw.index,
+            tab_id: raw.tab_id,
             url: raw.url,
         },
         "wait_for" => Action::WaitFor {
@@ -400,10 +400,10 @@ mod tests {
             }
         );
         assert_eq!(
-            parse(r#"{"action":"tab","op":"switch","index":2}"#).unwrap(),
+            parse(r#"{"action":"tab","op":"switch","tab_id":2}"#).unwrap(),
             Action::Tab {
                 op: TabOp::Switch,
-                index: Some(2),
+                tab_id: Some(2),
                 url: None,
             }
         );

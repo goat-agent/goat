@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use futures::{Sink, Stream};
 use goat_api::Grant;
-use goat_capability::Broker;
 use goat_wire::envelope::{Frame, Hello, Role};
 use tokio_util::sync::CancellationToken;
 
@@ -34,7 +33,6 @@ pub fn device_for(origin: &ClientOrigin) -> String {
 #[derive(Clone)]
 pub struct EnvelopeHost {
     pub manager: CodeSessionHub,
-    pub broker: Arc<Broker>,
     pub shutdown: CancellationToken,
     pub epoch: String,
     pub(crate) terminals: Arc<crate::pty::Terminals>,
@@ -51,7 +49,6 @@ impl EnvelopeHost {
     ) -> Self {
         Self {
             manager,
-            broker: Arc::new(Broker::new()),
             shutdown,
             epoch,
             terminals: Arc::new(crate::pty::Terminals::new()),
@@ -72,13 +69,14 @@ pub async fn serve_envelope<Si, St>(
 {
     let EnvelopeHost {
         manager,
-        broker,
         shutdown,
         epoch,
         terminals,
         db_path,
     } = host;
     let epoch = epoch.as_str();
+    let broker = manager.broker();
+    let browser_events = manager.browser_events();
     let client_id = manager.next_client_id();
     let build = manager.build();
     let grants = grants_for(&origin);
@@ -87,6 +85,7 @@ pub async fn serve_envelope<Si, St>(
         api::DaemonApi {
             manager,
             broker,
+            browser_events,
             device,
             epoch: epoch.to_owned(),
             shutdown: shutdown.clone(),
@@ -149,7 +148,6 @@ mod tests {
     use super::ClientOrigin;
     use super::{device_for, grants_for, serve_envelope};
     use goat_api::{Api, DaemonStatus, DaemonStatus2, Empty, Grant};
-    use goat_capability::Broker;
     use goat_wire::WireConn;
     use goat_wire::envelope::{ErrorCode, Frame, Hello, Role};
     use goat_wire::peer::{RejectAll, spawn};
@@ -177,7 +175,6 @@ mod tests {
         tokio::spawn(serve_envelope(
             super::EnvelopeHost {
                 manager: manager(),
-                broker: Arc::new(Broker::new()),
                 shutdown: CancellationToken::new(),
                 epoch: "e9".to_owned(),
                 terminals: Arc::new(crate::pty::Terminals::new()),

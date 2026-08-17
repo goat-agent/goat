@@ -1,13 +1,14 @@
 admin.agent_reload@1 unary admin to_daemon d8901cba39dcf5b1
-admin.config_edit@1 unary admin to_daemon 48a697147ba037c2
+admin.config_edit@1 unary admin to_daemon 406549ecb646a241
 admin.daemon_stop@1 unary admin to_daemon 481f399d850707af
 admin.device_list@1 unary admin to_daemon 808a5aa9ead18a03
 admin.device_pair@1 unary admin to_daemon a269b916790d85ca
 admin.device_revoke@1 unary admin to_daemon 863c6f11ba2a2d7f
 agent.watch@1 stream:reliable any to_daemon 9aec81778f254ad8
 ask.answer@1 unary any to_daemon 9bfe53a9718c5063
+browser.event@1 unary any to_daemon 6db09693b3d1fe6f
 capability.advertise@1 unary any to_daemon 11c893eed2623dcf
-capability.bind@1 unary any to_daemon d5f90cbb8e8c9b38
+capability.bind@1 unary any to_daemon 5985c5a059f3da18
 capability.list@1 unary any to_daemon b6fd66c8014c180a
 conversation.list@1 unary any to_daemon c6583c878134e02b
 daemon.status@1 unary any to_daemon 940b8d2682013ab1
@@ -15,7 +16,7 @@ fs.list@1 unary any to_daemon 1b04051de1613e14
 fs.read@1 unary any to_daemon c237b7eff0c2fe31
 fs.write@1 unary any to_daemon 274704ccfd4cfcda
 git.diff@1 unary any to_daemon cfcd06fb2cf3c1c8
-host.browser@1 unary any to_client 173b3cc7adca891b
+host.browser@1 unary any to_client fdd2baa86932f2d8
 host.notify@1 unary any to_client 5b2209de91ca04e3
 pty.open@1 stream:lossy any to_daemon fd9da051b9d0df69
 pty.resize@1 unary any to_daemon 26417e560a49647f

@@ -112,11 +112,7 @@ fn status_rows(
     });
     rows.push(StatusRow {
         label: "toggles",
-        value: format!(
-            "mouse {} · browser {}",
-            toggle_label(snapshot.mouse_capture),
-            toggle_label(snapshot.browser)
-        ),
+        value: format!("mouse {}", toggle_label(snapshot.mouse_capture)),
     });
     rows.push(StatusRow {
         label: "theme",
@@ -227,7 +223,6 @@ mod tests {
             skill_count: 0,
             transcript_entries: 0,
             mouse_capture: false,
-            browser: false,
             dark_theme: true,
             log_path: None,
             started: Instant::now(),

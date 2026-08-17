@@ -733,6 +733,7 @@ async fn build_shared(base: &RuntimeBase, agents: &[AgentConfig]) -> RuntimeShar
     goat_agent_tool_memory::register(&mut tools_reg, base.memory_engine.clone());
     goat_agent_tool_pty::register(&mut tools_reg, base.pty_manager.clone());
     if let Some(manager) = base.code.clone() {
+        goat_agent_tool_browser::register(&mut tools_reg, manager.clone());
         goat_agent_tool_code::register(&mut tools_reg, manager);
     }
 

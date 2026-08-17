@@ -215,7 +215,6 @@ pub struct BrowserSnapshot<'a> {
     pub url: &'a str,
     pub state: &'a str,
     pub load: &'a str,
-    pub profile: &'a str,
     pub last_action: Option<&'a str>,
     pub switched: bool,
     pub raw: &'a RawSnapshot,
@@ -234,7 +233,6 @@ pub fn format_snapshot(snapshot: &BrowserSnapshot<'_>, max_bytes: usize) -> Stri
     let _ = writeln!(out, "state: {}", snapshot.state);
     let _ = writeln!(out, "load: {}", snapshot.load);
     let _ = writeln!(out, "scroll: {}", scroll_state(snapshot.raw));
-    let _ = writeln!(out, "profile: {}", snapshot.profile);
     if snapshot.switched {
         out.push_str("tabs: switched_to_new_tab\n");
     }
@@ -290,7 +288,7 @@ pub fn format_snapshot(snapshot: &BrowserSnapshot<'_>, max_bytes: usize) -> Stri
     let mut hints: Vec<&str> = Vec::new();
     if snapshot.raw.password_field {
         hints.push(
-            "login_form_present: a password field is on the page; if this is a login wall, ask the user to sign in in the Chrome window, then continue",
+            "login_form_present: a password field is on the page; if this is a login wall, ask the user to sign in themselves, then continue",
         );
     }
     if snapshot.raw.overlay {
@@ -420,7 +418,6 @@ mod tests {
                 url: "https://x.com",
                 state: "usable",
                 load: "complete",
-                profile: "persistent",
                 last_action: None,
                 switched: false,
                 raw,
@@ -489,7 +486,6 @@ mod tests {
                 url: "about:blank",
                 state: "usable",
                 load: "complete",
-                profile: "persistent",
                 last_action: None,
                 switched: false,
                 raw: &raw,

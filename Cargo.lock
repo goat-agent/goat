@@ -1983,6 +1983,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-agent-tool-browser"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "goat-agent-tool",
+ "goat-api",
+ "goat-daemon",
+ "goat-tool",
+ "goat-tool-browser",
+]
+
+[[package]]
 name = "goat-agent-tool-code"
 version = "0.1.0"
 dependencies = [
@@ -2534,6 +2546,7 @@ dependencies = [
  "goat-proxy",
  "goat-remote",
  "goat-store",
+ "goat-tool-browser",
  "goat-types",
  "goat-wire",
  "pty-process",
@@ -3314,6 +3327,7 @@ dependencies = [
  "goat-agent-command",
  "goat-agent-config",
  "goat-agent-tool",
+ "goat-agent-tool-browser",
  "goat-agent-tool-code",
  "goat-agent-tool-goal",
  "goat-agent-tool-memory",
@@ -3531,9 +3545,9 @@ name = "goat-tool-browser"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "chromiumoxide",
- "futures",
- "goat-config",
+ "chromiumoxide_cdp",
+ "chromiumoxide_types",
+ "goat-api",
  "goat-protocol",
  "goat-tool",
  "image",

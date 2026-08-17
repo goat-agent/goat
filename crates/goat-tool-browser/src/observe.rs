@@ -2,16 +2,18 @@ use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use chromiumoxide::Page;
-use chromiumoxide::cdp::browser_protocol::network::{
-    self, EventLoadingFailed, EventResponseReceived,
+use chromiumoxide_cdp::cdp::browser_protocol::network::{
+    EventLoadingFailed, EventResponseReceived,
 };
-use chromiumoxide::cdp::js_protocol::runtime::{
+use chromiumoxide_cdp::cdp::js_protocol::runtime::{
     EventConsoleApiCalled, EventExceptionThrown, RemoteObject,
 };
-use futures::StreamExt as _;
+use goat_api::CdpEvent;
 use tokio::sync::Mutex;
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
+
+use crate::cdp::{Cdp, decode, next_event};
 
 const RING_MAX: usize = 60;
 const URL_MAX: usize = 120;
@@ -40,76 +42,13 @@ pub struct SessionObservers {
 }
 
 impl SessionObservers {
-    pub async fn spawn(page: &Page) -> Self {
+    pub fn spawn(cdp: &Cdp) -> Self {
         let network: NetworkRing = Arc::new(Mutex::new(VecDeque::new()));
         let console: ConsoleRing = Arc::new(Mutex::new(VecDeque::new()));
-        let _ = page.execute(network::EnableParams::default()).await;
-        let mut tasks = Vec::new();
-        if let Ok(mut events) = page.event_listener::<EventResponseReceived>().await {
-            let ring = network.clone();
-            tasks.push(tokio::spawn(async move {
-                while let Some(event) = events.next().await {
-                    push(
-                        &ring,
-                        NetworkEntry {
-                            status: event.response.status,
-                            kind: format!("{:?}", event.r#type).to_lowercase(),
-                            mime: event.response.mime_type.clone(),
-                            url: cap(&event.response.url, URL_MAX),
-                            failure: None,
-                        },
-                    )
-                    .await;
-                }
-            }));
-        }
-        if let Ok(mut events) = page.event_listener::<EventLoadingFailed>().await {
-            let ring = network.clone();
-            tasks.push(tokio::spawn(async move {
-                while let Some(event) = events.next().await {
-                    if event.canceled == Some(true) {
-                        continue;
-                    }
-                    push(
-                        &ring,
-                        NetworkEntry {
-                            status: 0,
-                            kind: format!("{:?}", event.r#type).to_lowercase(),
-                            mime: String::new(),
-                            url: String::new(),
-                            failure: Some(event.error_text.clone()),
-                        },
-                    )
-                    .await;
-                }
-            }));
-        }
-        if let Ok(mut events) = page.event_listener::<EventConsoleApiCalled>().await {
-            let ring = console.clone();
-            tasks.push(tokio::spawn(async move {
-                while let Some(event) = events.next().await {
-                    let level = format!("{:?}", event.r#type).to_lowercase();
-                    let text = render_args(&event.args);
-                    push_console(&ring, ConsoleEntry { level, text }).await;
-                }
-            }));
-        }
-        if let Ok(mut events) = page.event_listener::<EventExceptionThrown>().await {
-            let ring = console.clone();
-            tasks.push(tokio::spawn(async move {
-                while let Some(event) = events.next().await {
-                    let text = cap(&event.exception_details.text, CONSOLE_TEXT_MAX);
-                    push_console(
-                        &ring,
-                        ConsoleEntry {
-                            level: "exception".to_owned(),
-                            text,
-                        },
-                    )
-                    .await;
-                }
-            }));
-        }
+        let tasks = vec![
+            tokio::spawn(watch_network(cdp.events(), network.clone())),
+            tokio::spawn(watch_console(cdp.events(), console.clone())),
+        ];
         Self {
             network,
             console,
@@ -182,6 +121,63 @@ impl SessionObservers {
             (entry.level == "error" || entry.level == "exception")
                 .then(|| format!("page_error: [{}] {}", entry.level, entry.text))
         })
+    }
+}
+
+async fn watch_network(mut events: broadcast::Receiver<CdpEvent>, ring: NetworkRing) {
+    while let Some(event) = next_event(&mut events).await {
+        if let Some(received) = decode::<EventResponseReceived>(&event) {
+            push(
+                &ring,
+                NetworkEntry {
+                    status: received.response.status,
+                    kind: format!("{:?}", received.r#type).to_lowercase(),
+                    mime: received.response.mime_type.clone(),
+                    url: cap(&received.response.url, URL_MAX),
+                    failure: None,
+                },
+            )
+            .await;
+        } else if let Some(failed) = decode::<EventLoadingFailed>(&event) {
+            if failed.canceled == Some(true) {
+                continue;
+            }
+            push(
+                &ring,
+                NetworkEntry {
+                    status: 0,
+                    kind: format!("{:?}", failed.r#type).to_lowercase(),
+                    mime: String::new(),
+                    url: String::new(),
+                    failure: Some(failed.error_text.clone()),
+                },
+            )
+            .await;
+        }
+    }
+}
+
+async fn watch_console(mut events: broadcast::Receiver<CdpEvent>, ring: ConsoleRing) {
+    while let Some(event) = next_event(&mut events).await {
+        if let Some(called) = decode::<EventConsoleApiCalled>(&event) {
+            push_console(
+                &ring,
+                ConsoleEntry {
+                    level: format!("{:?}", called.r#type).to_lowercase(),
+                    text: render_args(&called.args),
+                },
+            )
+            .await;
+        } else if let Some(thrown) = decode::<EventExceptionThrown>(&event) {
+            push_console(
+                &ring,
+                ConsoleEntry {
+                    level: "exception".to_owned(),
+                    text: cap(&thrown.exception_details.text, CONSOLE_TEXT_MAX),
+                },
+            )
+            .await;
+        }
     }
 }
 

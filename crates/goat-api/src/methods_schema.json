@@ -223,22 +223,6 @@
                   "kind"
                 ],
                 "type": "object"
-              },
-              {
-                "properties": {
-                  "edit": {
-                    "const": "browser_set",
-                    "type": "string"
-                  },
-                  "enabled": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "edit",
-                  "enabled"
-                ],
-                "type": "object"
               }
             ]
           }
@@ -741,6 +725,54 @@
         "title": "null",
         "type": "null"
       },
+      "name": "browser.event",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "CdpEvent": {
+            "properties": {
+              "method": {
+                "type": "string"
+              },
+              "params": true
+            },
+            "required": [
+              "method"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "event": {
+            "$ref": "#/$defs/CdpEvent"
+          },
+          "instance": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "instance",
+          "event"
+        ],
+        "title": "BrowserEventParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
       "name": "capability.advertise",
       "output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -822,7 +854,7 @@
       },
       "params": {
         "$defs": {
-          "SessionId": {
+          "Holder": {
             "type": "string"
           }
         },
@@ -831,15 +863,15 @@
           "capability": {
             "type": "string"
           },
+          "holder": {
+            "$ref": "#/$defs/Holder"
+          },
           "instance": {
             "type": "string"
-          },
-          "session": {
-            "$ref": "#/$defs/SessionId"
           }
         },
         "required": [
-          "session",
+          "holder",
           "capability",
           "instance"
         ],
@@ -1457,80 +1489,177 @@
       },
       "name": "host.browser",
       "output": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "properties": {
-          "image": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "media_type": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "summary": {
-            "type": "string"
-          },
-          "text": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "summary"
-        ],
-        "title": "HostBrowserOutput",
-        "type": "object"
-      },
-      "params": {
         "$defs": {
-          "HostOrigin": {
+          "BrowserTab": {
             "properties": {
-              "label": {
+              "id": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "selected": {
+                "type": "boolean"
+              },
+              "title": {
                 "type": "string"
               },
-              "session": {
-                "$ref": "#/$defs/SessionId"
-              },
-              "task": {
-                "$ref": "#/$defs/TaskId"
+              "url": {
+                "type": "string"
               }
             },
             "required": [
-              "session",
-              "task",
-              "label"
+              "id",
+              "url",
+              "title",
+              "selected"
             ],
             "type": "object"
-          },
-          "SessionId": {
-            "type": "string"
-          },
-          "TaskId": {
-            "type": "string"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "properties": {
-          "action": {
-            "type": "string"
+        "oneOf": [
+          {
+            "properties": {
+              "reply": {
+                "const": "cdp",
+                "type": "string"
+              },
+              "result": true
+            },
+            "required": [
+              "reply"
+            ],
+            "type": "object"
           },
-          "arguments": true,
-          "origin": {
-            "$ref": "#/$defs/HostOrigin"
+          {
+            "properties": {
+              "reply": {
+                "const": "tabs",
+                "type": "string"
+              },
+              "tabs": {
+                "items": {
+                  "$ref": "#/$defs/BrowserTab"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "reply",
+              "tabs"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "reply": {
+                "const": "detached",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reply"
+            ],
+            "type": "object"
           }
-        },
-        "required": [
-          "origin",
-          "action"
         ],
-        "title": "HostBrowserParams",
-        "type": "object"
+        "title": "HostBrowserOutput"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "properties": {
+              "command": {
+                "const": "cdp",
+                "type": "string"
+              },
+              "method": {
+                "type": "string"
+              },
+              "params": true
+            },
+            "required": [
+              "command",
+              "method"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "command": {
+                "const": "tab_list",
+                "type": "string"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "command": {
+                "const": "tab_select",
+                "type": "string"
+              },
+              "id": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command",
+              "id"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "command": {
+                "const": "tab_close",
+                "type": "string"
+              },
+              "id": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command",
+              "id"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "command": {
+                "const": "tab_open",
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "command",
+              "url"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "command": {
+                "const": "detach",
+                "type": "string"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "BrowserCommand"
       },
       "shape": "unary",
       "version": 1

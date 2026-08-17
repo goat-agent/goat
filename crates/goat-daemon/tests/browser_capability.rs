@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use goat_api::{
-    CapabilityBind, CapabilityBindParams, CapabilityList, CapabilityListParams, ResumeMode,
-    SessionOpen, SessionOpenParams,
+    CapabilityBind, CapabilityBindParams, CapabilityList, CapabilityListParams, Holder, ResumeMode,
+    SessionId, SessionOpen, SessionOpenParams,
 };
 use goat_browser_host::{
     BrowserHost, BrowserPort, CAPABILITY, advertise, advertisement, withdrawal,
@@ -117,6 +117,7 @@ async fn the_broker_reaches_a_real_provider_over_a_real_connection() {
         dir.path().join("store.sqlite"),
     );
     manager.mark_ready();
+    let broker = manager.broker();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let host = goat_daemon::EnvelopeHost::new(
         manager,
@@ -124,7 +125,6 @@ async fn the_broker_reaches_a_real_provider_over_a_real_connection() {
         "e1".to_owned(),
         dir.path().join("store.sqlite"),
     );
-    let broker = host.broker.clone();
 
     let (a, b) = tokio::io::duplex(1024 * 1024);
     let (daemon_sink, daemon_source) = Conn::new(a).split();
@@ -166,9 +166,9 @@ async fn the_broker_reaches_a_real_provider_over_a_real_connection() {
     let calling = tokio::spawn(async move {
         broker
             .invoke(
-                1,
+                &Holder::session(SessionId(1)),
                 CAPABILITY,
-                json!({ "action": "navigate" }),
+                json!({ "command": "cdp", "method": "Page.navigate", "params": {} }),
                 Duration::from_secs(5),
             )
             .await
@@ -178,10 +178,13 @@ async fn the_broker_reaches_a_real_provider_over_a_real_connection() {
         .await
         .expect("the reverse call reaches the browser port")
         .expect("the port is open");
-    assert_eq!(params["action"], "navigate");
+    assert_eq!(params["method"], "Page.navigate");
 
     browser
-        .settle(request_id, Ok(json!({ "summary": "navigated" })))
+        .settle(
+            request_id,
+            Ok(json!({ "reply": "cdp", "result": { "frameId": "f1" } })),
+        )
         .await;
 
     let answered = tokio::time::timeout(Duration::from_secs(5), calling)
@@ -189,7 +192,7 @@ async fn the_broker_reaches_a_real_provider_over_a_real_connection() {
         .expect("the answer comes back")
         .expect("the call task finishes")
         .expect("the browser answered");
-    assert_eq!(answered["summary"], "navigated");
+    assert_eq!(answered["result"]["frameId"], "f1");
     std::mem::forget(peer);
 }
 
@@ -242,7 +245,7 @@ async fn binding_an_unknown_instance_is_refused_without_touching_a_browser() {
     let refused = caller
         .api
         .call::<CapabilityBind>(CapabilityBindParams {
-            session,
+            holder: Holder::session(session),
             capability: CAPABILITY.to_owned(),
             instance: "a-browser-that-never-attached".to_owned(),
         })
