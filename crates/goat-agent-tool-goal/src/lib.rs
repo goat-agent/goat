@@ -187,6 +187,7 @@ mod tests {
         let store: Arc<dyn Store> = Arc::new(store);
         let ctx = ToolCaller {
             agent,
+            agent_slug: "dev".to_owned(),
             conversation: conv,
             audience: None,
             goat_root: PathBuf::from("/tmp"),

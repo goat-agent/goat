@@ -210,6 +210,7 @@ mod tests {
     fn ctx(root: PathBuf) -> ToolCaller {
         ToolCaller {
             agent: AgentId::new(),
+            agent_slug: "dev".to_owned(),
             conversation: ConversationId::new(ChannelId::new("test"), InstanceId::new(), "x"),
             audience: None,
             goat_root: root,

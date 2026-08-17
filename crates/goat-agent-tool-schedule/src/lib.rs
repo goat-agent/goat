@@ -441,6 +441,7 @@ mod tests {
         store.ensure_conversation(&conv, agent).await.unwrap();
         let ctx = ToolCaller {
             agent,
+            agent_slug: "dev".to_owned(),
             conversation: conv,
             audience: None,
             goat_root: PathBuf::from("/tmp"),

@@ -1125,6 +1125,7 @@ async fn spawn_agent(
 
     let brain = Arc::new(Brain::new(BrainDeps {
         agent: raw.id,
+        slug: raw.slug.clone(),
         personality: Arc::new(raw.personality.clone()),
         default_model: raw.default_model.clone(),
         timezone: raw.timezone.clone(),

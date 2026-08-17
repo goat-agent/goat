@@ -156,6 +156,7 @@ mod tests {
     fn ctx(agent: AgentId) -> ToolCaller {
         ToolCaller {
             agent,
+            agent_slug: "dev".to_owned(),
             conversation: ConversationId::new(
                 ChannelId::from_static("test"),
                 InstanceId::default(),
