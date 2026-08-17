@@ -28,6 +28,7 @@ struct ManagerInner {
     db_path: PathBuf,
     sessions: Mutex<SessionTable>,
     conversations: Mutex<HashMap<i64, SessionId>>,
+    attach_holds: Mutex<std::collections::HashSet<(ClientId, SessionId)>>,
     next_session: AtomicU64,
     next_client: AtomicU64,
     remote: Mutex<Option<RemoteControls>>,
@@ -64,6 +65,7 @@ impl CodeSessionHub {
                 db_path,
                 sessions: Mutex::new(HashMap::new()),
                 conversations: Mutex::new(HashMap::new()),
+                attach_holds: Mutex::new(std::collections::HashSet::new()),
                 next_session: AtomicU64::new(1),
                 next_client: AtomicU64::new(1),
                 remote: Mutex::new(None),
@@ -229,6 +231,50 @@ impl CodeSessionHub {
         conversation_unregister_owner(&mut conversations, session);
     }
 
+    pub(crate) async fn hold_for_attach(
+        &self,
+        session: SessionId,
+        client: ClientId,
+        cancel: tokio_util::sync::CancellationToken,
+    ) {
+        {
+            let table = self.inner.sessions.lock().await;
+            let Some(live) = table.get(&session) else {
+                return;
+            };
+            live.inner.lock().await.pending_attaches += 1;
+        }
+        self.inner
+            .attach_holds
+            .lock()
+            .await
+            .insert((client, session));
+        let this = self.clone();
+        tokio::spawn(async move {
+            cancel.cancelled().await;
+            this.release_attach_hold(session, client).await;
+        });
+    }
+
+    async fn release_attach_hold(&self, session: SessionId, client: ClientId) {
+        let held = {
+            let mut holds = self.inner.attach_holds.lock().await;
+            holds.remove(&(client, session))
+        };
+        if !held {
+            return;
+        }
+        let live = {
+            let table = self.inner.sessions.lock().await;
+            table.get(&session).cloned()
+        };
+        if let Some(live) = live {
+            let mut inner = live.inner.lock().await;
+            inner.pending_attaches = inner.pending_attaches.saturating_sub(1);
+        }
+        self.evict_if_idle(session).await;
+    }
+
     pub(crate) async fn open_or_attach(
         &self,
         cwd: PathBuf,
@@ -385,6 +431,7 @@ impl CodeSessionHub {
         sender: mpsc::Sender<ServerFrame>,
         lagged: tokio_util::sync::CancellationToken,
     ) -> Result<(), String> {
+        self.release_attach_hold(session, client).await;
         let live = {
             let table = self.inner.sessions.lock().await;
             let live = table.get(&session).cloned();
