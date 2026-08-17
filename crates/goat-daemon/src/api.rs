@@ -1223,4 +1223,21 @@ mod tests {
         });
         assert_eq!(entry.name, "src");
     }
+
+    #[test]
+    fn every_served_method_is_a_frozen_contract() {
+        let router = build(daemon_api(CancellationToken::new()), &LOCAL_GRANTS);
+        let served: std::collections::BTreeSet<String> = router.advertised().into_keys().collect();
+        let frozen: std::collections::BTreeSet<String> = goat_api::registry()
+            .into_iter()
+            .filter(|schema| schema.direction == goat_api::Direction::ToDaemon)
+            .map(|schema| schema.name.to_owned())
+            .collect();
+        assert_eq!(
+            served, frozen,
+            "the daemon router and goat-api's registry disagree; a method served but not registered \
+             is invisible to methods_fingerprint.txt, and one registered but not served is advertised \
+             to nobody"
+        );
+    }
 }
