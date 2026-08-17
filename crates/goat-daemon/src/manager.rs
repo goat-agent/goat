@@ -1132,6 +1132,9 @@ fn apply_edit(config: &mut goat_config::Config, edit: goat_api::ConfigEdit) {
         ConfigEdit::IntegrationRemove { kind } => {
             config.integrations.remove(&kind);
         }
+        ConfigEdit::BrowserSet { enabled } => {
+            config.browser_enabled = enabled;
+        }
     }
 }
 

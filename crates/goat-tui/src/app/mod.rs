@@ -127,8 +127,9 @@ enum ViewportAction {
 }
 
 struct HostActions {
-    pending_copy: Option<String>,
-    pending_open: Option<String>,
+    copy: Option<String>,
+    open: Option<String>,
+    edits: Vec<Vec<goat_api::ConfigEdit>>,
 }
 
 struct SessionState {
@@ -330,8 +331,9 @@ impl App {
                 dirty: false,
             },
             host_actions: HostActions {
-                pending_copy: None,
-                pending_open: None,
+                copy: None,
+                open: None,
+                edits: Vec::new(),
             },
             session: SessionState {
                 session_id: origin.session,
@@ -569,6 +571,10 @@ impl App {
                     }
                 }
                 ops
+            }
+            CommandEffect::EditConfig(edits) => {
+                self.host_actions.edits.push(edits);
+                Vec::new()
             }
             CommandEffect::Submit { display, prompt } => self.submit_command(display, prompt),
             CommandEffect::Noop => Vec::new(),
@@ -1068,7 +1074,7 @@ impl App {
         if text.is_empty() {
             return;
         }
-        self.host_actions.pending_copy = Some(text);
+        self.host_actions.copy = Some(text);
         self.toasts.push(crate::toast::Toast::new(
             goat_protocol::NotifyKind::Info,
             "copied".to_owned(),
@@ -1077,11 +1083,15 @@ impl App {
     }
 
     pub(crate) fn take_pending_copy(&mut self) -> Option<String> {
-        self.host_actions.pending_copy.take()
+        self.host_actions.copy.take()
+    }
+
+    pub(crate) fn take_config_edits(&mut self) -> Vec<Vec<goat_api::ConfigEdit>> {
+        std::mem::take(&mut self.host_actions.edits)
     }
 
     pub(crate) fn take_pending_open(&mut self) -> Option<String> {
-        self.host_actions.pending_open.take()
+        self.host_actions.open.take()
     }
 
     fn on_left_click(&mut self, col: u16, row: u16) {
@@ -1092,7 +1102,7 @@ impl App {
             return;
         };
         if let Some(url) = self.active_transcript().url_at(line, content_col) {
-            self.host_actions.pending_open = Some(url);
+            self.host_actions.open = Some(url);
         } else if let Some(img) = self.active_transcript().image_at(line) {
             self.screens.active = PendingScreen::Screen(Box::new(ImageZoomScreen::new(
                 Box::new(img),
@@ -1663,13 +1673,6 @@ impl SettingsState {
             self.save_failed = true;
         }
     }
-
-    fn persist_config(&mut self, cfg: &goat_config::Config) {
-        if let Err(err) = cfg.save() {
-            tracing::warn!(error = %err, "failed to save config");
-            self.save_failed = true;
-        }
-    }
 }
 
 impl Settings for SettingsState {
@@ -1707,9 +1710,6 @@ impl Settings for SettingsState {
 
     fn set_browser(&mut self, enabled: bool) {
         self.browser = enabled;
-        let mut cfg = goat_config::Config::load();
-        cfg.browser_enabled = enabled;
-        self.persist_config(&cfg);
     }
 }
 
@@ -1865,6 +1865,7 @@ pub enum ExitReason {
 
 pub async fn run(
     ops: Sender<Op>,
+    edits: Sender<Vec<goat_api::ConfigEdit>>,
     mut events: Receiver<EngineEvent>,
     mut presence: Receiver<usize>,
     theme: Theme,
@@ -1878,6 +1879,7 @@ pub async fn run(
     let result = event_loop(
         &mut terminal,
         &ops,
+        &edits,
         &mut events,
         &mut presence,
         app,
@@ -1892,6 +1894,7 @@ pub async fn run(
 async fn event_loop(
     terminal: &mut DefaultTerminal,
     ops: &Sender<Op>,
+    edits: &Sender<Vec<goat_api::ConfigEdit>>,
     events: &mut Receiver<EngineEvent>,
     presence: &mut Receiver<usize>,
     mut app: App,
@@ -1943,6 +1946,9 @@ async fn event_loop(
             }
         }
 
+        for batch in app.take_config_edits() {
+            let _ = edits.send(batch).await;
+        }
         if let Some(notification) = app.take_notification() {
             crate::notification::spawn(notification);
         }

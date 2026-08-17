@@ -147,6 +147,7 @@ fn identity_of(build: Option<BuildId>) -> Identity {
 
 pub struct Attachment {
     pub ops: mpsc::Sender<Op>,
+    pub edits: mpsc::Sender<Vec<goat_api::ConfigEdit>>,
     pub events: mpsc::Receiver<Event>,
     pub presence: mpsc::Receiver<usize>,
     pub client_id: u64,
@@ -343,6 +344,7 @@ fn spawn_pumps(
     daemon: Identity,
 ) -> Attachment {
     let (ops_tx, ops_rx) = mpsc::channel::<Op>(OPS_CAPACITY);
+    let (edits_tx, edits_rx) = mpsc::channel::<Vec<goat_api::ConfigEdit>>(OPS_CAPACITY);
     let (events_tx, events_rx) = mpsc::channel::<Event>(EVENTS_CAPACITY);
     let (presence_tx, presence_rx) = mpsc::channel::<usize>(PRESENCE_CAPACITY);
 
@@ -358,12 +360,14 @@ fn spawn_pumps(
         shared,
         link,
         ops_rx,
+        edits_rx,
         events_tx,
         presence_tx,
     ));
 
     Attachment {
         ops: ops_tx,
+        edits: edits_tx,
         events: events_rx,
         presence: presence_rx,
         client_id,
@@ -379,6 +383,7 @@ async fn run_pump(
     shared: Arc<Shared>,
     link: Arc<Link>,
     mut ops_rx: mpsc::Receiver<Op>,
+    mut edits_rx: mpsc::Receiver<Vec<goat_api::ConfigEdit>>,
     events_tx: mpsc::Sender<Event>,
     presence_tx: mpsc::Sender<usize>,
 ) {
@@ -399,6 +404,13 @@ async fn run_pump(
         let keep_going = loop {
             tokio::select! {
                 biased;
+                edits = edits_rx.recv() => {
+                    let Some(edits) = edits else { break false };
+                    let _ = session
+                        .api
+                        .call::<goat_api::AdminConfigEdit>(goat_api::AdminConfigEditParams { edits })
+                        .await;
+                }
                 op = ops_rx.recv() => {
                     let Some(op) = op else { break false };
                     match handle_op(&session.api, &shared, op, &events_tx).await {

@@ -6,6 +6,7 @@ use goat_protocol::NotifyKind;
 
 enum SearchOutcome {
     Notice(String),
+    Edited(String, Vec<goat_api::ConfigEdit>),
     Error(String),
 }
 use goat_config::Config;
@@ -22,12 +23,16 @@ impl Command for Search {
     }
 
     fn run(&self, invocation: CommandInvocation, session: &mut dyn Session) -> CommandEffect {
-        let (kind, message) = match run_search(invocation.raw_args.trim()) {
-            SearchOutcome::Notice(message) => (NotifyKind::Info, message),
-            SearchOutcome::Error(message) => (NotifyKind::Error, message),
+        let (kind, message, edits) = match run_search(invocation.raw_args.trim()) {
+            SearchOutcome::Notice(message) => (NotifyKind::Info, message, Vec::new()),
+            SearchOutcome::Edited(message, edits) => (NotifyKind::Info, message, edits),
+            SearchOutcome::Error(message) => (NotifyKind::Error, message, Vec::new()),
         };
         session.notify(kind, message);
-        CommandEffect::Noop
+        if edits.is_empty() {
+            return CommandEffect::Noop;
+        }
+        CommandEffect::EditConfig(edits)
     }
 }
 
@@ -74,37 +79,41 @@ fn add_api_key(provider: &str, key: &str) -> SearchOutcome {
         return SearchOutcome::Error(format!("could not store {provider} credential: {err}"));
     }
     match upsert_account(provider, account, None) {
-        Ok(target) => SearchOutcome::Notice(format!(
-            "web search: configured {target} and set it as the default"
-        )),
+        Ok((target, edits)) => SearchOutcome::Edited(
+            format!("web search: configured {target} and set it as the default"),
+            edits,
+        ),
         Err(err) => SearchOutcome::Error(err),
     }
 }
 
 fn add_searxng(url: &str) -> SearchOutcome {
     match upsert_account("searxng", "home", Some(url)) {
-        Ok(target) => SearchOutcome::Notice(format!(
-            "web search: configured {target} ({url}) and set it as the default"
-        )),
+        Ok((target, edits)) => SearchOutcome::Edited(
+            format!("web search: configured {target} ({url}) and set it as the default"),
+            edits,
+        ),
         Err(err) => SearchOutcome::Error(err),
     }
 }
 
-fn upsert_account(provider: &str, account: &str, endpoint: Option<&str>) -> Result<String, String> {
+fn upsert_account(
+    provider: &str,
+    account: &str,
+    endpoint: Option<&str>,
+) -> Result<(String, Vec<goat_api::ConfigEdit>), String> {
     let config_account =
         goat_search_providers::build_search_account_config(provider, account, endpoint, None)?;
     let target = config_account.target();
-    let mut config = Config::load();
-    config
-        .search
-        .accounts
-        .retain(|existing| existing.target() != target);
-    config.search.accounts.push(config_account);
-    if should_take_default(config.search.default_target.as_deref()) {
-        config.search.default_target = Some(target.clone());
+    let mut edits = vec![goat_api::ConfigEdit::SearchAccountSet {
+        account: serde_json::to_value(&config_account).map_err(|err| err.to_string())?,
+    }];
+    if should_take_default(Config::load().search.default_target.as_deref()) {
+        edits.push(goat_api::ConfigEdit::SearchDefaultSet {
+            target: Some(target.clone()),
+        });
     }
-    config.save().map_err(|err| err.to_string())?;
-    Ok(target)
+    Ok((target, edits))
 }
 
 fn should_take_default(current: Option<&str>) -> bool {
@@ -115,7 +124,7 @@ fn should_take_default(current: Option<&str>) -> bool {
 }
 
 fn set_default(target: &str) -> SearchOutcome {
-    let mut config = Config::load();
+    let config = Config::load();
     if !config
         .search
         .accounts
@@ -127,35 +136,35 @@ fn set_default(target: &str) -> SearchOutcome {
             "no configured or built-in search target named {target}"
         ));
     }
-    config.search.default_target = Some(target.to_owned());
-    match config.save() {
-        Ok(()) => SearchOutcome::Notice(format!("web search: default is now {target}")),
-        Err(err) => SearchOutcome::Error(err.to_string()),
-    }
+    SearchOutcome::Edited(
+        format!("web search: default is now {target}"),
+        vec![goat_api::ConfigEdit::SearchDefaultSet {
+            target: Some(target.to_owned()),
+        }],
+    )
 }
 
 fn remove(target: &str) -> SearchOutcome {
-    let mut config = Config::load();
-    let before = config.search.accounts.len();
-    config
+    let config = Config::load();
+    if !config
         .search
         .accounts
-        .retain(|account| account.target() != target);
-    if config.search.accounts.len() == before {
+        .iter()
+        .any(|account| account.target() == target)
+    {
         return SearchOutcome::Error(format!("no configured search account named {target}"));
-    }
-    if config.search.default_target.as_deref() == Some(target) {
-        config.search.default_target = None;
     }
     if let Some((provider, account)) = target.split_once('/')
         && let Some(store) = credential_store()
     {
         let _ = store.remove(&CredentialKey::search(provider, account));
     }
-    match config.save() {
-        Ok(()) => SearchOutcome::Notice(format!("web search: removed {target}")),
-        Err(err) => SearchOutcome::Error(err.to_string()),
-    }
+    SearchOutcome::Edited(
+        format!("web search: removed {target}"),
+        vec![goat_api::ConfigEdit::SearchAccountRemove {
+            target: target.to_owned(),
+        }],
+    )
 }
 
 fn list() -> SearchOutcome {

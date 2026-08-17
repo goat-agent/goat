@@ -279,13 +279,14 @@ async fn run_tui(
     .with_attachment(&attachment);
     let goat_client::Attachment {
         ops,
+        edits,
         events,
         presence,
         mut pump,
         ..
     } = attachment;
 
-    let exit = goat_tui::run(ops, events, presence, theme, origin, Vec::new()).await?;
+    let exit = goat_tui::run(ops, edits, events, presence, theme, origin, Vec::new()).await?;
     if tokio::time::timeout(std::time::Duration::from_secs(1), &mut pump)
         .await
         .is_err()

@@ -1,5 +1,5 @@
 admin.agent_reload@1 unary admin to_daemon d8901cba39dcf5b1
-admin.config_edit@1 unary admin to_daemon 406549ecb646a241
+admin.config_edit@1 unary admin to_daemon 48a697147ba037c2
 admin.daemon_stop@1 unary admin to_daemon 481f399d850707af
 admin.device_list@1 unary admin to_daemon 808a5aa9ead18a03
 admin.device_pair@1 unary admin to_daemon a269b916790d85ca

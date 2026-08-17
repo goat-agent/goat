@@ -161,11 +161,6 @@ impl Config {
         Ok(serde_json::from_str(raw)?)
     }
 
-    pub fn save(&self) -> Result<(), SettingsError> {
-        let path = config_path().ok_or(SettingsError::NoHome)?;
-        self.save_path(&path)
-    }
-
     pub fn save_at(&self, path: &Path) -> Result<(), SettingsError> {
         self.save_path(path)
     }
