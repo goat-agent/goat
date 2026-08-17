@@ -767,14 +767,13 @@ mod tests {
         assert!(local.grants().contains(&Grant::Admin));
         assert!(!remote.grants().contains(&Grant::Admin));
 
-        let admin = [
-            "admin.agent_reload",
-            "admin.daemon_stop",
-            "admin.device_pair",
-            "admin.device_list",
-            "admin.device_revoke",
-        ];
-        for method in admin {
+        let admin: Vec<String> = goat_api::registry()
+            .into_iter()
+            .filter(|schema| schema.grant == Grant::Admin)
+            .map(|schema| schema.name.to_owned())
+            .collect();
+        assert!(!admin.is_empty(), "the registry declares admin methods");
+        for method in &admin {
             assert!(local.serves(method, 1), "local should serve {method}");
             assert!(
                 !remote.serves(method, 1),
@@ -783,7 +782,11 @@ mod tests {
         }
         assert!(remote.serves("session.open", 1));
         assert!(remote.serves("fs.list", 1));
-        assert_eq!(local.advertised().len(), remote.advertised().len() + 5);
+        assert_eq!(
+            local.advertised().len(),
+            remote.advertised().len() + admin.len(),
+            "the admin routes are the only difference between the two routers"
+        );
     }
 
     #[tokio::test]
