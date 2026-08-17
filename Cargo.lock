@@ -2403,6 +2403,7 @@ name = "goat-command"
 version = "0.1.0"
 dependencies = [
  "crossterm 0.29.0",
+ "goat-api",
  "goat-client",
  "goat-github",
  "goat-protocol",
@@ -3674,6 +3675,7 @@ dependencies = [
  "color-eyre",
  "crossterm 0.29.0",
  "futures",
+ "goat-api",
  "goat-client",
  "goat-command",
  "goat-commands",
