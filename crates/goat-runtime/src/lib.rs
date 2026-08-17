@@ -865,8 +865,8 @@ impl Supervisor {
         &mut self,
         agents: Vec<AgentConfig>,
         only: Option<&str>,
-    ) -> goat_wire::ReloadReport {
-        let mut report = goat_wire::ReloadReport::default();
+    ) -> goat_daemon::ReloadReport {
+        let mut report = goat_daemon::ReloadReport::default();
 
         if only.is_none() {
             let wanted: std::collections::HashSet<&str> =
@@ -881,7 +881,7 @@ impl Supervisor {
             for slug in stale {
                 if on_disk.contains(&slug) {
                     warn!(agent = %slug, "config did not load; keeping the running agent");
-                    report.failed.push(goat_wire::ReloadFailure {
+                    report.failed.push(goat_daemon::ReloadFailure {
                         agent: slug,
                         reason: "config did not load; keeping the settings already running"
                             .to_owned(),
@@ -934,7 +934,7 @@ impl Supervisor {
                 Err(e) => {
                     cancel.cancel();
                     warn!(agent = %agent.slug, error = ?e, "skipping agent");
-                    report.failed.push(goat_wire::ReloadFailure {
+                    report.failed.push(goat_daemon::ReloadFailure {
                         agent: agent.slug.clone(),
                         reason: format!("{e:#}"),
                     });
@@ -945,7 +945,7 @@ impl Supervisor {
         if let Some(slug) = only
             && !agents.iter().any(|a| a.slug == slug)
         {
-            report.failed.push(goat_wire::ReloadFailure {
+            report.failed.push(goat_daemon::ReloadFailure {
                 agent: slug.to_owned(),
                 reason: "no agent with this name loaded from config".to_owned(),
             });
@@ -960,12 +960,12 @@ impl Supervisor {
         report
     }
 
-    async fn reload(&mut self, only: Option<String>) -> goat_wire::ReloadReport {
+    async fn reload(&mut self, only: Option<String>) -> goat_daemon::ReloadReport {
         let cfg = match goat_config::load_from(self.base.paths.clone()) {
             Ok(cfg) => cfg,
             Err(e) => {
-                return goat_wire::ReloadReport {
-                    failed: vec![goat_wire::ReloadFailure {
+                return goat_daemon::ReloadReport {
+                    failed: vec![goat_daemon::ReloadFailure {
                         agent: "*".to_owned(),
                         reason: format!("{e:#}"),
                     }],

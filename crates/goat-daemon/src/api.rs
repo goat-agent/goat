@@ -125,12 +125,12 @@ fn encode_item(item: &goat_api::WatchItem) -> Result<serde_json::Value, CallErro
     })
 }
 
-fn resume_mode(mode: goat_api::ResumeMode) -> goat_wire::ResumeMode {
+fn resume_mode(mode: goat_api::ResumeMode) -> crate::wire::ResumeMode {
     match mode {
-        goat_api::ResumeMode::New {} => goat_wire::ResumeMode::New {},
-        goat_api::ResumeMode::Latest {} => goat_wire::ResumeMode::Latest {},
+        goat_api::ResumeMode::New {} => crate::wire::ResumeMode::New {},
+        goat_api::ResumeMode::Latest {} => crate::wire::ResumeMode::Latest {},
         goat_api::ResumeMode::Conversation { conversation_id } => {
-            goat_wire::ResumeMode::Conversation { conversation_id }
+            crate::wire::ResumeMode::Conversation { conversation_id }
         }
     }
 }
@@ -232,7 +232,11 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
                     .await
                     .map_err(refused)?;
                 manager
-                    .hold_for_attach(session, goat_wire::ClientId(ctx.client), ctx.cancel.clone())
+                    .hold_for_attach(
+                        session,
+                        crate::wire::ClientId(ctx.client),
+                        ctx.cancel.clone(),
+                    )
                     .await;
                 Ok(SessionOpenOutput {
                     session: SessionId(session.0),
@@ -245,7 +249,7 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
             let manager = submit_manager.clone();
             async move {
                 let task = manager
-                    .submit_task(goat_wire::SessionId(params.session.0), params.op)
+                    .submit_task(crate::wire::SessionId(params.session.0), params.op)
                     .await
                     .map_err(refused)?;
                 Ok(SessionSubmitOutput { task })
@@ -261,7 +265,7 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
                     })?);
                 let settled = manager
                     .settle_ask(
-                        goat_wire::SessionId(params.session.0),
+                        crate::wire::SessionId(params.session.0),
                         call,
                         params.revision,
                         params.answers,
@@ -291,7 +295,7 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
             let manager = control_manager.clone();
             async move {
                 manager
-                    .control(goat_wire::SessionId(params.session.0), params.op)
+                    .control(crate::wire::SessionId(params.session.0), params.op)
                     .await
                     .map_err(refused)?;
                 Ok(Empty {})
@@ -301,7 +305,7 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
             let manager = kill_manager.clone();
             async move {
                 manager
-                    .kill_session(goat_wire::SessionId(params.session.0))
+                    .kill_session(crate::wire::SessionId(params.session.0))
                     .await
                     .map_err(refused)?;
                 Ok(Empty {})
@@ -389,8 +393,8 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
                 let lagged = tokio_util::sync::CancellationToken::new();
                 let (backlog, _cwd) = manager
                     .watch_open(
-                        goat_wire::SessionId(params.session.0),
-                        goat_wire::ClientId(ctx.client),
+                        crate::wire::SessionId(params.session.0),
+                        crate::wire::ClientId(ctx.client),
                         &epoch,
                         &params.from,
                         out_tx,
@@ -417,16 +421,15 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
                         }
                         frame = out_rx.recv() => {
                             let Some(frame) = frame else { break };
-                            if let Some(item) = live_item(frame, &epoch) {
-                                sink.send(encode_item(&item)?).await?;
-                            }
+                            let item = watch_item(frame, &epoch, false);
+                            sink.send(encode_item(&item)?).await?;
                         }
                     }
                 }
                 manager
                     .unsubscribe(
-                        goat_wire::SessionId(params.session.0),
-                        goat_wire::ClientId(ctx.client),
+                        crate::wire::SessionId(params.session.0),
+                        crate::wire::ClientId(ctx.client),
                     )
                     .await;
                 Ok(Empty {})
@@ -549,103 +552,37 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
     goat_capability::routes(router, broker, device)
 }
 
-pub(crate) fn snapshot_item(
-    frame: goat_wire::ServerFrame,
-    cwd: String,
+pub(crate) fn watch_item(
+    update: crate::session::Update,
     epoch: &str,
-    watermark: u64,
     reset: bool,
 ) -> goat_api::WatchItem {
-    let goat_wire::ServerFrame::Snapshot {
-        session,
-        target,
-        transcript,
-        pending,
-        context_tokens,
-        compaction_threshold,
-        skills,
-        accounts,
-        model_list,
-        selected,
-        rate_limits,
-        mode,
-        processes,
-        usage,
-        active,
-        retry,
-        ..
-    } = frame
-    else {
-        return goat_api::WatchItem::Presence {
+    match update {
+        crate::session::Update::Snapshot { watermark, state } => goat_api::WatchItem::Snapshot {
             cursor: goat_api::cursor_for(epoch, watermark),
-            clients: 0,
-        };
-    };
-    goat_api::WatchItem::Snapshot {
-        cursor: goat_api::cursor_for(epoch, watermark),
-        reset,
-        state: Box::new(goat_api::SessionSnapshot {
-            session: SessionId(session.0),
-            cwd,
-            target: *target,
-            transcript,
-            pending,
-            context_tokens,
-            compaction_threshold,
-            skills,
-            accounts,
-            models: model_list,
-            selected: *selected,
-            mode: mode.mode,
-            plan_path: mode.plan_path,
-            processes,
-            usage: usage
-                .into_iter()
-                .map(|entry| goat_api::UsageEntry {
-                    provider: entry.provider,
-                    account: entry.account,
-                    usage: entry.usage,
-                    context_window: entry.context_window,
-                    compaction_threshold: entry.compaction_threshold,
-                })
-                .collect(),
-            retry: retry.map(|entry| goat_api::RetryEntry {
-                id: entry.id,
-                attempt: entry.attempt,
-                max_attempts: entry.max_attempts,
-                delay_ms: entry.delay_ms,
-                reason: entry.reason,
-                resets_at: entry.resets_at,
-            }),
-            rate_limits: rate_limits
-                .into_iter()
-                .map(|entry| goat_api::RateLimitEntry {
-                    provider: entry.provider,
-                    account: entry.account,
-                    snapshot: entry.snapshot,
-                    cached_at: entry.cached_at,
-                })
-                .collect(),
-            active,
-        }),
-    }
-}
-
-pub(crate) fn live_item(frame: goat_wire::ServerFrame, epoch: &str) -> Option<goat_api::WatchItem> {
-    match frame {
-        goat_wire::ServerFrame::Event { seq, event, .. } => Some(goat_api::WatchItem::Event {
+            reset,
+            state,
+        },
+        crate::session::Update::Event { seq, event } => goat_api::WatchItem::Event {
             cursor: goat_api::cursor_for(epoch, seq),
-            event: Box::new(event),
-        }),
-        goat_wire::ServerFrame::Presence { clients, .. } => Some(goat_api::WatchItem::Presence {
+            event,
+        },
+        crate::session::Update::Presence { clients } => goat_api::WatchItem::Presence {
             cursor: goat_api::cursor_for(epoch, 0),
-            clients: clients.len(),
-        }),
-        _ => None,
+            clients,
+        },
+        crate::session::Update::Error { message } => goat_api::WatchItem::Event {
+            cursor: goat_api::cursor_for(epoch, 0),
+            event: Box::new(goat_protocol::Event::Error {
+                id: None,
+                message,
+                hint: None,
+            }),
+        },
     }
 }
 
-fn session_info(info: goat_wire::SessionInfo) -> SessionInfo {
+fn session_info(info: crate::wire::SessionInfo) -> SessionInfo {
     SessionInfo {
         session: SessionId(info.session.0),
         cwd: info.cwd,
@@ -656,7 +593,7 @@ fn session_info(info: goat_wire::SessionInfo) -> SessionInfo {
     }
 }
 
-fn conversation_info(info: goat_wire::ConversationInfo) -> ConversationInfo {
+fn conversation_info(info: crate::wire::ConversationInfo) -> ConversationInfo {
     ConversationInfo {
         conversation_id: info.conversation_id,
         cwd: info.cwd,
@@ -668,21 +605,21 @@ fn conversation_info(info: goat_wire::ConversationInfo) -> ConversationInfo {
     }
 }
 
-fn live_state(state: goat_wire::SessionLiveState) -> SessionLiveState {
+fn live_state(state: crate::wire::SessionLiveState) -> SessionLiveState {
     match state {
-        goat_wire::SessionLiveState::Idle {} => SessionLiveState::Idle {},
-        goat_wire::SessionLiveState::Active {} => SessionLiveState::Active {},
-        goat_wire::SessionLiveState::WaitingOnAsk {} => SessionLiveState::WaitingOnAsk {},
+        crate::wire::SessionLiveState::Idle {} => SessionLiveState::Idle {},
+        crate::wire::SessionLiveState::Active {} => SessionLiveState::Active {},
+        crate::wire::SessionLiveState::WaitingOnAsk {} => SessionLiveState::WaitingOnAsk {},
     }
 }
 
-fn dir_entry(entry: goat_wire::DirEntry) -> DirEntry {
+fn dir_entry(entry: crate::wire::DirEntry) -> DirEntry {
     DirEntry {
         name: entry.name,
         kind: match entry.kind {
-            goat_wire::DirEntryKind::Directory {} => DirEntryKind::Directory {},
-            goat_wire::DirEntryKind::File {} => DirEntryKind::File {},
-            goat_wire::DirEntryKind::Symlink {} => DirEntryKind::Symlink {},
+            crate::wire::DirEntryKind::Directory {} => DirEntryKind::Directory {},
+            crate::wire::DirEntryKind::File {} => DirEntryKind::File {},
+            crate::wire::DirEntryKind::Symlink {} => DirEntryKind::Symlink {},
         },
     }
 }
@@ -690,13 +627,14 @@ fn dir_entry(entry: goat_wire::DirEntry) -> DirEntry {
 #[cfg(test)]
 mod tests {
     use super::{LOCAL_GRANTS, REMOTE_GRANTS, build, conversation_info, dir_entry, session_info};
+    use crate::wire::SessionId as WireSessionId;
     use goat_api::{
         DaemonStatus2, FsListOutput, Grant, Router, SessionListOutput, SessionLiveState,
     };
     use goat_capability::Broker;
+    use goat_wire::WireConn;
     use goat_wire::envelope::{ErrorCode, Frame, Role};
     use goat_wire::peer::{Handler, Peer, RejectAll, spawn};
-    use goat_wire::{SessionId as WireSessionId, WireConn};
     use serde_json::{Value, json};
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
@@ -1117,31 +1055,39 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_snapshot_frame_becomes_a_watch_item_carrying_its_cursor() {
-        let frame = goat_wire::ServerFrame::Snapshot {
-            session: WireSessionId(4),
-            watermark: 12,
-            target: Box::new(None),
+    fn snapshot_state() -> Box<goat_api::SessionSnapshot> {
+        Box::new(goat_api::SessionSnapshot {
+            session: goat_api::SessionId(4),
+            cwd: "/w".to_owned(),
+            target: None,
             transcript: Vec::new(),
             pending: Vec::new(),
             context_tokens: None,
             compaction_threshold: None,
             skills: Vec::new(),
             accounts: Vec::new(),
-            model_list: Vec::new(),
-            selected: Box::new(None),
-            rate_limits: Vec::new(),
-            mode: goat_wire::ModeEntry {
-                mode: goat_protocol::Mode::Normal,
-                plan_path: None,
-            },
+            models: Vec::new(),
+            selected: None,
+            mode: goat_protocol::Mode::Normal,
+            plan_path: None,
             processes: Vec::new(),
             usage: Vec::new(),
+            rate_limits: Vec::new(),
             active: None,
-            retry: Box::new(None),
-        };
-        let item = super::snapshot_item(frame, "/w".to_owned(), "e3", 12, true);
+            retry: None,
+        })
+    }
+
+    #[test]
+    fn a_snapshot_update_becomes_a_watch_item_carrying_its_cursor() {
+        let item = super::watch_item(
+            crate::session::Update::Snapshot {
+                watermark: 12,
+                state: snapshot_state(),
+            },
+            "e3",
+            true,
+        );
         let goat_api::WatchItem::Snapshot {
             cursor,
             reset,
@@ -1157,43 +1103,41 @@ mod tests {
     }
 
     #[test]
-    fn live_frames_translate_only_where_a_cursor_exists() {
-        let event = super::live_item(
-            goat_wire::ServerFrame::Event {
-                session: WireSessionId(1),
+    fn every_live_update_reaches_the_client() {
+        let event = super::watch_item(
+            crate::session::Update::Event {
                 seq: 41,
-                event: goat_protocol::Event::TaskDone {
+                event: Box::new(goat_protocol::Event::TaskDone {
                     id: goat_protocol::TaskId(2),
                     interrupted: false,
-                },
+                }),
             },
             "e3",
-        )
-        .expect("events translate");
+            false,
+        );
         assert_eq!(event.cursor().to_string(), "e3:41");
 
-        let presence = super::live_item(
-            goat_wire::ServerFrame::Presence {
-                session: WireSessionId(1),
-                clients: vec![goat_wire::ClientId(1), goat_wire::ClientId(2)],
-            },
-            "e3",
-        )
-        .expect("presence translates");
+        let presence =
+            super::watch_item(crate::session::Update::Presence { clients: 2 }, "e3", false);
         assert!(matches!(
             presence,
             goat_api::WatchItem::Presence { clients: 2, .. }
         ));
 
-        assert!(
-            super::live_item(
-                goat_wire::ServerFrame::Error {
-                    message: "x".to_owned()
-                },
-                "e3"
-            )
-            .is_none()
+        let stopped = super::watch_item(
+            crate::session::Update::Error {
+                message: "engine stopped".to_owned(),
+            },
+            "e3",
+            false,
         );
+        let goat_api::WatchItem::Event { event, .. } = stopped else {
+            panic!("expected an event item")
+        };
+        assert!(matches!(
+            *event,
+            goat_protocol::Event::Error { ref message, .. } if message == "engine stopped"
+        ));
     }
 
     #[tokio::test]
@@ -1209,10 +1153,10 @@ mod tests {
 
     #[test]
     fn wire_types_convert_without_losing_state() {
-        let info = session_info(goat_wire::SessionInfo {
+        let info = session_info(crate::wire::SessionInfo {
             session: WireSessionId(4),
             cwd: "/w".to_owned(),
-            state: goat_wire::SessionLiveState::WaitingOnAsk {},
+            state: crate::wire::SessionLiveState::WaitingOnAsk {},
             windows: 2,
             age_ms: 10,
             tokens: 99,
@@ -1220,20 +1164,20 @@ mod tests {
         assert_eq!(info.session.0, 4);
         assert_eq!(info.state, SessionLiveState::WaitingOnAsk {});
 
-        let conversation = conversation_info(goat_wire::ConversationInfo {
+        let conversation = conversation_info(crate::wire::ConversationInfo {
             conversation_id: 7,
             cwd: "/w".to_owned(),
             title: Some("t".to_owned()),
             model: "m".to_owned(),
             updated_at: 1,
             live: Some(WireSessionId(4)),
-            state: Some(goat_wire::SessionLiveState::Active {}),
+            state: Some(crate::wire::SessionLiveState::Active {}),
         });
         assert_eq!(conversation.live.map(|s| s.0), Some(4));
 
-        let entry = dir_entry(goat_wire::DirEntry {
+        let entry = dir_entry(crate::wire::DirEntry {
             name: "src".to_owned(),
-            kind: goat_wire::DirEntryKind::Directory {},
+            kind: crate::wire::DirEntryKind::Directory {},
         });
         assert_eq!(entry.name, "src");
     }

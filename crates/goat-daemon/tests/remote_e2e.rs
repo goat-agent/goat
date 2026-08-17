@@ -158,7 +158,11 @@ async fn revoked_device_cannot_reconnect() {
         "the paired device is revoked"
     );
 
-    let refused = goat_remote::client::connect(&host, &credentials).await;
+    let refused = goat_remote::client::connect::<
+        goat_wire::envelope::Frame,
+        goat_wire::envelope::Frame,
+    >(&host, &credentials)
+    .await;
     assert!(refused.is_err(), "a revoked device must not connect");
 }
 

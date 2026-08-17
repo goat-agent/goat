@@ -1,8 +1,5 @@
-use std::pin::Pin;
 use std::sync::Arc;
 
-use futures::{Sink, Stream};
-use goat_wire::{ClientFrame, ServerFrame, WireError};
 use rcgen::{CertificateParams, DnType, KeyPair};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -13,9 +10,6 @@ use tokio_rustls::client::TlsStream;
 use crate::RemoteError;
 use crate::verify::PinnedServer;
 use crate::ws;
-
-pub type DeviceSink = Pin<Box<dyn Sink<ClientFrame, Error = WireError> + Send>>;
-pub type DeviceStream = Pin<Box<dyn Stream<Item = Result<ServerFrame, WireError>> + Send>>;
 
 #[derive(Debug, Clone)]
 pub struct DeviceCredentials {
@@ -68,14 +62,7 @@ pub async fn enroll(
     })
 }
 
-pub async fn connect(
-    host: &str,
-    credentials: &DeviceCredentials,
-) -> Result<(DeviceSink, DeviceStream), RemoteError> {
-    connect_as::<ClientFrame, ServerFrame>(host, credentials).await
-}
-
-pub async fn connect_as<Out, In>(
+pub async fn connect<Out, In>(
     host: &str,
     credentials: &DeviceCredentials,
 ) -> Result<(ws::FrameSink<Out>, ws::FrameStream<In>), RemoteError>

@@ -186,15 +186,22 @@ Placements that contradict the naming:
   provider, covering thirteen hosted providers plus the local trio (ollama, lmstudio, llama-cpp).
 - `goat-integration-mcp` registers nothing either — same idea, one family over. It is the shared base
   every hosted-MCP integration builds on, so a leaf is a `McpService` descriptor plus its parser.
-- `goat-wire` holds two surfaces that do not know each other. `protocol.rs` is the original
-  `ClientFrame`/`ServerFrame` pair, hashed into `wire_fingerprint` together with `Op` and `Event` —
-  which is why adding one `Event` variant refuses every older client. `envelope.rs` + `peer.rs` are
-  the replacement: six frame kinds (`hello`, `req`, `res`, `data`, `end`, `cancel`) whose payloads
-  are opaque JSON, so `envelope_fingerprint` moves only when the envelope itself changes. A test
-  asserts the envelope schema never mentions engine vocabulary; keep it that way or the whole point
-  is lost. `peer.rs` is the duplex state machine: one reader task that never awaits a handler, three
-  outbound lanes (control > data > requests) so a flooding stream cannot starve a response, and an
-  id space split by parity — odd is client-originated, even is daemon-originated.
+- `goat-wire` is one surface. `envelope.rs` + `peer.rs` are the whole crate: six frame kinds
+  (`hello`, `req`, `res`, `data`, `end`, `cancel`) whose payloads are opaque JSON, so
+  `envelope_fingerprint` moves only when the envelope itself changes. A test asserts the envelope
+  schema never mentions engine vocabulary; keep it that way or the whole point is lost. `peer.rs` is
+  the duplex state machine: one reader task that never awaits a handler, three outbound lanes
+  (control > data > requests) so a flooding stream cannot starve a response, and an id space split
+  by parity — odd is client-originated, even is daemon-originated. There used to be a second surface
+  here — `ClientFrame`/`ServerFrame` hashed into a `wire_fingerprint` alongside `Op` and `Event`,
+  which is why adding one `Event` variant refused every older client. It is gone; the types that
+  survived it were daemon-internal all along and now live in `goat-daemon`'s `wire.rs`, except
+  `BuildId` and `Busy`, which the client also reads and so sit in `goat-api`.
+- **The daemon's subscriber bus is `session::Update`, not a wire type.** Four variants — snapshot,
+  event, presence, error — which `api::watch_item` stamps with a cursor to make a `WatchItem`. That
+  mapping is total: every update reaches the client, including the error a stopping engine emits.
+  `build_snapshot` produces a `goat_api::SessionSnapshot` directly, so nothing translates between an
+  internal shape and the published one.
 - `goat-api` is the method surface: `Method` contracts with per-method versions, a `Grant`, a
   `Direction`, and a `Shape`. `methods_fingerprint.txt` freezes every contract, so changing a param
   type without bumping its version fails CI — that is the only thing making "hash the envelope, not
@@ -226,7 +233,7 @@ Placements that contradict the naming:
 - `goat-remote` holds **both halves** of the mTLS surface: `server` (accept, pair, verify) and
   `client` (enroll, connect). `ws::adapt` is the one WebSocket↔frame adapter, used in both
   directions. Keep new transport work here rather than growing a second remote path — the daemon
-  serves remote clients through the same `serve_connection` as the local socket, and that is what
+  serves remote clients through the same `serve_envelope` as the local socket, and that is what
   keeps the two from drifting.
 - `goat-mcp` is the **protocol** crate: transports (stdio and streamable HTTP), session lifecycle,
   result extraction, error classification, OAuth. It knows neither tool system and no tool adapter

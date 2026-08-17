@@ -2,20 +2,35 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use crate::wire::{ClientId, SessionId, SessionLiveState};
 use goat_protocol::{
     AccountEntry, Event, Mode, ModelEntry, ModelTarget, Op, ProcessInfo, ProcessState,
     RateLimitSnapshot, RunId, SkillInfo, TaskId, ToolCall, ToolCallId, TranscriptEntry, Usage,
 };
-use goat_wire::{
-    ClientId, ModeEntry, RateLimitEntry, RetryEntry, ServerFrame, SessionId, SessionLiveState,
-    UsageEntry,
-};
+
+#[derive(Debug, Clone)]
+pub(crate) enum Update {
+    Snapshot {
+        watermark: u64,
+        state: Box<goat_api::SessionSnapshot>,
+    },
+    Event {
+        seq: u64,
+        event: Box<Event>,
+    },
+    Presence {
+        clients: usize,
+    },
+    Error {
+        message: String,
+    },
+}
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
 pub(crate) struct Subscriber {
     pub(crate) client: ClientId,
-    pub(crate) sender: mpsc::Sender<ServerFrame>,
+    pub(crate) sender: mpsc::Sender<Update>,
     pub(crate) lagged: tokio_util::sync::CancellationToken,
 }
 
@@ -366,7 +381,7 @@ impl SessionInner {
         }
     }
 
-    pub(crate) fn fanout(&mut self, frame: &ServerFrame) {
+    pub(crate) fn fanout(&mut self, frame: &Update) {
         self.subscribers.retain(|sub| {
             if sub.sender.try_send(frame.clone()).is_ok() {
                 true
@@ -460,10 +475,9 @@ impl SessionInner {
         }
         let prompt = prompt_action(&event);
         let conversation_id = self.conversation_id;
-        let frame = ServerFrame::Event {
-            session: self.id,
+        let frame = Update::Event {
             seq,
-            event: event.clone(),
+            event: Box::new(event.clone()),
         };
         self.log.push_back((seq, event));
         self.fanout(&frame);
@@ -485,12 +499,12 @@ impl SessionInner {
         }
     }
 
-    pub(crate) fn build_snapshot(&self) -> ServerFrame {
+    pub(crate) fn build_snapshot(&self) -> Update {
         let rate_limits = self
             .rate_limits
             .iter()
             .map(
-                |((provider, account), (snapshot, cached_at))| RateLimitEntry {
+                |((provider, account), (snapshot, cached_at))| goat_api::RateLimitEntry {
                     provider: provider.clone(),
                     account: account.clone(),
                     snapshot: snapshot.clone(),
@@ -501,7 +515,7 @@ impl SessionInner {
         let usage = self
             .usage
             .iter()
-            .map(|((provider, account), state)| UsageEntry {
+            .map(|((provider, account), state)| goat_api::UsageEntry {
                 provider: provider.clone(),
                 account: account.clone(),
                 usage: state.usage.clone(),
@@ -511,7 +525,7 @@ impl SessionInner {
             .collect();
         let mut processes: Vec<_> = self.processes.values().cloned().collect();
         processes.sort_by_key(|process| process.id);
-        let retry = self.retry.as_ref().map(|retry| RetryEntry {
+        let retry = self.retry.as_ref().map(|retry| goat_api::RetryEntry {
             id: retry.id,
             attempt: retry.attempt,
             max_attempts: retry.max_attempts,
@@ -537,31 +551,31 @@ impl SessionInner {
         asks.sort_by_key(|(call, _)| **call);
         pending.extend(asks.into_iter().map(|(_, event)| event.clone()));
         pending.extend(self.plan.iter().cloned());
-        ServerFrame::Snapshot {
-            session: self.id,
+        Update::Snapshot {
             watermark: self.next_seq,
-            target: Box::new(
-                self.selected_target
+            state: Box::new(goat_api::SessionSnapshot {
+                session: goat_api::SessionId(self.id.0),
+                cwd: self.cwd.clone(),
+                target: self
+                    .selected_target
                     .clone()
                     .or_else(|| self.restore_target.clone()),
-            ),
-            transcript: self.transcript.entries.clone(),
-            pending,
-            context_tokens: self.context_tokens,
-            compaction_threshold: self.compaction_threshold,
-            skills: self.skills.clone(),
-            accounts: self.accounts.clone(),
-            model_list: self.model_list.clone(),
-            selected: Box::new(self.selected_target.clone()),
-            rate_limits,
-            mode: ModeEntry {
+                transcript: self.transcript.entries.clone(),
+                pending,
+                context_tokens: self.context_tokens,
+                compaction_threshold: self.compaction_threshold,
+                skills: self.skills.clone(),
+                accounts: self.accounts.clone(),
+                models: self.model_list.clone(),
+                selected: self.selected_target.clone(),
                 mode: self.mode,
                 plan_path: self.plan_path.clone(),
-            },
-            processes,
-            usage,
-            active: self.active,
-            retry: Box::new(retry),
+                processes,
+                usage,
+                rate_limits,
+                active: self.active,
+                retry,
+            }),
         }
     }
 
@@ -651,7 +665,7 @@ pub(crate) fn subscriber_map_remove(subs: &mut Vec<Subscriber>, client: ClientId
 pub(crate) fn subscriber_upsert(
     subs: &mut Vec<Subscriber>,
     client: ClientId,
-    sender: mpsc::Sender<ServerFrame>,
+    sender: mpsc::Sender<Update>,
     lagged: tokio_util::sync::CancellationToken,
 ) {
     if let Some(existing) = subs.iter_mut().find(|s| s.client == client) {
@@ -676,8 +690,9 @@ mod tests {
     };
     use std::collections::HashMap;
 
+    use super::Update;
+    use crate::wire::{ClientId, SessionId, SessionLiveState};
     use goat_protocol::{AskQuestion, Event, TaskId, ToolCallId};
-    use goat_wire::{ClientId, ServerFrame, SessionId, SessionLiveState};
     use tokio::sync::mpsc;
 
     #[test]
@@ -900,8 +915,8 @@ mod tests {
     #[test]
     fn upsert_replaces_sender_for_same_client() {
         let mut subs: Vec<Subscriber> = Vec::new();
-        let (a, _ra) = mpsc::channel::<ServerFrame>(8);
-        let (b, _rb) = mpsc::channel::<ServerFrame>(8);
+        let (a, _ra) = mpsc::channel::<Update>(8);
+        let (b, _rb) = mpsc::channel::<Update>(8);
         subscriber_upsert(
             &mut subs,
             ClientId(7),
@@ -935,7 +950,7 @@ mod tests {
             compaction_threshold: None,
         };
         inner.record_and_fanout(event);
-        let ServerFrame::Snapshot { watermark, .. } = inner.build_snapshot() else {
+        let Update::Snapshot { watermark, .. } = inner.build_snapshot() else {
             panic!("expected snapshot frame");
         };
         let restored_seq = inner.log.back().map(|(seq, _)| *seq).unwrap();
@@ -982,16 +997,10 @@ mod tests {
             },
             cached_at: 42,
         });
-        let ServerFrame::Snapshot {
-            watermark,
-            target,
-            skills,
-            rate_limits,
-            ..
-        } = inner.build_snapshot()
-        else {
+        let Update::Snapshot { watermark, state } = inner.build_snapshot() else {
             panic!("expected snapshot frame");
         };
+        let (target, skills, rate_limits) = (&state.target, &state.skills, &state.rate_limits);
         assert!(
             target.is_none(),
             "new session snapshot has no restore target"
@@ -1026,14 +1035,10 @@ mod tests {
                 text: format!("answer {id}"),
             });
         }
-        let ServerFrame::Snapshot {
-            watermark,
-            transcript,
-            ..
-        } = inner.build_snapshot()
-        else {
+        let Update::Snapshot { watermark, state } = inner.build_snapshot() else {
             panic!("expected snapshot frame");
         };
+        let transcript = &state.transcript;
         assert_eq!(watermark, inner.next_seq);
         assert_eq!(transcript.len(), super::MAX_RETAINED_EVENTS + 2);
         assert!(matches!(
@@ -1066,14 +1071,10 @@ mod tests {
             id: TaskId(1),
             text: "world".to_owned(),
         });
-        let ServerFrame::Snapshot {
-            target: snapshot_target,
-            transcript,
-            ..
-        } = inner.build_snapshot()
-        else {
+        let Update::Snapshot { state, .. } = inner.build_snapshot() else {
             panic!("expected snapshot frame");
         };
+        let (snapshot_target, transcript) = (&state.target, &state.transcript);
         assert_eq!(*snapshot_target, Some(target));
         assert_eq!(transcript.len(), 2);
     }
@@ -1084,10 +1085,10 @@ mod tests {
         let (sender, _receiver) = mpsc::channel(1);
         let lagged = tokio_util::sync::CancellationToken::new();
         subscriber_upsert(&mut inner.subscribers, ClientId(9), sender, lagged.clone());
-        inner.fanout(&ServerFrame::Error {
+        inner.fanout(&Update::Error {
             message: "first".to_owned(),
         });
-        inner.fanout(&ServerFrame::Error {
+        inner.fanout(&Update::Error {
             message: "second".to_owned(),
         });
         tokio::time::timeout(std::time::Duration::from_secs(1), lagged.cancelled())
@@ -1165,18 +1166,12 @@ mod tests {
         ];
         for ((event, expected), pending) in events.into_iter().zip(expected).zip(pending) {
             inner.record_and_fanout(event);
-            let ServerFrame::Snapshot {
-                watermark,
-                transcript,
-                pending: snapshot_pending,
-                ..
-            } = inner.build_snapshot()
-            else {
+            let Update::Snapshot { watermark, state } = inner.build_snapshot() else {
                 panic!("expected snapshot frame");
             };
             assert_eq!(watermark, inner.next_seq);
-            assert_eq!(transcript, expected);
-            assert_eq!(snapshot_pending, pending);
+            assert_eq!(state.transcript, expected);
+            assert_eq!(state.pending, pending);
         }
     }
 

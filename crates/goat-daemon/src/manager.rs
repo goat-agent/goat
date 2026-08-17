@@ -3,19 +3,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+use crate::wire::{ClientId, ResumeMode, SessionId, SessionInfo};
 use goat_auth::CredentialStore;
 use goat_code_store::CodeStore as Store;
 use goat_core::Session;
 use goat_engine::CodingEngine;
 use goat_protocol::Op;
-use goat_wire::{ClientId, ResumeMode, ServerFrame, SessionId, SessionInfo};
 use tokio::sync::Mutex;
 use tokio::sync::{mpsc, oneshot};
 
 const SUBSCRIBER_QUEUE: usize = 1024;
 const WALK_CAP: usize = 4000;
 
-use crate::session::{LiveSession, SessionInner, SessionTable};
+use crate::session::{LiveSession, SessionInner, SessionTable, Update};
 
 #[derive(Clone)]
 pub struct CodeSessionHub {
@@ -34,7 +34,7 @@ struct ManagerInner {
     remote: Mutex<Option<RemoteControls>>,
     meter: std::sync::OnceLock<goat_proxy::Meter>,
     reload: std::sync::OnceLock<mpsc::Sender<ReloadRequest>>,
-    build: Option<goat_wire::BuildId>,
+    build: Option<goat_api::BuildId>,
     started_at: i64,
     ready: AtomicBool,
     agent_turns: std::sync::OnceLock<Arc<AtomicUsize>>,
@@ -42,7 +42,7 @@ struct ManagerInner {
 
 pub struct ReloadRequest {
     pub agent: Option<String>,
-    pub reply: oneshot::Sender<goat_wire::ReloadReport>,
+    pub reply: oneshot::Sender<crate::wire::ReloadReport>,
 }
 
 struct RemoteControls {
@@ -71,7 +71,7 @@ impl CodeSessionHub {
                 remote: Mutex::new(None),
                 meter: std::sync::OnceLock::new(),
                 reload: std::sync::OnceLock::new(),
-                build: goat_wire::BuildId::current(),
+                build: goat_api::BuildId::current(),
                 started_at: Self::now_ms(),
                 ready: AtomicBool::new(false),
                 agent_turns: std::sync::OnceLock::new(),
@@ -91,7 +91,7 @@ impl CodeSessionHub {
         self.inner.ready.store(true, Ordering::Relaxed);
     }
 
-    pub(crate) fn build(&self) -> Option<goat_wire::BuildId> {
+    pub(crate) fn build(&self) -> Option<goat_api::BuildId> {
         self.inner.build.clone()
     }
 
@@ -103,7 +103,7 @@ impl CodeSessionHub {
         self.inner.ready.load(Ordering::Relaxed)
     }
 
-    pub(crate) async fn busy(&self) -> goat_wire::Busy {
+    pub(crate) async fn busy(&self) -> goat_api::Busy {
         let lives: Vec<LiveSession> = {
             let table = self.inner.sessions.lock().await;
             table.values().cloned().collect()
@@ -120,7 +120,7 @@ impl CodeSessionHub {
             .agent_turns
             .get()
             .map_or(0, |turns| turns.load(Ordering::Relaxed));
-        goat_wire::Busy { sessions, turns }
+        goat_api::Busy { sessions, turns }
     }
 
     pub fn set_reload(&self, sender: mpsc::Sender<ReloadRequest>) {
@@ -130,7 +130,7 @@ impl CodeSessionHub {
     pub async fn reload_agents(
         &self,
         agent: Option<String>,
-    ) -> Result<goat_wire::ReloadReport, String> {
+    ) -> Result<crate::wire::ReloadReport, String> {
         let Some(sender) = self.inner.reload.get() else {
             return Err("no agent runtime is attached to this daemon".to_owned());
         };
@@ -176,7 +176,7 @@ impl CodeSessionHub {
         ))
     }
 
-    pub(crate) async fn list_devices(&self) -> Result<Vec<goat_wire::DeviceInfo>, String> {
+    pub(crate) async fn list_devices(&self) -> Result<Vec<crate::wire::DeviceInfo>, String> {
         let guard = self.inner.remote.lock().await;
         let controls = guard.as_ref().ok_or("remote is not enabled")?;
         let devices = controls
@@ -184,7 +184,7 @@ impl CodeSessionHub {
             .list()
             .await
             .into_iter()
-            .map(|d| goat_wire::DeviceInfo {
+            .map(|d| crate::wire::DeviceInfo {
                 id: d.id,
                 label: d.label,
                 paired_at: d.paired_at,
@@ -367,7 +367,7 @@ impl CodeSessionHub {
             next_seq: 0,
             next_task: 1,
             subscribers: Vec::new(),
-            state: goat_wire::SessionLiveState::Idle {},
+            state: crate::wire::SessionLiveState::Idle {},
             transcript: crate::session::LiveTranscript::default(),
             restore_target: None,
             context_tokens: None,
@@ -428,7 +428,7 @@ impl CodeSessionHub {
         &self,
         session: SessionId,
         client: ClientId,
-        sender: mpsc::Sender<ServerFrame>,
+        sender: mpsc::Sender<Update>,
         lagged: tokio_util::sync::CancellationToken,
     ) -> Result<(), String> {
         self.release_attach_hold(session, client).await;
@@ -449,7 +449,7 @@ impl CodeSessionHub {
             crate::session::subscriber_upsert(&mut inner.subscribers, client, bridge_tx, lagged);
             inner.pending_attaches = inner.pending_attaches.saturating_sub(1);
             let clients = inner.presence();
-            broadcast_presence(&mut inner, clients);
+            broadcast_presence(&mut inner, clients.len());
             (snapshot, bridge_rx)
         };
         let replay_sent = spawn_subscriber_bridge(sender, vec![snapshot], live_rx);
@@ -463,7 +463,7 @@ impl CodeSessionHub {
         client: ClientId,
         epoch: &str,
         from: &goat_api::WatchFrom,
-        sender: mpsc::Sender<ServerFrame>,
+        sender: mpsc::Sender<Update>,
         lagged: tokio_util::sync::CancellationToken,
     ) -> Result<(Vec<goat_api::WatchItem>, String), String> {
         let live = {
@@ -481,14 +481,7 @@ impl CodeSessionHub {
             let start = goat_api::decide_watch_start(epoch, inner.retained(), from);
             let backlog = match start {
                 goat_api::WatchStart::Snapshot { reset } => {
-                    let watermark = inner.retained().next_seq;
-                    vec![crate::api::snapshot_item(
-                        inner.build_snapshot(),
-                        inner.cwd.clone(),
-                        epoch,
-                        watermark,
-                        reset,
-                    )]
+                    vec![crate::api::watch_item(inner.build_snapshot(), epoch, reset)]
                 }
                 goat_api::WatchStart::Replay { from_seq } => inner
                     .replay_from(from_seq)
@@ -504,7 +497,7 @@ impl CodeSessionHub {
             inner.pending_attaches = inner.pending_attaches.saturating_sub(1);
             let clients = inner.presence();
             let cwd = inner.cwd.clone();
-            broadcast_presence(&mut inner, clients);
+            broadcast_presence(&mut inner, clients.len());
             (backlog, cwd, bridge_rx)
         };
         let replay_sent = spawn_subscriber_bridge(sender, Vec::new(), live_rx);
@@ -556,7 +549,7 @@ impl CodeSessionHub {
             let mut inner = live.inner.lock().await;
             crate::session::subscriber_map_remove(&mut inner.subscribers, client);
             let clients = inner.presence();
-            broadcast_presence(&mut inner, clients);
+            broadcast_presence(&mut inner, clients.len());
             inner.evictable()
         };
         if evictable {
@@ -574,7 +567,7 @@ impl CodeSessionHub {
             let mut inner = live.inner.lock().await;
             crate::session::subscriber_map_remove(&mut inner.subscribers, client);
             let clients = inner.presence();
-            broadcast_presence(&mut inner, clients);
+            broadcast_presence(&mut inner, clients.len());
             if inner.evictable() {
                 candidates.push(id);
             }
@@ -647,24 +640,6 @@ impl CodeSessionHub {
         Ok((ops, task))
     }
 
-    pub(crate) async fn submit(
-        &self,
-        session: SessionId,
-        client_sender: &mpsc::Sender<ServerFrame>,
-        correlation: u64,
-        mut op: Op,
-    ) -> Result<(), String> {
-        let (ops, task) = self.prepare_submit(session, &mut op).await?;
-        let _ = client_sender
-            .send(ServerFrame::CorrelationAssigned {
-                session,
-                correlation,
-                task,
-            })
-            .await;
-        ops.send(op).await.map_err(|_| "engine closed".to_owned())
-    }
-
     pub(crate) async fn submit_task(
         &self,
         session: SessionId,
@@ -682,14 +657,12 @@ impl CodeSessionHub {
     ) -> Result<mpsc::Receiver<goat_protocol::Event>, String> {
         let (session, _cwd) = self.open_or_attach(cwd, ResumeMode::New {}).await?;
         let client = self.next_client_id();
-        let (frame_tx, mut frame_rx) = mpsc::channel::<ServerFrame>(SUBSCRIBER_QUEUE);
+        let (frame_tx, mut frame_rx) = mpsc::channel::<Update>(SUBSCRIBER_QUEUE);
         let lagged = tokio_util::sync::CancellationToken::new();
         self.subscribe(session, client, frame_tx.clone(), lagged.clone())
             .await?;
-        self.submit(
+        self.submit_task(
             session,
-            &frame_tx,
-            1,
             Op::SubmitMessage {
                 id: goat_protocol::TaskId(0),
                 text: prompt,
@@ -717,9 +690,10 @@ impl CodeSessionHub {
                 let Some(frame) = frame else {
                     break;
                 };
-                let ServerFrame::Event { event, .. } = frame else {
+                let Update::Event { event, .. } = frame else {
                     continue;
                 };
+                let event = *event;
                 let terminal = matches!(
                     event,
                     goat_protocol::Event::TaskDone { .. } | goat_protocol::Event::Error { .. }
@@ -771,7 +745,7 @@ impl CodeSessionHub {
     pub(crate) fn list_directory(
         path: &str,
         recursive: bool,
-    ) -> Result<Vec<goat_wire::DirEntry>, String> {
+    ) -> Result<Vec<crate::wire::DirEntry>, String> {
         let root = std::path::Path::new(path);
         let mut children = Vec::new();
         let mut stack = vec![root.to_path_buf()];
@@ -797,16 +771,16 @@ impl CodeSessionHub {
                 let name = name.to_string_lossy().replace('\\', "/");
                 let file_type = entry.file_type().map_err(|e| format!("file_type: {e}"))?;
                 let kind = if file_type.is_symlink() {
-                    goat_wire::DirEntryKind::Symlink {}
+                    crate::wire::DirEntryKind::Symlink {}
                 } else if file_type.is_dir() {
                     if recursive {
                         stack.push(path);
                     }
-                    goat_wire::DirEntryKind::Directory {}
+                    crate::wire::DirEntryKind::Directory {}
                 } else {
-                    goat_wire::DirEntryKind::File {}
+                    crate::wire::DirEntryKind::File {}
                 };
-                children.push(goat_wire::DirEntry { name, kind });
+                children.push(crate::wire::DirEntry { name, kind });
                 if children.len() >= WALK_CAP {
                     break;
                 }
@@ -820,13 +794,13 @@ impl CodeSessionHub {
         name.starts_with('.') || name == "target" || name == "node_modules"
     }
 
-    pub(crate) async fn list_conversations(&self, cwd: &str) -> Vec<goat_wire::ConversationInfo> {
+    pub(crate) async fn list_conversations(&self, cwd: &str) -> Vec<crate::wire::ConversationInfo> {
         let normalized = Self::normalize_cwd(std::path::Path::new(cwd));
         let live: HashMap<i64, SessionId> = {
             let conversations = self.inner.conversations.lock().await;
             conversations.clone()
         };
-        let mut states: HashMap<SessionId, goat_wire::SessionLiveState> = HashMap::new();
+        let mut states: HashMap<SessionId, crate::wire::SessionLiveState> = HashMap::new();
         {
             let table = self.inner.sessions.lock().await;
             for session in live.values() {
@@ -919,9 +893,9 @@ async fn wait_subscribe_ready(live: &LiveSession) {
 }
 
 fn spawn_subscriber_bridge(
-    sender: mpsc::Sender<ServerFrame>,
-    backlog: Vec<ServerFrame>,
-    mut live_rx: mpsc::Receiver<ServerFrame>,
+    sender: mpsc::Sender<Update>,
+    backlog: Vec<Update>,
+    mut live_rx: mpsc::Receiver<Update>,
 ) -> oneshot::Receiver<()> {
     let (ready_tx, ready_rx) = oneshot::channel();
     tokio::spawn(async move {
@@ -954,12 +928,8 @@ fn rewrite_resurrected_answer(inner: &mut SessionInner, op: &Op) -> Option<(u64,
     }
 }
 
-fn broadcast_presence(inner: &mut SessionInner, clients: Vec<ClientId>) {
-    let frame = ServerFrame::Presence {
-        session: inner.id,
-        clients,
-    };
-    inner.fanout(&frame);
+fn broadcast_presence(inner: &mut SessionInner, clients: usize) {
+    inner.fanout(&Update::Presence { clients });
 }
 
 fn spawn_pump(
@@ -1017,7 +987,7 @@ fn spawn_pump(
         }
         {
             let mut guard = inner.lock().await;
-            let frame = ServerFrame::Error {
+            let frame = Update::Error {
                 message: "session engine stopped".to_owned(),
             };
             guard.fanout(&frame);
@@ -1070,11 +1040,11 @@ async fn resurrect_open_prompts(
 fn conversation_info(
     t: goat_code_store::Conversation,
     live: &HashMap<i64, SessionId>,
-    states: &HashMap<SessionId, goat_wire::SessionLiveState>,
-) -> goat_wire::ConversationInfo {
+    states: &HashMap<SessionId, crate::wire::SessionLiveState>,
+) -> crate::wire::ConversationInfo {
     let live_session = live.get(&t.id).copied();
     let state = live_session.and_then(|s| states.get(&s).copied());
-    goat_wire::ConversationInfo {
+    crate::wire::ConversationInfo {
         conversation_id: t.id,
         cwd: t.cwd,
         title: t.title,
@@ -1100,10 +1070,9 @@ fn conversation_unregister_owner(conversations: &mut HashMap<i64, SessionId>, se
 #[cfg(test)]
 mod tests {
     use super::{
-        CodeSessionHub, HashMap, SessionId, conversation_register, conversation_unregister_owner,
-        spawn_subscriber_bridge,
+        CodeSessionHub, HashMap, SessionId, Update, conversation_register,
+        conversation_unregister_owner, spawn_subscriber_bridge,
     };
-    use goat_wire::ServerFrame;
     use tokio::sync::mpsc;
 
     fn tree() -> tempfile::TempDir {
@@ -1119,7 +1088,7 @@ mod tests {
         dir
     }
 
-    fn names(entries: &[goat_wire::DirEntry]) -> Vec<String> {
+    fn names(entries: &[crate::wire::DirEntry]) -> Vec<String> {
         entries.iter().map(|e| e.name.clone()).collect()
     }
 
@@ -1197,18 +1166,18 @@ mod tests {
     fn conversation_info_marks_live_conversations() {
         let mut live: HashMap<i64, SessionId> = HashMap::new();
         live.insert(5, SessionId(9));
-        let mut states: HashMap<SessionId, goat_wire::SessionLiveState> = HashMap::new();
-        states.insert(SessionId(9), goat_wire::SessionLiveState::Active {});
+        let mut states: HashMap<SessionId, crate::wire::SessionLiveState> = HashMap::new();
+        states.insert(SessionId(9), crate::wire::SessionLiveState::Active {});
 
         let info = super::conversation_info(sample_conversation(5), &live, &states);
         assert_eq!(info.live, Some(SessionId(9)));
-        assert_eq!(info.state, Some(goat_wire::SessionLiveState::Active {}));
+        assert_eq!(info.state, Some(crate::wire::SessionLiveState::Active {}));
     }
 
     #[test]
     fn conversation_info_marks_dead_conversations_with_no_live_session() {
         let live: HashMap<i64, SessionId> = HashMap::new();
-        let states: HashMap<SessionId, goat_wire::SessionLiveState> = HashMap::new();
+        let states: HashMap<SessionId, crate::wire::SessionLiveState> = HashMap::new();
 
         let info = super::conversation_info(sample_conversation(5), &live, &states);
         assert_eq!(info.live, None);
@@ -1221,24 +1190,24 @@ mod tests {
         let (live_tx, live_rx) = mpsc::channel(8);
         let replay_sent = spawn_subscriber_bridge(
             target_tx,
-            vec![ServerFrame::Error {
+            vec![Update::Error {
                 message: "backlog".to_owned(),
             }],
             live_rx,
         );
         live_tx
-            .send(ServerFrame::Error {
+            .send(Update::Error {
                 message: "live".to_owned(),
             })
             .await
             .unwrap();
         replay_sent.await.unwrap();
         match target_rx.recv().await.unwrap() {
-            ServerFrame::Error { message } => assert_eq!(message, "backlog"),
+            Update::Error { message } => assert_eq!(message, "backlog"),
             _ => panic!("expected backlog frame"),
         }
         match target_rx.recv().await.unwrap() {
-            ServerFrame::Error { message } => assert_eq!(message, "live"),
+            Update::Error { message } => assert_eq!(message, "live"),
             _ => panic!("expected live frame"),
         }
     }

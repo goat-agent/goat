@@ -6,6 +6,7 @@ mod pty;
 mod pty_spawn;
 mod remote;
 mod session;
+mod wire;
 
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,7 @@ pub use crate::envelope_conn::{
     ClientOrigin, EnvelopeHost, device_for, grants_for, serve_envelope,
 };
 pub use crate::manager::{CodeSessionHub, ReloadRequest};
+pub use crate::wire::{ReloadFailure, ReloadReport};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {

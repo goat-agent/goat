@@ -8,8 +8,9 @@ use goat_api::{
     SessionOpen, SessionOpenParams, SessionSnapshot, SessionSubmit, SessionSubmitParams,
     SessionWatch, SessionWatchParams, StreamEvent, WatchFrom, WatchItem,
 };
+use goat_api::{BuildId, Busy};
 use goat_protocol::{Event, Op};
-use goat_wire::{BuildId, Busy, WireError};
+use goat_wire::WireError;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
@@ -778,9 +779,9 @@ pub async fn revoke_device(link: &Link, device: String) -> Result<bool, ClientEr
 #[cfg(test)]
 mod tests {
     use super::{Identity, OnStale, Resolution, is_current, resolve, snapshot_to_events};
+    use goat_api::{BuildId, Busy};
     use goat_api::{SessionId, SessionSnapshot};
     use goat_protocol::{Event, ModelTarget, SkillInfo};
-    use goat_wire::{BuildId, Busy};
 
     fn build(len: u64) -> BuildId {
         BuildId {
@@ -840,7 +841,7 @@ mod tests {
         );
 
         let daemon = Identity {
-            build: goat_wire::BuildId::of(&daemon_exe),
+            build: goat_api::BuildId::of(&daemon_exe),
             ..desktop.clone()
         };
         assert!(
