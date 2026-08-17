@@ -44,7 +44,7 @@ pub async fn run_connect(cmd: ConnectCmd) -> Result<()> {
         }
         ConnectCmd::List => connect_list(&paths),
         ConnectCmd::Remove { kind } => {
-            connect_remove(&paths, &kind)?;
+            connect_remove(&paths, &kind).await?;
             super::apply::config_changed(None).await;
             Ok(())
         }
@@ -106,11 +106,11 @@ fn connect_list(paths: &GoatPaths) -> Result<()> {
     })
 }
 
-fn connect_remove(paths: &GoatPaths, kind: &str) -> Result<()> {
-    ui::cell("Integration Disconnect", || {
+async fn connect_remove(paths: &GoatPaths, kind: &str) -> Result<()> {
+    ui::cell_async("Integration Disconnect", || async move {
         let kind = kind.trim();
         let store = CredentialStore::new(paths.credentials_json.clone());
-        let mut config = Config::load();
+        let config = Config::load();
         if !is_connected(kind, &store, &config) {
             return Err(anyhow!("no connection for `{kind}`"));
         }
@@ -127,14 +127,18 @@ fn connect_remove(paths: &GoatPaths, kind: &str) -> Result<()> {
                 store.remove(&key)?;
             }
         }
-        if config.integrations.remove(kind).is_some() {
-            config.save()?;
+        if config.integrations.contains_key(kind) {
+            write_config(vec![goat_api::ConfigEdit::IntegrationRemove {
+                kind: kind.to_string(),
+            }])
+            .await?;
         }
         ui::line(&ui::dim(
             "agent bindings are kept; remove them with `goat agent integration rm`",
         ));
         Ok(Footer::Ok("Disconnected"))
     })
+    .await
 }
 
 fn store_oauth_client(store: &CredentialStore, kind: &str) -> Result<()> {
@@ -191,26 +195,30 @@ async fn connect_flow(paths: &GoatPaths, kind: &str) -> Result<String> {
                     let _ = open::that(url);
                 })
                 .await?;
-            let mut config = Config::load();
-            let entry = config
+            let mut entry = Config::load()
                 .integrations
-                .entry(kind.to_string())
-                .or_insert_with(|| json!({}));
+                .get(kind)
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             if let (Some(entry), Some(patch)) = (entry.as_object_mut(), patch.as_object()) {
                 entry.extend(patch.clone());
             }
-            config.save()?;
+            write_config(vec![goat_api::ConfigEdit::IntegrationSet {
+                kind: kind.to_string(),
+                config: entry,
+            }])
+            .await?;
         }
         IntegrationAuth::External => {}
     }
     let identity = verify_connection(&integration, kind, &store).await?;
-    if metadata.auth == IntegrationAuth::External {
-        let mut config = Config::load();
-        config
-            .integrations
-            .entry(kind.to_string())
-            .or_insert_with(|| json!({}));
-        config.save()?;
+    if metadata.auth == IntegrationAuth::External && !Config::load().integrations.contains_key(kind)
+    {
+        write_config(vec![goat_api::ConfigEdit::IntegrationSet {
+            kind: kind.to_string(),
+            config: json!({}),
+        }])
+        .await?;
     }
     Ok(identity)
 }
@@ -432,4 +440,15 @@ fn instantiate(
 
 fn integration_factory(slug: &str) -> Option<&'static IntegrationFactory> {
     goat_integration::factory_for(slug)
+}
+
+async fn write_config(edits: Vec<goat_api::ConfigEdit>) -> Result<()> {
+    let socket_path =
+        goat_config::socket_path().ok_or_else(|| anyhow!(goat_config::HOME_NOT_FOUND))?;
+    let daemon_exe = std::env::current_exe()?;
+    let link = goat_client::Link::local(socket_path, daemon_exe);
+    goat_client::edit_config(&link, edits)
+        .await
+        .map_err(|err| anyhow!("could not write the daemon config: {err}"))?;
+    Ok(())
 }

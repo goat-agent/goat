@@ -175,7 +175,7 @@ async fn run_code(args: CodeArgs) -> color_eyre::Result<()> {
             };
             return result.map_err(color_eyre::Report::from);
         }
-        Some(CodeCommand::Search(command)) => return search::run(command),
+        Some(CodeCommand::Search(command)) => return search::run(command).await,
         Some(CodeCommand::Session(command)) => {
             return run_session_command(command, args.remote.as_deref()).await;
         }

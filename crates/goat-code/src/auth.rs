@@ -242,11 +242,11 @@ async fn add_custom(
         }
         None => None,
     };
-    let mut config = goat_config::Config::load();
-    config
-        .providers
-        .insert(name.clone(), goat_config::UserProviderConfig { endpoint });
-    config.save().map_err(storage_error)?;
+    write_config(vec![goat_api::ConfigEdit::ProviderSet {
+        name: name.clone(),
+        endpoint,
+    }])
+    .await?;
     let account = account.unwrap_or_else(|| goat_providers::DEFAULT_ACCOUNT.to_owned());
     if let Some(key) = key.filter(|key| !key.trim().is_empty()) {
         store
@@ -264,6 +264,14 @@ async fn add_custom(
     ui::success(&format!("{verb} provider {name}"));
     verify(store, user, &name, &account).await;
     apply_to_daemon().await;
+    Ok(())
+}
+
+async fn write_config(edits: Vec<goat_api::ConfigEdit>) -> color_eyre::Result<()> {
+    let link = crate::remote::local()?;
+    goat_client::edit_config(&link, edits)
+        .await
+        .map_err(|err| color_eyre::eyre::eyre!("could not write the daemon config: {err}"))?;
     Ok(())
 }
 
@@ -305,9 +313,10 @@ async fn remove_custom(
         ui::note("cancelled");
         return Ok(());
     }
-    let mut config = goat_config::Config::load();
-    config.providers.remove(name);
-    config.save().map_err(storage_error)?;
+    write_config(vec![goat_api::ConfigEdit::ProviderRemove {
+        name: name.to_owned(),
+    }])
+    .await?;
     for (key, _) in store.entries() {
         if key.service == CredentialService::Model && key.provider == name {
             let _ = store.remove(&key);
