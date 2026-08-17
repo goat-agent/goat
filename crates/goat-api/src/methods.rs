@@ -337,6 +337,9 @@ pub enum ConfigEdit {
     IntegrationRemove {
         kind: String,
     },
+    BrowserSet {
+        enabled: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

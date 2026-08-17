@@ -223,6 +223,22 @@
                   "kind"
                 ],
                 "type": "object"
+              },
+              {
+                "properties": {
+                  "edit": {
+                    "const": "browser_set",
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "edit",
+                  "enabled"
+                ],
+                "type": "object"
               }
             ]
           }
