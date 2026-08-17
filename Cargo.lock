@@ -2446,6 +2446,7 @@ name = "goat-command-settings"
 version = "0.1.0"
 dependencies = [
  "crossterm 0.29.0",
+ "goat-api",
  "goat-auth",
  "goat-client",
  "goat-command",
@@ -2456,6 +2457,7 @@ dependencies = [
  "goat-search-providers",
  "goat-worktree",
  "ratatui",
+ "serde_json",
  "unicode-width 0.2.2",
 ]
 

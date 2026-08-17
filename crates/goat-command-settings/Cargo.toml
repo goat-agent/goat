@@ -10,6 +10,8 @@ publish.workspace = true
 
 [dependencies]
 goat-command = { workspace = true }
+goat-api = { workspace = true }
+serde_json = { workspace = true }
 goat-config = { workspace = true }
 goat-auth = { workspace = true }
 goat-search-provider = { workspace = true }
