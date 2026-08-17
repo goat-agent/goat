@@ -1673,13 +1673,6 @@ impl SettingsState {
             self.save_failed = true;
         }
     }
-
-    fn persist_config(&mut self, cfg: &goat_config::Config) {
-        if let Err(err) = cfg.save() {
-            tracing::warn!(error = %err, "failed to save config");
-            self.save_failed = true;
-        }
-    }
 }
 
 impl Settings for SettingsState {
@@ -1717,9 +1710,6 @@ impl Settings for SettingsState {
 
     fn set_browser(&mut self, enabled: bool) {
         self.browser = enabled;
-        let mut cfg = goat_config::Config::load();
-        cfg.browser_enabled = enabled;
-        self.persist_config(&cfg);
     }
 }
 

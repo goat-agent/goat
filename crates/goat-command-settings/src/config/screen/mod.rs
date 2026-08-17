@@ -702,7 +702,9 @@ impl ConfigScreen {
             }
             ConfigOutcome::SetBrowser { enabled } => {
                 session.settings().set_browser(enabled);
-                ScreenOutcome::Continue
+                ScreenOutcome::Effect(CommandEffect::EditConfig(vec![
+                    goat_api::ConfigEdit::BrowserSet { enabled },
+                ]))
             }
         }
     }
