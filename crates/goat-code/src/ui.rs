@@ -33,7 +33,7 @@ pub fn age(millis: i64) -> String {
     }
 }
 
-pub fn busy_summary(busy: goat_wire::Busy) -> String {
+pub fn busy_summary(busy: goat_api::Busy) -> String {
     let mut parts = Vec::new();
     if busy.turns > 0 {
         parts.push(format!("{} agent turn(s) in flight", busy.turns));

@@ -1,15 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-use futures::{Sink, SinkExt, Stream, StreamExt};
+use futures::{Sink, Stream};
 use goat_remote::client::DeviceCredentials;
+use goat_wire::WireError;
 use goat_wire::transport;
-use goat_wire::{ClientConn, ClientFrame, ServerFrame, WireError};
 
 use crate::ClientError;
-
-pub type FrameSink = Pin<Box<dyn Sink<ClientFrame, Error = WireError> + Send>>;
-pub type FrameStream = Pin<Box<dyn Stream<Item = Result<ServerFrame, WireError>> + Send>>;
 
 pub const LOCAL: &str = "local";
 
@@ -72,27 +69,12 @@ impl Link {
             Self::Remote {
                 host, credentials, ..
             } => {
-                let (sink, source) = goat_remote::client::connect_as::<
+                let (sink, source) = goat_remote::client::connect::<
                     goat_wire::envelope::Frame,
                     goat_wire::envelope::Frame,
                 >(host, credentials)
                 .await?;
                 Ok(EnvelopeConn { sink, source })
-            }
-        }
-    }
-
-    pub async fn dial(&self) -> Result<Conn, ClientError> {
-        match self {
-            Self::Local { socket_path, .. } => {
-                let stream = transport::connect(socket_path).await?;
-                Ok(Conn::local(stream))
-            }
-            Self::Remote {
-                host, credentials, ..
-            } => {
-                let (sink, stream) = goat_remote::client::connect(host, credentials).await?;
-                Ok(Conn { sink, stream })
             }
         }
     }
@@ -134,38 +116,6 @@ impl EnvelopeConn {
     #[must_use]
     pub fn split(self) -> (EnvelopeSink, EnvelopeSource) {
         (self.sink, self.source)
-    }
-}
-
-pub struct Conn {
-    sink: FrameSink,
-    stream: FrameStream,
-}
-
-impl Conn {
-    fn local(stream: transport::Stream) -> Self {
-        let conn: ClientConn<transport::Stream> = ClientConn::new(stream);
-        let (sink, stream) = conn.split();
-        Self {
-            sink: Box::pin(sink),
-            stream: Box::pin(stream),
-        }
-    }
-
-    pub async fn send(&mut self, frame: ClientFrame) -> Result<(), WireError> {
-        self.sink.send(frame).await
-    }
-
-    pub async fn recv(&mut self) -> Result<ServerFrame, WireError> {
-        match self.stream.next().await {
-            Some(frame) => frame,
-            None => Err(WireError::Closed),
-        }
-    }
-
-    #[must_use]
-    pub fn split(self) -> (FrameSink, FrameStream) {
-        (self.sink, self.stream)
     }
 }
 
