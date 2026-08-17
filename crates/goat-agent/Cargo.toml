@@ -15,6 +15,7 @@ path = "src/lib.rs"
 [dependencies]
 goat-runtime    = { workspace = true }
 goat-client     = { workspace = true }
+goat-api        = { workspace = true }
 goat-wire       = { workspace = true }
 goat-config     = { workspace = true }
 goat-console    = { workspace = true }

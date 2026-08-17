@@ -311,6 +311,44 @@ pub struct SessionKillParams {
     pub session: SessionId,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "edit", rename_all = "snake_case")]
+pub enum ConfigEdit {
+    ProviderSet {
+        name: String,
+        endpoint: String,
+    },
+    ProviderRemove {
+        name: String,
+    },
+    SearchAccountSet {
+        account: serde_json::Value,
+    },
+    SearchAccountRemove {
+        target: String,
+    },
+    SearchDefaultSet {
+        target: Option<String>,
+    },
+    IntegrationSet {
+        kind: String,
+        config: serde_json::Value,
+    },
+    IntegrationRemove {
+        kind: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AdminConfigEditParams {
+    pub edits: Vec<ConfigEdit>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AdminConfigEditOutput {
+    pub changed: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AdminDaemonStopParams {
     #[serde(default)]
@@ -805,6 +843,17 @@ method!(
     Direction::ToDaemon,
     AdminAgentReloadParams,
     AdminAgentReloadOutput,
+    ()
+);
+method!(
+    AdminConfigEdit,
+    "admin.config_edit",
+    1,
+    Shape::Unary,
+    Grant::Admin,
+    Direction::ToDaemon,
+    AdminConfigEditParams,
+    AdminConfigEditOutput,
     ()
 );
 method!(

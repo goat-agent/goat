@@ -1905,6 +1905,7 @@ dependencies = [
  "goat-agent-tool-fs",
  "goat-agent-tool-shell",
  "goat-agent-tool-skill",
+ "goat-api",
  "goat-auth",
  "goat-channel",
  "goat-channel-discord",

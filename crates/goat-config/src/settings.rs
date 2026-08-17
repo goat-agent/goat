@@ -53,6 +53,11 @@ impl UserProviders {
     }
 
     #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    #[must_use]
     pub fn load(&self) -> std::collections::BTreeMap<String, UserProviderConfig> {
         let Some(path) = &self.path else {
             return std::collections::BTreeMap::new();
@@ -159,6 +164,15 @@ impl Config {
     pub fn save(&self) -> Result<(), SettingsError> {
         let path = config_path().ok_or(SettingsError::NoHome)?;
         self.save_path(&path)
+    }
+
+    pub fn save_at(&self, path: &Path) -> Result<(), SettingsError> {
+        self.save_path(path)
+    }
+
+    #[must_use]
+    pub fn load_at(path: &Path) -> Self {
+        Self::load_path(path)
     }
 
     fn save_path(&self, path: &Path) -> Result<(), SettingsError> {

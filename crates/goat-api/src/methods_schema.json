@@ -88,6 +88,171 @@
         "title": "null",
         "type": "null"
       },
+      "name": "admin.config_edit",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "changed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "changed"
+        ],
+        "title": "AdminConfigEditOutput",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "ConfigEdit": {
+            "oneOf": [
+              {
+                "properties": {
+                  "edit": {
+                    "const": "provider_set",
+                    "type": "string"
+                  },
+                  "endpoint": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "edit",
+                  "name",
+                  "endpoint"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "edit": {
+                    "const": "provider_remove",
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "edit",
+                  "name"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "account": true,
+                  "edit": {
+                    "const": "search_account_set",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "edit",
+                  "account"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "edit": {
+                    "const": "search_account_remove",
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "edit",
+                  "target"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "edit": {
+                    "const": "search_default_set",
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "edit"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "config": true,
+                  "edit": {
+                    "const": "integration_set",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "edit",
+                  "kind",
+                  "config"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "edit": {
+                    "const": "integration_remove",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "edit",
+                  "kind"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "edits": {
+            "items": {
+              "$ref": "#/$defs/ConfigEdit"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "edits"
+        ],
+        "title": "AdminConfigEditParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "admin",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
       "name": "admin.daemon_stop",
       "output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

@@ -438,12 +438,20 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   "who writes this" had no principled answer. A first load with no `client.json` adopts those four
   keys out of `config.json` **and removes them from it**, so a key never lives in two places; the
   adoption takes only the keys the client owns, so the daemon's stay behind.
-- **What the daemon owns, the client should not write directly.** The remaining crossings are
-  `providers` (`goat provider …`, `goat setup`), `search` (`goat search …`, `/search`) and
-  `integrations` (`goat agent integration …`), which still write `config.json` from the client. They
-  belong behind `admin.*` methods like `admin.device_*` already is — locally the two coincide by
-  accident, against a remote daemon they do not. `browser_enabled` is the last toggle in the same
-  shape and disappears with the CDP browser backend. Do not add a new direct writer.
+- **The daemon's config has one writer: `admin.config_edit`.** It takes a list of `ConfigEdit` —
+  a closed set of intents (`provider_set`, `search_default_set`, `integration_remove`, …) — and the
+  daemon is the only place that opens the file. One method rather than nine keeps the table small;
+  the enum is the vocabulary. Provider-shaped payloads (a search account, an integration entry) cross
+  as opaque JSON so `goat-api` never learns a concrete provider name. `goat provider`,
+  `goat search` and `goat agent integration` call it, and a local target autostarts the daemon so a
+  write still works from a cold machine.
+- **Two writers are left, both in the TUI, both blocked on the same missing piece.** `/search`
+  writes `config.json` directly and `/config`'s account rows still go out as
+  `Op::AddAccount`/`RemoveAccount` — engine vocabulary that has nothing to do with a coding turn.
+  Neither can move until `Attachment` carries an admin channel beside its `Op` sender; today a slash
+  command can only reach the daemon through `CommandEffect::Dispatch(Vec<Op>)`. `browser_enabled` is
+  the last toggle in that shape and disappears with the CDP browser backend. Do not add a new direct
+  writer.
 
 ## Vestigial — present in code, does nothing
 
