@@ -42,6 +42,10 @@ pub enum ClientError {
     BusyIncompatible { sessions: usize, turns: usize },
     #[error("the remote daemon speaks a different protocol")]
     RemoteIncompatible,
+    #[error(
+        "the running daemon speaks a different protocol; run `goat daemon start` to replace it"
+    )]
+    Incompatible,
     #[error("daemon did not open a session: {0}")]
     OpenFailed(String),
     #[error("could not start daemon: {0}")]
@@ -69,11 +73,39 @@ pub enum Daemon {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action {
+enum OnStale {
     Attach,
-    AttachStale,
+    ReplaceIfIdle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Resolution {
+    Reused,
+    Stale,
     Replace,
     Refuse,
+}
+
+fn resolve(ours: &Identity, theirs: &Identity, on_stale: OnStale) -> Resolution {
+    if is_current(ours, theirs) {
+        return Resolution::Reused;
+    }
+    if on_stale == OnStale::ReplaceIfIdle && theirs.busy.is_idle() {
+        return Resolution::Replace;
+    }
+    if theirs.wire != ours.wire {
+        return Resolution::Refuse;
+    }
+    Resolution::Stale
+}
+
+#[must_use]
+pub fn is_current(mine: &Identity, theirs: &Identity) -> bool {
+    theirs.wire == mine.wire
+        && match (mine.build.as_ref(), theirs.build.as_ref()) {
+            (Some(ours), Some(other)) => ours == other,
+            _ => true,
+        }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,21 +141,6 @@ fn identity_of(build: Option<BuildId>) -> Identity {
     }
 }
 
-#[must_use]
-pub fn decide(mine: &Identity, theirs: &Identity) -> Action {
-    let incompatible = theirs.wire != mine.wire;
-    let stale = match (mine.build.as_ref(), theirs.build.as_ref()) {
-        (Some(ours), Some(other)) => ours != other,
-        _ => false,
-    };
-    match (incompatible, stale, theirs.busy.is_idle()) {
-        (false, false, _) => Action::Attach,
-        (true, _, false) => Action::Refuse,
-        (false, true, false) => Action::AttachStale,
-        (_, _, true) => Action::Replace,
-    }
-}
-
 pub struct Attachment {
     pub ops: mpsc::Sender<Op>,
     pub events: mpsc::Receiver<Event>,
@@ -151,7 +168,7 @@ pub async fn connect(
     cwd: PathBuf,
     resume: ResumeMode,
 ) -> Result<(Attachment, Attached), ClientError> {
-    let (mut conn, identity, client_id, attached) = ensure(&link).await?;
+    let (mut conn, identity, client_id, attached) = ensure(&link, OnStale::Attach).await?;
 
     conn.send(ClientFrame::OpenSession {
         cwd: cwd.display().to_string(),
@@ -172,7 +189,7 @@ pub async fn connect(
 
 pub async fn start(socket_path: &Path, daemon_exe: &Path) -> Result<Attached, ClientError> {
     let link = Link::local(socket_path.to_path_buf(), daemon_exe.to_path_buf());
-    let (_, _, _, attached) = ensure(&link).await?;
+    let (_, _, _, attached) = ensure(&link, OnStale::ReplaceIfIdle).await?;
     Ok(attached)
 }
 
@@ -227,7 +244,10 @@ async fn request(conn: &mut Conn) -> Result<ServerFrame, ClientError> {
         .map_err(ClientError::Wire)
 }
 
-async fn ensure(link: &Link) -> Result<(Conn, Identity, u64, Attached), ClientError> {
+async fn ensure(
+    link: &Link,
+    on_stale: OnStale,
+) -> Result<(Conn, Identity, u64, Attached), ClientError> {
     let ours = mine_for(link.local_parts().map(|(_, daemon_exe)| daemon_exe));
     let opened = open(link).await;
     if link.local_parts().is_none() {
@@ -248,17 +268,20 @@ async fn ensure(link: &Link) -> Result<(Conn, Identity, u64, Attached), ClientEr
         return Ok((conn, identity, client_id, Attached::Started));
     };
 
-    match decide(&ours, &identity) {
-        Action::Attach => Ok((conn, identity, client_id, Attached::Reused)),
-        Action::AttachStale => {
+    match resolve(&ours, &identity, on_stale) {
+        Resolution::Reused => Ok((conn, identity, client_id, Attached::Reused)),
+        Resolution::Stale => {
             let stale = identity.clone();
             Ok((conn, identity, client_id, Attached::Stale(Box::new(stale))))
         }
-        Action::Refuse => Err(ClientError::BusyIncompatible {
-            sessions: identity.busy.sessions,
-            turns: identity.busy.turns,
-        }),
-        Action::Replace => {
+        Resolution::Refuse => match on_stale {
+            OnStale::Attach => Err(ClientError::Incompatible),
+            OnStale::ReplaceIfIdle => Err(ClientError::BusyIncompatible {
+                sessions: identity.busy.sessions,
+                turns: identity.busy.turns,
+            }),
+        },
+        Resolution::Replace => {
             let replaced = identity.clone();
             shutdown_and_wait(conn).await;
             let (conn, identity, client_id) = spawn_and_wait(link).await?;
@@ -801,7 +824,10 @@ fn refusal(frame: ServerFrame) -> ClientError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, Delivery, Identity, decide, frame_to_events, sequenced_delivery};
+    use super::{
+        Delivery, Identity, OnStale, Resolution, frame_to_events, is_current, resolve,
+        sequenced_delivery,
+    };
     use goat_protocol::{Event, ModelTarget, SkillInfo, TaskId};
     use goat_wire::{BuildId, Busy, ServerFrame, SessionId};
 
@@ -843,9 +869,8 @@ mod tests {
             build: goat_wire::BuildId::of(&daemon_exe),
             ..desktop.clone()
         };
-        assert_eq!(
-            decide(&desktop, &daemon),
-            Action::Attach,
+        assert!(
+            is_current(&desktop, &daemon),
             "a desktop client must attach to the daemon it would have spawned"
         );
 
@@ -854,9 +879,8 @@ mod tests {
             own_exe.build, desktop.build,
             "the fix only matters because the two differ"
         );
-        assert_eq!(
-            decide(&own_exe, &daemon),
-            Action::Replace,
+        assert!(
+            !is_current(&own_exe, &daemon),
             "reporting its own exe is what used to replace an idle daemon every launch"
         );
 
@@ -870,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn decision_table_preserves_busy_daemons() {
+    fn opening_a_session_never_replaces_the_daemon() {
         let idle = Busy::default();
         let busy = Busy {
             sessions: 1,
@@ -878,16 +902,40 @@ mod tests {
         };
         let ours = peer("aaaa", 1, idle);
         for (wire, len, load, want) in [
-            ("aaaa", 1, idle, Action::Attach),
-            ("aaaa", 1, busy, Action::Attach),
-            ("aaaa", 2, idle, Action::Replace),
-            ("aaaa", 2, busy, Action::AttachStale),
-            ("bbbb", 1, idle, Action::Replace),
-            ("bbbb", 1, busy, Action::Refuse),
-            ("bbbb", 2, busy, Action::Refuse),
+            ("aaaa", 1, idle, Resolution::Reused),
+            ("aaaa", 1, busy, Resolution::Reused),
+            ("aaaa", 2, idle, Resolution::Stale),
+            ("aaaa", 2, busy, Resolution::Stale),
+            ("bbbb", 1, idle, Resolution::Refuse),
+            ("bbbb", 1, busy, Resolution::Refuse),
         ] {
             assert_eq!(
-                decide(&ours, &peer(wire, len, load)),
+                resolve(&ours, &peer(wire, len, load), OnStale::Attach),
+                want,
+                "wire={wire} len={len} busy={load:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn daemon_start_replaces_an_idle_leftover_and_preserves_a_busy_one() {
+        let idle = Busy::default();
+        let busy = Busy {
+            sessions: 1,
+            turns: 0,
+        };
+        let ours = peer("aaaa", 1, idle);
+        for (wire, len, load, want) in [
+            ("aaaa", 1, idle, Resolution::Reused),
+            ("aaaa", 1, busy, Resolution::Reused),
+            ("aaaa", 2, idle, Resolution::Replace),
+            ("aaaa", 2, busy, Resolution::Stale),
+            ("bbbb", 1, idle, Resolution::Replace),
+            ("bbbb", 1, busy, Resolution::Refuse),
+            ("bbbb", 2, busy, Resolution::Refuse),
+        ] {
+            assert_eq!(
+                resolve(&ours, &peer(wire, len, load), OnStale::ReplaceIfIdle),
                 want,
                 "wire={wire} len={len} busy={load:?}"
             );
@@ -899,7 +947,7 @@ mod tests {
         let ours = peer("aaaa", 1, Busy::default());
         let mut theirs = peer("aaaa", 2, Busy::default());
         theirs.build = None;
-        assert_eq!(decide(&ours, &theirs), Action::Attach);
+        assert!(is_current(&ours, &theirs));
     }
 
     fn text(seq: u64) -> ServerFrame {

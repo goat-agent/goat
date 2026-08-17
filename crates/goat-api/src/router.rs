@@ -253,13 +253,17 @@ mod tests {
     fn local_router() -> Router {
         Router::new([Grant::Any, Grant::Admin])
             .unary::<DaemonStatus, _, _>(|_params, _ctx| async { Ok(status()) })
-            .unary::<AdminDaemonStop, _, _>(|_params, _ctx| async { Ok(Empty {}) })
+            .unary::<AdminDaemonStop, _, _>(|_params, _ctx| async {
+                Ok(crate::AdminDaemonStopOutput::Stopping)
+            })
     }
 
     fn narrow_router() -> Router {
         Router::new([Grant::Any])
             .unary::<DaemonStatus, _, _>(|_params, _ctx| async { Ok(status()) })
-            .unary::<AdminDaemonStop, _, _>(|_params, _ctx| async { Ok(Empty {}) })
+            .unary::<AdminDaemonStop, _, _>(|_params, _ctx| async {
+                Ok(crate::AdminDaemonStopOutput::Stopping)
+            })
     }
 
     fn watching_router() -> Router {

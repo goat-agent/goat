@@ -274,10 +274,7 @@ async fn apply_to_daemon() {
     let goat_client::Daemon::Reachable(them) = goat_client::greet(&socket_path).await else {
         return;
     };
-    if !matches!(
-        goat_client::decide(&goat_client::mine(), &them),
-        goat_client::Action::Attach
-    ) {
+    if !goat_client::is_current(&goat_client::mine(), &them) {
         return;
     }
     let Ok(link) = crate::remote::local() else {

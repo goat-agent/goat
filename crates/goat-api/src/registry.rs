@@ -125,6 +125,7 @@ pub fn registry() -> Vec<MethodSchema> {
         describe::<m::SessionOpen>(),
         describe::<m::SessionSubmit>(),
         describe::<m::SessionControl>(),
+        describe::<m::SessionKill>(),
         describe::<m::SessionWatch>(),
         describe::<m::ConversationList>(),
         describe::<m::AskAnswer>(),
