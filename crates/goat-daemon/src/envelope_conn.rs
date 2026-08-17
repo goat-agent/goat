@@ -37,8 +37,27 @@ pub struct EnvelopeHost {
     pub broker: Arc<Broker>,
     pub shutdown: CancellationToken,
     pub epoch: String,
-    pub terminals: Arc<crate::pty::Terminals>,
+    pub(crate) terminals: Arc<crate::pty::Terminals>,
     pub db_path: std::path::PathBuf,
+}
+
+impl EnvelopeHost {
+    #[must_use]
+    pub fn new(
+        manager: CodeSessionHub,
+        shutdown: CancellationToken,
+        epoch: String,
+        db_path: std::path::PathBuf,
+    ) -> Self {
+        Self {
+            manager,
+            broker: Arc::new(Broker::new()),
+            shutdown,
+            epoch,
+            terminals: Arc::new(crate::pty::Terminals::new()),
+            db_path,
+        }
+    }
 }
 
 pub async fn serve_envelope<Si, St>(

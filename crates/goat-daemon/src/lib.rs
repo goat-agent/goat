@@ -136,14 +136,12 @@ pub async fn serve_bound(
     sweep_orphaned_turns(&config.db_path).await;
     sweep_orphaned_processes(&config.db_path).await;
 
-    let host = EnvelopeHost {
-        manager: manager.clone(),
-        broker: std::sync::Arc::new(goat_capability::Broker::new()),
-        shutdown: shutdown.clone(),
-        epoch: manager.started_at().to_string(),
-        terminals: std::sync::Arc::new(pty::Terminals::new()),
-        db_path: db_path.clone(),
-    };
+    let host = EnvelopeHost::new(
+        manager.clone(),
+        shutdown.clone(),
+        manager.started_at().to_string(),
+        db_path.clone(),
+    );
 
     if let Some(remote_settings) = config.remote {
         spawn_remote(&manager, &host, &shutdown, remote_settings)?;
