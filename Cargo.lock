@@ -2373,6 +2373,7 @@ dependencies = [
  "goat-proxy-store",
  "goat-remote",
  "goat-runtime",
+ "goat-tool-browser",
  "goat-tool-search",
  "goat-tui",
  "goat-wire",
