@@ -100,6 +100,26 @@ impl MethodSchema {
     }
 }
 
+#[must_use]
+pub fn schema_document() -> serde_json::Value {
+    serde_json::json!({
+        "envelope": goat_wire::envelope_fingerprint(),
+        "methods": registry()
+            .into_iter()
+            .map(|schema| serde_json::json!({
+                "name": schema.name,
+                "version": schema.version,
+                "shape": schema.shape.as_str(),
+                "grant": schema.grant.as_str(),
+                "direction": schema.direction.as_str(),
+                "params": schema.params,
+                "output": schema.output,
+                "item": schema.item,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
 pub fn describe<M: Method>() -> MethodSchema {
     MethodSchema {
         name: M::NAME,
@@ -292,6 +312,27 @@ mod frozen {
 
     fn fixture() -> &'static str {
         include_str!("methods_fingerprint.txt")
+    }
+
+    fn schema_fixture() -> &'static str {
+        include_str!("methods_schema.json")
+    }
+
+    fn rendered_schema() -> String {
+        let mut text = serde_json::to_string_pretty(&super::schema_document())
+            .expect("the method table serializes");
+        text.push('\n');
+        text
+    }
+
+    #[test]
+    fn the_published_schema_matches_the_method_table() {
+        assert_eq!(
+            rendered_schema(),
+            schema_fixture(),
+            "methods_schema.json is the contract other clients generate from; regenerate it with \
+             `cargo run -p goat-api --bin methods_schema crates/goat-api/src/methods_schema.json`"
+        );
     }
 
     #[test]

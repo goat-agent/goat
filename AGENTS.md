@@ -205,7 +205,13 @@ Placements that contradict the naming:
 - `goat-api` is the method surface: `Method` contracts with per-method versions, a `Grant`, a
   `Direction`, and a `Shape`. `methods_fingerprint.txt` freezes every contract, so changing a param
   type without bumping its version fails CI — that is the only thing making "hash the envelope, not
-  the payload" safe. Its `Router` is built from *grants*, not from the transport: a router without
+  the payload" safe. `methods_schema.json` beside it is the same table as full JSON Schema, and it is
+  **the artifact non-Rust clients generate from**: the wire is length-delimited JSON, so a Mac app or
+  a Chrome panel needs no Rust, no FFI and no sidecar — read a four-byte length, decode JSON. Both
+  files are generated, both are frozen by a test, and the generator is
+  `cargo run -p goat-api --bin methods_schema crates/goat-api/src/methods_schema.json`. Adding a
+  method means adding a line to `registry()`; a route served without that line is invisible to both
+  files, which `goat-daemon`'s `every_served_method_is_a_frozen_contract` refuses. Its `Router` is built from *grants*, not from the transport: a router without
   `Grant::Admin` does not contain the admin routes at all, so a peer calling one gets
   `unknown_method` rather than a check someone can forget.
 - `goat-capability` is the daemon-side broker for capabilities that live on the human's machine
@@ -425,14 +431,19 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   second daemon here.
 - `Hello`/`Welcome` carry `build` alongside `PROTOCOL_VERSION`. A protocol mismatch is fatal; a
   build mismatch is only reported, because remote client and daemon update independently.
-- **Config writing has three doors and only one of them crosses the wire.** `Op::AddAccount` /
-  `Op::RemoveAccount` reach the daemon and write *its* `credentials.json`; the CLI
-  (`goat setup`, `goat provider login`, `goat search login`) and the `/search` slash command
-  (`goat-command-settings`) write the *client's* files directly; and `/config`'s browser and
-  computer-use toggles write the client's `config.json` while the consumer is
-  `goat-engine`'s `CodingEngine::new`. Locally these coincide by accident. Against a remote daemon
-  they do not, and the toggles are already ineffective locally until the daemon restarts.
-  Collapsing the first two doors into the third is the intended direction; do not add a fourth.
+- **Two config files, split by who reads them.** `~/.goat/config.json` is the daemon's — `search`,
+  `web_fetch`, `proxy`, `integrations`, `providers`, `devices`, all read inside the daemon.
+  `~/.goat/client.json` is the client's — `theme`, `mouse_capture_enabled`, `remotes`,
+  `default_remote`, read only by the TUI and the CLI dialling out. One file with two owners is why
+  "who writes this" had no principled answer. A first load with no `client.json` adopts those four
+  keys out of `config.json` **and removes them from it**, so a key never lives in two places; the
+  adoption takes only the keys the client owns, so the daemon's stay behind.
+- **What the daemon owns, the client should not write directly.** The remaining crossings are
+  `providers` (`goat provider …`, `goat setup`), `search` (`goat search …`, `/search`) and
+  `integrations` (`goat agent integration …`), which still write `config.json` from the client. They
+  belong behind `admin.*` methods like `admin.device_*` already is — locally the two coincide by
+  accident, against a remote daemon they do not. `browser_enabled` is the last toggle in the same
+  shape and disappears with the CDP browser backend. Do not add a new direct writer.
 
 ## Vestigial — present in code, does nothing
 

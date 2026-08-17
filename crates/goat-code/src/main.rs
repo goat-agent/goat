@@ -255,7 +255,7 @@ async fn run_tui(
     goat_tui::install_hooks()?;
     let _guard = logging::init();
 
-    let config = goat_config::Config::load();
+    let config = goat_config::ClientConfig::load();
     let theme = match config.theme {
         goat_config::ThemeChoice::Dark => goat_tui::Theme::dark(),
         goat_config::ThemeChoice::Light => goat_tui::Theme::light(),

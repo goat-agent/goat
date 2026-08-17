@@ -304,12 +304,13 @@ impl App {
         let git_workspace = (!remote)
             .then(|| goat_worktree::workspace(std::path::Path::new(&origin.cwd)).ok())
             .flatten();
+        let client = goat_config::ClientConfig::load();
         let cfg = goat_config::Config::load();
         Self {
             settings: SettingsState {
                 theme,
                 terminal_bg: None,
-                mouse_capture: cfg.mouse_capture_enabled,
+                mouse_capture: client.mouse_capture_enabled,
                 browser: cfg.browser_enabled,
                 theme_changed: false,
                 save_failed: false,
@@ -1656,6 +1657,13 @@ impl App {
 }
 
 impl SettingsState {
+    fn persist_client(&mut self, client: &goat_config::ClientConfig) {
+        if let Err(err) = client.save() {
+            tracing::warn!(error = %err, "failed to save the client settings");
+            self.save_failed = true;
+        }
+    }
+
     fn persist_config(&mut self, cfg: &goat_config::Config) {
         if let Err(err) = cfg.save() {
             tracing::warn!(error = %err, "failed to save config");
@@ -1672,13 +1680,13 @@ impl Settings for SettingsState {
     fn set_theme(&mut self, theme: Theme) {
         self.theme = theme.with_base(self.terminal_bg);
         self.theme_changed = true;
-        let mut cfg = goat_config::Config::load();
-        cfg.theme = if theme.is_dark() {
+        let mut client = goat_config::ClientConfig::load();
+        client.theme = if theme.is_dark() {
             goat_config::ThemeChoice::Dark
         } else {
             goat_config::ThemeChoice::Light
         };
-        self.persist_config(&cfg);
+        self.persist_client(&client);
     }
 
     fn mouse_capture(&self) -> bool {
@@ -1688,9 +1696,9 @@ impl Settings for SettingsState {
     fn set_mouse_capture(&mut self, enabled: bool) {
         self.mouse_capture = enabled;
         tui::set_mouse_capture(enabled);
-        let mut cfg = goat_config::Config::load();
-        cfg.mouse_capture_enabled = enabled;
-        self.persist_config(&cfg);
+        let mut client = goat_config::ClientConfig::load();
+        client.mouse_capture_enabled = enabled;
+        self.persist_client(&client);
     }
 
     fn browser(&self) -> bool {
