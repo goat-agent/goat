@@ -987,3 +987,44 @@ mod tests {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct BuildId {
+    pub path: String,
+    pub len: u64,
+    pub mtime: i64,
+}
+
+impl BuildId {
+    pub fn current() -> Option<Self> {
+        Self::of(&std::env::current_exe().ok()?)
+    }
+
+    pub fn of(path: &std::path::Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        let mtime = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        Some(Self {
+            path: path.display().to_string(),
+            len: meta.len(),
+            mtime: i64::try_from(mtime.as_millis()).unwrap_or(i64::MAX),
+        })
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+pub struct Busy {
+    pub sessions: usize,
+    pub turns: usize,
+}
+
+impl Busy {
+    pub fn is_idle(self) -> bool {
+        self.sessions == 0 && self.turns == 0
+    }
+}
