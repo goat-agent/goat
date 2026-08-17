@@ -209,9 +209,9 @@ async fn connect_session(
         mcp::approve_project_servers(&cwd)?;
     }
     let resume = if args.r#continue {
-        goat_wire::ResumeMode::Latest {}
+        goat_api::ResumeMode::Latest {}
     } else {
-        goat_wire::ResumeMode::New {}
+        goat_api::ResumeMode::New {}
     };
 
     let (attachment, attached) = goat_client::connect(link.clone(), cwd, resume).await?;
@@ -697,11 +697,11 @@ async fn run_session_command(
     }
 }
 
-fn daemon_state(state: goat_wire::SessionLiveState) -> (&'static str, Palette) {
+fn daemon_state(state: goat_api::SessionLiveState) -> (&'static str, Palette) {
     match state {
-        goat_wire::SessionLiveState::Idle {} => ("idle", Palette::Local),
-        goat_wire::SessionLiveState::Active {} => ("active", Palette::Success),
-        goat_wire::SessionLiveState::WaitingOnAsk {} => ("waiting", Palette::Warning),
+        goat_api::SessionLiveState::Idle {} => ("idle", Palette::Local),
+        goat_api::SessionLiveState::Active {} => ("active", Palette::Success),
+        goat_api::SessionLiveState::WaitingOnAsk {} => ("waiting", Palette::Warning),
     }
 }
 

@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use futures::{SinkExt, StreamExt};
+use goat_api::{ResumeMode, SessionOpen, SessionOpenParams};
+use goat_client::Link;
 use goat_remote::client::DeviceCredentials;
-use goat_wire::transport::{self, Stream};
-use goat_wire::{ClientConn, ClientFrame, ResumeMode, ServerFrame, WireConn};
+use goat_wire::transport;
 
 async fn start_remote_daemon(dir: &std::path::Path, port: u16) -> PathBuf {
     let socket = dir.join("d.sock");
@@ -32,31 +32,15 @@ async fn start_remote_daemon(dir: &std::path::Path, port: u16) -> PathBuf {
     panic!("daemon did not start");
 }
 
-async fn local_conn(socket: &std::path::Path) -> ClientConn<Stream> {
-    let stream = transport::connect(socket).await.unwrap();
-    let mut conn: ClientConn<Stream> = WireConn::new(stream);
-    match conn.recv().await.unwrap() {
-        ServerFrame::Welcome { .. } => {}
-        other => panic!("expected Welcome, got {other:?}"),
-    }
-    conn
+fn local(socket: &std::path::Path) -> Link {
+    Link::local(socket.to_path_buf(), PathBuf::new())
 }
 
 async fn mint_code(socket: &std::path::Path) -> (String, String) {
-    let mut conn = local_conn(socket).await;
-    conn.send(&ClientFrame::PairDevice {
-        label: "phone".to_owned(),
-    })
-    .await
-    .unwrap();
-    match conn.recv().await.unwrap() {
-        ServerFrame::PairingCode {
-            code,
-            server_fingerprint,
-            ..
-        } => (code, server_fingerprint),
-        other => panic!("expected PairingCode, got {other:?}"),
-    }
+    let info = goat_client::pair_device(&local(socket), "phone".to_owned())
+        .await
+        .expect("the daemon mints a pairing code");
+    (info.code, info.server_fingerprint)
 }
 
 async fn settle(
@@ -106,28 +90,50 @@ async fn remote_pair_and_open_session_over_mtls() {
     let (code, fingerprint) = mint_code(&socket).await;
     let credentials = enroll(&host, &fingerprint, &code).await;
 
-    let (mut sink, mut stream) = goat_remote::client::connect(&host, &credentials)
+    let link = Link::remote("desk".to_owned(), host, credentials);
+    let session = goat_client::open_api(&link, "remote-e2e")
         .await
-        .expect("connect over mtls");
+        .expect("the daemon greets over mtls");
+    assert!(session.daemon.compatible());
 
-    match stream.next().await.unwrap().unwrap() {
-        ServerFrame::Welcome { wire, .. } => assert_eq!(wire, goat_wire::wire_fingerprint()),
-        other => panic!("expected Welcome, got {other:?}"),
-    }
+    let opened = session
+        .api
+        .call::<SessionOpen>(SessionOpenParams {
+            cwd: dir.path().display().to_string(),
+            resume: ResumeMode::New {},
+        })
+        .await
+        .expect("a remote client opens a session");
+    let expected = std::fs::canonicalize(dir.path()).unwrap();
+    assert_eq!(
+        opened.cwd,
+        expected.display().to_string(),
+        "the daemon reports the cwd it normalized, not the one the client sent"
+    );
+}
 
-    sink.send(ClientFrame::OpenSession {
-        cwd: dir.path().display().to_string(),
-        resume: ResumeMode::New {},
-    })
-    .await
-    .unwrap();
-    match stream.next().await.unwrap().unwrap() {
-        ServerFrame::SessionOpened { cwd, .. } => {
-            let expected = std::fs::canonicalize(dir.path()).unwrap();
-            assert_eq!(cwd, expected.display().to_string());
-        }
-        other => panic!("expected SessionOpened, got {other:?}"),
-    }
+#[tokio::test]
+async fn a_remote_client_is_not_granted_the_admin_routes() {
+    install_provider();
+    let dir = tempfile::tempdir().unwrap();
+    let port = 47322;
+    let host = format!("127.0.0.1:{port}");
+    let socket = start_remote_daemon(dir.path(), port).await;
+
+    let (code, fingerprint) = mint_code(&socket).await;
+    let credentials = enroll(&host, &fingerprint, &code).await;
+
+    let link = Link::remote("desk".to_owned(), host, credentials);
+    let session = goat_client::open_api(&link, "remote-e2e")
+        .await
+        .expect("the daemon greets over mtls");
+
+    assert!(session.daemon.speaks("session.open", 1));
+    assert!(
+        !session.daemon.speaks("admin.daemon_stop", 1),
+        "a paired device must not be offered the admin routes at all"
+    );
+    assert!(!session.daemon.speaks("admin.device_revoke", 1));
 }
 
 #[tokio::test]
@@ -141,26 +147,16 @@ async fn revoked_device_cannot_reconnect() {
     let (code, fingerprint) = mint_code(&socket).await;
     let credentials = enroll(&host, &fingerprint, &code).await;
 
-    let device_id = {
-        let mut conn = local_conn(&socket).await;
-        conn.send(&ClientFrame::ListDevices {}).await.unwrap();
-        match conn.recv().await.unwrap() {
-            ServerFrame::Devices { devices } => devices[0].id.clone(),
-            other => panic!("expected Devices, got {other:?}"),
-        }
-    };
-    {
-        let mut conn = local_conn(&socket).await;
-        conn.send(&ClientFrame::RevokeDevice {
-            device: device_id.clone(),
-        })
+    let devices = goat_client::list_devices(&local(&socket))
         .await
-        .unwrap();
-        match conn.recv().await.unwrap() {
-            ServerFrame::DeviceRevoked { ok } => assert!(ok),
-            other => panic!("expected DeviceRevoked, got {other:?}"),
-        }
-    }
+        .expect("devices list");
+    let device_id = devices[0].id.clone();
+    assert!(
+        goat_client::revoke_device(&local(&socket), device_id)
+            .await
+            .expect("revoke answers"),
+        "the paired device is revoked"
+    );
 
     let refused = goat_remote::client::connect(&host, &credentials).await;
     assert!(refused.is_err(), "a revoked device must not connect");

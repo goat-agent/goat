@@ -622,35 +622,6 @@ impl CodeSessionHub {
         }
     }
 
-    pub(crate) async fn rebind(
-        &self,
-        client: ClientId,
-        from: SessionId,
-        client_sender: &mpsc::Sender<ServerFrame>,
-        resume: ResumeMode,
-        lagged: tokio_util::sync::CancellationToken,
-    ) -> Result<(), String> {
-        let cwd = {
-            let table = self.inner.sessions.lock().await;
-            let live = table.get(&from).ok_or("unknown session")?;
-            let inner = live.inner.lock().await;
-            inner.cwd.clone()
-        };
-        let (new, opened_cwd) = self.open_or_attach(PathBuf::from(cwd), resume).await?;
-        self.unsubscribe(from, client).await;
-        let _ = client_sender
-            .send(ServerFrame::Detached { session: from })
-            .await;
-        let _ = client_sender
-            .send(ServerFrame::SessionOpened {
-                session: new,
-                cwd: opened_cwd,
-            })
-            .await;
-        self.subscribe(new, client, client_sender.clone(), lagged)
-            .await
-    }
-
     async fn prepare_submit(
         &self,
         session: SessionId,

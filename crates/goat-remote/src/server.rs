@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use goat_wire::{ClientFrame, ServerFrame};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -240,7 +239,8 @@ impl RemoteServer {
             Some(crate::ws::config()),
         )
         .await;
-        let (sink, stream) = crate::ws::adapt::<_, ServerFrame, ClientFrame>(ws);
+        let (sink, stream) =
+            crate::ws::adapt::<_, goat_wire::envelope::Frame, goat_wire::envelope::Frame>(ws);
         handler.handle(device, sink, stream).await;
         Ok(())
     }
