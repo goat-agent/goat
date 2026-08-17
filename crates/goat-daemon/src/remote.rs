@@ -5,13 +5,11 @@ use std::time::Duration;
 
 use goat_remote::{Device, Devices, RemoteHandler, RemoteSink, RemoteStream};
 
-use crate::conn::{ClientOrigin, serve_connection};
-use crate::manager::CodeSessionHub;
+use crate::envelope_conn::{ClientOrigin, EnvelopeHost, serve_envelope};
 
 pub(crate) struct DaemonRemoteHandler {
-    pub(crate) manager: CodeSessionHub,
+    pub(crate) host: EnvelopeHost,
     pub(crate) devices: Devices,
-    pub(crate) shutdown: tokio_util::sync::CancellationToken,
 }
 
 impl RemoteHandler for DaemonRemoteHandler {
@@ -21,8 +19,7 @@ impl RemoteHandler for DaemonRemoteHandler {
         sink: RemoteSink,
         stream: RemoteStream,
     ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        let manager = self.manager.clone();
-        let shutdown = self.shutdown.clone();
+        let host = self.host.clone();
         let devices = self.devices.clone();
         let fingerprint = device.fingerprint.clone();
         let origin = ClientOrigin::Remote { device: device.id };
@@ -38,20 +35,12 @@ impl RemoteHandler for DaemonRemoteHandler {
                     }
                 }
             });
-            serve_connection(sink, stream, manager, shutdown, origin, disconnect).await;
+            serve_envelope(host, origin, sink, stream, disconnect).await;
             revocation.abort();
         })
     }
 }
 
-pub(crate) fn handler(
-    manager: CodeSessionHub,
-    devices: Devices,
-    shutdown: tokio_util::sync::CancellationToken,
-) -> Arc<DaemonRemoteHandler> {
-    Arc::new(DaemonRemoteHandler {
-        manager,
-        devices,
-        shutdown,
-    })
+pub(crate) fn handler(host: EnvelopeHost, devices: Devices) -> Arc<DaemonRemoteHandler> {
+    Arc::new(DaemonRemoteHandler { host, devices })
 }

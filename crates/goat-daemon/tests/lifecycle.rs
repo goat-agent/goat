@@ -2,8 +2,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures::SinkExt;
-use goat_wire::transport::{self, Stream};
-use goat_wire::{ClientConn, ResumeMode, ServerFrame, WireConn};
+use goat_api::{
+    DaemonStatus, Empty, ResumeMode, SessionKill, SessionKillParams, SessionOpen,
+    SessionOpenParams, SessionWatch, SessionWatchParams, WatchFrom,
+};
+use goat_client::{ApiSession, Link};
+use goat_wire::transport;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 fn config(dir: &Path) -> goat_daemon::DaemonConfig {
@@ -47,23 +51,37 @@ async fn socket_is_gone(socket: &Path) -> bool {
     false
 }
 
+async fn connect(socket: &Path) -> ApiSession {
+    goat_client::open_api(
+        &Link::local(socket.to_path_buf(), PathBuf::new()),
+        "lifecycle",
+    )
+    .await
+    .expect("the daemon greets")
+}
+
+async fn busy(socket: &Path) -> (usize, usize) {
+    let session = connect(socket).await;
+    let status = session
+        .api
+        .call::<DaemonStatus>(Empty {})
+        .await
+        .expect("status answers");
+    (status.sessions, status.turns)
+}
+
 #[tokio::test]
 async fn greets_before_the_client_sends_anything() {
     let dir = tempfile::tempdir().unwrap();
     let socket = start_daemon(dir.path()).await;
 
-    let stream = transport::connect(&socket).await.unwrap();
-    let mut conn: ClientConn<Stream> = WireConn::new(stream);
-    match conn.recv().await.unwrap() {
-        ServerFrame::Welcome {
-            wire, pid, ready, ..
-        } => {
-            assert_eq!(wire, goat_wire::wire_fingerprint());
-            assert_eq!(pid, std::process::id());
-            assert!(ready);
-        }
-        other => panic!("expected Welcome, got {other:?}"),
-    }
+    let session = connect(&socket).await;
+    assert_eq!(session.daemon.role, goat_wire::envelope::Role::Daemon);
+    assert!(session.daemon.compatible());
+    assert_eq!(
+        session.daemon.info["pid"].as_u64(),
+        Some(u64::from(std::process::id()))
+    );
 }
 
 #[tokio::test]
@@ -73,14 +91,27 @@ async fn a_client_that_cannot_encode_our_frames_can_still_stop_the_daemon() {
 
     let stream = transport::connect(&socket).await.unwrap();
     let mut framed = Framed::new(stream, LengthDelimitedCodec::new());
-    framed
-        .send(bytes::Bytes::from_static(br#"{"type":"StopDaemon"}"#))
-        .await
-        .unwrap();
+    let hello = serde_json::to_vec(&serde_json::json!({
+        "kind": "hello",
+        "role": "client",
+        "envelope": goat_wire::envelope_fingerprint(),
+        "agent": "raw",
+    }))
+    .unwrap();
+    framed.send(bytes::Bytes::from(hello)).await.unwrap();
+    let stop = serde_json::to_vec(&serde_json::json!({
+        "kind": "req",
+        "id": "1",
+        "method": "admin.daemon_stop",
+        "version": 1,
+        "params": { "if_idle": false },
+    }))
+    .unwrap();
+    framed.send(bytes::Bytes::from(stop)).await.unwrap();
 
     assert!(
         socket_is_gone(&socket).await,
-        "a raw StopDaemon must shut the daemon down"
+        "a hand-written admin.daemon_stop must shut the daemon down"
     );
 }
 
@@ -89,45 +120,41 @@ async fn busy_counts_a_live_session_and_clears_when_it_is_killed() {
     let dir = tempfile::tempdir().unwrap();
     let socket = start_daemon(dir.path()).await;
 
-    let stream = transport::connect(&socket).await.unwrap();
-    let mut conn: ClientConn<Stream> = WireConn::new(stream);
-    let ServerFrame::Welcome { busy, .. } = conn.recv().await.unwrap() else {
-        panic!("expected Welcome");
-    };
-    assert!(busy.is_idle(), "a fresh daemon is idle");
+    assert_eq!(busy(&socket).await, (0, 0), "a fresh daemon is idle");
 
-    conn.send(&goat_wire::ClientFrame::OpenSession {
-        cwd: dir.path().display().to_string(),
-        resume: ResumeMode::New {},
-    })
-    .await
-    .unwrap();
-    let session = loop {
-        if let ServerFrame::SessionOpened { session, .. } = conn.recv().await.unwrap() {
-            break session;
-        }
-    };
+    let holder = connect(&socket).await;
+    let session = holder
+        .api
+        .call::<SessionOpen>(SessionOpenParams {
+            cwd: dir.path().display().to_string(),
+            resume: ResumeMode::New {},
+        })
+        .await
+        .unwrap()
+        .session;
+    let _watch = holder
+        .api
+        .open::<SessionWatch>(SessionWatchParams {
+            session,
+            from: WatchFrom::Snapshot {},
+        })
+        .await
+        .expect("watch opens");
 
-    let second = transport::connect(&socket).await.unwrap();
-    let mut probe: ClientConn<Stream> = WireConn::new(second);
-    let ServerFrame::Welcome { busy, .. } = probe.recv().await.unwrap() else {
-        panic!("expected Welcome");
-    };
-    assert_eq!(busy.sessions, 1, "an attached session is busy");
-    assert_eq!(busy.turns, 0, "no agent runtime is attached in this test");
+    let (sessions, turns) = busy(&socket).await;
+    assert_eq!(sessions, 1, "an attached session is busy");
+    assert_eq!(turns, 0, "no agent runtime is attached in this test");
 
+    let probe = connect(&socket).await;
     probe
-        .send(&goat_wire::ClientFrame::KillSession { session })
+        .api
+        .call::<SessionKill>(SessionKillParams { session })
         .await
         .unwrap();
-    drop(conn);
+    holder.shutdown();
 
     for _ in 0..100 {
-        let stream = transport::connect(&socket).await.unwrap();
-        let mut c: ClientConn<Stream> = WireConn::new(stream);
-        if let ServerFrame::Welcome { busy, .. } = c.recv().await.unwrap()
-            && busy.is_idle()
-        {
+        if busy(&socket).await == (0, 0) {
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -147,12 +174,7 @@ async fn a_second_daemon_loses_the_lock_and_leaves_the_first_alive() {
     );
     drop(taken);
 
-    let stream = transport::connect(&socket).await.unwrap();
-    let mut conn: ClientConn<Stream> = WireConn::new(stream);
-    assert!(matches!(
-        conn.recv().await.unwrap(),
-        ServerFrame::Welcome { .. }
-    ));
+    assert!(connect(&socket).await.daemon.compatible());
 }
 
 #[tokio::test]
@@ -162,12 +184,7 @@ async fn a_stale_socket_is_reclaimed() {
     std::fs::write(&stale, b"").unwrap();
 
     let socket = start_daemon(dir.path()).await;
-    let stream = transport::connect(&socket).await.unwrap();
-    let mut conn: ClientConn<Stream> = WireConn::new(stream);
-    assert!(matches!(
-        conn.recv().await.unwrap(),
-        ServerFrame::Welcome { .. }
-    ));
+    assert!(connect(&socket).await.daemon.compatible());
 }
 
 #[tokio::test]
@@ -175,12 +192,8 @@ async fn the_lock_is_released_when_the_daemon_exits() {
     let dir = tempfile::tempdir().unwrap();
     let socket = start_daemon(dir.path()).await;
 
-    let stream = transport::connect(&socket).await.unwrap();
-    let mut conn: ClientConn<Stream> = WireConn::new(stream);
-    let _ = conn.recv().await.unwrap();
-    conn.send(&goat_wire::ClientFrame::StopDaemon {})
-        .await
-        .unwrap();
+    let link = Link::local(socket.clone(), PathBuf::new());
+    goat_client::stop(&link).await.expect("the daemon stops");
     assert!(socket_is_gone(&socket).await);
 
     goat_daemon::acquire(&dir.path().join("daemon.lock"), Duration::from_secs(5))

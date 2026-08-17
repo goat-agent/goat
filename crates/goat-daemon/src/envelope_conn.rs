@@ -7,8 +7,13 @@ use goat_wire::envelope::{Frame, Hello, Role};
 use tokio_util::sync::CancellationToken;
 
 use crate::api;
-use crate::conn::ClientOrigin;
 use crate::manager::CodeSessionHub;
+
+#[derive(Debug, Clone)]
+pub enum ClientOrigin {
+    Local,
+    Remote { device: String },
+}
 
 #[must_use]
 pub fn grants_for(origin: &ClientOrigin) -> &'static [Grant] {
@@ -122,8 +127,8 @@ pub async fn serve_envelope<Si, St>(
 
 #[cfg(test)]
 mod tests {
+    use super::ClientOrigin;
     use super::{device_for, grants_for, serve_envelope};
-    use crate::conn::ClientOrigin;
     use goat_api::{Api, DaemonStatus, DaemonStatus2, Empty, Grant};
     use goat_capability::Broker;
     use goat_wire::WireConn;

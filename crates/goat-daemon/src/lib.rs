@@ -1,5 +1,4 @@
 mod api;
-mod conn;
 mod envelope_conn;
 mod files;
 mod manager;
@@ -14,8 +13,10 @@ use goat_wire::transport;
 use tokio_util::sync::CancellationToken;
 
 pub use crate::api::{LOCAL_GRANTS, REMOTE_GRANTS, build as build_router};
-pub use crate::conn::ClientOrigin;
-pub use crate::envelope_conn::{EnvelopeHost, device_for, grants_for, serve_envelope};
+
+pub use crate::envelope_conn::{
+    ClientOrigin, EnvelopeHost, device_for, grants_for, serve_envelope,
+};
 pub use crate::manager::{CodeSessionHub, ReloadRequest};
 
 #[derive(Debug, thiserror::Error)]
@@ -133,8 +134,17 @@ pub async fn serve_bound(
     sweep_orphaned_turns(&config.db_path).await;
     sweep_orphaned_processes(&config.db_path).await;
 
+    let host = EnvelopeHost {
+        manager: manager.clone(),
+        broker: std::sync::Arc::new(goat_capability::Broker::new()),
+        shutdown: shutdown.clone(),
+        epoch: manager.started_at().to_string(),
+        terminals: std::sync::Arc::new(pty::Terminals::new()),
+        db_path: db_path.clone(),
+    };
+
     if let Some(remote_settings) = config.remote {
-        spawn_remote(&manager, &shutdown, remote_settings)?;
+        spawn_remote(&manager, &host, &shutdown, remote_settings)?;
     }
 
     loop {
@@ -145,9 +155,20 @@ pub async fn serve_bound(
             }
             accepted = listener.accept() => match accepted {
                 Ok(stream) => {
-                    let manager = manager.clone();
-                    let shutdown = shutdown.clone();
-                    tokio::spawn(conn::handle_connection(stream, manager, shutdown));
+                    let host = host.clone();
+                    tokio::spawn(async move {
+                        let conn: goat_wire::WireConn<_, goat_wire::envelope::Frame, goat_wire::envelope::Frame> =
+                            goat_wire::WireConn::new(stream);
+                        let (sink, source) = conn.split();
+                        serve_envelope(
+                            host,
+                            ClientOrigin::Local,
+                            Box::pin(sink),
+                            Box::pin(source),
+                            CancellationToken::new(),
+                        )
+                        .await;
+                    });
                 }
                 Err(err) => {
                     tracing::warn!(%err, "accept failed");
@@ -185,6 +206,7 @@ async fn shutdown_signal() {
 
 fn spawn_remote(
     manager: &CodeSessionHub,
+    host: &EnvelopeHost,
     shutdown: &tokio_util::sync::CancellationToken,
     settings: RemoteSettings,
 ) -> Result<(), DaemonError> {
@@ -202,7 +224,7 @@ fn spawn_remote(
         server.server_fingerprint().to_owned(),
         server.advertised().to_vec(),
     );
-    let handler = remote::handler(manager.clone(), devices, shutdown.clone());
+    let handler = remote::handler(host.clone(), devices);
     let shutdown = shutdown.clone();
     tokio::spawn(async move {
         if let Err(err) = server.run(handler, shutdown).await {

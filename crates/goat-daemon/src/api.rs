@@ -180,366 +180,371 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
     let devices_manager = manager.clone();
     let revoke_manager = manager;
 
-    let router =
-        Router::new(grants.iter().copied())
-            .unary::<DaemonStatus, _, _>(move |_params, _ctx| {
-                let manager = status_manager.clone();
-                let epoch = status_epoch.clone();
-                async move {
-                    let busy = manager.busy().await;
-                    Ok(DaemonStatus2 {
-                        version: env!("CARGO_PKG_VERSION").to_owned(),
-                        pid: std::process::id(),
-                        started_at: manager.started_at(),
-                        ready: manager.is_ready(),
-                        epoch,
-                        sessions: busy.sessions,
-                        turns: busy.turns,
-                    })
-                }
-            })
-            .unary::<SessionList, _, _>(move |_params, _ctx| {
-                let manager = sessions_manager.clone();
-                async move {
-                    Ok(SessionListOutput {
-                        sessions: manager
-                            .list_sessions()
-                            .await
-                            .into_iter()
-                            .map(session_info)
-                            .collect(),
-                    })
-                }
-            })
-            .unary::<ConversationList, _, _>(move |params: ConversationListParams, _ctx| {
-                let manager = conversations_manager.clone();
-                async move {
-                    Ok(ConversationListOutput {
-                        conversations: manager
-                            .list_conversations(&params.cwd)
-                            .await
-                            .into_iter()
-                            .map(conversation_info)
-                            .collect(),
-                    })
-                }
-            })
-            .unary::<SessionOpen, _, _>(move |params: SessionOpenParams, _ctx| {
-                let manager = open_manager.clone();
-                let epoch = open_epoch.clone();
-                async move {
-                    let (session, cwd) = manager
-                        .open_or_attach(PathBuf::from(&params.cwd), resume_mode(params.resume))
+    let router = Router::new(grants.iter().copied())
+        .unary::<DaemonStatus, _, _>(move |_params, _ctx| {
+            let manager = status_manager.clone();
+            let epoch = status_epoch.clone();
+            async move {
+                let busy = manager.busy().await;
+                Ok(DaemonStatus2 {
+                    version: env!("CARGO_PKG_VERSION").to_owned(),
+                    pid: std::process::id(),
+                    started_at: manager.started_at(),
+                    ready: manager.is_ready(),
+                    epoch,
+                    sessions: busy.sessions,
+                    turns: busy.turns,
+                })
+            }
+        })
+        .unary::<SessionList, _, _>(move |_params, _ctx| {
+            let manager = sessions_manager.clone();
+            async move {
+                Ok(SessionListOutput {
+                    sessions: manager
+                        .list_sessions()
                         .await
-                        .map_err(refused)?;
-                    Ok(SessionOpenOutput {
-                        session: SessionId(session.0),
-                        cwd,
-                        epoch,
-                    })
-                }
-            })
-            .unary::<SessionSubmit, _, _>(move |params: SessionSubmitParams, _ctx| {
-                let manager = submit_manager.clone();
-                async move {
-                    let task = manager
-                        .submit_task(goat_wire::SessionId(params.session.0), params.op)
+                        .into_iter()
+                        .map(session_info)
+                        .collect(),
+                })
+            }
+        })
+        .unary::<ConversationList, _, _>(move |params: ConversationListParams, _ctx| {
+            let manager = conversations_manager.clone();
+            async move {
+                Ok(ConversationListOutput {
+                    conversations: manager
+                        .list_conversations(&params.cwd)
                         .await
-                        .map_err(refused)?;
-                    Ok(SessionSubmitOutput { task })
-                }
-            })
-            .unary::<AskAnswer, _, _>(move |params: AskAnswerParams, _ctx| {
-                let manager = ask_manager.clone();
-                async move {
-                    let call =
-                        goat_protocol::ToolCallId(u64::try_from(params.prompt).map_err(|_| {
-                            CallError::new(ErrorCode::InvalidParams, "prompt id must be positive")
-                                .with_execution(Execution::NotStarted)
-                        })?);
-                    let settled = manager
-                        .settle_ask(
-                            goat_wire::SessionId(params.session.0),
-                            call,
-                            params.revision,
-                            params.answers,
-                        )
-                        .await
-                        .map_err(refused)?;
-                    match settled {
+                        .into_iter()
+                        .map(conversation_info)
+                        .collect(),
+                })
+            }
+        })
+        .unary::<SessionOpen, _, _>(move |params: SessionOpenParams, ctx| {
+            let manager = open_manager.clone();
+            let epoch = open_epoch.clone();
+            async move {
+                let (session, cwd) = manager
+                    .open_or_attach(PathBuf::from(&params.cwd), resume_mode(params.resume))
+                    .await
+                    .map_err(refused)?;
+                manager
+                    .hold_for_attach(session, goat_wire::ClientId(ctx.client), ctx.cancel.clone())
+                    .await;
+                Ok(SessionOpenOutput {
+                    session: SessionId(session.0),
+                    cwd,
+                    epoch,
+                })
+            }
+        })
+        .unary::<SessionSubmit, _, _>(move |params: SessionSubmitParams, _ctx| {
+            let manager = submit_manager.clone();
+            async move {
+                let task = manager
+                    .submit_task(goat_wire::SessionId(params.session.0), params.op)
+                    .await
+                    .map_err(refused)?;
+                Ok(SessionSubmitOutput { task })
+            }
+        })
+        .unary::<AskAnswer, _, _>(move |params: AskAnswerParams, _ctx| {
+            let manager = ask_manager.clone();
+            async move {
+                let call =
+                    goat_protocol::ToolCallId(u64::try_from(params.prompt).map_err(|_| {
+                        CallError::new(ErrorCode::InvalidParams, "prompt id must be positive")
+                            .with_execution(Execution::NotStarted)
+                    })?);
+                let settled = manager
+                    .settle_ask(
+                        goat_wire::SessionId(params.session.0),
+                        call,
+                        params.revision,
+                        params.answers,
+                    )
+                    .await
+                    .map_err(refused)?;
+                match settled {
                     crate::session::AskSettlement::Accepted => Ok(AskAnswerOutput {
                         outcome: AnswerOutcome::Accepted,
                     }),
                     crate::session::AskSettlement::AlreadyAnswered => Ok(AskAnswerOutput {
                         outcome: AnswerOutcome::AlreadyAnswered,
                     }),
-                    crate::session::AskSettlement::StaleRevision { current } => Err(CallError::new(
-                        ErrorCode::Conflict,
-                        format!(
-                            "this prompt is at revision {current}; re-read it before answering"
-                        ),
-                    )
-                    .with_execution(Execution::NotStarted)),
-                }
-                }
-            })
-            .unary::<SessionControl, _, _>(move |params: SessionControlParams, _ctx| {
-                let manager = control_manager.clone();
-                async move {
-                    manager
-                        .control(goat_wire::SessionId(params.session.0), params.op)
-                        .await
-                        .map_err(refused)?;
-                    Ok(Empty {})
-                }
-            })
-            .unary::<SessionKill, _, _>(move |params: SessionKillParams, _ctx| {
-                let manager = kill_manager.clone();
-                async move {
-                    manager
-                        .kill_session(goat_wire::SessionId(params.session.0))
-                        .await
-                        .map_err(refused)?;
-                    Ok(Empty {})
-                }
-            })
-            .unary::<AdminAgentReload, _, _>(move |params: AdminAgentReloadParams, _ctx| {
-                let manager = reload_manager.clone();
-                async move {
-                    let report = manager.reload_agents(params.agent).await.map_err(refused)?;
-                    Ok(AdminAgentReloadOutput {
-                        reloaded: report.reloaded,
-                        unchanged: report.unchanged,
-                        failed: report
-                            .failed
-                            .into_iter()
-                            .map(|failure| ReloadFailure {
-                                agent: failure.agent,
-                                reason: failure.reason,
-                            })
-                            .collect(),
-                        warnings: report.warnings,
-                    })
-                }
-            })
-            .unary::<AdminDaemonStop, _, _>(move |params: AdminDaemonStopParams, _ctx| {
-                let shutdown = shutdown.clone();
-                let manager = stop_manager.clone();
-                async move {
-                    if params.if_idle {
-                        let busy = manager.busy().await;
-                        if !busy.is_idle() {
-                            return Ok(AdminDaemonStopOutput::Busy {
-                                sessions: busy.sessions,
-                                turns: busy.turns,
-                            });
-                        }
-                    }
-                    shutdown.cancel();
-                    Ok(AdminDaemonStopOutput::Stopping)
-                }
-            })
-            .unary::<AdminDevicePair, _, _>(move |params: AdminDevicePairParams, _ctx| {
-                let manager = pair_manager.clone();
-                async move {
-                    let (code, server_fingerprint, advertised) =
-                        manager.pair_device(params.label).await.map_err(refused)?;
-                    Ok(AdminDevicePairOutput {
-                        code,
-                        server_fingerprint,
-                        advertised,
-                    })
-                }
-            })
-            .unary::<AdminDeviceList, _, _>(move |_params, _ctx| {
-                let manager = devices_manager.clone();
-                async move {
-                    let devices = manager.list_devices().await.map_err(refused)?;
-                    Ok(AdminDeviceListOutput {
-                        devices: devices
-                            .into_iter()
-                            .map(|device| DeviceInfo {
-                                id: device.id,
-                                label: device.label,
-                                paired_at: device.paired_at,
-                            })
-                            .collect(),
-                    })
-                }
-            })
-            .unary::<AdminDeviceRevoke, _, _>(move |params: AdminDeviceRevokeParams, _ctx| {
-                let manager = revoke_manager.clone();
-                async move {
-                    let ok = manager
-                        .revoke_device(&params.device)
-                        .await
-                        .map_err(refused)?;
-                    Ok(AdminDeviceRevokeOutput { ok })
-                }
-            })
-            .stream::<SessionWatch, _, _>(move |params: SessionWatchParams, ctx, sink| {
-                let manager = watch_manager.clone();
-                let epoch = watch_epoch.clone();
-                async move {
-                    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(WATCH_QUEUE);
-                    let lagged = tokio_util::sync::CancellationToken::new();
-                    let (backlog, _cwd) = manager
-                        .watch_open(
-                            goat_wire::SessionId(params.session.0),
-                            goat_wire::ClientId(ctx.client),
-                            &epoch,
-                            &params.from,
-                            out_tx,
-                            lagged.clone(),
+                    crate::session::AskSettlement::StaleRevision { current } => {
+                        Err(CallError::new(
+                            ErrorCode::Conflict,
+                            format!(
+                                "this prompt is at revision {current}; re-read it before answering"
+                            ),
                         )
-                        .await
-                        .map_err(|message| {
-                            CallError::new(ErrorCode::NotFound, message)
-                                .with_execution(Execution::NotStarted)
-                        })?;
-                    for item in backlog {
-                        sink.send(encode_item(&item)?).await?;
-                    }
-                    loop {
-                        tokio::select! {
-                            biased;
-                            () = ctx.cancel.cancelled() => break,
-                            () = lagged.cancelled() => {
-                                return Err(CallError::new(
-                                    ErrorCode::Lagged,
-                                    "this watcher fell behind; reopen with the last cursor you saw",
-                                )
-                                .with_execution(Execution::KnownFailed));
-                            }
-                            frame = out_rx.recv() => {
-                                let Some(frame) = frame else { break };
-                                if let Some(item) = live_item(frame, &epoch) {
-                                    sink.send(encode_item(&item)?).await?;
-                                }
-                            }
-                        }
-                    }
-                    manager
-                        .unsubscribe(
-                            goat_wire::SessionId(params.session.0),
-                            goat_wire::ClientId(ctx.client),
-                        )
-                        .await;
-                    Ok(Empty {})
-                }
-            })
-            .stream::<AgentWatch, _, _>(move |params: AgentWatchParams, ctx, sink| {
-                let db_path = activity_db.clone();
-                let epoch = activity_epoch.clone();
-                async move {
-                    let store = goat_store::SqliteStore::open(&db_path)
-                        .await
-                        .map_err(|err| {
-                            CallError::new(
-                                ErrorCode::Internal,
-                                format!("the agent store is unavailable: {err}"),
-                            )
-                            .with_execution(Execution::KnownFailed)
-                        })?;
-                    let agents = parse_agents(&params.agents);
-                    let mut cursor = activity_start(&store, &epoch, &params.from).await?;
-                    loop {
-                        let batch = store
-                            .activity_since(&agents, cursor, ACTIVITY_PAGE)
-                            .await
-                            .map_err(|err| {
-                                CallError::new(ErrorCode::Internal, err.to_string())
-                                    .with_execution(Execution::KnownFailed)
-                            })?;
-                        for record in &batch {
-                            cursor = record.id;
-                            sink.send(encode_activity(&activity_item(record, &epoch))?)
-                                .await?;
-                        }
-                        if batch.is_empty() {
-                            tokio::select! {
-                                biased;
-                                () = ctx.cancel.cancelled() => return Ok(Empty {}),
-                                () = tokio::time::sleep(ACTIVITY_POLL) => {}
-                            }
-                        } else if ctx.cancel.is_cancelled() {
-                            return Ok(Empty {});
-                        }
+                        .with_execution(Execution::NotStarted))
                     }
                 }
-            })
-            .stream::<PtyOpen, _, _>(move |params: PtyOpenParams, ctx, sink| {
-                let terminals = pty_terminals.clone();
-                async move {
-                    let id = terminals.mint_id();
-                    let spawned = crate::pty_spawn::spawn(
-                        &params.cwd,
-                        params.cols,
-                        params.rows,
-                        params.command.as_deref(),
-                        id.clone(),
-                    )?;
-                    terminals.insert(id.clone(), spawned.terminal).await;
-                    let mut output = spawned.output;
-                    let result = loop {
-                        tokio::select! {
-                            biased;
-                            () = ctx.cancel.cancelled() => break Ok(Empty {}),
-                            item = output.recv() => {
-                                let Some(item) = item else { break Ok(Empty {}) };
-                                let exited = matches!(item, goat_api::PtyItem::Exited { .. });
-                                sink.send(encode_pty(&item)?).await?;
-                                if exited {
-                                    break Ok(Empty {});
-                                }
-                            }
-                        }
-                    };
-                    terminals.close(&id).await;
-                    result
-                }
-            })
-            .unary::<PtyWrite, _, _>(move |params: PtyWriteParams, _ctx| {
-                let terminals = write_terminals.clone();
-                async move {
-                    terminals.write(&params.pty, &params.data).await?;
-                    Ok(Empty {})
-                }
-            })
-            .unary::<PtyResize, _, _>(move |params: PtyResizeParams, _ctx| {
-                let terminals = resize_terminals.clone();
-                async move {
-                    terminals
-                        .resize(&params.pty, params.cols, params.rows)
-                        .await?;
-                    Ok(Empty {})
-                }
-            })
-            .unary::<FsRead, _, _>(|params: FsReadParams, _ctx| async move {
-                crate::files::read(&params)
-            })
-            .unary::<FsWrite, _, _>(|params: FsWriteParams, _ctx| async move {
-                let len = crate::files::write(&params)?;
-                Ok(FsWriteOutput {
-                    path: params.path,
-                    len,
+            }
+        })
+        .unary::<SessionControl, _, _>(move |params: SessionControlParams, _ctx| {
+            let manager = control_manager.clone();
+            async move {
+                manager
+                    .control(goat_wire::SessionId(params.session.0), params.op)
+                    .await
+                    .map_err(refused)?;
+                Ok(Empty {})
+            }
+        })
+        .unary::<SessionKill, _, _>(move |params: SessionKillParams, _ctx| {
+            let manager = kill_manager.clone();
+            async move {
+                manager
+                    .kill_session(goat_wire::SessionId(params.session.0))
+                    .await
+                    .map_err(refused)?;
+                Ok(Empty {})
+            }
+        })
+        .unary::<AdminAgentReload, _, _>(move |params: AdminAgentReloadParams, _ctx| {
+            let manager = reload_manager.clone();
+            async move {
+                let report = manager.reload_agents(params.agent).await.map_err(refused)?;
+                Ok(AdminAgentReloadOutput {
+                    reloaded: report.reloaded,
+                    unchanged: report.unchanged,
+                    failed: report
+                        .failed
+                        .into_iter()
+                        .map(|failure| ReloadFailure {
+                            agent: failure.agent,
+                            reason: failure.reason,
+                        })
+                        .collect(),
+                    warnings: report.warnings,
                 })
-            })
-            .unary::<GitDiff, _, _>(|params: GitDiffParams, _ctx| async move {
-                crate::files::diff(&params)
-            })
-            .unary::<FsList, _, _>(|params: FsListParams, _ctx| async move {
-                let children = CodeSessionHub::list_directory(&params.path, params.recursive)
+            }
+        })
+        .unary::<AdminDaemonStop, _, _>(move |params: AdminDaemonStopParams, _ctx| {
+            let shutdown = shutdown.clone();
+            let manager = stop_manager.clone();
+            async move {
+                if params.if_idle {
+                    let busy = manager.busy().await;
+                    if !busy.is_idle() {
+                        return Ok(AdminDaemonStopOutput::Busy {
+                            sessions: busy.sessions,
+                            turns: busy.turns,
+                        });
+                    }
+                }
+                shutdown.cancel();
+                Ok(AdminDaemonStopOutput::Stopping)
+            }
+        })
+        .unary::<AdminDevicePair, _, _>(move |params: AdminDevicePairParams, _ctx| {
+            let manager = pair_manager.clone();
+            async move {
+                let (code, server_fingerprint, advertised) =
+                    manager.pair_device(params.label).await.map_err(refused)?;
+                Ok(AdminDevicePairOutput {
+                    code,
+                    server_fingerprint,
+                    advertised,
+                })
+            }
+        })
+        .unary::<AdminDeviceList, _, _>(move |_params, _ctx| {
+            let manager = devices_manager.clone();
+            async move {
+                let devices = manager.list_devices().await.map_err(refused)?;
+                Ok(AdminDeviceListOutput {
+                    devices: devices
+                        .into_iter()
+                        .map(|device| DeviceInfo {
+                            id: device.id,
+                            label: device.label,
+                            paired_at: device.paired_at,
+                        })
+                        .collect(),
+                })
+            }
+        })
+        .unary::<AdminDeviceRevoke, _, _>(move |params: AdminDeviceRevokeParams, _ctx| {
+            let manager = revoke_manager.clone();
+            async move {
+                let ok = manager
+                    .revoke_device(&params.device)
+                    .await
+                    .map_err(refused)?;
+                Ok(AdminDeviceRevokeOutput { ok })
+            }
+        })
+        .stream::<SessionWatch, _, _>(move |params: SessionWatchParams, ctx, sink| {
+            let manager = watch_manager.clone();
+            let epoch = watch_epoch.clone();
+            async move {
+                let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(WATCH_QUEUE);
+                let lagged = tokio_util::sync::CancellationToken::new();
+                let (backlog, _cwd) = manager
+                    .watch_open(
+                        goat_wire::SessionId(params.session.0),
+                        goat_wire::ClientId(ctx.client),
+                        &epoch,
+                        &params.from,
+                        out_tx,
+                        lagged.clone(),
+                    )
+                    .await
                     .map_err(|message| {
                         CallError::new(ErrorCode::NotFound, message)
                             .with_execution(Execution::NotStarted)
                     })?;
-                Ok(FsListOutput {
-                    path: params.path,
-                    entries: children.into_iter().map(dir_entry).collect(),
-                    truncated: false,
-                })
-            });
+                for item in backlog {
+                    sink.send(encode_item(&item)?).await?;
+                }
+                loop {
+                    tokio::select! {
+                        biased;
+                        () = ctx.cancel.cancelled() => break,
+                        () = lagged.cancelled() => {
+                            return Err(CallError::new(
+                                ErrorCode::Lagged,
+                                "this watcher fell behind; reopen with the last cursor you saw",
+                            )
+                            .with_execution(Execution::KnownFailed));
+                        }
+                        frame = out_rx.recv() => {
+                            let Some(frame) = frame else { break };
+                            if let Some(item) = live_item(frame, &epoch) {
+                                sink.send(encode_item(&item)?).await?;
+                            }
+                        }
+                    }
+                }
+                manager
+                    .unsubscribe(
+                        goat_wire::SessionId(params.session.0),
+                        goat_wire::ClientId(ctx.client),
+                    )
+                    .await;
+                Ok(Empty {})
+            }
+        })
+        .stream::<AgentWatch, _, _>(move |params: AgentWatchParams, ctx, sink| {
+            let db_path = activity_db.clone();
+            let epoch = activity_epoch.clone();
+            async move {
+                let store = goat_store::SqliteStore::open(&db_path)
+                    .await
+                    .map_err(|err| {
+                        CallError::new(
+                            ErrorCode::Internal,
+                            format!("the agent store is unavailable: {err}"),
+                        )
+                        .with_execution(Execution::KnownFailed)
+                    })?;
+                let agents = parse_agents(&params.agents);
+                let mut cursor = activity_start(&store, &epoch, &params.from).await?;
+                loop {
+                    let batch = store
+                        .activity_since(&agents, cursor, ACTIVITY_PAGE)
+                        .await
+                        .map_err(|err| {
+                            CallError::new(ErrorCode::Internal, err.to_string())
+                                .with_execution(Execution::KnownFailed)
+                        })?;
+                    for record in &batch {
+                        cursor = record.id;
+                        sink.send(encode_activity(&activity_item(record, &epoch))?)
+                            .await?;
+                    }
+                    if batch.is_empty() {
+                        tokio::select! {
+                            biased;
+                            () = ctx.cancel.cancelled() => return Ok(Empty {}),
+                            () = tokio::time::sleep(ACTIVITY_POLL) => {}
+                        }
+                    } else if ctx.cancel.is_cancelled() {
+                        return Ok(Empty {});
+                    }
+                }
+            }
+        })
+        .stream::<PtyOpen, _, _>(move |params: PtyOpenParams, ctx, sink| {
+            let terminals = pty_terminals.clone();
+            async move {
+                let id = terminals.mint_id();
+                let spawned = crate::pty_spawn::spawn(
+                    &params.cwd,
+                    params.cols,
+                    params.rows,
+                    params.command.as_deref(),
+                    id.clone(),
+                )?;
+                terminals.insert(id.clone(), spawned.terminal).await;
+                let mut output = spawned.output;
+                let result = loop {
+                    tokio::select! {
+                        biased;
+                        () = ctx.cancel.cancelled() => break Ok(Empty {}),
+                        item = output.recv() => {
+                            let Some(item) = item else { break Ok(Empty {}) };
+                            let exited = matches!(item, goat_api::PtyItem::Exited { .. });
+                            sink.send(encode_pty(&item)?).await?;
+                            if exited {
+                                break Ok(Empty {});
+                            }
+                        }
+                    }
+                };
+                terminals.close(&id).await;
+                result
+            }
+        })
+        .unary::<PtyWrite, _, _>(move |params: PtyWriteParams, _ctx| {
+            let terminals = write_terminals.clone();
+            async move {
+                terminals.write(&params.pty, &params.data).await?;
+                Ok(Empty {})
+            }
+        })
+        .unary::<PtyResize, _, _>(move |params: PtyResizeParams, _ctx| {
+            let terminals = resize_terminals.clone();
+            async move {
+                terminals
+                    .resize(&params.pty, params.cols, params.rows)
+                    .await?;
+                Ok(Empty {})
+            }
+        })
+        .unary::<FsRead, _, _>(
+            |params: FsReadParams, _ctx| async move { crate::files::read(&params) },
+        )
+        .unary::<FsWrite, _, _>(|params: FsWriteParams, _ctx| async move {
+            let len = crate::files::write(&params)?;
+            Ok(FsWriteOutput {
+                path: params.path,
+                len,
+            })
+        })
+        .unary::<GitDiff, _, _>(
+            |params: GitDiffParams, _ctx| async move { crate::files::diff(&params) },
+        )
+        .unary::<FsList, _, _>(|params: FsListParams, _ctx| async move {
+            let children = CodeSessionHub::list_directory(&params.path, params.recursive).map_err(
+                |message| {
+                    CallError::new(ErrorCode::NotFound, message)
+                        .with_execution(Execution::NotStarted)
+                },
+            )?;
+            Ok(FsListOutput {
+                path: params.path,
+                entries: children.into_iter().map(dir_entry).collect(),
+                truncated: false,
+            })
+        });
 
     goat_capability::routes(router, broker, device)
 }
@@ -567,6 +572,7 @@ pub(crate) fn snapshot_item(
         processes,
         usage,
         active,
+        retry,
         ..
     } = frame
     else {
@@ -603,6 +609,14 @@ pub(crate) fn snapshot_item(
                     compaction_threshold: entry.compaction_threshold,
                 })
                 .collect(),
+            retry: retry.map(|entry| goat_api::RetryEntry {
+                id: entry.id,
+                attempt: entry.attempt,
+                max_attempts: entry.max_attempts,
+                delay_ms: entry.delay_ms,
+                reason: entry.reason,
+                resets_at: entry.resets_at,
+            }),
             rate_limits: rate_limits
                 .into_iter()
                 .map(|entry| goat_api::RateLimitEntry {

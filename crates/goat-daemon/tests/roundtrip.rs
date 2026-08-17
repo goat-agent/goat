@@ -1,19 +1,22 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use goat_wire::transport::{self, Stream};
-use goat_wire::{ClientConn, ClientFrame, ResumeMode, ServerFrame, WireConn};
+use goat_api::{
+    Api, ConversationList, ConversationListParams, Empty, ResumeMode, SessionKill,
+    SessionKillParams, SessionList, SessionOpen, SessionOpenParams, SessionSubmit,
+    SessionSubmitParams, SessionWatch, SessionWatchParams, StreamEvent, WatchFrom, WatchItem,
+};
+use goat_client::{ApiSession, Link};
+use goat_wire::transport;
 
 async fn start_daemon(dir: &std::path::Path) -> PathBuf {
     let socket = dir.join("d.sock");
-    let auth = dir.join("auth.json");
-    let db = dir.join("store.sqlite");
     let cfg = goat_daemon::DaemonConfig {
         socket_path: socket.clone(),
         lock_path: dir.join("daemon.lock"),
-        auth_path: auth,
+        auth_path: dir.join("auth.json"),
         config_json: dir.join("config.json"),
-        db_path: db,
+        db_path: dir.join("store.sqlite"),
         remote: None,
     };
     tokio::spawn(async move {
@@ -28,92 +31,109 @@ async fn start_daemon(dir: &std::path::Path) -> PathBuf {
     panic!("daemon did not start");
 }
 
-async fn connect(socket: &std::path::Path) -> ClientConn<Stream> {
-    let stream = transport::connect(socket).await.unwrap();
-    let mut conn: ClientConn<Stream> = WireConn::new(stream);
-    match conn.recv().await.unwrap() {
-        ServerFrame::Welcome { wire, .. } => assert_eq!(wire, goat_wire::wire_fingerprint()),
-        other => panic!("expected Welcome, got {other:?}"),
-    }
-    conn
+fn link(socket: &std::path::Path) -> Link {
+    Link::local(socket.to_path_buf(), PathBuf::new())
+}
+
+async fn connect(socket: &std::path::Path) -> ApiSession {
+    goat_client::open_api(&link(socket), "roundtrip")
+        .await
+        .expect("the daemon greets an envelope client")
+}
+
+async fn open(api: &Api, cwd: &std::path::Path, resume: ResumeMode) -> goat_api::SessionId {
+    api.call::<SessionOpen>(SessionOpenParams {
+        cwd: cwd.display().to_string(),
+        resume,
+    })
+    .await
+    .expect("session opens")
+    .session
+}
+
+#[tokio::test]
+async fn the_daemon_advertises_its_method_table_before_the_client_speaks() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = start_daemon(dir.path()).await;
+    let session = connect(&socket).await;
+
+    assert!(session.daemon.compatible());
+    assert!(session.daemon.speaks("session.open", 1));
+    assert!(session.daemon.speaks("session.watch", 1));
+    assert!(
+        session.daemon.speaks("admin.daemon_stop", 1),
+        "a local client is granted the admin routes"
+    );
 }
 
 #[tokio::test]
 async fn open_session_and_list() {
     let dir = tempfile::tempdir().unwrap();
     let socket = start_daemon(dir.path()).await;
-    let mut conn = connect(&socket).await;
+    let session = connect(&socket).await;
+    let opened = open(&session.api, dir.path(), ResumeMode::New {}).await;
 
-    conn.send(&ClientFrame::OpenSession {
-        cwd: dir.path().display().to_string(),
-        resume: ResumeMode::New {},
-    })
-    .await
-    .unwrap();
-    let session = match conn.recv().await.unwrap() {
-        ServerFrame::SessionOpened { session, .. } => session,
-        other => panic!("expected SessionOpened, got {other:?}"),
-    };
-
-    let mut lister = connect(&socket).await;
-    lister.send(&ClientFrame::ListSessions {}).await.unwrap();
-    match lister.recv().await.unwrap() {
-        ServerFrame::Sessions { sessions } => {
-            assert!(sessions.iter().any(|s| s.session == session));
-        }
-        other => panic!("expected Sessions, got {other:?}"),
-    }
+    let other = connect(&socket).await;
+    let listed = other
+        .api
+        .call::<SessionList>(Empty {})
+        .await
+        .expect("sessions list");
+    assert!(
+        listed.sessions.iter().any(|s| s.session == opened),
+        "the open session is visible to another client"
+    );
 }
 
 #[tokio::test]
 async fn submit_message_flows_back_as_events() {
     let dir = tempfile::tempdir().unwrap();
     let socket = start_daemon(dir.path()).await;
-    let mut conn = connect(&socket).await;
+    let session = connect(&socket).await;
+    let opened = open(&session.api, dir.path(), ResumeMode::New {}).await;
 
-    conn.send(&ClientFrame::OpenSession {
-        cwd: dir.path().display().to_string(),
-        resume: ResumeMode::New {},
-    })
-    .await
-    .unwrap();
-    let session = match conn.recv().await.unwrap() {
-        ServerFrame::SessionOpened { session, .. } => session,
-        other => panic!("expected SessionOpened, got {other:?}"),
-    };
+    let mut watch = session
+        .api
+        .open::<SessionWatch>(SessionWatchParams {
+            session: opened,
+            from: WatchFrom::Snapshot {},
+        })
+        .await
+        .expect("watch opens");
 
-    conn.send(&ClientFrame::Submit {
-        session,
-        correlation: 1,
-        op: goat_protocol::Op::SubmitMessage {
-            id: goat_protocol::TaskId(1),
-            text: "hello".to_owned(),
-            display: None,
-            attachments: Vec::new(),
-        },
-    })
-    .await
-    .unwrap();
+    let task = session
+        .api
+        .call::<SessionSubmit>(SessionSubmitParams {
+            session: opened,
+            op: goat_protocol::Op::SubmitMessage {
+                id: goat_protocol::TaskId(0),
+                text: "hello".to_owned(),
+                display: None,
+                attachments: Vec::new(),
+            },
+        })
+        .await
+        .expect("submit is accepted");
+    assert!(
+        task.task.0 > 0,
+        "submit mints the task id instead of the client correlating one"
+    );
 
-    let mut saw_seq_event = false;
+    let mut saw_event = false;
     for _ in 0..20 {
-        match tokio::time::timeout(Duration::from_secs(5), conn.recv()).await {
-            Ok(Ok(ServerFrame::Event {
-                session: s, seq, ..
+        match tokio::time::timeout(Duration::from_secs(5), watch.recv()).await {
+            Ok(Some(StreamEvent::Item {
+                item: WatchItem::Event { .. },
+                ..
             })) => {
-                assert_eq!(s, session);
-                let _ = seq;
-                saw_seq_event = true;
+                saw_event = true;
                 break;
             }
-            Ok(Ok(_)) => {}
-            Ok(Err(_)) | Err(_) => break,
+            Ok(Some(StreamEvent::Item { .. })) => {}
+            Ok(Some(StreamEvent::End(_)) | None) | Err(_) => break,
         }
     }
-    assert!(
-        saw_seq_event,
-        "expected at least one seq-stamped event from the engine"
-    );
+    assert!(saw_event, "expected at least one engine event on the watch");
 }
 
 #[tokio::test]
@@ -121,38 +141,23 @@ async fn same_conversation_id_returns_same_session() {
     let dir = tempfile::tempdir().unwrap();
     let socket = start_daemon(dir.path()).await;
 
-    let mut a = connect(&socket).await;
-    a.send(&ClientFrame::OpenSession {
-        cwd: dir.path().display().to_string(),
-        resume: ResumeMode::Conversation {
-            conversation_id: 99,
-        },
-    })
-    .await
-    .unwrap();
-    let first = match a.recv().await.unwrap() {
-        ServerFrame::SessionOpened { session, .. } => session,
-        other => panic!("expected SessionOpened, got {other:?}"),
-    };
+    let a = connect(&socket).await;
+    let first = open(
+        &a.api,
+        dir.path(),
+        ResumeMode::Conversation { conversation_id: 1 },
+    )
+    .await;
 
-    let mut b = connect(&socket).await;
-    b.send(&ClientFrame::OpenSession {
-        cwd: dir.path().display().to_string(),
-        resume: ResumeMode::Conversation {
-            conversation_id: 99,
-        },
-    })
-    .await
-    .unwrap();
-    let second = match b.recv().await.unwrap() {
-        ServerFrame::SessionOpened { session, .. } => session,
-        other => panic!("expected SessionOpened, got {other:?}"),
-    };
+    let b = connect(&socket).await;
+    let second = open(
+        &b.api,
+        dir.path(),
+        ResumeMode::Conversation { conversation_id: 1 },
+    )
+    .await;
 
-    assert_eq!(
-        first, second,
-        "opening the same conversation must converge on the one live session"
-    );
+    assert_eq!(first, second, "one conversation has one live session");
 }
 
 #[tokio::test]
@@ -160,33 +165,25 @@ async fn distinct_conversation_ids_get_distinct_sessions() {
     let dir = tempfile::tempdir().unwrap();
     let socket = start_daemon(dir.path()).await;
 
-    let mut a = connect(&socket).await;
-    a.send(&ClientFrame::OpenSession {
-        cwd: dir.path().display().to_string(),
-        resume: ResumeMode::Conversation { conversation_id: 1 },
-    })
-    .await
-    .unwrap();
-    let first = match a.recv().await.unwrap() {
-        ServerFrame::SessionOpened { session, .. } => session,
-        other => panic!("expected SessionOpened, got {other:?}"),
-    };
+    let a = connect(&socket).await;
+    let first = open(
+        &a.api,
+        dir.path(),
+        ResumeMode::Conversation { conversation_id: 1 },
+    )
+    .await;
 
-    let mut b = connect(&socket).await;
-    b.send(&ClientFrame::OpenSession {
-        cwd: dir.path().display().to_string(),
-        resume: ResumeMode::Conversation { conversation_id: 2 },
-    })
-    .await
-    .unwrap();
-    let second = match b.recv().await.unwrap() {
-        ServerFrame::SessionOpened { session, .. } => session,
-        other => panic!("expected SessionOpened, got {other:?}"),
-    };
+    let b = connect(&socket).await;
+    let second = open(
+        &b.api,
+        dir.path(),
+        ResumeMode::Conversation { conversation_id: 2 },
+    )
+    .await;
 
     assert_ne!(
         first, second,
-        "different conversations must run as independent sessions"
+        "different conversations are different sessions"
     );
 }
 
@@ -194,163 +191,95 @@ async fn distinct_conversation_ids_get_distinct_sessions() {
 async fn kill_session_removes_it_from_the_list() {
     let dir = tempfile::tempdir().unwrap();
     let socket = start_daemon(dir.path()).await;
-    let mut conn = connect(&socket).await;
-    conn.send(&ClientFrame::OpenSession {
-        cwd: dir.path().display().to_string(),
-        resume: ResumeMode::New {},
-    })
-    .await
-    .unwrap();
-    let session = match conn.recv().await.unwrap() {
-        ServerFrame::SessionOpened { session, .. } => session,
-        other => panic!("expected SessionOpened, got {other:?}"),
-    };
+    let session = connect(&socket).await;
+    let opened = open(&session.api, dir.path(), ResumeMode::New {}).await;
 
-    let mut admin = connect(&socket).await;
-    admin
-        .send(&ClientFrame::KillSession { session })
+    session
+        .api
+        .call::<SessionKill>(SessionKillParams { session: opened })
         .await
-        .unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+        .expect("kill is accepted");
 
-    admin.send(&ClientFrame::ListSessions {}).await.unwrap();
-    match admin.recv().await.unwrap() {
-        ServerFrame::Sessions { sessions } => {
-            assert!(!sessions.iter().any(|s| s.session == session));
-        }
-        other => panic!("expected Sessions, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn rebind_moves_one_window_leaving_others() {
-    let dir = tempfile::tempdir().unwrap();
-    let socket = start_daemon(dir.path()).await;
-
-    let mut a = connect(&socket).await;
-    a.send(&ClientFrame::OpenSession {
-        cwd: dir.path().display().to_string(),
-        resume: ResumeMode::Conversation { conversation_id: 1 },
-    })
-    .await
-    .unwrap();
-    let first = match a.recv().await.unwrap() {
-        ServerFrame::SessionOpened { session, .. } => session,
-        other => panic!("expected SessionOpened, got {other:?}"),
-    };
-
-    let mut b = connect(&socket).await;
-    b.send(&ClientFrame::OpenSession {
-        cwd: dir.path().display().to_string(),
-        resume: ResumeMode::Conversation { conversation_id: 1 },
-    })
-    .await
-    .unwrap();
-    let shared = match b.recv().await.unwrap() {
-        ServerFrame::SessionOpened { session, .. } => session,
-        other => panic!("expected SessionOpened, got {other:?}"),
-    };
-    assert_eq!(
-        first, shared,
-        "both windows share the live session for conversation 1"
-    );
-
-    b.send(&ClientFrame::Submit {
-        session: shared,
-        correlation: 1,
-        op: goat_protocol::Op::Resume { conversation_id: 2 },
-    })
-    .await
-    .unwrap();
-    let moved = loop {
-        match tokio::time::timeout(Duration::from_secs(5), b.recv()).await {
-            Ok(Ok(ServerFrame::SessionOpened { session, .. })) => break session,
-            Ok(Ok(_)) => {}
-            other => panic!("expected SessionOpened, got {other:?}"),
-        }
-    };
-    assert_ne!(moved, first, "rebound window is on a different session");
-
-    let mut admin = connect(&socket).await;
-    admin.send(&ClientFrame::ListSessions {}).await.unwrap();
-    match admin.recv().await.unwrap() {
-        ServerFrame::Sessions { sessions } => {
-            assert!(
-                sessions.iter().any(|s| s.session == first),
-                "the original session stays alive for window a"
-            );
-        }
-        other => panic!("expected Sessions, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn list_conversations_returns_a_frame() {
-    let dir = tempfile::tempdir().unwrap();
-    let socket = start_daemon(dir.path()).await;
-    let mut conn = connect(&socket).await;
-
-    conn.send(&ClientFrame::ListConversations {
-        cwd: dir.path().display().to_string(),
-    })
-    .await
-    .unwrap();
-    match conn.recv().await.unwrap() {
-        ServerFrame::Conversations { conversations } => {
-            assert!(
-                conversations.is_empty(),
-                "no conversations exist yet in a fresh cwd"
-            );
-        }
-        other => panic!("expected Conversations, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn daemon_intercepts_clear_as_rebind() {
-    let dir = tempfile::tempdir().unwrap();
-    let socket = start_daemon(dir.path()).await;
-    let mut conn = connect(&socket).await;
-
-    conn.send(&ClientFrame::OpenSession {
-        cwd: dir.path().display().to_string(),
-        resume: ResumeMode::Conversation { conversation_id: 1 },
-    })
-    .await
-    .unwrap();
-    let first = match conn.recv().await.unwrap() {
-        ServerFrame::SessionOpened { session, .. } => session,
-        other => panic!("expected SessionOpened, got {other:?}"),
-    };
-
-    conn.send(&ClientFrame::Submit {
-        session: first,
-        correlation: 1,
-        op: goat_protocol::Op::Clear {},
-    })
-    .await
-    .unwrap();
-
-    let mut detached = false;
-    let mut opened: Option<goat_wire::SessionId> = None;
-    for _ in 0..20 {
-        match tokio::time::timeout(Duration::from_secs(5), conn.recv()).await {
-            Ok(Ok(ServerFrame::Detached { session })) => {
-                assert_eq!(session, first);
-                detached = true;
-            }
-            Ok(Ok(ServerFrame::SessionOpened { session, .. })) => {
-                opened = Some(session);
-                break;
-            }
-            Ok(Ok(_)) => {}
-            Ok(Err(_)) | Err(_) => break,
-        }
-    }
+    let listed = session
+        .api
+        .call::<SessionList>(Empty {})
+        .await
+        .expect("sessions list");
     assert!(
-        detached,
-        "clear must detach the window from the old session"
+        !listed.sessions.iter().any(|s| s.session == opened),
+        "a killed session leaves the list"
     );
-    let opened = opened.expect("clear must open a new session");
-    assert_ne!(opened, first, "clear must rebind to a different session");
+}
+
+#[tokio::test]
+async fn reopening_with_another_conversation_leaves_the_first_session_alive() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = start_daemon(dir.path()).await;
+
+    let a = connect(&socket).await;
+    let first = open(
+        &a.api,
+        dir.path(),
+        ResumeMode::Conversation { conversation_id: 1 },
+    )
+    .await;
+
+    let b = connect(&socket).await;
+    let shared = open(
+        &b.api,
+        dir.path(),
+        ResumeMode::Conversation { conversation_id: 1 },
+    )
+    .await;
+    assert_eq!(first, shared, "both windows share the live session");
+
+    let moved = open(
+        &b.api,
+        dir.path(),
+        ResumeMode::Conversation { conversation_id: 2 },
+    )
+    .await;
+    assert_ne!(moved, first, "the moved window is on a different session");
+
+    let admin = connect(&socket).await;
+    let listed = admin
+        .api
+        .call::<SessionList>(Empty {})
+        .await
+        .expect("sessions list");
+    assert!(
+        listed.sessions.iter().any(|s| s.session == first),
+        "the original session stays alive for the window that did not move"
+    );
+}
+
+#[tokio::test]
+async fn clearing_opens_a_fresh_session_for_the_same_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = start_daemon(dir.path()).await;
+    let session = connect(&socket).await;
+
+    let first = open(&session.api, dir.path(), ResumeMode::New {}).await;
+    let cleared = open(&session.api, dir.path(), ResumeMode::New {}).await;
+
+    assert_ne!(
+        first, cleared,
+        "clearing is the client opening a new session, not the daemon rebinding one"
+    );
+}
+
+#[tokio::test]
+async fn list_conversations_answers_for_a_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = start_daemon(dir.path()).await;
+    let session = connect(&socket).await;
+
+    let listed = session
+        .api
+        .call::<ConversationList>(ConversationListParams {
+            cwd: dir.path().display().to_string(),
+        })
+        .await
+        .expect("conversation list answers");
+    assert!(listed.conversations.is_empty());
 }

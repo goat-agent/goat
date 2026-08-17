@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 
 use futures::{Sink, Stream};
-use goat_wire::{ClientFrame, ServerFrame, WireError};
+use goat_wire::WireError;
 
 pub use ca::{Authority, SignedDevice, fingerprint_der, fingerprint_pem};
 pub use devices::{Device, Devices};
@@ -38,8 +38,9 @@ pub enum RemoteError {
     Handshake(String),
 }
 
-pub type RemoteSink = Pin<Box<dyn Sink<ServerFrame, Error = WireError> + Send>>;
-pub type RemoteStream = Pin<Box<dyn Stream<Item = Result<ClientFrame, WireError>> + Send>>;
+pub type RemoteSink = Pin<Box<dyn Sink<goat_wire::envelope::Frame, Error = WireError> + Send>>;
+pub type RemoteStream =
+    Pin<Box<dyn Stream<Item = Result<goat_wire::envelope::Frame, WireError>> + Send>>;
 
 pub trait RemoteHandler: Send + Sync + 'static {
     fn handle(

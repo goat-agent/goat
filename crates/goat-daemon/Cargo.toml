@@ -35,6 +35,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+goat-client = { workspace = true }
 goat-remote = { workspace = true }
 rustls = { workspace = true }
 futures = { workspace = true }

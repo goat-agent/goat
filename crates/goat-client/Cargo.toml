@@ -12,6 +12,7 @@ publish.workspace = true
 goat-process = { workspace = true }
 goat-protocol = { workspace = true }
 goat-remote = { workspace = true }
+serde_json = { workspace = true }
 goat-wire = { workspace = true }
 goat-api = { workspace = true }
 tokio-util = { workspace = true }

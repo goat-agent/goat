@@ -2,15 +2,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use goat_api::{
+    Api, ConversationList, ConversationListParams, DaemonStatus, Empty, FsList, FsListParams,
+    ResumeMode, SessionControl, SessionControlParams, SessionKill, SessionKillParams, SessionList,
+    SessionOpen, SessionOpenParams, SessionSnapshot, SessionSubmit, SessionSubmitParams,
+    SessionWatch, SessionWatchParams, StreamEvent, WatchFrom, WatchItem,
+};
 use goat_protocol::{Event, Op};
-use goat_wire::{BuildId, Busy, ClientFrame, ResumeMode, ServerFrame, SessionId, WireError};
+use goat_wire::{BuildId, Busy, WireError};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
-use crate::idmap::IdMap;
-use crate::link::Conn;
-
-mod idmap;
 mod link;
 mod session;
 
@@ -23,6 +25,7 @@ pub const STOP_TIMEOUT: Duration = Duration::from_secs(20);
 pub const SPAWN_BUDGET: Duration = Duration::from_secs(45);
 
 const SPAWN_POLL: Duration = Duration::from_millis(100);
+const AGENT: &str = concat!("goat-client/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
@@ -86,6 +89,15 @@ enum Resolution {
     Refuse,
 }
 
+#[must_use]
+pub fn is_current(mine: &Identity, theirs: &Identity) -> bool {
+    theirs.wire == mine.wire
+        && match (mine.build.as_ref(), theirs.build.as_ref()) {
+            (Some(ours), Some(other)) => ours == other,
+            _ => true,
+        }
+}
+
 fn resolve(ours: &Identity, theirs: &Identity, on_stale: OnStale) -> Resolution {
     if is_current(ours, theirs) {
         return Resolution::Reused;
@@ -97,15 +109,6 @@ fn resolve(ours: &Identity, theirs: &Identity, on_stale: OnStale) -> Resolution 
         return Resolution::Refuse;
     }
     Resolution::Stale
-}
-
-#[must_use]
-pub fn is_current(mine: &Identity, theirs: &Identity) -> bool {
-    theirs.wire == mine.wire
-        && match (mine.build.as_ref(), theirs.build.as_ref()) {
-            (Some(ours), Some(other)) => ours == other,
-            _ => true,
-        }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,7 +134,7 @@ pub fn mine_for(daemon_exe: Option<&Path>) -> Identity {
 
 fn identity_of(build: Option<BuildId>) -> Identity {
     Identity {
-        wire: goat_wire::wire_fingerprint().to_owned(),
+        wire: goat_wire::envelope_fingerprint().to_owned(),
         build,
         version: env!("CARGO_PKG_VERSION").to_owned(),
         pid: std::process::id(),
@@ -168,94 +171,92 @@ pub async fn connect(
     cwd: PathBuf,
     resume: ResumeMode,
 ) -> Result<(Attachment, Attached), ClientError> {
-    let (mut conn, identity, client_id, attached) = ensure(&link, OnStale::Attach).await?;
+    let (session, identity, client_id, attached) = ensure(&link, OnStale::Attach).await?;
 
-    conn.send(ClientFrame::OpenSession {
-        cwd: cwd.display().to_string(),
-        resume,
-    })
-    .await?;
-    let (session, opened_cwd) = match request(&mut conn).await? {
-        ServerFrame::SessionOpened { session, cwd } => (session, cwd),
-        ServerFrame::Error { message } => return Err(ClientError::OpenFailed(message)),
-        _ => return Err(ClientError::Handshake),
-    };
+    let opened = session
+        .api
+        .call::<SessionOpen>(SessionOpenParams {
+            cwd: cwd.display().to_string(),
+            resume,
+        })
+        .await
+        .map_err(|err| ClientError::OpenFailed(err.message))?;
 
     Ok((
-        spawn_pumps(conn, session, client_id, opened_cwd, link, identity),
+        spawn_pumps(session, &opened, client_id, link, identity),
         attached,
     ))
 }
 
 pub async fn start(socket_path: &Path, daemon_exe: &Path) -> Result<Attached, ClientError> {
     let link = Link::local(socket_path.to_path_buf(), daemon_exe.to_path_buf());
-    let (_, _, _, attached) = ensure(&link, OnStale::ReplaceIfIdle).await?;
+    let (session, _, _, attached) = ensure(&link, OnStale::ReplaceIfIdle).await?;
+    session.shutdown();
     Ok(attached)
 }
 
 pub async fn greet(socket_path: &Path) -> Daemon {
     let link = Link::local(socket_path.to_path_buf(), PathBuf::new());
     match open(&link).await {
-        Ok((_, identity, _)) => Daemon::Reachable(identity),
+        Ok((session, identity, _)) => {
+            session.shutdown();
+            Daemon::Reachable(identity)
+        }
         Err(ClientError::Timeout(_) | ClientError::Handshake) => Daemon::Silent,
         Err(_) => Daemon::Absent,
     }
 }
 
-async fn open(link: &Link) -> Result<(Conn, Identity, u64), ClientError> {
-    let mut conn = tokio::time::timeout(GREET_TIMEOUT, link.dial())
+async fn open(link: &Link) -> Result<(ApiSession, Identity, u64), ClientError> {
+    let session = tokio::time::timeout(GREET_TIMEOUT, session::open(link, AGENT))
         .await
         .map_err(|_| ClientError::Timeout(GREET_TIMEOUT))??;
-    let frame = tokio::time::timeout(GREET_TIMEOUT, conn.recv())
-        .await
-        .map_err(|_| ClientError::Timeout(GREET_TIMEOUT))??;
-    let ServerFrame::Welcome {
-        wire,
-        build,
-        busy,
-        version,
-        pid,
-        started_at,
-        ready,
-        client_id,
-    } = frame
-    else {
-        return Err(ClientError::Handshake);
-    };
-    Ok((
-        conn,
-        Identity {
-            wire,
-            build,
-            version,
-            pid,
-            started_at,
-            ready,
-            busy,
-        },
-        client_id.0,
-    ))
-}
 
-async fn request(conn: &mut Conn) -> Result<ServerFrame, ClientError> {
-    tokio::time::timeout(REQUEST_TIMEOUT, conn.recv())
+    let info = session.daemon.info.clone();
+    let client_id = info
+        .get("client_id")
+        .and_then(|value| value.as_str())
+        .and_then(|text| text.parse::<u64>().ok())
+        .unwrap_or(0);
+    let build = info
+        .get("build")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Option<BuildId>>(value).ok())
+        .flatten();
+
+    let status = session
+        .api
+        .call::<DaemonStatus>(Empty {})
         .await
-        .map_err(|_| ClientError::Timeout(REQUEST_TIMEOUT))?
-        .map_err(ClientError::Wire)
+        .map_err(|_| ClientError::Handshake)?;
+
+    let identity = Identity {
+        wire: session.daemon.envelope.clone(),
+        build,
+        version: status.version,
+        pid: status.pid,
+        started_at: status.started_at,
+        ready: status.ready,
+        busy: Busy {
+            sessions: status.sessions,
+            turns: status.turns,
+        },
+    };
+    Ok((session, identity, client_id))
 }
 
 async fn ensure(
     link: &Link,
     on_stale: OnStale,
-) -> Result<(Conn, Identity, u64, Attached), ClientError> {
+) -> Result<(ApiSession, Identity, u64, Attached), ClientError> {
     let ours = mine_for(link.local_parts().map(|(_, daemon_exe)| daemon_exe));
     let opened = open(link).await;
     if link.local_parts().is_none() {
-        let (conn, identity, client_id) = opened?;
+        let (session, identity, client_id) = opened?;
         if identity.wire != ours.wire {
             return Err(ClientError::RemoteIncompatible);
         }
-        return Ok((conn, identity, client_id, Attached::Reused));
+        return Ok((session, identity, client_id, Attached::Reused));
     }
 
     let opened = match opened {
@@ -263,16 +264,21 @@ async fn ensure(
         Err(err @ (ClientError::Timeout(_) | ClientError::Handshake)) => return Err(err),
         Err(_) => None,
     };
-    let Some((conn, identity, client_id)) = opened else {
-        let (conn, identity, client_id) = spawn_and_wait(link).await?;
-        return Ok((conn, identity, client_id, Attached::Started));
+    let Some((session, identity, client_id)) = opened else {
+        let (session, identity, client_id) = spawn_and_wait(link).await?;
+        return Ok((session, identity, client_id, Attached::Started));
     };
 
     match resolve(&ours, &identity, on_stale) {
-        Resolution::Reused => Ok((conn, identity, client_id, Attached::Reused)),
+        Resolution::Reused => Ok((session, identity, client_id, Attached::Reused)),
         Resolution::Stale => {
             let stale = identity.clone();
-            Ok((conn, identity, client_id, Attached::Stale(Box::new(stale))))
+            Ok((
+                session,
+                identity,
+                client_id,
+                Attached::Stale(Box::new(stale)),
+            ))
         }
         Resolution::Refuse => match on_stale {
             OnStale::Attach => Err(ClientError::Incompatible),
@@ -283,10 +289,10 @@ async fn ensure(
         },
         Resolution::Replace => {
             let replaced = identity.clone();
-            shutdown_and_wait(conn).await;
-            let (conn, identity, client_id) = spawn_and_wait(link).await?;
+            stop_daemon_and_wait(session).await;
+            let (session, identity, client_id) = spawn_and_wait(link).await?;
             Ok((
-                conn,
+                session,
                 identity,
                 client_id,
                 Attached::Replaced(Box::new(replaced)),
@@ -295,14 +301,19 @@ async fn ensure(
     }
 }
 
-async fn shutdown_and_wait(mut conn: Conn) {
-    if conn.send(ClientFrame::StopDaemon {}).await.is_err() {
-        return;
-    }
-    let _ = tokio::time::timeout(STOP_TIMEOUT, async { while conn.recv().await.is_ok() {} }).await;
+async fn stop_daemon_and_wait(session: ApiSession) {
+    let _ = tokio::time::timeout(
+        STOP_TIMEOUT,
+        session
+            .api
+            .call::<goat_api::AdminDaemonStop>(goat_api::AdminDaemonStopParams { if_idle: false }),
+    )
+    .await;
+    session.shutdown();
+    tokio::time::sleep(SPAWN_POLL).await;
 }
 
-async fn spawn_and_wait(link: &Link) -> Result<(Conn, Identity, u64), ClientError> {
+async fn spawn_and_wait(link: &Link) -> Result<(ApiSession, Identity, u64), ClientError> {
     link.spawn_local()?;
     let deadline = tokio::time::Instant::now() + SPAWN_BUDGET;
     loop {
@@ -318,454 +329,413 @@ async fn spawn_and_wait(link: &Link) -> Result<(Conn, Identity, u64), ClientErro
     }
 }
 
-enum Outbound {
-    Op(Op),
-    ListConversations,
-    ListFiles,
-}
-
 struct Shared {
-    current: Mutex<SessionId>,
-    current_conversation: Mutex<Option<i64>>,
-    idmap: Mutex<IdMap>,
+    session: Mutex<goat_api::SessionId>,
     cwd: String,
 }
 
 fn spawn_pumps(
-    conn: Conn,
-    session: SessionId,
+    session: ApiSession,
+    opened: &goat_api::SessionOpenOutput,
     client_id: u64,
-    cwd: String,
     link: Arc<Link>,
     daemon: Identity,
 ) -> Attachment {
-    let (ops_tx, mut ops_rx) = mpsc::channel::<Op>(OPS_CAPACITY);
+    let (ops_tx, ops_rx) = mpsc::channel::<Op>(OPS_CAPACITY);
     let (events_tx, events_rx) = mpsc::channel::<Event>(EVENTS_CAPACITY);
     let (presence_tx, presence_rx) = mpsc::channel::<usize>(PRESENCE_CAPACITY);
-    let (cmd_tx, mut cmd_rx) = mpsc::channel::<Outbound>(OPS_CAPACITY + 8);
 
-    let opened_cwd = cwd.clone();
+    let session_id = opened.session;
+    let cwd = opened.cwd.clone();
     let shared = Arc::new(Shared {
-        current: Mutex::new(session),
-        current_conversation: Mutex::new(None),
-        idmap: Mutex::new(IdMap::new()),
-        cwd,
+        session: Mutex::new(session_id),
+        cwd: cwd.clone(),
     });
 
-    let cmd_for_ops = cmd_tx.clone();
-    tokio::spawn(async move {
-        while let Some(op) = ops_rx.recv().await {
-            let cmd = match op {
-                Op::ListConversations {} => Outbound::ListConversations,
-                Op::ListFiles {} => Outbound::ListFiles,
-                other => Outbound::Op(other),
-            };
-            if cmd_for_ops.send(cmd).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    let pump = tokio::spawn(async move {
-        let mut conn = Some(conn);
-        loop {
-            let this_conn = match conn.take() {
-                Some(c) => c,
-                None => match reconnect(&link, &shared, &events_tx).await {
-                    Some(c) => c,
-                    None => break,
-                },
-            };
-            let alive =
-                run_connection(this_conn, &shared, &mut cmd_rx, &events_tx, &presence_tx).await;
-            if !alive {
-                break;
-            }
-        }
-    });
+    let pump = tokio::spawn(run_pump(
+        session,
+        shared,
+        link,
+        ops_rx,
+        events_tx,
+        presence_tx,
+    ));
 
     Attachment {
         ops: ops_tx,
         events: events_rx,
         presence: presence_rx,
         client_id,
-        cwd: opened_cwd,
+        cwd,
         daemon,
-        session: session.0,
+        session: session_id.0,
         pump,
     }
 }
 
-async fn reconnect(
-    link: &Arc<Link>,
-    shared: &Arc<Shared>,
-    events_tx: &mpsc::Sender<Event>,
-) -> Option<Conn> {
-    for _ in 0..100 {
-        let Ok((mut conn, identity, _)) = open(link).await else {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            continue;
-        };
-        if identity.wire != mine().wire {
-            report_incompatible(events_tx).await;
-            return None;
-        }
-        let resume = match *shared.current_conversation.lock().await {
-            Some(conversation_id) => ResumeMode::Conversation { conversation_id },
-            None => ResumeMode::New {},
-        };
-        if conn
-            .send(ClientFrame::OpenSession {
-                cwd: shared.cwd.clone(),
-                resume,
+async fn run_pump(
+    mut session: ApiSession,
+    shared: Arc<Shared>,
+    link: Arc<Link>,
+    mut ops_rx: mpsc::Receiver<Op>,
+    events_tx: mpsc::Sender<Event>,
+    presence_tx: mpsc::Sender<usize>,
+) {
+    let mut from = WatchFrom::Snapshot {};
+    loop {
+        let watching = *shared.session.lock().await;
+        let Ok(mut watch) = session
+            .api
+            .open::<SessionWatch>(SessionWatchParams {
+                session: watching,
+                from: from.clone(),
             })
             .await
-            .is_err()
-        {
-            continue;
+        else {
+            break;
+        };
+
+        let keep_going = loop {
+            tokio::select! {
+                biased;
+                op = ops_rx.recv() => {
+                    let Some(op) = op else { break false };
+                    match handle_op(&session.api, &shared, op, &events_tx).await {
+                        OpOutcome::Continue => {}
+                        OpOutcome::Rewatch => {
+                            from = WatchFrom::Snapshot {};
+                            break true;
+                        }
+                        OpOutcome::Stop => break false,
+                    }
+                }
+                item = watch.recv() => {
+                    match item {
+                        Some(StreamEvent::Item { item, .. }) => {
+                            if !deliver(item, &mut from, &events_tx, &presence_tx).await {
+                                break false;
+                            }
+                        }
+                        Some(StreamEvent::End(_)) | None => break true,
+                    }
+                }
+            }
+        };
+
+        if !keep_going {
+            break;
         }
-        if let Ok(ServerFrame::SessionOpened { session, .. }) = request(&mut conn).await {
-            *shared.current.lock().await = session;
-            shared.idmap.lock().await.reset();
-            return Some(conn);
+        if session.closed.is_cancelled() {
+            match reopen(&link).await {
+                Some(fresh) => session = fresh,
+                None => break,
+            }
         }
+    }
+    session.shutdown();
+}
+
+async fn reopen(link: &Link) -> Option<ApiSession> {
+    for _ in 0..100 {
+        if let Ok(session) = session::open(link, AGENT).await {
+            return Some(session);
+        }
+        tokio::time::sleep(SPAWN_POLL).await;
     }
     None
 }
 
-async fn report_incompatible(events_tx: &mpsc::Sender<Event>) {
-    let _ = events_tx
-        .send(Event::Error {
-            id: None,
-            message: "the daemon protocol changed while reconnecting".to_owned(),
-            hint: Some("restart the daemon with this goat build".to_owned()),
-        })
-        .await;
+enum OpOutcome {
+    Continue,
+    Rewatch,
+    Stop,
 }
 
-async fn run_connection(
-    conn: Conn,
+async fn handle_op(
+    api: &Api,
     shared: &Arc<Shared>,
-    cmd_rx: &mut mpsc::Receiver<Outbound>,
+    op: Op,
+    events_tx: &mpsc::Sender<Event>,
+) -> OpOutcome {
+    let session = *shared.session.lock().await;
+    match op {
+        Op::Shutdown {} => OpOutcome::Stop,
+        Op::Clear {} => rebind(api, shared, ResumeMode::New {}).await,
+        Op::ResumeLatest {} => rebind(api, shared, ResumeMode::Latest {}).await,
+        Op::Resume { conversation_id } => {
+            rebind(api, shared, ResumeMode::Conversation { conversation_id }).await
+        }
+        Op::ListConversations {} => {
+            if let Ok(listed) = api
+                .call::<ConversationList>(ConversationListParams {
+                    cwd: shared.cwd.clone(),
+                })
+                .await
+            {
+                let _ = events_tx
+                    .send(Event::ConversationsListed {
+                        conversations: listed
+                            .conversations
+                            .into_iter()
+                            .map(|entry| goat_protocol::ConversationSummary {
+                                id: entry.conversation_id,
+                                title: entry.title.unwrap_or_default(),
+                                model: entry.model,
+                                updated_at: entry.updated_at,
+                                live: entry.live.is_some(),
+                            })
+                            .collect(),
+                    })
+                    .await;
+            }
+            OpOutcome::Continue
+        }
+        Op::ListFiles {} => {
+            if let Ok(listed) = api
+                .call::<FsList>(FsListParams {
+                    path: shared.cwd.clone(),
+                    recursive: true,
+                })
+                .await
+            {
+                let _ = events_tx
+                    .send(Event::FilesListed {
+                        entries: listed
+                            .entries
+                            .into_iter()
+                            .map(|entry| match entry.kind {
+                                goat_api::DirEntryKind::Directory {} => {
+                                    format!("{}/", entry.name)
+                                }
+                                goat_api::DirEntryKind::File {}
+                                | goat_api::DirEntryKind::Symlink {} => entry.name,
+                            })
+                            .collect(),
+                    })
+                    .await;
+            }
+            OpOutcome::Continue
+        }
+        Op::Interrupt { .. }
+        | Op::Answer { .. }
+        | Op::DequeueMessage { .. }
+        | Op::ProcessKill { .. }
+        | Op::ProcessWatch { .. } => {
+            let _ = api
+                .call::<SessionControl>(SessionControlParams { session, op })
+                .await;
+            OpOutcome::Continue
+        }
+        other => {
+            let _ = api
+                .call::<SessionSubmit>(SessionSubmitParams { session, op: other })
+                .await;
+            OpOutcome::Continue
+        }
+    }
+}
+
+async fn rebind(api: &Api, shared: &Arc<Shared>, resume: ResumeMode) -> OpOutcome {
+    let Ok(opened) = api
+        .call::<SessionOpen>(SessionOpenParams {
+            cwd: shared.cwd.clone(),
+            resume,
+        })
+        .await
+    else {
+        return OpOutcome::Continue;
+    };
+    *shared.session.lock().await = opened.session;
+    OpOutcome::Rewatch
+}
+
+async fn deliver(
+    item: WatchItem,
+    from: &mut WatchFrom,
     events_tx: &mpsc::Sender<Event>,
     presence_tx: &mpsc::Sender<usize>,
 ) -> bool {
-    use futures::{SinkExt, StreamExt};
-    let (mut sink, mut source) = conn.split();
-    let mut expected_seq: Option<u64> = None;
-    let mut replaying = false;
+    let (WatchItem::Presence { cursor, .. }
+    | WatchItem::Event { cursor, .. }
+    | WatchItem::Snapshot { cursor, .. }) = &item;
+    *from = WatchFrom::Cursor {
+        cursor: cursor.clone(),
+    };
 
-    loop {
-        tokio::select! {
-            biased;
-            cmd = cmd_rx.recv() => {
-                let Some(cmd) = cmd else { return false };
-                let frame = match cmd {
-                    Outbound::ListConversations => ClientFrame::ListConversations {
-                        cwd: shared.cwd.clone(),
-                    },
-                    Outbound::ListFiles => ClientFrame::ListDirectory {
-                        path: shared.cwd.clone(),
-                        recursive: true,
-                    },
-                    Outbound::Op(op) => {
-                        let session = *shared.current.lock().await;
-                        match op {
-                            Op::Shutdown {} => {
-                                let _ = sink.send(ClientFrame::Goodbye {}).await;
-                                return false;
-                            }
-                            Op::Interrupt { .. }
-                            | Op::Answer { .. }
-                            | Op::DequeueMessage { .. }
-                            | Op::ProcessKill { .. }
-                            | Op::ProcessWatch { .. } => {
-                                let mut op = op;
-                                shared.idmap.lock().await.translate_outbound(&mut op);
-                                ClientFrame::Control { session, op }
-                            }
-                            other => {
-                                let correlation = submit_correlation(&other);
-                                ClientFrame::Submit {
-                                    session,
-                                    correlation,
-                                    op: other,
-                                }
-                            }
-                        }
-                    }
-                };
-                if sink.send(frame).await.is_err() {
-                    return true;
+    match item {
+        WatchItem::Presence { clients, .. } => {
+            let _ = presence_tx.try_send(clients);
+            true
+        }
+        WatchItem::Event { event, .. } => events_tx.send(*event).await.is_ok(),
+        WatchItem::Snapshot { state, .. } => {
+            for event in snapshot_to_events(*state) {
+                if events_tx.send(event).await.is_err() {
+                    return false;
                 }
             }
-            item = source.next() => {
-                let Some(item) = item else { return true };
-                let Ok(frame) = item else { return true };
-                match &frame {
-                    ServerFrame::SessionOpened { session: new, .. } => {
-                        *shared.current.lock().await = *new;
-                        *shared.current_conversation.lock().await = None;
-                        continue;
-                    }
-                    ServerFrame::Detached { .. } => {
-                        shared.idmap.lock().await.reset();
-                        expected_seq = None;
-                        continue;
-                    }
-                    ServerFrame::CorrelationAssigned { correlation, task, .. } => {
-                        shared.idmap.lock().await.record_correlation(*correlation, *task);
-                        continue;
-                    }
-                    ServerFrame::Presence { clients, .. } => {
-                        let _ = presence_tx.try_send(clients.len());
-                        continue;
-                    }
-                    ServerFrame::Snapshot { .. } => {
-                        let _ = sink
-                            .send(ClientFrame::ListDirectory {
-                                path: shared.cwd.clone(),
-                                recursive: true,
-                            })
-                            .await;
-                    }
-                    _ => {}
-                }
-                match sequenced_delivery(&mut expected_seq, &mut replaying, &frame) {
-                    Delivery::Reconnect => return true,
-                    Delivery::Skip => continue,
-                    Delivery::Forward => {}
-                }
-                if let ServerFrame::Event {
-                    event: Event::ConversationBound { conversation_id },
-                    ..
-                } = &frame
-                {
-                    *shared.current_conversation.lock().await = Some(*conversation_id);
-                }
-                for mut event in frame_to_events(frame) {
-                    shared.idmap.lock().await.translate_inbound(&mut event);
-                    if events_tx.send(event).await.is_err() {
-                        return false;
-                    }
-                }
-            }
+            true
         }
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-enum Delivery {
-    Forward,
-    Skip,
-    Reconnect,
-}
+fn snapshot_to_events(snapshot: SessionSnapshot) -> Vec<Event> {
+    let SessionSnapshot {
+        target,
+        transcript,
+        pending,
+        context_tokens,
+        compaction_threshold,
+        skills,
+        accounts,
+        models,
+        selected,
+        mode,
+        plan_path,
+        processes,
+        usage,
+        rate_limits,
+        active,
+        retry,
+        ..
+    } = snapshot;
 
-fn sequenced_delivery(
-    expected_seq: &mut Option<u64>,
-    replaying: &mut bool,
-    frame: &ServerFrame,
-) -> Delivery {
-    match frame {
-        ServerFrame::Snapshot { watermark, .. } => {
-            *expected_seq = Some(*watermark);
-            *replaying = false;
-            Delivery::Forward
-        }
-        ServerFrame::Event { seq, .. } if *replaying => match *expected_seq {
-            Some(exp) if *seq < exp => Delivery::Skip,
-            Some(exp) if *seq == exp => {
-                *expected_seq = Some(*seq + 1);
-                *replaying = false;
-                Delivery::Forward
-            }
-            Some(_) | None => Delivery::Skip,
-        },
-        ServerFrame::Event { seq, .. } => match *expected_seq {
-            Some(exp) if *seq < exp => Delivery::Skip,
-            Some(exp) if *seq > exp => {
-                *replaying = true;
-                Delivery::Reconnect
-            }
-            _ => {
-                *expected_seq = Some(*seq + 1);
-                Delivery::Forward
-            }
-        },
-        _ => Delivery::Forward,
-    }
-}
-
-fn submit_correlation(op: &Op) -> u64 {
-    match op {
-        Op::SubmitMessage { id, .. } | Op::SubmitShell { id, .. } | Op::Compact { id, .. } => id.0,
-        _ => 0,
-    }
-}
-
-fn frame_to_events(frame: ServerFrame) -> Vec<Event> {
-    match frame {
-        ServerFrame::Event { event, .. } => vec![event],
-        ServerFrame::Snapshot {
+    let mut events = Vec::new();
+    if let Some(target) = target {
+        events.push(Event::ConversationRestored {
             target,
-            transcript,
-            pending,
+            entries: transcript,
             context_tokens,
             compaction_threshold,
-            skills,
-            accounts,
-            model_list,
-            selected,
-            rate_limits,
-            mode,
-            processes,
-            usage,
-            active,
-            retry,
-            ..
-        } => {
-            let mut events = Vec::new();
-            if let Some(target) = *target {
-                events.push(Event::ConversationRestored {
-                    target,
-                    entries: transcript,
-                    context_tokens,
-                    compaction_threshold,
-                });
-            }
-            events.push(Event::SkillsChanged { skills });
-            events.push(Event::AccountsChanged {
-                providers: accounts,
-            });
-            events.push(Event::ModelListChanged {
-                entries: model_list,
-            });
-            if let Some(target) = *selected {
-                events.push(Event::ModelSelected { target });
-            }
-            events.push(Event::ModeChanged {
-                mode: mode.mode,
-                plan_path: mode.plan_path,
-            });
-            events.push(Event::ProcessListChanged { processes });
-            if let Some(id) = active {
-                events.push(Event::TaskStarted { id });
-            }
-            events.extend(pending);
-            for entry in usage {
-                events.push(Event::Usage {
-                    id: active.unwrap_or(goat_protocol::TaskId(0)),
-                    provider: entry.provider,
-                    account: entry.account,
-                    usage: entry.usage,
-                    context_window: entry.context_window,
-                    compaction_threshold: entry.compaction_threshold,
-                });
-            }
-            if let Some(retry) = *retry {
-                events.push(Event::Retrying {
-                    id: retry.id,
-                    attempt: retry.attempt,
-                    max_attempts: retry.max_attempts,
-                    delay_ms: retry.delay_ms,
-                    reason: retry.reason,
-                    resets_at: retry.resets_at,
-                });
-            }
-            for entry in rate_limits {
-                events.push(Event::RateLimits {
-                    provider: entry.provider,
-                    account: entry.account,
-                    snapshot: entry.snapshot,
-                    cached_at: entry.cached_at,
-                });
-            }
-            events
-        }
-        ServerFrame::Conversations { conversations } => vec![Event::ConversationsListed {
-            conversations: conversations
-                .into_iter()
-                .map(|t| goat_protocol::ConversationSummary {
-                    id: t.conversation_id,
-                    title: t.title.unwrap_or_default(),
-                    model: t.model,
-                    updated_at: t.updated_at,
-                    live: t.live.is_some(),
-                })
-                .collect(),
-        }],
-        ServerFrame::Directory { children, .. } => vec![Event::FilesListed {
-            entries: children
-                .into_iter()
-                .map(|entry| match entry.kind {
-                    goat_wire::DirEntryKind::Directory {} => format!("{}/", entry.name),
-                    goat_wire::DirEntryKind::File {} | goat_wire::DirEntryKind::Symlink {} => {
-                        entry.name
-                    }
-                })
-                .collect(),
-        }],
-        ServerFrame::Error { message } => vec![Event::Error {
-            id: None,
-            message,
-            hint: None,
-        }],
-        _ => Vec::new(),
+        });
     }
+    events.push(Event::SkillsChanged { skills });
+    events.push(Event::AccountsChanged {
+        providers: accounts,
+    });
+    events.push(Event::ModelListChanged { entries: models });
+    if let Some(target) = selected {
+        events.push(Event::ModelSelected { target });
+    }
+    events.push(Event::ModeChanged { mode, plan_path });
+    events.push(Event::ProcessListChanged { processes });
+    if let Some(id) = active {
+        events.push(Event::TaskStarted { id });
+    }
+    events.extend(pending);
+    for entry in usage {
+        events.push(Event::Usage {
+            id: active.unwrap_or(goat_protocol::TaskId(0)),
+            provider: entry.provider,
+            account: entry.account,
+            usage: entry.usage,
+            context_window: entry.context_window,
+            compaction_threshold: entry.compaction_threshold,
+        });
+    }
+    if let Some(retry) = retry {
+        events.push(Event::Retrying {
+            id: retry.id,
+            attempt: retry.attempt,
+            max_attempts: retry.max_attempts,
+            delay_ms: retry.delay_ms,
+            reason: retry.reason,
+            resets_at: retry.resets_at,
+        });
+    }
+    for entry in rate_limits {
+        events.push(Event::RateLimits {
+            provider: entry.provider,
+            account: entry.account,
+            snapshot: entry.snapshot,
+            cached_at: entry.cached_at,
+        });
+    }
+    events
 }
 
-pub async fn status(link: &Link) -> Result<Vec<goat_wire::SessionInfo>, ClientError> {
-    match ask(link, ClientFrame::ListSessions {}).await? {
-        ServerFrame::Sessions { sessions } => Ok(sessions),
-        other => Err(refusal(other)),
-    }
+async fn one_shot<T, F, Fut>(link: &Link, call: F) -> Result<T, ClientError>
+where
+    F: FnOnce(Api) -> Fut,
+    Fut: std::future::Future<Output = Result<T, goat_wire::envelope::CallError>>,
+{
+    let session = session::open(link, AGENT).await?;
+    let result = call(session.api.clone()).await;
+    session.shutdown();
+    result.map_err(|err| ClientError::Refused(err.message))
+}
+
+pub async fn status(link: &Link) -> Result<Vec<goat_api::SessionInfo>, ClientError> {
+    one_shot(link, |api| async move {
+        api.call::<SessionList>(Empty {})
+            .await
+            .map(|out| out.sessions)
+    })
+    .await
 }
 
 pub async fn list_conversations(
     link: &Link,
     cwd: &Path,
-) -> Result<Vec<goat_wire::ConversationInfo>, ClientError> {
-    let frame = ClientFrame::ListConversations {
-        cwd: cwd.display().to_string(),
-    };
-    match ask(link, frame).await? {
-        ServerFrame::Conversations { conversations } => Ok(conversations),
-        other => Err(refusal(other)),
-    }
+) -> Result<Vec<goat_api::ConversationInfo>, ClientError> {
+    let cwd = cwd.display().to_string();
+    one_shot(link, |api| async move {
+        api.call::<ConversationList>(ConversationListParams { cwd })
+            .await
+            .map(|out| out.conversations)
+    })
+    .await
 }
 
 pub async fn stop(link: &Link) -> Result<(), ClientError> {
-    let (mut conn, _, _) = open(link).await?;
-    conn.send(ClientFrame::StopDaemon {}).await?;
-    tokio::time::timeout(STOP_TIMEOUT, async {
-        loop {
-            match conn.recv().await {
-                Ok(ServerFrame::Error { message }) => return Err(ClientError::Refused(message)),
-                Ok(_) => {}
-                Err(WireError::Closed) => return Ok(()),
-                Err(err) => return Err(ClientError::Wire(err)),
-            }
+    stop_if(link, false).await
+}
+
+pub async fn stop_if_idle(link: &Link) -> Result<Option<Busy>, ClientError> {
+    match stop_if(link, true).await {
+        Ok(()) => Ok(None),
+        Err(ClientError::BusyIncompatible { sessions, turns }) => {
+            Ok(Some(Busy { sessions, turns }))
         }
-    })
-    .await
-    .map_err(|_| ClientError::Timeout(STOP_TIMEOUT))?
+        Err(err) => Err(err),
+    }
+}
+
+async fn stop_if(link: &Link, if_idle: bool) -> Result<(), ClientError> {
+    let session = session::open(link, AGENT).await?;
+    let answered = session
+        .api
+        .call::<goat_api::AdminDaemonStop>(goat_api::AdminDaemonStopParams { if_idle })
+        .await;
+    session.shutdown();
+    match answered {
+        Ok(goat_api::AdminDaemonStopOutput::Busy { sessions, turns }) => {
+            Err(ClientError::BusyIncompatible { sessions, turns })
+        }
+        Ok(goat_api::AdminDaemonStopOutput::Stopping) | Err(_) => Ok(()),
+    }
 }
 
 pub async fn reload(
     link: &Link,
     agent: Option<String>,
-) -> Result<goat_wire::ReloadReport, ClientError> {
-    match ask(link, ClientFrame::ReloadAgents { agent }).await? {
-        ServerFrame::Reloaded { report } => Ok(report),
-        other => Err(refusal(other)),
-    }
+) -> Result<goat_api::AdminAgentReloadOutput, ClientError> {
+    one_shot(link, |api| async move {
+        api.call::<goat_api::AdminAgentReload>(goat_api::AdminAgentReloadParams { agent })
+            .await
+    })
+    .await
 }
 
 pub async fn kill_session(link: &Link, session: u64) -> Result<(), ClientError> {
-    let frame = ClientFrame::KillSession {
-        session: SessionId(session),
-    };
-    tell(link, frame).await
+    one_shot(link, |api| async move {
+        api.call::<SessionKill>(SessionKillParams {
+            session: goat_api::SessionId(session),
+        })
+        .await
+        .map(|_| ())
+    })
+    .await
 }
 
 pub struct PairingInfo {
@@ -775,61 +745,42 @@ pub struct PairingInfo {
 }
 
 pub async fn pair_device(link: &Link, label: String) -> Result<PairingInfo, ClientError> {
-    match ask(link, ClientFrame::PairDevice { label }).await? {
-        ServerFrame::PairingCode {
-            code,
-            server_fingerprint,
-            advertised,
-        } => Ok(PairingInfo {
-            code,
-            server_fingerprint,
-            advertised,
-        }),
-        other => Err(refusal(other)),
-    }
+    let out = one_shot(link, |api| async move {
+        api.call::<goat_api::AdminDevicePair>(goat_api::AdminDevicePairParams { label })
+            .await
+    })
+    .await?;
+    Ok(PairingInfo {
+        code: out.code,
+        server_fingerprint: out.server_fingerprint,
+        advertised: out.advertised,
+    })
 }
 
-pub async fn list_devices(link: &Link) -> Result<Vec<goat_wire::DeviceInfo>, ClientError> {
-    match ask(link, ClientFrame::ListDevices {}).await? {
-        ServerFrame::Devices { devices } => Ok(devices),
-        other => Err(refusal(other)),
-    }
+pub async fn list_devices(link: &Link) -> Result<Vec<goat_api::DeviceInfo>, ClientError> {
+    one_shot(link, |api| async move {
+        api.call::<goat_api::AdminDeviceList>(Empty {})
+            .await
+            .map(|out| out.devices)
+    })
+    .await
 }
 
 pub async fn revoke_device(link: &Link, device: String) -> Result<bool, ClientError> {
-    match ask(link, ClientFrame::RevokeDevice { device }).await? {
-        ServerFrame::DeviceRevoked { ok } => Ok(ok),
-        other => Err(refusal(other)),
-    }
-}
-
-async fn tell(link: &Link, frame: ClientFrame) -> Result<(), ClientError> {
-    let (mut conn, _, _) = open(link).await?;
-    conn.send(frame).await?;
-    Ok(())
-}
-
-async fn ask(link: &Link, frame: ClientFrame) -> Result<ServerFrame, ClientError> {
-    let (mut conn, _, _) = open(link).await?;
-    conn.send(frame).await?;
-    request(&mut conn).await
-}
-
-fn refusal(frame: ServerFrame) -> ClientError {
-    match frame {
-        ServerFrame::Error { message } => ClientError::Refused(message),
-        _ => ClientError::Handshake,
-    }
+    one_shot(link, |api| async move {
+        api.call::<goat_api::AdminDeviceRevoke>(goat_api::AdminDeviceRevokeParams { device })
+            .await
+            .map(|out| out.ok)
+    })
+    .await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Delivery, Identity, OnStale, Resolution, frame_to_events, is_current, resolve,
-        sequenced_delivery,
-    };
-    use goat_protocol::{Event, ModelTarget, SkillInfo, TaskId};
-    use goat_wire::{BuildId, Busy, ServerFrame, SessionId};
+    use super::{Identity, OnStale, Resolution, is_current, resolve, snapshot_to_events};
+    use goat_api::{SessionId, SessionSnapshot};
+    use goat_protocol::{Event, ModelTarget, SkillInfo};
+    use goat_wire::{BuildId, Busy};
 
     fn build(len: u64) -> BuildId {
         BuildId {
@@ -848,6 +799,29 @@ mod tests {
             started_at: 0,
             ready: true,
             busy,
+        }
+    }
+
+    fn snapshot(target: Option<ModelTarget>, skills: Vec<SkillInfo>) -> SessionSnapshot {
+        SessionSnapshot {
+            session: SessionId(1),
+            cwd: "/tmp".to_owned(),
+            target,
+            transcript: Vec::new(),
+            pending: Vec::new(),
+            context_tokens: None,
+            compaction_threshold: None,
+            skills,
+            accounts: Vec::new(),
+            models: Vec::new(),
+            selected: None,
+            mode: goat_protocol::Mode::Normal,
+            plan_path: None,
+            processes: Vec::new(),
+            usage: Vec::new(),
+            rate_limits: Vec::new(),
+            active: None,
+            retry: None,
         }
     }
 
@@ -950,112 +924,21 @@ mod tests {
         assert!(is_current(&ours, &theirs));
     }
 
-    fn text(seq: u64) -> ServerFrame {
-        ServerFrame::Event {
-            session: SessionId(1),
-            seq,
-            event: Event::TextDelta {
-                id: TaskId(1),
-                chunk: "x".to_owned(),
-            },
-        }
-    }
-
     #[test]
-    fn gap_requests_one_reconnect_and_suppresses_until_snapshot() {
-        let mut expected = Some(2);
-        let mut replaying = false;
-        assert_eq!(
-            sequenced_delivery(&mut expected, &mut replaying, &text(4)),
-            Delivery::Reconnect
-        );
-        assert!(replaying);
-        assert_eq!(
-            sequenced_delivery(&mut expected, &mut replaying, &text(5)),
-            Delivery::Skip
-        );
-        assert_eq!(expected, Some(2));
-        assert_eq!(
-            sequenced_delivery(&mut expected, &mut replaying, &text(2)),
-            Delivery::Forward
-        );
-        assert_eq!(expected, Some(3));
-        assert!(!replaying);
-    }
-
-    #[test]
-    fn snapshot_resets_replay_state() {
-        let mut expected = Some(2);
-        let mut replaying = true;
-        let snapshot = ServerFrame::Snapshot {
-            session: SessionId(1),
-            watermark: 4,
-            target: Box::new(None),
-            transcript: Vec::new(),
-            pending: Vec::new(),
-            context_tokens: None,
-            compaction_threshold: None,
-            skills: Vec::new(),
-            accounts: Vec::new(),
-            model_list: Vec::new(),
-            selected: Box::new(None),
-            rate_limits: Vec::new(),
-            mode: goat_wire::ModeEntry {
-                mode: goat_protocol::Mode::Normal,
-                plan_path: None,
-            },
-            processes: Vec::new(),
-            usage: Vec::new(),
-            active: None,
-            retry: Box::new(None),
-        };
-        assert_eq!(
-            sequenced_delivery(&mut expected, &mut replaying, &snapshot),
-            Delivery::Forward
-        );
-        assert_eq!(expected, Some(4));
-        assert!(!replaying);
-        assert_eq!(
-            sequenced_delivery(&mut expected, &mut replaying, &text(4)),
-            Delivery::Forward
-        );
-        assert_eq!(expected, Some(5));
-    }
-
-    #[test]
-    fn resumed_snapshot_expands_restore_first_then_state() {
-        let snapshot = ServerFrame::Snapshot {
-            session: SessionId(1),
-            watermark: 4,
-            target: Box::new(Some(ModelTarget {
+    fn a_resumed_snapshot_restores_before_it_reports_state() {
+        let events = snapshot_to_events(snapshot(
+            Some(ModelTarget {
                 provider: "p".to_owned(),
                 model: "m".to_owned(),
                 account: "a".to_owned(),
                 effort: None,
-            })),
-            transcript: Vec::new(),
-            pending: Vec::new(),
-            context_tokens: None,
-            compaction_threshold: None,
-            skills: vec![SkillInfo {
+            }),
+            vec![SkillInfo {
                 name: "deploy".to_owned(),
                 description: "ship".to_owned(),
                 command: None,
             }],
-            accounts: Vec::new(),
-            model_list: Vec::new(),
-            selected: Box::new(None),
-            rate_limits: Vec::new(),
-            mode: goat_wire::ModeEntry {
-                mode: goat_protocol::Mode::Normal,
-                plan_path: None,
-            },
-            processes: Vec::new(),
-            usage: Vec::new(),
-            active: None,
-            retry: Box::new(None),
-        };
-        let events = frame_to_events(snapshot);
+        ));
         assert!(
             matches!(events.first(), Some(Event::ConversationRestored { .. })),
             "restore must land before state events"
@@ -1069,120 +952,46 @@ mod tests {
     }
 
     #[test]
-    fn new_session_snapshot_omits_restore_but_keeps_skills() {
-        let snapshot = ServerFrame::Snapshot {
-            session: SessionId(1),
-            watermark: 2,
-            target: Box::new(None),
-            transcript: Vec::new(),
-            pending: Vec::new(),
-            context_tokens: None,
-            compaction_threshold: None,
-            skills: vec![SkillInfo {
+    fn a_new_session_snapshot_omits_restore_but_keeps_skills() {
+        let events = snapshot_to_events(snapshot(
+            None,
+            vec![SkillInfo {
                 name: "deploy".to_owned(),
                 description: "ship".to_owned(),
                 command: None,
             }],
-            accounts: Vec::new(),
-            model_list: Vec::new(),
-            selected: Box::new(None),
-            rate_limits: Vec::new(),
-            mode: goat_wire::ModeEntry {
-                mode: goat_protocol::Mode::Normal,
-                plan_path: None,
-            },
-            processes: Vec::new(),
-            usage: Vec::new(),
-            active: None,
-            retry: Box::new(None),
-        };
-        let events = frame_to_events(snapshot);
+        ));
         assert!(
             !events
                 .iter()
                 .any(|e| matches!(e, Event::ConversationRestored { .. })),
-            "a new session has no restore target"
+            "a fresh session has nothing to restore"
         );
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, Event::SkillsChanged { .. })),
-            "skills still arrive for a new session"
+                .any(|e| matches!(e, Event::SkillsChanged { skills } if skills.len() == 1)),
+            "skills must still arrive"
         );
     }
 
     #[test]
-    fn new_session_snapshot_watermark_keeps_seq_continuity() {
-        let snapshot = ServerFrame::Snapshot {
-            session: SessionId(1),
-            watermark: 2,
-            target: Box::new(None),
-            transcript: Vec::new(),
-            pending: Vec::new(),
-            context_tokens: None,
-            compaction_threshold: None,
-            skills: Vec::new(),
-            accounts: Vec::new(),
-            model_list: Vec::new(),
-            selected: Box::new(None),
-            rate_limits: Vec::new(),
-            mode: goat_wire::ModeEntry {
-                mode: goat_protocol::Mode::Normal,
-                plan_path: None,
-            },
-            processes: Vec::new(),
-            usage: Vec::new(),
-            active: None,
-            retry: Box::new(None),
-        };
-        let mut expected = None;
-        let mut replaying = false;
-        assert_eq!(
-            sequenced_delivery(&mut expected, &mut replaying, &snapshot),
-            Delivery::Forward
-        );
-        assert_eq!(expected, Some(2));
-        assert_eq!(
-            sequenced_delivery(&mut expected, &mut replaying, &text(2)),
-            Delivery::Forward
-        );
-        assert_eq!(expected, Some(3));
-    }
-
-    #[test]
-    fn duplicate_event_is_skipped() {
-        let mut expected = Some(4);
-        let mut replaying = false;
-        assert_eq!(
-            sequenced_delivery(&mut expected, &mut replaying, &text(3)),
-            Delivery::Skip
-        );
-        assert_eq!(expected, Some(4));
-    }
-
-    #[test]
-    fn control_frames_forward_while_replaying() {
-        let mut expected = Some(4);
-        let mut replaying = true;
-        assert_eq!(
-            sequenced_delivery(
-                &mut expected,
-                &mut replaying,
-                &ServerFrame::Error {
-                    message: "err".to_owned(),
-                },
-            ),
-            Delivery::Forward
-        );
-        assert_eq!(
-            sequenced_delivery(
-                &mut expected,
-                &mut replaying,
-                &ServerFrame::Conversations {
-                    conversations: Vec::new()
-                },
-            ),
-            Delivery::Forward
+    fn a_retrying_snapshot_replays_the_retry_state() {
+        let mut state = snapshot(None, Vec::new());
+        state.retry = Some(goat_api::RetryEntry {
+            id: goat_protocol::TaskId(3),
+            attempt: 2,
+            max_attempts: 5,
+            delay_ms: 1000,
+            reason: "overloaded".to_owned(),
+            resets_at: None,
+        });
+        let events = snapshot_to_events(state);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Retrying { attempt: 2, .. })),
+            "a client that reattaches mid-retry must still see the retry"
         );
     }
 }
