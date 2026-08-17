@@ -103,10 +103,7 @@ async fn run_reload(agent: Option<String>) -> color_eyre::Result<()> {
             );
         }
         goat_client::Daemon::Reachable(them) => {
-            if !matches!(
-                goat_client::decide(&ours, &them),
-                goat_client::Action::Attach
-            ) {
+            if !goat_client::is_current(&ours, &them) {
                 return ui::fail_hint(
                     format!(
                         "the running daemon is a different build (goat {})",
@@ -633,15 +630,12 @@ async fn print_daemon_status(socket_path: &std::path::Path) -> color_eyre::Resul
         }
         goat_client::Daemon::Reachable(them) => {
             let ours = goat_client::mine();
-            let (label, palette) = match goat_client::decide(&ours, &them) {
-                goat_client::Action::Attach => ("running", Palette::Success),
-                goat_client::Action::AttachStale => ("running an older build", Palette::Warning),
-                goat_client::Action::Replace if them.wire == ours.wire => {
-                    ("running an older build", Palette::Warning)
-                }
-                goat_client::Action::Replace | goat_client::Action::Refuse => {
-                    ("running a different protocol", Palette::Warning)
-                }
+            let (label, palette) = if goat_client::is_current(&ours, &them) {
+                ("running", Palette::Success)
+            } else if them.wire == ours.wire {
+                ("running an older build", Palette::Warning)
+            } else {
+                ("running a different protocol", Palette::Warning)
             };
             println!("{}", color.paint(label, palette));
             pair("version", &them.version);
@@ -652,10 +646,7 @@ async fn print_daemon_status(socket_path: &std::path::Path) -> color_eyre::Resul
             if let Some(build) = &them.build {
                 pair("binary", &build.path);
             }
-            if !matches!(
-                goat_client::decide(&ours, &them),
-                goat_client::Action::Attach
-            ) {
+            if !goat_client::is_current(&ours, &them) {
                 pair("refresh", "goat daemon start");
             }
         }

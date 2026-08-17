@@ -50,10 +50,7 @@ async fn daemon_state() -> String {
         goat_client::Daemon::Silent => "not answering".to_owned(),
         goat_client::Daemon::Reachable(them) => {
             let ours = goat_client::mine();
-            if matches!(
-                goat_client::decide(&ours, &them),
-                goat_client::Action::Attach
-            ) {
+            if goat_client::is_current(&ours, &them) {
                 format!("running goat {}", them.version)
             } else {
                 format!("running goat {} (older build)", them.version)

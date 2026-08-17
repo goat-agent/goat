@@ -93,10 +93,7 @@ async fn daemon_line() -> (String, Option<String>) {
         goat_client::Daemon::Reachable(them) => {
             let ours = goat_client::mine();
             let running = format!("running goat {} (pid {})", them.version, them.pid);
-            if matches!(
-                goat_client::decide(&ours, &them),
-                goat_client::Action::Attach
-            ) {
+            if goat_client::is_current(&ours, &them) {
                 (running, None)
             } else {
                 (

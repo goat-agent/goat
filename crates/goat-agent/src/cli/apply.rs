@@ -12,10 +12,7 @@ pub async fn config_changed(agent: Option<&str>) {
             return;
         }
         goat_client::Daemon::Reachable(them) => {
-            if !matches!(
-                goat_client::decide(&ours, &them),
-                goat_client::Action::Attach
-            ) {
+            if !goat_client::is_current(&ours, &them) {
                 ui::line(&ui::dim(
                     "saved — the running daemon is a different build; run `goat daemon start` to apply",
                 ));
