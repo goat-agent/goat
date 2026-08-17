@@ -231,6 +231,27 @@ impl CodeSessionHub {
         conversation_unregister_owner(&mut conversations, session);
     }
 
+    pub(crate) fn edit_config(&self, edits: Vec<goat_api::ConfigEdit>) -> Result<bool, String> {
+        let path = self
+            .inner
+            .user_providers
+            .path()
+            .ok_or("this daemon has no config file")?
+            .to_path_buf();
+        let mut config = goat_config::Config::load_at(&path);
+        let before = config.clone();
+        for edit in edits {
+            apply_edit(&mut config, edit);
+        }
+        if config == before {
+            return Ok(false);
+        }
+        config
+            .save_at(&path)
+            .map_err(|err| format!("could not write the config: {err}"))?;
+        Ok(true)
+    }
+
     pub(crate) async fn hold_for_attach(
         &self,
         session: SessionId,
@@ -1065,6 +1086,53 @@ fn conversation_register(
 
 fn conversation_unregister_owner(conversations: &mut HashMap<i64, SessionId>, session: SessionId) {
     conversations.retain(|_, owner| *owner != session);
+}
+
+fn apply_edit(config: &mut goat_config::Config, edit: goat_api::ConfigEdit) {
+    use goat_api::ConfigEdit;
+    match edit {
+        ConfigEdit::ProviderSet { name, endpoint } => {
+            config
+                .providers
+                .insert(name, goat_config::UserProviderConfig { endpoint });
+        }
+        ConfigEdit::ProviderRemove { name } => {
+            config.providers.remove(&name);
+        }
+        ConfigEdit::SearchAccountSet { account } => {
+            let Ok(account) = serde_json::from_value::<goat_config::SearchAccountConfig>(account)
+            else {
+                return;
+            };
+            let target = account.target();
+            config
+                .search
+                .accounts
+                .retain(|entry| entry.target() != target);
+            config.search.accounts.push(account);
+        }
+        ConfigEdit::SearchAccountRemove { target } => {
+            config
+                .search
+                .accounts
+                .retain(|entry| entry.target() != target);
+            if config.search.default_target.as_deref() == Some(target.as_str()) {
+                config.search.default_target = None;
+            }
+        }
+        ConfigEdit::SearchDefaultSet { target } => {
+            config.search.default_target = target;
+        }
+        ConfigEdit::IntegrationSet {
+            kind,
+            config: entry,
+        } => {
+            config.integrations.insert(kind, entry);
+        }
+        ConfigEdit::IntegrationRemove { kind } => {
+            config.integrations.remove(&kind);
+        }
+    }
 }
 
 #[cfg(test)]

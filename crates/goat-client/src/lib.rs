@@ -728,6 +728,21 @@ pub async fn reload(
     .await
 }
 
+pub async fn edit_config(
+    link: &Link,
+    edits: Vec<goat_api::ConfigEdit>,
+) -> Result<bool, ClientError> {
+    let (session, _, _, _) = ensure(link, OnStale::Attach).await?;
+    let answered = session
+        .api
+        .call::<goat_api::AdminConfigEdit>(goat_api::AdminConfigEditParams { edits })
+        .await;
+    session.shutdown();
+    answered
+        .map(|out| out.changed)
+        .map_err(|err| ClientError::Refused(err.message))
+}
+
 pub async fn kill_session(link: &Link, session: u64) -> Result<(), ClientError> {
     one_shot(link, |api| async move {
         api.call::<SessionKill>(SessionKillParams {

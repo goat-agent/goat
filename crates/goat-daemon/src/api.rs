@@ -1,15 +1,16 @@
 use std::sync::Arc;
 
 use goat_api::{
-    AdminAgentReload, AdminAgentReloadOutput, AdminAgentReloadParams, AdminDaemonStop,
-    AdminDaemonStopOutput, AdminDaemonStopParams, AdminDeviceList, AdminDeviceListOutput,
-    AdminDevicePair, AdminDevicePairOutput, AdminDevicePairParams, AdminDeviceRevoke,
-    AdminDeviceRevokeOutput, AdminDeviceRevokeParams, AgentWatch, AgentWatchParams, AnswerOutcome,
-    AskAnswer, AskAnswerOutput, AskAnswerParams, ConversationInfo, ConversationList,
-    ConversationListOutput, ConversationListParams, DaemonStatus, DaemonStatus2, DeviceInfo,
-    DirEntry, DirEntryKind, Empty, FsList, FsListOutput, FsListParams, FsRead, FsReadParams,
-    FsWrite, FsWriteOutput, FsWriteParams, GitDiff, GitDiffParams, Grant, PtyOpen, PtyOpenParams,
-    PtyResize, PtyResizeParams, PtyWrite, PtyWriteParams, ReloadFailure, Router, SessionControl,
+    AdminAgentReload, AdminAgentReloadOutput, AdminAgentReloadParams, AdminConfigEdit,
+    AdminConfigEditOutput, AdminConfigEditParams, AdminDaemonStop, AdminDaemonStopOutput,
+    AdminDaemonStopParams, AdminDeviceList, AdminDeviceListOutput, AdminDevicePair,
+    AdminDevicePairOutput, AdminDevicePairParams, AdminDeviceRevoke, AdminDeviceRevokeOutput,
+    AdminDeviceRevokeParams, AgentWatch, AgentWatchParams, AnswerOutcome, AskAnswer,
+    AskAnswerOutput, AskAnswerParams, ConversationInfo, ConversationList, ConversationListOutput,
+    ConversationListParams, DaemonStatus, DaemonStatus2, DeviceInfo, DirEntry, DirEntryKind, Empty,
+    FsList, FsListOutput, FsListParams, FsRead, FsReadParams, FsWrite, FsWriteOutput,
+    FsWriteParams, GitDiff, GitDiffParams, Grant, PtyOpen, PtyOpenParams, PtyResize,
+    PtyResizeParams, PtyWrite, PtyWriteParams, ReloadFailure, Router, SessionControl,
     SessionControlParams, SessionId, SessionInfo, SessionKill, SessionKillParams, SessionList,
     SessionListOutput, SessionLiveState, SessionOpen, SessionOpenOutput, SessionOpenParams,
     SessionSubmit, SessionSubmitOutput, SessionSubmitParams, SessionWatch, SessionWatchParams,
@@ -166,6 +167,7 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
     let control_manager = manager.clone();
     let kill_manager = manager.clone();
     let stop_manager = manager.clone();
+    let edit_manager = manager.clone();
     let submit_manager = manager.clone();
     let ask_manager = manager.clone();
     let activity_db = db_path.clone();
@@ -328,6 +330,13 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
                         .collect(),
                     warnings: report.warnings,
                 })
+            }
+        })
+        .unary::<AdminConfigEdit, _, _>(move |params: AdminConfigEditParams, _ctx| {
+            let manager = edit_manager.clone();
+            async move {
+                let changed = manager.edit_config(params.edits).map_err(refused)?;
+                Ok(AdminConfigEditOutput { changed })
             }
         })
         .unary::<AdminDaemonStop, _, _>(move |params: AdminDaemonStopParams, _ctx| {
