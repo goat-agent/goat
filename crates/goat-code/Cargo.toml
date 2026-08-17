@@ -88,6 +88,7 @@ open = { workspace = true }
 unicode-width = { workspace = true }
 
 [dev-dependencies]
+goat-tool-browser = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

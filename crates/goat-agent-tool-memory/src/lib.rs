@@ -448,6 +448,7 @@ mod tests {
         );
         let ctx = ToolCaller {
             agent: AgentId::new(),
+            agent_slug: "dev".to_owned(),
             conversation: ConversationId::new(
                 ChannelId::new("discord"),
                 InstanceId::new(),

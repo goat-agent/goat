@@ -42,6 +42,29 @@ impl std::fmt::Display for SessionId {
     }
 }
 
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+pub struct Holder(pub String);
+
+impl Holder {
+    #[must_use]
+    pub fn session(session: SessionId) -> Self {
+        Self(format!("s{}", session.0))
+    }
+
+    #[must_use]
+    pub fn agent(slug: &str) -> Self {
+        Self(format!("a:{slug}"))
+    }
+}
+
+impl std::fmt::Display for Holder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Empty {}
 
@@ -337,9 +360,6 @@ pub enum ConfigEdit {
     IntegrationRemove {
         kind: String,
     },
-    BrowserSet {
-        enabled: bool,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -489,7 +509,7 @@ pub struct CapabilityListOutput {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CapabilityBindParams {
-    pub session: SessionId,
+    pub holder: Holder,
     pub capability: String,
     pub instance: String,
 }
@@ -592,22 +612,58 @@ pub struct HostOrigin {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct HostBrowserParams {
-    pub origin: HostOrigin,
-    pub action: String,
-    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
-    pub arguments: serde_json::Value,
+#[serde(tag = "command", rename_all = "snake_case")]
+pub enum BrowserCommand {
+    Cdp {
+        method: String,
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        params: serde_json::Value,
+    },
+    TabList {},
+    TabSelect {
+        id: i64,
+    },
+    TabClose {
+        id: i64,
+    },
+    TabOpen {
+        url: String,
+    },
+    Detach {},
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct HostBrowserOutput {
-    pub summary: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub media_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
+pub struct BrowserTab {
+    pub id: i64,
+    pub url: String,
+    pub title: String,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CdpEvent {
+    pub method: String,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub params: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "reply", rename_all = "snake_case")]
+pub enum HostBrowserOutput {
+    Cdp {
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        result: serde_json::Value,
+    },
+    Tabs {
+        tabs: Vec<BrowserTab>,
+    },
+    Detached {},
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct BrowserEventParams {
+    pub instance: String,
+    pub event: CdpEvent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -910,7 +966,7 @@ method!(
     Shape::Unary,
     Grant::Any,
     Direction::ToClient,
-    HostBrowserParams,
+    BrowserCommand,
     HostBrowserOutput,
     ()
 );
@@ -925,12 +981,23 @@ method!(
     Empty,
     ()
 );
+method!(
+    BrowserEvent,
+    "browser.event",
+    1,
+    Shape::Unary,
+    Grant::Any,
+    Direction::ToDaemon,
+    BrowserEventParams,
+    Empty,
+    ()
+);
 
 #[cfg(test)]
 mod tests {
     use super::{
-        AnswerOutcome, AskAnswerParams, Cursor, Empty, HostBrowserParams, HostOrigin, PtyItem,
-        SessionId, WatchFrom, WatchItem,
+        AnswerOutcome, AskAnswerParams, BrowserCommand, BrowserTab, Cursor, Empty,
+        HostBrowserOutput, PtyItem, SessionId, WatchFrom, WatchItem,
     };
     use goat_protocol::TaskId;
 
@@ -1005,20 +1072,32 @@ mod tests {
     }
 
     #[test]
-    fn a_host_call_always_names_its_origin() {
-        let params = HostBrowserParams {
-            origin: HostOrigin {
-                session: SessionId(7),
-                task: TaskId(9),
-                label: "fix the flake".to_owned(),
-            },
-            action: "navigate".to_owned(),
-            arguments: serde_json::json!({"url": "https://example.com"}),
+    fn a_browser_call_carries_a_cdp_command_verbatim() {
+        let command = BrowserCommand::Cdp {
+            method: "Page.navigate".to_owned(),
+            params: serde_json::json!({"url": "https://example.com"}),
         };
-        let text = serde_json::to_string(&params).unwrap();
-        assert!(text.contains(r#""origin""#));
-        let back: HostBrowserParams = serde_json::from_str(&text).unwrap();
-        assert_eq!(back, params);
+        let text = serde_json::to_string(&command).unwrap();
+        assert!(text.contains(r#""command":"cdp""#));
+        assert!(text.contains(r#""Page.navigate""#));
+        let back: BrowserCommand = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, command);
+    }
+
+    #[test]
+    fn a_tab_command_answers_with_the_tab_list_it_produced() {
+        let reply = HostBrowserOutput::Tabs {
+            tabs: vec![BrowserTab {
+                id: 42,
+                url: "https://example.com".to_owned(),
+                title: "Example".to_owned(),
+                selected: true,
+            }],
+        };
+        let text = serde_json::to_string(&reply).unwrap();
+        assert!(text.contains(r#""reply":"tabs""#));
+        let back: HostBrowserOutput = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, reply);
     }
 
     #[test]

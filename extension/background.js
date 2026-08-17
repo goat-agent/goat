@@ -1,8 +1,11 @@
 const HOST = "com.goat.browser_host";
 const CHUNK_PAYLOAD = 512 * 1024;
+const PROTOCOL = "1.3";
 
 let port = null;
 let attached = null;
+let current = null;
+let outgoing = 0;
 const inbound = new Map();
 
 function connect() {
@@ -12,7 +15,7 @@ function connect() {
   port.onDisconnect.addListener(() => {
     port = null;
     inbound.clear();
-    detach().catch(() => {});
+    release().catch(() => {});
   });
   return port;
 }
@@ -20,7 +23,8 @@ function connect() {
 function send(body) {
   const live = connect();
   const encoded = JSON.stringify(body);
-  const seq = Date.now();
+  outgoing += 1;
+  const seq = outgoing;
   if (encoded.length <= CHUNK_PAYLOAD) {
     live.postMessage({ t: "message", seq, body });
     return;
@@ -52,84 +56,91 @@ function reassemble(message) {
   return JSON.parse(group.join(""));
 }
 
-async function activeTabId() {
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (!tab) throw new Error("no active tab");
-  return tab.id;
+async function currentTabId() {
+  if (current !== null) {
+    try {
+      await chrome.tabs.get(current);
+      return current;
+    } catch {
+      current = null;
+    }
+  }
+  const [tab] = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
+  if (!tab) throw new Error("no open tab to drive");
+  current = tab.id;
+  return current;
+}
+
+async function listTabs() {
+  const tabs = await chrome.tabs.query({});
+  return tabs.map((tab) => ({
+    id: tab.id,
+    url: tab.url ?? "",
+    title: tab.title ?? "",
+    selected: tab.id === current,
+  }));
 }
 
 async function attach(tabId) {
   if (attached === tabId) return;
-  await detach();
-  await chrome.debugger.attach({ tabId }, "1.3");
+  await release();
+  await chrome.debugger.attach({ tabId }, PROTOCOL);
   attached = tabId;
 }
 
-async function detach() {
-  if (attached === null) return;
+async function release() {
   const tabId = attached;
   attached = null;
-  try {
-    await chrome.debugger.detach({ tabId });
-  } catch {
-    // the tab is already gone
-  }
+  if (tabId === null) return;
+  await chrome.debugger.detach({ tabId }).catch(() => {});
 }
 
-async function cdp(tabId, method, params) {
-  return chrome.debugger.sendCommand({ tabId }, method, params ?? {});
-}
-
-async function perform(params) {
-  const tabId = await activeTabId();
-  const action = params.action;
-  const args = params.arguments ?? {};
-
-  if (action === "navigate") {
-    await attach(tabId);
-    await cdp(tabId, "Page.enable");
-    await cdp(tabId, "Page.navigate", { url: args.url });
-    return { summary: `navigated to ${args.url}` };
+async function perform(params, begin) {
+  switch (params.command) {
+    case "cdp": {
+      const tabId = await currentTabId();
+      await attach(tabId);
+      begin();
+      const result = await chrome.debugger.sendCommand(
+        { tabId },
+        params.method,
+        params.params ?? {},
+      );
+      return { reply: "cdp", result: result ?? {} };
+    }
+    case "tab_list":
+      return { reply: "tabs", tabs: await listTabs() };
+    case "tab_select": {
+      begin();
+      await chrome.tabs.update(params.id, { active: true });
+      current = params.id;
+      await attach(params.id);
+      return { reply: "tabs", tabs: await listTabs() };
+    }
+    case "tab_close": {
+      begin();
+      if (params.id === attached) await release();
+      await chrome.tabs.remove(params.id);
+      if (params.id === current) current = null;
+      return { reply: "tabs", tabs: await listTabs() };
+    }
+    case "tab_open": {
+      begin();
+      const tab = await chrome.tabs.create({ url: params.url, active: true });
+      current = tab.id;
+      await attach(tab.id);
+      return { reply: "tabs", tabs: await listTabs() };
+    }
+    case "detach":
+      begin();
+      await release();
+      return { reply: "detached" };
+    default:
+      throw new Error(`unsupported browser command: ${params.command}`);
   }
-  if (action === "read_content") {
-    await attach(tabId);
-    const { result } = await cdp(tabId, "Runtime.evaluate", {
-      expression: "document.body.innerText",
-      returnByValue: true,
-    });
-    return { summary: "read the page text", text: result?.value ?? "" };
-  }
-  if (action === "click") {
-    await attach(tabId);
-    await cdp(tabId, "Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x: args.x,
-      y: args.y,
-      button: "left",
-      clickCount: 1,
-    });
-    await cdp(tabId, "Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x: args.x,
-      y: args.y,
-      button: "left",
-      clickCount: 1,
-    });
-    return { summary: `clicked at ${args.x},${args.y}` };
-  }
-  if (action === "screenshot") {
-    await attach(tabId);
-    const shot = await cdp(tabId, "Page.captureScreenshot", {
-      format: "jpeg",
-      quality: 80,
-    });
-    return {
-      summary: "captured the visible tab",
-      media_type: "image/jpeg",
-      image: shot.data,
-    };
-  }
-  throw new Error(`unsupported browser action: ${action}`);
 }
 
 async function onMessage(raw) {
@@ -138,8 +149,9 @@ async function onMessage(raw) {
 
   let started = false;
   try {
-    started = true;
-    const result = await perform(message.params ?? {});
+    const result = await perform(message.params ?? {}, () => {
+      started = true;
+    });
     send({
       type: "browser.reply",
       request_id: message.request_id,
@@ -151,10 +163,22 @@ async function onMessage(raw) {
       request_id: message.request_id,
       error: { message: String(error?.message ?? error), started },
     });
-  } finally {
-    await detach();
   }
 }
+
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (source.tabId !== attached) return;
+  send({ type: "browser.event", event: { method, params: params ?? {} } });
+});
+
+chrome.debugger.onDetach.addListener((source) => {
+  if (source.tabId === attached) attached = null;
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (tabId === attached) attached = null;
+  if (tabId === current) current = null;
+});
 
 chrome.runtime.onMessage.addListener((message, _sender, respond) => {
   if (message?.t !== "status") return false;

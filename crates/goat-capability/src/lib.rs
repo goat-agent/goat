@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use goat_api::Holder;
 use goat_wire::envelope::{CallError, ErrorCode, Execution};
 use goat_wire::peer::PeerHandle;
 use serde_json::Value;
@@ -109,12 +110,12 @@ pub struct ProviderSummary {
 }
 
 type Key = (String, String);
-type SessionKey = (u64, String);
+type LeaseKey = (Holder, String);
 
 #[derive(Default)]
 struct State {
     providers: HashMap<Key, Provider>,
-    leases: HashMap<SessionKey, Lease>,
+    leases: HashMap<LeaseKey, Lease>,
 }
 
 #[derive(Default)]
@@ -187,7 +188,7 @@ impl Broker {
 
     pub async fn bind(
         &self,
-        session: u64,
+        holder: &Holder,
         capability: &str,
         provider: &ProviderId,
     ) -> Result<(), CallError> {
@@ -198,7 +199,7 @@ impl Broker {
         };
         let boot_epoch = found.boot_epoch;
         state.leases.insert(
-            (session, capability.to_owned()),
+            (holder.clone(), capability.to_owned()),
             Lease {
                 provider: provider.clone(),
                 boot_epoch,
@@ -208,19 +209,31 @@ impl Broker {
         Ok(())
     }
 
-    pub async fn release(&self, session: u64, capability: &str) {
+    pub async fn release(&self, holder: &Holder, capability: &str) {
         let mut state = self.state.lock().await;
-        state.leases.remove(&(session, capability.to_owned()));
+        state
+            .leases
+            .remove(&(holder.clone(), capability.to_owned()));
     }
 
-    pub async fn release_session(&self, session: u64) {
+    pub async fn release_holder(&self, holder: &Holder) {
         let mut state = self.state.lock().await;
-        state.leases.retain(|(sid, _), _| *sid != session);
+        state.leases.retain(|(held, _), _| held != holder);
     }
 
-    pub async fn lease_state(&self, session: u64, capability: &str) -> Option<LeaseState> {
+    pub async fn holders(&self, instance: &str, capability: &str) -> Vec<Holder> {
         let state = self.state.lock().await;
-        let lease = state.leases.get(&(session, capability.to_owned()))?;
+        state
+            .leases
+            .iter()
+            .filter(|((_, held), lease)| held == capability && lease.provider.instance == instance)
+            .map(|((holder, _), _)| holder.clone())
+            .collect()
+    }
+
+    pub async fn lease_state(&self, holder: &Holder, capability: &str) -> Option<LeaseState> {
+        let state = self.state.lock().await;
+        let lease = state.leases.get(&(holder.clone(), capability.to_owned()))?;
         if lease.expires_at <= Instant::now() {
             return Some(LeaseState::Expired);
         }
@@ -233,27 +246,27 @@ impl Broker {
 
     pub async fn invoke(
         &self,
-        session: u64,
+        holder: &Holder,
         capability: &str,
         params: Value,
         deadline: Duration,
     ) -> Result<Value, CallError> {
-        let (caller, version) = self.acquire(session, capability).await?;
+        let (caller, version) = self.acquire(holder, capability).await?;
         let result = caller.call(capability, version, params, deadline).await;
-        self.finish(session, capability).await;
+        self.finish(holder, capability).await;
         result
     }
 
     async fn acquire(
         &self,
-        session: u64,
+        holder: &Holder,
         capability: &str,
     ) -> Result<(Arc<dyn Caller>, u16), CallError> {
         let mut state = self.state.lock().await;
         let now = Instant::now();
-        let session_key = (session, capability.to_owned());
+        let lease_key = (holder.clone(), capability.to_owned());
 
-        let instance = match state.leases.get(&session_key) {
+        let instance = match state.leases.get(&lease_key) {
             Some(lease) if lease.expires_at > now => {
                 let key = (lease.provider.instance.clone(), capability.to_owned());
                 let epoch = lease.boot_epoch;
@@ -298,7 +311,7 @@ impl Broker {
                             .get(&(instance.clone(), capability.to_owned()))
                             .map_or(0, |p| p.boot_epoch);
                         state.leases.insert(
-                            session_key,
+                            lease_key,
                             Lease {
                                 provider: ProviderId::new(String::new(), instance.clone()),
                                 boot_epoch: epoch,
@@ -346,11 +359,11 @@ impl Broker {
         Ok((provider.caller.clone(), provider.version))
     }
 
-    async fn finish(&self, session: u64, capability: &str) {
+    async fn finish(&self, holder: &Holder, capability: &str) {
         let mut state = self.state.lock().await;
         let instance = state
             .leases
-            .get(&(session, capability.to_owned()))
+            .get(&(holder.clone(), capability.to_owned()))
             .map(|lease| lease.provider.instance.clone());
         if let Some(instance) = instance
             && let Some(provider) = state.providers.get_mut(&(instance, capability.to_owned()))
@@ -373,7 +386,7 @@ fn no_host(capability: &str) -> CallError {
 #[cfg(test)]
 mod tests {
     use super::{
-        Broker, CallError, Caller, DEFAULT_CALL_DEADLINE, ErrorCode, Execution, LeaseState,
+        Broker, CallError, Caller, DEFAULT_CALL_DEADLINE, ErrorCode, Execution, Holder, LeaseState,
         ProviderId, Registration,
     };
     use goat_wire::envelope::Execution as Exec;
@@ -442,6 +455,14 @@ mod tests {
         }
     }
 
+    fn one() -> Holder {
+        Holder::session(goat_api::SessionId(1))
+    }
+
+    fn two() -> Holder {
+        Holder::agent("scout")
+    }
+
     fn registration(id: &str, caller: Arc<Fake>, epoch: u64, max_in_flight: usize) -> Registration {
         Registration {
             id: ProviderId::new("device", id),
@@ -458,7 +479,7 @@ mod tests {
     async fn no_provider_fails_immediately_and_tells_the_model_not_to_retry() {
         let broker = Broker::new();
         let err = broker
-            .invoke(1, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+            .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::NoHost);
@@ -477,16 +498,26 @@ mod tests {
             .await;
 
         let first = broker
-            .invoke(1, "host.browser", json!({"n": 1}), DEFAULT_CALL_DEADLINE)
+            .invoke(
+                &one(),
+                "host.browser",
+                json!({"n": 1}),
+                DEFAULT_CALL_DEADLINE,
+            )
             .await
             .unwrap();
         assert_eq!(first["by"], "laptop");
         assert_eq!(
-            broker.lease_state(1, "host.browser").await,
+            broker.lease_state(&one(), "host.browser").await,
             Some(LeaseState::Active)
         );
         broker
-            .invoke(1, "host.browser", json!({"n": 2}), DEFAULT_CALL_DEADLINE)
+            .invoke(
+                &one(),
+                "host.browser",
+                json!({"n": 2}),
+                DEFAULT_CALL_DEADLINE,
+            )
             .await
             .unwrap();
         assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
@@ -496,7 +527,7 @@ mod tests {
     async fn capability_registered_after_the_session_started_is_usable() {
         let broker = Broker::new();
         let err = broker
-            .invoke(1, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+            .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::NoHost);
@@ -504,7 +535,7 @@ mod tests {
         let (fake, _entered) = Fake::new("laptop");
         broker.register(registration("laptop", fake, 1, 1)).await;
         let got = broker
-            .invoke(1, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+            .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
             .await
             .unwrap();
         assert_eq!(got["by"], "laptop");
@@ -523,7 +554,7 @@ mod tests {
             .await;
 
         let err = broker
-            .invoke(1, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+            .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::Conflict);
@@ -534,11 +565,15 @@ mod tests {
         assert_eq!(listed["providers"], json!(["desktop", "laptop"]));
 
         broker
-            .bind(1, "host.browser", &ProviderId::new("device", "desktop"))
+            .bind(
+                &one(),
+                "host.browser",
+                &ProviderId::new("device", "desktop"),
+            )
             .await
             .unwrap();
         let got = broker
-            .invoke(1, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+            .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
             .await
             .unwrap();
         assert_eq!(got["by"], "desktop");
@@ -550,7 +585,7 @@ mod tests {
         let (laptop, _a) = Fake::new("laptop");
         broker.register(registration("laptop", laptop, 1, 1)).await;
         broker
-            .invoke(1, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+            .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
             .await
             .unwrap();
 
@@ -561,11 +596,11 @@ mod tests {
         broker.unregister_instance("laptop").await;
 
         assert_eq!(
-            broker.lease_state(1, "host.browser").await,
+            broker.lease_state(&one(), "host.browser").await,
             Some(LeaseState::Paused)
         );
         let err = broker
-            .invoke(1, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+            .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::HostGone);
@@ -579,7 +614,7 @@ mod tests {
         let (first, _a) = Fake::new("laptop");
         broker.register(registration("laptop", first, 1, 1)).await;
         broker
-            .invoke(1, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+            .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
             .await
             .unwrap();
 
@@ -588,22 +623,22 @@ mod tests {
             .register(registration("laptop", reborn.clone(), 2, 1))
             .await;
         assert_eq!(
-            broker.lease_state(1, "host.browser").await,
+            broker.lease_state(&one(), "host.browser").await,
             Some(LeaseState::Paused)
         );
         let err = broker
-            .invoke(1, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+            .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::HostGone);
         assert_eq!(reborn.calls.load(Ordering::SeqCst), 0);
 
         broker
-            .bind(1, "host.browser", &ProviderId::new("device", "laptop"))
+            .bind(&one(), "host.browser", &ProviderId::new("device", "laptop"))
             .await
             .unwrap();
         broker
-            .invoke(1, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+            .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
             .await
             .unwrap();
         assert_eq!(reborn.calls.load(Ordering::SeqCst), 1);
@@ -621,14 +656,24 @@ mod tests {
             let broker = broker.clone();
             tokio::spawn(async move {
                 broker
-                    .invoke(1, "host.browser", json!({"n": 1}), DEFAULT_CALL_DEADLINE)
+                    .invoke(
+                        &one(),
+                        "host.browser",
+                        json!({"n": 1}),
+                        DEFAULT_CALL_DEADLINE,
+                    )
                     .await
             })
         };
         assert_eq!(entered.recv().await, Some("laptop"));
 
         let err = broker
-            .invoke(1, "host.browser", json!({"n": 2}), DEFAULT_CALL_DEADLINE)
+            .invoke(
+                &one(),
+                "host.browser",
+                json!({"n": 2}),
+                DEFAULT_CALL_DEADLINE,
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::Conflict);
@@ -640,14 +685,19 @@ mod tests {
         assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
 
         broker
-            .invoke(1, "host.browser", json!({"n": 3}), DEFAULT_CALL_DEADLINE)
+            .invoke(
+                &one(),
+                "host.browser",
+                json!({"n": 3}),
+                DEFAULT_CALL_DEADLINE,
+            )
             .await
             .unwrap();
         assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
-    async fn two_sessions_get_independent_leases() {
+    async fn a_session_and_an_agent_get_independent_leases() {
         let broker = Broker::new();
         let (laptop, _a) = Fake::new("laptop");
         let (desktop, _b) = Fake::new("desktop");
@@ -658,24 +708,28 @@ mod tests {
             .register(registration("desktop", desktop.clone(), 1, 1))
             .await;
         broker
-            .bind(1, "host.browser", &ProviderId::new("device", "laptop"))
+            .bind(&one(), "host.browser", &ProviderId::new("device", "laptop"))
             .await
             .unwrap();
         broker
-            .bind(2, "host.browser", &ProviderId::new("device", "desktop"))
+            .bind(
+                &two(),
+                "host.browser",
+                &ProviderId::new("device", "desktop"),
+            )
             .await
             .unwrap();
 
         assert_eq!(
             broker
-                .invoke(1, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+                .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
                 .await
                 .unwrap()["by"],
             "laptop"
         );
         assert_eq!(
             broker
-                .invoke(2, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+                .invoke(&two(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
                 .await
                 .unwrap()["by"],
             "desktop"
@@ -688,21 +742,21 @@ mod tests {
         let (laptop, _a) = Fake::new("laptop");
         broker.register(registration("laptop", laptop, 1, 1)).await;
         broker
-            .invoke(1, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+            .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
             .await
             .unwrap();
         assert_eq!(
-            broker.lease_state(1, "host.browser").await,
+            broker.lease_state(&one(), "host.browser").await,
             Some(LeaseState::Active)
         );
 
         tokio::time::advance(Duration::from_secs(61)).await;
         assert_eq!(
-            broker.lease_state(1, "host.browser").await,
+            broker.lease_state(&one(), "host.browser").await,
             Some(LeaseState::Expired)
         );
         let got = broker
-            .invoke(1, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+            .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
             .await
             .unwrap();
         assert_eq!(got["by"], "laptop");
@@ -715,7 +769,7 @@ mod tests {
         let (desktop, _b) = Fake::new("desktop");
         broker.register(registration("laptop", laptop, 1, 1)).await;
         broker
-            .bind(1, "host.browser", &ProviderId::new("device", "laptop"))
+            .bind(&one(), "host.browser", &ProviderId::new("device", "laptop"))
             .await
             .unwrap();
         broker
@@ -724,7 +778,7 @@ mod tests {
 
         tokio::time::advance(Duration::from_secs(61)).await;
         let err = broker
-            .invoke(1, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+            .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::Conflict);
@@ -734,31 +788,57 @@ mod tests {
     async fn binding_an_unknown_provider_is_refused() {
         let broker = Broker::new();
         let err = broker
-            .bind(1, "host.browser", &ProviderId::new("device", "ghost"))
+            .bind(&one(), "host.browser", &ProviderId::new("device", "ghost"))
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::NoHost);
     }
 
     #[tokio::test]
-    async fn releasing_a_session_drops_only_its_leases() {
+    async fn releasing_a_holder_drops_only_its_leases() {
         let broker = Broker::new();
         let (laptop, _a) = Fake::new("laptop");
         broker.register(registration("laptop", laptop, 1, 1)).await;
         broker
-            .bind(1, "host.browser", &ProviderId::new("device", "laptop"))
+            .bind(&one(), "host.browser", &ProviderId::new("device", "laptop"))
             .await
             .unwrap();
         broker
-            .bind(2, "host.browser", &ProviderId::new("device", "laptop"))
+            .bind(&two(), "host.browser", &ProviderId::new("device", "laptop"))
             .await
             .unwrap();
-        broker.release_session(1).await;
-        assert_eq!(broker.lease_state(1, "host.browser").await, None);
+        broker.release_holder(&one()).await;
+        assert_eq!(broker.lease_state(&one(), "host.browser").await, None);
         assert_eq!(
-            broker.lease_state(2, "host.browser").await,
+            broker.lease_state(&two(), "host.browser").await,
             Some(LeaseState::Active)
         );
+    }
+
+    #[tokio::test]
+    async fn holders_finds_leases_however_they_were_made() {
+        let broker = Broker::new();
+        let (laptop, _a) = Fake::new("laptop");
+        broker.register(registration("laptop", laptop, 1, 1)).await;
+        broker
+            .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+            .await
+            .unwrap();
+        broker
+            .bind(&two(), "host.browser", &ProviderId::new("device", "laptop"))
+            .await
+            .unwrap();
+
+        let (desktop, _b) = Fake::new("desktop");
+        broker
+            .register(registration("desktop", desktop, 1, 1))
+            .await;
+
+        let mut found = broker.holders("laptop", "host.browser").await;
+        found.sort();
+        assert_eq!(found, vec![two(), one()]);
+        assert!(broker.holders("desktop", "host.browser").await.is_empty());
+        assert!(broker.holders("laptop", "host.simulator").await.is_empty());
     }
 
     #[tokio::test]
@@ -770,7 +850,7 @@ mod tests {
             .await;
         fake.connected.store(false, Ordering::SeqCst);
         let err = broker
-            .invoke(1, "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
+            .invoke(&one(), "host.browser", Value::Null, DEFAULT_CALL_DEADLINE)
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::HostGone);

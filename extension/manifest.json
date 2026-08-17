@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Chat with goat beside the page, and let goat drive this browser under your own login.",
   "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArO5XBJjMvOARI1d4tB0UJD/Mc+PuN9QuAAplOvkHN81EdnZBZP/duFxkZV/xpX+GeI11b67p1ffwQL8w5p4MdxDjjMeZAL5EMi478Gvf77Xh4N4pwafCFg5csDjmGNPwrVGh1hFXHH+PaiVYF3SoNEC7buovYvS1FXqEq6Kj/pqR52Hjmd0OkayYokMJFyh9JBQFWy8PxHlaZiMQwaHTdDabEb2nzPBNVubXgkssv33jBK6EJALxuVAMJh1D3uUCAQvfr1vlWlIPBviPIamWM8JKDgDAcbCxIN8wwH5cKcLz6ytGEQtTf9hGVbvtPaSjjaNJU3M2mg0iGmIm6QPExwIDAQAB",
   "background": {
     "service_worker": "background.js",
     "type": "module"

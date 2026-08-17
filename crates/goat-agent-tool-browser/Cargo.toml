@@ -1,0 +1,20 @@
+[package]
+name = "goat-agent-tool-browser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+goat-agent-tool  = { workspace = true }
+goat-api         = { workspace = true }
+goat-daemon      = { workspace = true }
+goat-tool        = { workspace = true }
+goat-tool-browser = { workspace = true }
+async-trait      = { workspace = true }
+
+[lints]
+workspace = true

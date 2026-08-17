@@ -17,7 +17,6 @@ pub struct GoatPaths {
     pub skills_dir: PathBuf,
     pub logs_dir: PathBuf,
     pub remote_dir: PathBuf,
-    pub browser_dir: PathBuf,
     pub update_dir: PathBuf,
     pub bin_dir: PathBuf,
     pub socket_path: PathBuf,
@@ -44,7 +43,6 @@ impl GoatPaths {
             skills_dir: root.join("skills"),
             logs_dir: root.join("logs"),
             remote_dir: root.join("remote"),
-            browser_dir: root.join("browser"),
             update_dir: root.join("update"),
             bin_dir: root.join("bin"),
             socket_path: root.join("daemon.sock"),
@@ -52,10 +50,6 @@ impl GoatPaths {
             state_db: root.join("goat.db"),
             root,
         }
-    }
-
-    pub fn browser_profile_dir(&self) -> PathBuf {
-        self.browser_dir.join("profile")
     }
 }
 
@@ -88,10 +82,6 @@ pub fn log_dir() -> Option<PathBuf> {
 
 pub fn skills_dir() -> Option<PathBuf> {
     resolved().map(|p| p.skills_dir)
-}
-
-pub fn browser_profile_dir() -> Option<PathBuf> {
-    resolved().map(|p| p.browser_profile_dir())
 }
 
 pub fn socket_path() -> Option<PathBuf> {

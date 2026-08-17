@@ -6,5 +6,5 @@ slow-timeout = { period = "20s", terminate-after = 3 }
 failure-output = "immediate-final"
 
 [[profile.default.overrides]]
-filter = 'package(goat-daemon)'
+filter = 'package(goat-daemon) | (package(goat-code) & binary(browser_host))'
 test-group = 'daemon'

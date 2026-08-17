@@ -1,13 +1,14 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use chromiumoxide::Page;
-use chromiumoxide::cdp::browser_protocol::page::{
+use chromiumoxide_cdp::cdp::browser_protocol::page::{
     DialogType, EventJavascriptDialogOpening, HandleJavaScriptDialogParams,
 };
-use futures::StreamExt as _;
-use tokio::sync::Mutex;
+use goat_api::CdpEvent;
+use tokio::sync::{Mutex, broadcast};
 use tokio::task::JoinHandle;
+
+use crate::cdp::{Cdp, decode, next_event};
 
 const DIALOG_LOG_MAX: usize = 8;
 const DIALOG_MESSAGE_MAX: usize = 120;
@@ -20,24 +21,9 @@ pub struct DialogGuard {
 }
 
 impl DialogGuard {
-    pub async fn spawn(page: &Page) -> Self {
+    pub fn spawn(cdp: &Cdp) -> Self {
         let log: DialogLog = Arc::new(Mutex::new(VecDeque::new()));
-        let task = match page.event_listener::<EventJavascriptDialogOpening>().await {
-            Ok(mut events) => {
-                let page = page.clone();
-                let log = log.clone();
-                tokio::spawn(async move {
-                    while let Some(event) = events.next().await {
-                        let accept = matches!(event.r#type, DialogType::Beforeunload);
-                        let _ = page
-                            .execute(HandleJavaScriptDialogParams::new(accept))
-                            .await;
-                        record(&log, &event, accept).await;
-                    }
-                })
-            }
-            Err(_) => tokio::spawn(std::future::ready(())),
-        };
+        let task = tokio::spawn(watch(cdp.clone(), cdp.events(), log.clone()));
         Self { task, log }
     }
 
@@ -48,6 +34,17 @@ impl DialogGuard {
 
     pub fn abort(&self) {
         self.task.abort();
+    }
+}
+
+async fn watch(cdp: Cdp, mut events: broadcast::Receiver<CdpEvent>, log: DialogLog) {
+    while let Some(event) = next_event(&mut events).await {
+        let Some(opening) = decode::<EventJavascriptDialogOpening>(&event) else {
+            continue;
+        };
+        let accept = matches!(opening.r#type, DialogType::Beforeunload);
+        let _ = cdp.send(HandleJavaScriptDialogParams::new(accept)).await;
+        record(&log, &opening, accept).await;
     }
 }
 

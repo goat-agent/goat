@@ -223,6 +223,7 @@ impl ProviderRegistry {
 
 pub struct BrainDeps {
     pub agent: AgentId,
+    pub slug: String,
     pub personality: Arc<AgentCard>,
     pub default_model: Model,
     pub timezone: Option<String>,
@@ -292,6 +293,7 @@ impl OutgoingSink for StoreSink {
 
 pub struct Brain {
     agent: AgentId,
+    agent_slug: String,
     personality: Arc<AgentCard>,
     default_model: Model,
     schedule_timezone: String,
@@ -318,6 +320,7 @@ impl Brain {
     pub fn new(deps: BrainDeps) -> Self {
         Self {
             agent: deps.agent,
+            agent_slug: deps.slug,
             personality: deps.personality,
             default_model: deps.default_model,
             schedule_timezone: deps
@@ -1330,6 +1333,7 @@ impl Brain {
         }
         let ctx = ToolCaller {
             agent: self.agent,
+            agent_slug: self.agent_slug.clone(),
             conversation: conv.clone(),
             audience,
             goat_root: self.goat_root.clone(),

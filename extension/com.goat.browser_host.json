@@ -3,5 +3,5 @@
   "description": "goat browser host",
   "path": "/usr/local/bin/goat-browser-host",
   "type": "stdio",
-  "allowed_origins": []
+  "allowed_origins": ["chrome-extension://mnpgokpnlppedkmpglalagjjbfidbcdf/"]
 }

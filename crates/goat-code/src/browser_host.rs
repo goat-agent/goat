@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use color_eyre::eyre::eyre;
+use goat_api::{BrowserEvent, BrowserEventParams, CdpEvent};
 use goat_browser_host::native::{Bridge, NativeError, Reassembler, frame, read_message};
 use goat_browser_host::{BrowserHost, BrowserPort, advertise, advertisement, withdrawal};
 use goat_wire::envelope::{CallError, ErrorCode, Execution, Hello, Role};
@@ -54,6 +55,13 @@ impl<W: AsyncWrite + Unpin + Send + Sync> BrowserPort for StdoutPort<W> {
         }))
         .await
     }
+}
+
+pub fn parse_event(body: &Value) -> Option<CdpEvent> {
+    if body.get("type").and_then(Value::as_str) != Some("browser.event") {
+        return None;
+    }
+    serde_json::from_value(body.get("event")?.clone()).ok()
 }
 
 pub fn parse_reply(body: &Value) -> Option<(u64, Result<Value, CallError>)> {
@@ -127,16 +135,21 @@ pub async fn run(instance: Option<String>, label: Option<String>) -> color_eyre:
             Err(NativeError::Closed) => break,
             Err(err) => return Err(eyre!("{err}")),
         };
-        let Ok(bridge) = serde_json::from_value::<Bridge>(message.clone()) else {
-            if let Some((request_id, result)) = parse_reply(&message) {
-                host.settle(request_id, result).await;
-            }
-            continue;
+        let body = match serde_json::from_value::<Bridge>(message.clone()) {
+            Ok(bridge) => reassembler.accept(bridge).map_err(|err| eyre!("{err}"))?,
+            Err(_) => Some(message),
         };
-        if let Some(body) = reassembler.accept(bridge).map_err(|err| eyre!("{err}"))?
-            && let Some((request_id, result)) = parse_reply(&body)
-        {
+        let Some(body) = body else { continue };
+        if let Some((request_id, result)) = parse_reply(&body) {
             host.settle(request_id, result).await;
+        } else if let Some(event) = parse_event(&body) {
+            let _ = session
+                .api
+                .call::<BrowserEvent>(BrowserEventParams {
+                    instance: instance.clone(),
+                    event,
+                })
+                .await;
         }
     }
 
@@ -148,7 +161,7 @@ pub async fn run(instance: Option<String>, label: Option<String>) -> color_eyre:
 
 #[cfg(test)]
 mod tests {
-    use super::{StdoutPort, parse_reply};
+    use super::{StdoutPort, parse_event, parse_reply};
     use goat_browser_host::BrowserPort;
     use goat_browser_host::native::Bridge;
     use goat_wire::envelope::{ErrorCode, Execution};
@@ -269,5 +282,22 @@ mod tests {
             parse_reply(&json!({"type": "browser.reply", "request_id": "abc"})).is_none(),
             "a non-numeric request id must not be accepted"
         );
+    }
+
+    #[test]
+    fn an_unsolicited_event_is_parsed_without_a_request_id() {
+        let event = parse_event(&json!({
+            "type": "browser.event",
+            "event": {"method": "Page.loadEventFired", "params": {"timestamp": 1.0}}
+        }))
+        .expect("an event parses");
+        assert_eq!(event.method, "Page.loadEventFired");
+        assert_eq!(event.params["timestamp"], 1.0);
+    }
+
+    #[test]
+    fn a_reply_is_never_read_as_an_event() {
+        assert!(parse_event(&json!({"type": "browser.reply", "request_id": "1"})).is_none());
+        assert!(parse_event(&json!({"type": "browser.event"})).is_none());
     }
 }

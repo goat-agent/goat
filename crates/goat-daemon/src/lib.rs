@@ -1,4 +1,5 @@
 mod api;
+mod browser;
 mod envelope_conn;
 mod files;
 mod manager;
@@ -14,6 +15,7 @@ use goat_wire::transport;
 use tokio_util::sync::CancellationToken;
 
 pub use crate::api::{LOCAL_GRANTS, REMOTE_GRANTS, build as build_router};
+pub use crate::browser::{BrowserEvents, BrowserRelay};
 
 pub use crate::envelope_conn::{
     ClientOrigin, EnvelopeHost, device_for, grants_for, serve_envelope,

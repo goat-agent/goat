@@ -69,16 +69,29 @@ pub struct CodingEngine {
     meter: Option<goat_proxy::Meter>,
 }
 
+pub struct EngineDeps {
+    pub registry: Registry,
+    pub store: Store,
+    pub credentials: CredentialStore,
+    pub user_providers: goat_config::UserProviders,
+    pub target: Option<ModelTarget>,
+    pub cwd: PathBuf,
+    pub meter: Option<goat_proxy::Meter>,
+    pub browser: Option<Arc<dyn goat_tool_browser::Transport>>,
+}
+
 impl CodingEngine {
-    pub async fn new(
-        registry: Registry,
-        store: Store,
-        credentials: CredentialStore,
-        user_providers: goat_config::UserProviders,
-        target: Option<ModelTarget>,
-        cwd: PathBuf,
-        meter: Option<goat_proxy::Meter>,
-    ) -> Self {
+    pub async fn new(deps: EngineDeps) -> Self {
+        let EngineDeps {
+            registry,
+            store,
+            credentials,
+            user_providers,
+            target,
+            cwd,
+            meter,
+            browser,
+        } = deps;
         let config = goat_config::Config::load();
         let project_root = goat_worktree::workspace(&cwd)
             .map_or_else(|_| cwd.clone(), |workspace| workspace.repo_root);
@@ -104,8 +117,8 @@ impl CodingEngine {
         if tool_count > 0 {
             tracing::info!(tool_count, "registered mcp tools");
         }
-        if config.browser_enabled {
-            tools.push(Box::new(goat_tool_browser::browser_tool()));
+        if let Some(browser) = browser {
+            tools.push(Box::new(goat_tool_browser::browser_tool(browser)));
         }
         Self {
             registry,
@@ -566,7 +579,7 @@ mod tests {
     use goat_providers::Registry;
     use tokio::{sync::mpsc, task::JoinHandle};
 
-    use super::CodingEngine;
+    use super::{CodingEngine, EngineDeps};
 
     struct MockProvider {
         id: String,
@@ -802,16 +815,7 @@ mod tests {
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-steering.json"));
         (
-            CodingEngine::new(
-                registry,
-                store,
-                credentials,
-                test_user_providers(),
-                Some(target("mock")),
-                std::env::temp_dir(),
-                None,
-            )
-            .await,
+            CodingEngine::new(test_deps(registry, store, credentials, "mock")).await,
             calls,
         )
     }
@@ -1061,16 +1065,8 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-overflow.json"));
-        let agent = CodingEngine::new(
-            registry,
-            store.clone(),
-            credentials,
-            test_user_providers(),
-            Some(target("mock")),
-            std::env::temp_dir(),
-            None,
-        )
-        .await;
+        let agent =
+            CodingEngine::new(test_deps(registry, store.clone(), credentials, "mock")).await;
         let session = Session::spawn(agent);
         let (ops, mut events, _handle) = session.into_parts();
         ops.send(Op::SubmitMessage {
@@ -1153,15 +1149,12 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-resume-compact.json"));
-        let agent = CodingEngine::new(
+        let agent = CodingEngine::new(test_deps(
             registry,
             store.clone(),
             credentials.clone(),
-            test_user_providers(),
-            Some(target("mock")),
-            std::env::temp_dir(),
-            None,
-        )
+            "mock",
+        ))
         .await;
         let session = Session::spawn(agent);
         let (ops, mut events, _handle) = session.into_parts();
@@ -1186,16 +1179,8 @@ mod tests {
             delay_ms: 0,
         };
         let registry2 = Registry::from_providers(vec![Arc::new(provider2)]);
-        let agent2 = CodingEngine::new(
-            registry2,
-            store.clone(),
-            credentials,
-            test_user_providers(),
-            Some(target("mock")),
-            std::env::temp_dir(),
-            None,
-        )
-        .await;
+        let agent2 =
+            CodingEngine::new(test_deps(registry2, store.clone(), credentials, "mock")).await;
         let session2 = Session::spawn(agent2);
         let (ops2, mut events2, _handle2) = session2.into_parts();
         ops2.send(Op::Resume { conversation_id: 1 }).await.unwrap();
@@ -1276,16 +1261,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-retry.json"));
         (
-            CodingEngine::new(
-                registry,
-                store,
-                credentials,
-                test_user_providers(),
-                Some(target("mock")),
-                std::env::temp_dir(),
-                None,
-            )
-            .await,
+            CodingEngine::new(test_deps(registry, store, credentials, "mock")).await,
             calls,
         )
     }
@@ -1424,16 +1400,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-delegate.json"));
-        let agent = CodingEngine::new(
-            registry,
-            store,
-            credentials,
-            test_user_providers(),
-            Some(target("mock")),
-            std::env::temp_dir(),
-            None,
-        )
-        .await;
+        let agent = CodingEngine::new(test_deps(registry, store, credentials, "mock")).await;
         let session = Session::spawn(agent);
         let (ops, mut events, _handle) = session.into_parts();
         ops.send(Op::SubmitMessage {
@@ -1478,16 +1445,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-parallel-delegate.json"));
-        let agent = CodingEngine::new(
-            registry,
-            store,
-            credentials,
-            test_user_providers(),
-            Some(target("mock")),
-            std::env::temp_dir(),
-            None,
-        )
-        .await;
+        let agent = CodingEngine::new(test_deps(registry, store, credentials, "mock")).await;
         let session = Session::spawn(agent);
         let (ops, mut events, _handle) = session.into_parts();
         ops.send(Op::SubmitMessage {
@@ -1552,16 +1510,7 @@ mod tests {
         let registry = Registry::from_providers(vec![Arc::new(provider)]);
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-anchor.json"));
-        let agent = CodingEngine::new(
-            registry,
-            store,
-            credentials,
-            test_user_providers(),
-            Some(target("mock")),
-            std::env::temp_dir(),
-            None,
-        )
-        .await;
+        let agent = CodingEngine::new(test_deps(registry, store, credentials, "mock")).await;
         let session = Session::spawn(agent);
         let (ops, mut events, _handle) = session.into_parts();
         ops.send(Op::SubmitMessage {
@@ -1605,6 +1554,24 @@ mod tests {
         )
     }
 
+    fn test_deps(
+        registry: Registry,
+        store: Store,
+        credentials: CredentialStore,
+        provider: &str,
+    ) -> EngineDeps {
+        EngineDeps {
+            registry,
+            store,
+            credentials,
+            user_providers: test_user_providers(),
+            target: Some(target(provider)),
+            cwd: std::env::temp_dir(),
+            meter: None,
+            browser: None,
+        }
+    }
+
     fn target(provider: &str) -> ModelTarget {
         ModelTarget {
             provider: provider.to_owned(),
@@ -1623,16 +1590,7 @@ mod tests {
         let registry = Registry::from_providers(vec![Arc::new(provider)]);
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-test.json"));
-        CodingEngine::new(
-            registry,
-            store,
-            credentials,
-            test_user_providers(),
-            Some(target("mock")),
-            std::env::temp_dir(),
-            None,
-        )
-        .await
+        CodingEngine::new(test_deps(registry, store, credentials, "mock")).await
     }
 
     #[tokio::test]
@@ -1722,16 +1680,7 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-slow-open.json"));
-        let agent = CodingEngine::new(
-            registry,
-            store,
-            credentials,
-            test_user_providers(),
-            Some(target("mock")),
-            std::env::temp_dir(),
-            None,
-        )
-        .await;
+        let agent = CodingEngine::new(test_deps(registry, store, credentials, "mock")).await;
         let session = Session::spawn(agent);
         let (ops, mut events, _handle) = session.into_parts();
         ops.send(Op::SubmitMessage {
@@ -1810,16 +1759,7 @@ mod tests {
         let registry = Registry::from_providers(vec![]);
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-ghost.json"));
-        let agent = CodingEngine::new(
-            registry,
-            store,
-            credentials,
-            test_user_providers(),
-            Some(target("ghost")),
-            std::env::temp_dir(),
-            None,
-        )
-        .await;
+        let agent = CodingEngine::new(test_deps(registry, store, credentials, "ghost")).await;
         let session = Session::spawn(agent);
         let (ops, mut events, _handle) = session.into_parts();
         ops.send(Op::SubmitMessage {
@@ -1910,16 +1850,8 @@ mod tests {
         let registry = Registry::from_providers(vec![Arc::new(provider)]);
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-shell.json"));
-        let agent = CodingEngine::new(
-            registry,
-            store.clone(),
-            credentials,
-            test_user_providers(),
-            Some(target("mock")),
-            std::env::temp_dir(),
-            None,
-        )
-        .await;
+        let agent =
+            CodingEngine::new(test_deps(registry, store.clone(), credentials, "mock")).await;
         let session = Session::spawn(agent);
         let (ops, mut events, _handle) = session.into_parts();
 
@@ -1976,16 +1908,8 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-resume-latest.json"));
-        let agent = CodingEngine::new(
-            registry,
-            store.clone(),
-            credentials,
-            test_user_providers(),
-            Some(target("mock")),
-            std::env::temp_dir(),
-            None,
-        )
-        .await;
+        let agent =
+            CodingEngine::new(test_deps(registry, store.clone(), credentials, "mock")).await;
         let session = Session::spawn(agent);
         let (ops, mut events, _handle) = session.into_parts();
 
@@ -2024,16 +1948,8 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-resume-kind.json"));
-        let agent = CodingEngine::new(
-            registry,
-            store.clone(),
-            credentials,
-            test_user_providers(),
-            Some(target("mock")),
-            std::env::temp_dir(),
-            None,
-        )
-        .await;
+        let agent =
+            CodingEngine::new(test_deps(registry, store.clone(), credentials, "mock")).await;
         let session = Session::spawn(agent);
         let (ops, mut events, _handle) = session.into_parts();
 
@@ -2155,16 +2071,8 @@ mod tests {
         let store = Store::open_in_memory().await.unwrap();
         let credentials =
             CredentialStore::new(std::env::temp_dir().join("goat-agent-resume-latest-empty.json"));
-        let agent = CodingEngine::new(
-            registry,
-            store.clone(),
-            credentials,
-            test_user_providers(),
-            Some(target("mock")),
-            std::env::temp_dir(),
-            None,
-        )
-        .await;
+        let agent =
+            CodingEngine::new(test_deps(registry, store.clone(), credentials, "mock")).await;
         let session = Session::spawn(agent);
         let (ops, mut events, _handle) = session.into_parts();
 
@@ -2205,16 +2113,8 @@ mod tests {
         let registry = Registry::from_providers(vec![Arc::new(provider)]);
         let store = Store::open_in_memory().await.unwrap();
         let credentials = CredentialStore::new(std::env::temp_dir().join("goat-agent-clear.json"));
-        let agent = CodingEngine::new(
-            registry,
-            store.clone(),
-            credentials,
-            test_user_providers(),
-            Some(target("mock")),
-            std::env::temp_dir(),
-            None,
-        )
-        .await;
+        let agent =
+            CodingEngine::new(test_deps(registry, store.clone(), credentials, "mock")).await;
         let session = Session::spawn(agent);
         let (ops, mut events, _handle) = session.into_parts();
 

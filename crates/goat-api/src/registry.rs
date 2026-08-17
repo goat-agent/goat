@@ -168,6 +168,7 @@ pub fn registry() -> Vec<MethodSchema> {
         describe::<m::AdminDeviceRevoke>(),
         describe::<m::HostBrowser>(),
         describe::<m::HostNotify>(),
+        describe::<m::BrowserEvent>(),
     ];
     all.sort_by(|a, b| (a.name, a.version).cmp(&(b.name, b.version)));
     all

@@ -85,7 +85,6 @@ pub struct SessionSnapshot {
     pub skill_count: usize,
     pub transcript_entries: usize,
     pub mouse_capture: bool,
-    pub browser: bool,
     pub dark_theme: bool,
     pub log_path: Option<String>,
     pub started: Instant,
@@ -96,8 +95,6 @@ pub trait Settings {
     fn set_theme(&mut self, theme: Theme);
     fn mouse_capture(&self) -> bool;
     fn set_mouse_capture(&mut self, enabled: bool);
-    fn browser(&self) -> bool;
-    fn set_browser(&mut self, enabled: bool);
 }
 
 pub trait Composer {

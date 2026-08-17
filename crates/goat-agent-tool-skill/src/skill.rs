@@ -115,6 +115,7 @@ mod tests {
     fn ctx(root: std::path::PathBuf) -> ToolCaller {
         ToolCaller {
             agent: AgentId::from_slug("dev"),
+            agent_slug: "dev".to_owned(),
             conversation: ConversationId {
                 channel: ChannelId::from_static("test"),
                 instance: InstanceId::new(),

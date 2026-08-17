@@ -114,6 +114,8 @@ image = { version = "0.25", default-features = false, features = [
     "webp",
 ] }
 chromiumoxide = "0.9"
+chromiumoxide_cdp = "0.9"
+chromiumoxide_types = "0.9"
 arboard = "3.6.1"
 rand = "0.10"
 rmcp = { version = "3.0.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "auth", "reqwest-tls-no-provider"] }
@@ -181,6 +183,7 @@ goat-agent-tool-skill         = { path = "crates/goat-agent-tool-skill" }
 goat-agent-tool-schedule      = { path = "crates/goat-agent-tool-schedule" }
 goat-agent-tool-goal          = { path = "crates/goat-agent-tool-goal" }
 goat-agent-tool-code          = { path = "crates/goat-agent-tool-code" }
+goat-agent-tool-browser       = { path = "crates/goat-agent-tool-browser" }
 goat-agent-tool-memory        = { path = "crates/goat-agent-tool-memory" }
 goat-agent-tool-pty           = { path = "crates/goat-agent-tool-pty" }
 goat-brain              = { path = "crates/goat-brain" }

@@ -17,7 +17,6 @@ pub enum ThemeChoice {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    pub browser_enabled: bool,
     #[serde(alias = "remote")]
     pub devices: DeviceConfig,
     pub search: SearchConfig,
@@ -319,7 +318,7 @@ mod tests {
         let client = directory.path().join("client.json");
         fs::write(
             &daemon,
-            r#"{ "theme": "light", "default_remote": "box", "browser_enabled": true }"#,
+            r#"{ "theme": "light", "default_remote": "box", "proxy": { "bind": "127.0.0.1:9000" } }"#,
         )
         .unwrap();
 
@@ -334,13 +333,13 @@ mod tests {
             "the adopted keys leave the daemon file so they cannot be edited in two places"
         );
         assert_eq!(
-            left["browser_enabled"], true,
+            left["proxy"]["bind"], "127.0.0.1:9000",
             "what the daemon owns stays where it was"
         );
         let taken: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&client).unwrap()).unwrap();
         assert!(
-            taken.get("browser_enabled").is_none(),
+            taken.get("proxy").is_none(),
             "adoption takes only the keys the client owns"
         );
 
@@ -350,12 +349,6 @@ mod tests {
             ThemeChoice::Light,
             "once client.json exists the daemon file is never consulted again"
         );
-    }
-
-    #[test]
-    fn the_daemon_file_keeps_what_it_owns() {
-        let cfg = Config::from_json(r#"{ "browser_enabled": true }"#).unwrap();
-        assert!(cfg.browser_enabled);
     }
 
     #[test]
@@ -413,11 +406,11 @@ mod tests {
         let mut config = Config::load_path(&path);
         assert_eq!(config.unrecognized.len(), 1);
         assert!(config.unrecognized.contains_key("future_extension"));
-        config.browser_enabled = true;
+        config.proxy.enabled = false;
         config.save_path(&path).unwrap();
         let reloaded = Config::load_path(&path);
 
-        assert!(reloaded.browser_enabled);
+        assert!(!reloaded.proxy.enabled);
         assert_eq!(reloaded.unrecognized["future_extension"], expected);
         let saved: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
@@ -427,7 +420,6 @@ mod tests {
     #[test]
     fn round_trips_through_json() {
         let cfg = Config {
-            browser_enabled: true,
             devices: DeviceConfig::default(),
             search: SearchConfig::default(),
             web_fetch: WebFetchConfig::default(),

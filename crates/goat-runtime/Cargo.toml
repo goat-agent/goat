@@ -31,6 +31,7 @@ goat-agent-tool-schedule    = { workspace = true }
 goat-agent-tool-observation = { workspace = true }
 goat-agent-tool-goal        = { workspace = true }
 goat-agent-tool-code        = { workspace = true }
+goat-agent-tool-browser     = { workspace = true }
 goat-daemon             = { workspace = true }
 goat-wire             = { workspace = true }
 goat-agent-tool-memory      = { workspace = true }

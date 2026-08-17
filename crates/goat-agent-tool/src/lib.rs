@@ -186,6 +186,7 @@ pub enum ToolAudience {
 #[derive(Clone, Debug)]
 pub struct ToolCaller {
     pub agent: AgentId,
+    pub agent_slug: String,
     pub conversation: ConversationId,
     pub audience: Option<ToolAudience>,
     pub goat_root: PathBuf,

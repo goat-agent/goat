@@ -50,7 +50,7 @@ pub fn routes(router: Router, broker: Arc<Broker>, device: String) -> Router {
             async move {
                 broker
                     .bind(
-                        params.session.0,
+                        &params.holder,
                         &params.capability,
                         &ProviderId::new(device, params.instance),
                     )
@@ -90,7 +90,7 @@ mod tests {
     use super::routes;
     use crate::{Broker, DEFAULT_CALL_DEADLINE};
     use goat_api::{
-        CapabilityListOutput, Empty, Grant, HostBrowser, HostBrowserOutput, HostBrowserParams,
+        BrowserCommand, CapabilityListOutput, Empty, Grant, Holder, HostBrowser, HostBrowserOutput,
         Router,
     };
     use goat_wire::WireConn;
@@ -110,15 +110,19 @@ mod tests {
         closed: CancellationToken,
     }
 
+    fn holder() -> Holder {
+        Holder::session(goat_api::SessionId(1))
+    }
+
     fn daemon_router(broker: Arc<Broker>) -> Router {
         let driver = broker.clone();
         routes(Router::new([Grant::Any]), broker, "device".to_owned()).unary::<HostBrowser, _, _>(
-            move |params: HostBrowserParams, _ctx| {
+            move |params: BrowserCommand, _ctx| {
                 let broker = driver.clone();
                 async move {
                     let value = broker
                         .invoke(
-                            params.origin.session.0,
+                            &holder(),
                             "host.browser",
                             serde_json::to_value(&params).unwrap_or(Value::Null),
                             DEFAULT_CALL_DEADLINE,
@@ -133,25 +137,24 @@ mod tests {
     }
 
     fn browser_client(entered: mpsc::UnboundedSender<String>, hold: bool) -> Router {
-        Router::new([Grant::Any]).unary::<HostBrowser, _, _>(
-            move |params: HostBrowserParams, ctx| {
-                let entered = entered.clone();
-                async move {
-                    let _ = entered.send(params.action.clone());
-                    if hold {
-                        ctx.cancel.cancelled().await;
-                        return Err(CallError::new(ErrorCode::Canceled, "cancelled")
-                            .with_execution(Execution::OutcomeUnknown));
-                    }
-                    Ok(HostBrowserOutput {
-                        summary: format!("did {}", params.action),
-                        text: Some("hello".to_owned()),
-                        media_type: None,
-                        image: None,
-                    })
+        Router::new([Grant::Any]).unary::<HostBrowser, _, _>(move |params: BrowserCommand, ctx| {
+            let entered = entered.clone();
+            async move {
+                let method = match &params {
+                    BrowserCommand::Cdp { method, .. } => method.clone(),
+                    other => format!("{other:?}"),
+                };
+                let _ = entered.send(method.clone());
+                if hold {
+                    ctx.cancel.cancelled().await;
+                    return Err(CallError::new(ErrorCode::Canceled, "cancelled")
+                        .with_execution(Execution::OutcomeUnknown));
                 }
-            },
-        )
+                Ok(HostBrowserOutput::Cdp {
+                    result: json!({ "did": method }),
+                })
+            }
+        })
     }
 
     fn connect(daemon: Router, client: Router) -> Rig {
@@ -197,12 +200,8 @@ mod tests {
             .unwrap();
     }
 
-    fn drive(action: &str) -> Value {
-        json!({
-            "origin": {"session": "1", "task": "9", "label": "test"},
-            "action": action,
-            "arguments": {}
-        })
+    fn drive(method: &str) -> Value {
+        json!({ "command": "cdp", "method": method, "params": {} })
     }
 
     #[tokio::test]
@@ -219,13 +218,17 @@ mod tests {
         let value = rig
             .client
             .handle
-            .call("host.browser", 1, drive("navigate"))
+            .call("host.browser", 1, drive("Page.navigate"))
             .await
             .unwrap();
-        assert_eq!(entered_rx.recv().await.as_deref(), Some("navigate"));
+        assert_eq!(entered_rx.recv().await.as_deref(), Some("Page.navigate"));
         let output: HostBrowserOutput = serde_json::from_value(value).unwrap();
-        assert_eq!(output.summary, "did navigate");
-        assert_eq!(output.text.as_deref(), Some("hello"));
+        assert_eq!(
+            output,
+            HostBrowserOutput::Cdp {
+                result: json!({ "did": "Page.navigate" }),
+            }
+        );
     }
 
     #[tokio::test]
@@ -240,7 +243,7 @@ mod tests {
         let err = rig
             .client
             .handle
-            .call("host.browser", 1, drive("navigate"))
+            .call("host.browser", 1, drive("Page.navigate"))
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::NoHost);
@@ -306,7 +309,7 @@ mod tests {
             .call(
                 "capability.bind",
                 1,
-                json!({"session": "1", "capability": "host.browser", "instance": "ghost"}),
+                json!({"holder": "s1", "capability": "host.browser", "instance": "ghost"}),
             )
             .await
             .unwrap_err();
@@ -322,9 +325,16 @@ mod tests {
 
         let call = {
             let handle = rig.client.handle.clone();
-            tokio::spawn(async move { handle.call("host.browser", 1, drive("click")).await })
+            tokio::spawn(async move {
+                handle
+                    .call("host.browser", 1, drive("Input.dispatchMouseEvent"))
+                    .await
+            })
         };
-        assert_eq!(entered_rx.recv().await.as_deref(), Some("click"));
+        assert_eq!(
+            entered_rx.recv().await.as_deref(),
+            Some("Input.dispatchMouseEvent")
+        );
 
         rig.closed.cancel();
         let err = call.await.unwrap().unwrap_err();
@@ -341,9 +351,16 @@ mod tests {
 
         let call = {
             let handle = rig.client.handle.clone();
-            tokio::spawn(async move { handle.call("host.browser", 1, drive("click")).await })
+            tokio::spawn(async move {
+                handle
+                    .call("host.browser", 1, drive("Input.dispatchMouseEvent"))
+                    .await
+            })
         };
-        assert_eq!(entered_rx.recv().await.as_deref(), Some("click"));
+        assert_eq!(
+            entered_rx.recv().await.as_deref(),
+            Some("Input.dispatchMouseEvent")
+        );
 
         tokio::time::advance(DEFAULT_CALL_DEADLINE + Duration::from_secs(1)).await;
         let err = call.await.unwrap().unwrap_err();

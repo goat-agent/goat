@@ -152,7 +152,6 @@ struct SettingsState {
     theme: Theme,
     terminal_bg: Option<ratatui::style::Color>,
     mouse_capture: bool,
-    browser: bool,
     theme_changed: bool,
     save_failed: bool,
 }
@@ -306,13 +305,11 @@ impl App {
             .then(|| goat_worktree::workspace(std::path::Path::new(&origin.cwd)).ok())
             .flatten();
         let client = goat_config::ClientConfig::load();
-        let cfg = goat_config::Config::load();
         Self {
             settings: SettingsState {
                 theme,
                 terminal_bg: None,
                 mouse_capture: client.mouse_capture_enabled,
-                browser: cfg.browser_enabled,
                 theme_changed: false,
                 save_failed: false,
             },
@@ -1703,14 +1700,6 @@ impl Settings for SettingsState {
         client.mouse_capture_enabled = enabled;
         self.persist_client(&client);
     }
-
-    fn browser(&self) -> bool {
-        self.browser
-    }
-
-    fn set_browser(&mut self, enabled: bool) {
-        self.browser = enabled;
-    }
 }
 
 impl Viewport for TranscriptViewport {
@@ -1802,7 +1791,6 @@ impl Session for App {
             skill_count: self.commands.specs().len(),
             transcript_entries: self.viewport.transcript.entry_count(),
             mouse_capture: self.settings.mouse_capture,
-            browser: self.settings.browser,
             dark_theme: self.settings.theme.is_dark(),
             log_path: goat_config::log_dir().map(|dir| format!("{}/goat.log", dir.display())),
             started: self.session.started,
