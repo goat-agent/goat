@@ -567,6 +567,7 @@ pub(crate) fn snapshot_item(
         processes,
         usage,
         active,
+        retry,
         ..
     } = frame
     else {
@@ -603,6 +604,14 @@ pub(crate) fn snapshot_item(
                     compaction_threshold: entry.compaction_threshold,
                 })
                 .collect(),
+            retry: retry.map(|entry| goat_api::RetryEntry {
+                id: entry.id,
+                attempt: entry.attempt,
+                max_attempts: entry.max_attempts,
+                delay_ms: entry.delay_ms,
+                reason: entry.reason,
+                resets_at: entry.resets_at,
+            }),
             rate_limits: rate_limits
                 .into_iter()
                 .map(|entry| goat_api::RateLimitEntry {

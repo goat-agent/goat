@@ -24,4 +24,4 @@ session.kill@1 unary any to_daemon 8cd7d66a51ea5c8b
 session.list@1 unary any to_daemon cb99dd0327a76825
 session.open@1 unary any to_daemon ed6f0ae5a1f5d57f
 session.submit@1 unary any to_daemon 914d120f36f8071c
-session.watch@1 stream:reliable any to_daemon 3b5e98e6610908d1
+session.watch@1 stream:reliable any to_daemon 0d7a0feae0fe35c1

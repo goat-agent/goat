@@ -102,6 +102,16 @@ pub struct UsageEntry {
     pub compaction_threshold: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RetryEntry {
+    pub id: TaskId,
+    pub attempt: u32,
+    pub max_attempts: u32,
+    pub delay_ms: u64,
+    pub reason: String,
+    pub resets_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RateLimitEntry {
     pub provider: String,
@@ -129,6 +139,8 @@ pub struct SessionSnapshot {
     pub usage: Vec<UsageEntry>,
     pub rate_limits: Vec<RateLimitEntry>,
     pub active: Option<TaskId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<RetryEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
