@@ -7,6 +7,7 @@ pub struct GoatPaths {
     pub root: PathBuf,
     pub credentials_json: PathBuf,
     pub config_json: PathBuf,
+    pub client_json: PathBuf,
     pub mcp_json: PathBuf,
     pub mcp_approvals_json: PathBuf,
     pub rate_limits_json: PathBuf,
@@ -33,6 +34,7 @@ impl GoatPaths {
         Self {
             credentials_json: root.join("credentials.json"),
             config_json: root.join("config.json"),
+            client_json: root.join("client.json"),
             mcp_json: root.join("mcp.json"),
             mcp_approvals_json: root.join("mcp_approvals.json"),
             rate_limits_json: root.join("rate_limits.json"),
@@ -64,12 +66,16 @@ fn home_root() -> Result<PathBuf> {
 
 pub const HOME_NOT_FOUND: &str = "could not resolve ~/.goat";
 
-fn resolved() -> Option<GoatPaths> {
+pub(crate) fn resolved() -> Option<GoatPaths> {
     GoatPaths::default_layout().ok()
 }
 
 pub fn config_path() -> Option<PathBuf> {
     resolved().map(|p| p.config_json)
+}
+
+pub fn client_path() -> Option<PathBuf> {
+    resolved().map(|p| p.client_json)
 }
 
 pub fn auth_path() -> Option<PathBuf> {

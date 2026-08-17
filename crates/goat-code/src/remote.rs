@@ -1,7 +1,7 @@
 use color_eyre::eyre::eyre;
 use goat_auth::{Credential, CredentialKey, CredentialStore, SecretString};
 use goat_client::Link;
-use goat_config::{Config, LOCAL_REMOTE, RemoteEntry};
+use goat_config::{ClientConfig, LOCAL_REMOTE, RemoteEntry};
 use goat_remote::client::DeviceCredentials;
 
 const KEY: &str = "key";
@@ -15,7 +15,7 @@ pub struct Row {
 }
 
 pub fn resolve(requested: Option<&str>) -> color_eyre::Result<Link> {
-    let config = Config::load();
+    let config = ClientConfig::load();
     let name = requested.or(config.default_remote.as_deref());
     match name {
         None | Some(LOCAL_REMOTE) => local(),
@@ -67,7 +67,7 @@ pub async fn add(
         Credential::ApiKey(SecretString::from(enrollment.ca_cert_pem)),
     )?;
 
-    let mut config = Config::load();
+    let mut config = ClientConfig::load();
     config.remotes.insert(
         name.to_owned(),
         RemoteEntry {
@@ -85,7 +85,7 @@ pub async fn add(
 }
 
 pub fn list() -> Vec<Row> {
-    let config = Config::load();
+    let config = ClientConfig::load();
     let active = config.default_remote.as_deref().unwrap_or(LOCAL_REMOTE);
     let socket = goat_config::socket_path()
         .map(|p| p.display().to_string())
@@ -106,7 +106,7 @@ pub fn list() -> Vec<Row> {
 }
 
 pub fn remove(name: &str) -> color_eyre::Result<bool> {
-    let mut config = Config::load();
+    let mut config = ClientConfig::load();
     if config.remotes.remove(name).is_none() {
         return Ok(false);
     }
@@ -122,7 +122,7 @@ pub fn remove(name: &str) -> color_eyre::Result<bool> {
 }
 
 pub fn select(name: &str) -> color_eyre::Result<()> {
-    let mut config = Config::load();
+    let mut config = ClientConfig::load();
     if name == LOCAL_REMOTE {
         config.default_remote = None;
     } else if config.remotes.contains_key(name) {
@@ -138,7 +138,7 @@ pub fn remember_dir(link: &Link, dir: &str) {
     let Link::Remote { name, .. } = link else {
         return;
     };
-    let mut config = Config::load();
+    let mut config = ClientConfig::load();
     let Some(entry) = config.remotes.get_mut(name) else {
         return;
     };
@@ -150,7 +150,7 @@ pub fn remember_dir(link: &Link, dir: &str) {
 }
 
 pub fn last_dir(name: &str) -> Option<String> {
-    Config::load()
+    ClientConfig::load()
         .remotes
         .get(name)
         .and_then(|entry| entry.last_dir.clone())
