@@ -56,6 +56,7 @@ pub async fn serve_envelope<Si, St>(
     } = host;
     let epoch = epoch.as_str();
     let client_id = manager.next_client_id();
+    let build = manager.build();
     let grants = grants_for(&origin);
     let device = device_for(&origin);
     let router = api::build(
@@ -99,6 +100,7 @@ pub async fn serve_envelope<Si, St>(
             "client_id": client_id.0.to_string(),
             "epoch": epoch,
             "pid": std::process::id(),
+            "build": build,
         }));
 
     if peer.handle.send_hello(hello).await.is_err() {
@@ -235,7 +237,7 @@ mod tests {
         })
         .await;
         let err = api
-            .call::<goat_api::AdminDaemonStop>(Empty {})
+            .call::<goat_api::AdminDaemonStop>(goat_api::AdminDaemonStopParams::default())
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::UnsupportedVersion);

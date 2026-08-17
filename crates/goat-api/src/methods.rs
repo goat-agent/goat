@@ -294,6 +294,24 @@ pub struct SessionControlParams {
     pub op: Op,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SessionKillParams {
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AdminDaemonStopParams {
+    #[serde(default)]
+    pub if_idle: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum AdminDaemonStopOutput {
+    Stopping,
+    Busy { sessions: usize, turns: usize },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionWatchParams {
     pub session: SessionId,
@@ -613,6 +631,17 @@ method!(
     ()
 );
 method!(
+    SessionKill,
+    "session.kill",
+    1,
+    Shape::Unary,
+    Grant::Any,
+    Direction::ToDaemon,
+    SessionKillParams,
+    Empty,
+    ()
+);
+method!(
     SessionWatch,
     "session.watch",
     1,
@@ -773,8 +802,8 @@ method!(
     Shape::Unary,
     Grant::Admin,
     Direction::ToDaemon,
-    Empty,
-    Empty,
+    AdminDaemonStopParams,
+    AdminDaemonStopOutput,
     ()
 );
 method!(
