@@ -23,8 +23,9 @@ One binary (`goat`), one daemon, one database (`~/.goat/goat.db`), one config tr
 | `cargo clippy --workspace --all-targets -- -D warnings` | Lint; warnings are errors |
 | `cargo fmt --all` | Format (`--check` to verify only) |
 
-Use `cargo nextest`, **not** `cargo test`. `.config/nextest.toml` pins `goat-daemon` tests to
-`max-threads = 1`; plain `cargo test` ignores that file and races them.
+Use `cargo nextest`, **not** `cargo test`. `.config/nextest.toml` pins every test that spawns a real
+daemon — `goat-daemon`'s and `goat-code`'s `browser_host` — to `max-threads = 1`; plain `cargo test`
+ignores that file and races them. A new test that binds a daemon socket joins that filter.
 
 `cargo fmt --all`, the clippy line, and the nextest line must all pass before any change is done.
 For a narrow change run the smallest relevant check; for a broad one run all four. CI adds
