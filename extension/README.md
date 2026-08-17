@@ -7,7 +7,11 @@ Two halves:
   for the duration of one action and detaches afterwards, which keeps Chrome's
   "is debugging this browser" banner scoped to actual agent activity.
 - `panel.html` / `panel.js` are the side panel, which shrinks the page and puts
-  goat beside it.
+  goat beside it. **The panel never opens its own native port.** It asks
+  `background.js` over `chrome.runtime` and renders what it is told. Two ports
+  would advertise `host.browser` twice from one browser, and the daemon's lease
+  keys on device, instance and boot epoch, so it would treat them as two
+  different browsers.
 
 ## Why `chrome.debugger` and not content scripts
 

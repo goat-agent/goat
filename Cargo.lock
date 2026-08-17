@@ -2512,11 +2512,13 @@ dependencies = [
 name = "goat-daemon"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "chrono",
  "futures",
  "goat-api",
  "goat-auth",
+ "goat-browser-host",
  "goat-capability",
  "goat-client",
  "goat-code-store",
