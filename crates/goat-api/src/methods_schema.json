@@ -1,0 +1,5368 @@
+{
+  "envelope": "env1:1d84920a144aa4fe",
+  "methods": [
+    {
+      "direction": "to_daemon",
+      "grant": "admin",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "admin.agent_reload",
+      "output": {
+        "$defs": {
+          "ReloadFailure": {
+            "properties": {
+              "agent": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent",
+              "reason"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "failed": {
+            "items": {
+              "$ref": "#/$defs/ReloadFailure"
+            },
+            "type": "array"
+          },
+          "reloaded": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "unchanged": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "reloaded",
+          "unchanged",
+          "failed",
+          "warnings"
+        ],
+        "title": "AdminAgentReloadOutput",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "AdminAgentReloadParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "admin",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "admin.daemon_stop",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "properties": {
+              "outcome": {
+                "const": "stopping",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "outcome": {
+                "const": "busy",
+                "type": "string"
+              },
+              "sessions": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "turns": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "outcome",
+              "sessions",
+              "turns"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "AdminDaemonStopOutput"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "if_idle": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "title": "AdminDaemonStopParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "admin",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "admin.device_list",
+      "output": {
+        "$defs": {
+          "DeviceInfo": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "paired_at": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "label",
+              "paired_at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "devices": {
+            "items": {
+              "$ref": "#/$defs/DeviceInfo"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "devices"
+        ],
+        "title": "AdminDeviceListOutput",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "admin",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "admin.device_pair",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "advertised": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "code": {
+            "type": "string"
+          },
+          "server_fingerprint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "server_fingerprint",
+          "advertised"
+        ],
+        "title": "AdminDevicePairOutput",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "AdminDevicePairParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "admin",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "admin.device_revoke",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "AdminDeviceRevokeOutput",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "device": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device"
+        ],
+        "title": "AdminDeviceRevokeParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$defs": {
+          "Cursor": {
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "properties": {
+              "agent": {
+                "type": "string"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              },
+              "run": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "t": {
+                "const": "turn_started",
+                "type": "string"
+              },
+              "trigger": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "cursor",
+              "agent",
+              "run",
+              "trigger"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "agent": {
+                "type": "string"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              },
+              "ok": {
+                "type": "boolean"
+              },
+              "run": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "t": {
+                "const": "turn_finished",
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "cursor",
+              "agent",
+              "run",
+              "ok"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "agent": {
+                "type": "string"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              },
+              "run": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "t": {
+                "const": "tool_started",
+                "type": "string"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "cursor",
+              "agent",
+              "run",
+              "tool"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "agent": {
+                "type": "string"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              },
+              "run": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "schedule": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "t": {
+                "const": "schedule_fired",
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "cursor",
+              "agent",
+              "run",
+              "schedule"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "AgentActivity"
+      },
+      "name": "agent.watch",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "Cursor": {
+            "type": "string"
+          },
+          "WatchFrom": {
+            "oneOf": [
+              {
+                "properties": {
+                  "type": {
+                    "const": "Snapshot",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "cursor": {
+                    "$ref": "#/$defs/Cursor"
+                  },
+                  "type": {
+                    "const": "Cursor",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "cursor"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "agents": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "from": {
+            "$ref": "#/$defs/WatchFrom"
+          }
+        },
+        "required": [
+          "from"
+        ],
+        "title": "AgentWatchParams",
+        "type": "object"
+      },
+      "shape": "stream:reliable",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "ask.answer",
+      "output": {
+        "$defs": {
+          "AnswerOutcome": {
+            "enum": [
+              "accepted",
+              "already_answered"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "outcome": {
+            "$ref": "#/$defs/AnswerOutcome"
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "title": "AskAnswerOutput",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "SessionId": {
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "answers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "prompt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "session": {
+            "$ref": "#/$defs/SessionId"
+          }
+        },
+        "required": [
+          "session",
+          "prompt",
+          "revision",
+          "answers"
+        ],
+        "title": "AskAnswerParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "capability.advertise",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "CapabilityOffer": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "max_in_flight": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "version": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "version",
+              "max_in_flight"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "boot_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "instance": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "offers": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/CapabilityOffer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "instance",
+          "label",
+          "boot_epoch"
+        ],
+        "title": "CapabilityAdvertiseParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "capability.bind",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "SessionId": {
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "capability": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string"
+          },
+          "session": {
+            "$ref": "#/$defs/SessionId"
+          }
+        },
+        "required": [
+          "session",
+          "capability",
+          "instance"
+        ],
+        "title": "CapabilityBindParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "capability.list",
+      "output": {
+        "$defs": {
+          "CapabilityProvider": {
+            "properties": {
+              "bound": {
+                "type": "boolean"
+              },
+              "capability": {
+                "type": "string"
+              },
+              "instance": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "instance",
+              "label",
+              "capability",
+              "version"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "providers": {
+            "items": {
+              "$ref": "#/$defs/CapabilityProvider"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "providers"
+        ],
+        "title": "CapabilityListOutput",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "capability": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "capability"
+        ],
+        "title": "CapabilityListParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "conversation.list",
+      "output": {
+        "$defs": {
+          "ConversationInfo": {
+            "properties": {
+              "conversation_id": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "live": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SessionId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "model": {
+                "type": "string"
+              },
+              "state": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SessionLiveState"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "updated_at": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "conversation_id",
+              "cwd",
+              "model",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "SessionId": {
+            "type": "string"
+          },
+          "SessionLiveState": {
+            "oneOf": [
+              {
+                "properties": {
+                  "type": {
+                    "const": "Idle",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "Active",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "WaitingOnAsk",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "conversations": {
+            "items": {
+              "$ref": "#/$defs/ConversationInfo"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "conversations"
+        ],
+        "title": "ConversationListOutput",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cwd": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cwd"
+        ],
+        "title": "ConversationListParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "daemon.status",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "epoch": {
+            "type": "string"
+          },
+          "pid": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "sessions": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "turns": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "pid",
+          "started_at",
+          "ready",
+          "epoch",
+          "sessions",
+          "turns"
+        ],
+        "title": "DaemonStatus2",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "fs.list",
+      "output": {
+        "$defs": {
+          "DirEntry": {
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/DirEntryKind"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "kind"
+            ],
+            "type": "object"
+          },
+          "DirEntryKind": {
+            "oneOf": [
+              {
+                "properties": {
+                  "type": {
+                    "const": "Directory",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "File",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "Symlink",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/$defs/DirEntry"
+            },
+            "type": "array"
+          },
+          "path": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "entries"
+        ],
+        "title": "FsListOutput",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "recursive": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "FsListParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "fs.read",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "len": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "offset": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "total": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "content",
+          "offset",
+          "len",
+          "total"
+        ],
+        "title": "FileChunk",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "len": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "FsReadParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "fs.write",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "len": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "len"
+        ],
+        "title": "FsWriteOutput",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "title": "FsWriteParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "git.diff",
+      "output": {
+        "$defs": {
+          "DiffFile": {
+            "properties": {
+              "added": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "patch": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "removed": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "status",
+              "added",
+              "removed",
+              "patch"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/$defs/DiffFile"
+            },
+            "type": "array"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "title": "GitDiffOutput",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cwd": {
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "rev": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "cwd"
+        ],
+        "title": "GitDiffParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_client",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "host.browser",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "image": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "media_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": "string"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "summary"
+        ],
+        "title": "HostBrowserOutput",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "HostOrigin": {
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "session": {
+                "$ref": "#/$defs/SessionId"
+              },
+              "task": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "session",
+              "task",
+              "label"
+            ],
+            "type": "object"
+          },
+          "SessionId": {
+            "type": "string"
+          },
+          "TaskId": {
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "arguments": true,
+          "origin": {
+            "$ref": "#/$defs/HostOrigin"
+          }
+        },
+        "required": [
+          "origin",
+          "action"
+        ],
+        "title": "HostBrowserParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_client",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "host.notify",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "HostOrigin": {
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "session": {
+                "$ref": "#/$defs/SessionId"
+              },
+              "task": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "required": [
+              "session",
+              "task",
+              "label"
+            ],
+            "type": "object"
+          },
+          "SessionId": {
+            "type": "string"
+          },
+          "TaskId": {
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/$defs/HostOrigin"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "origin",
+          "title",
+          "body"
+        ],
+        "title": "HostNotifyParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "properties": {
+              "pty": {
+                "type": "string"
+              },
+              "t": {
+                "const": "opened",
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "pty"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "t": {
+                "const": "output",
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "t": {
+                "const": "exited",
+                "type": "string"
+              }
+            },
+            "required": [
+              "t"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "PtyItem"
+      },
+      "name": "pty.open",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cols": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "rows": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cwd",
+          "cols",
+          "rows"
+        ],
+        "title": "PtyOpenParams",
+        "type": "object"
+      },
+      "shape": "stream:lossy",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "pty.resize",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cols": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pty": {
+            "type": "string"
+          },
+          "rows": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pty",
+          "cols",
+          "rows"
+        ],
+        "title": "PtyResizeParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "pty.write",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "data": {
+            "type": "string"
+          },
+          "pty": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pty",
+          "data"
+        ],
+        "title": "PtyWriteParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "session.control",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "Effort": {
+            "enum": [
+              "off",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "type": "string"
+          },
+          "InputAttachment": {
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "media_type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "media_type",
+              "data",
+              "label"
+            ],
+            "type": "object"
+          },
+          "LoginCredential": {
+            "oneOf": [
+              {
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "ApiKey",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "key"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "OAuth",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "Mode": {
+            "enum": [
+              "normal",
+              "plan"
+            ],
+            "type": "string"
+          },
+          "ModelTarget": {
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "effort": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Effort"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "model": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "provider",
+              "model",
+              "account"
+            ],
+            "type": "object"
+          },
+          "Op": {
+            "oneOf": [
+              {
+                "properties": {
+                  "attachments": {
+                    "items": {
+                      "$ref": "#/$defs/InputAttachment"
+                    },
+                    "type": "array"
+                  },
+                  "display": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "SubmitMessage",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "text"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "command": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "type": {
+                    "const": "SubmitShell",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "command"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "type": {
+                    "const": "Interrupt",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "Clear",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "target": {
+                    "$ref": "#/$defs/ModelTarget"
+                  },
+                  "type": {
+                    "const": "SelectModel",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "target"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "mode": {
+                    "$ref": "#/$defs/Mode"
+                  },
+                  "type": {
+                    "const": "SetMode",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "mode"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "call": {
+                    "$ref": "#/$defs/ToolCallId"
+                  },
+                  "decision": {
+                    "$ref": "#/$defs/PlanDecision"
+                  },
+                  "type": {
+                    "const": "ResolvePlan",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "call",
+                  "decision"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "credential": {
+                    "$ref": "#/$defs/LoginCredential"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "AddAccount",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "provider",
+                  "name",
+                  "credential"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "RemoveAccount",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "provider",
+                  "name"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "ListConversations",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "ListRewindPoints",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "checkpoint_id": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "scope": {
+                    "$ref": "#/$defs/RewindScope"
+                  },
+                  "type": {
+                    "const": "Rewind",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "checkpoint_id",
+                  "scope"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "ListFiles",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "conversation_id": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "Resume",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "conversation_id"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "ResumeLatest",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "RenameConversation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "title"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "answers": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "call": {
+                    "$ref": "#/$defs/ToolCallId"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "type": {
+                    "const": "Answer",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "call",
+                  "answers"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "instructions": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "type": {
+                    "const": "Compact",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "type": {
+                    "const": "DequeueMessage",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "process": {
+                    "$ref": "#/$defs/RunId"
+                  },
+                  "type": {
+                    "const": "ProcessKill",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "process"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "on": {
+                    "type": "boolean"
+                  },
+                  "process": {
+                    "$ref": "#/$defs/RunId"
+                  },
+                  "type": {
+                    "const": "ProcessWatch",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "process",
+                  "on"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "Shutdown",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "PlanDecision": {
+            "oneOf": [
+              {
+                "properties": {
+                  "type": {
+                    "const": "Approve",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "feedback": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "Reject",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "feedback"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "RewindScope": {
+            "enum": [
+              "code_and_conversation",
+              "conversation",
+              "code"
+            ],
+            "type": "string"
+          },
+          "RunId": {
+            "type": "string"
+          },
+          "SessionId": {
+            "type": "string"
+          },
+          "TaskId": {
+            "type": "string"
+          },
+          "ToolCallId": {
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "op": {
+            "$ref": "#/$defs/Op"
+          },
+          "session": {
+            "$ref": "#/$defs/SessionId"
+          }
+        },
+        "required": [
+          "session",
+          "op"
+        ],
+        "title": "SessionControlParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "session.kill",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "SessionId": {
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionId"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "title": "SessionKillParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "session.list",
+      "output": {
+        "$defs": {
+          "SessionId": {
+            "type": "string"
+          },
+          "SessionInfo": {
+            "properties": {
+              "age_ms": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "session": {
+                "$ref": "#/$defs/SessionId"
+              },
+              "state": {
+                "$ref": "#/$defs/SessionLiveState"
+              },
+              "tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "windows": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "session",
+              "cwd",
+              "state",
+              "windows",
+              "age_ms",
+              "tokens"
+            ],
+            "type": "object"
+          },
+          "SessionLiveState": {
+            "oneOf": [
+              {
+                "properties": {
+                  "type": {
+                    "const": "Idle",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "Active",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "WaitingOnAsk",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "sessions": {
+            "items": {
+              "$ref": "#/$defs/SessionInfo"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "sessions"
+        ],
+        "title": "SessionListOutput",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "session.open",
+      "output": {
+        "$defs": {
+          "SessionId": {
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cwd": {
+            "type": "string"
+          },
+          "epoch": {
+            "type": "string"
+          },
+          "session": {
+            "$ref": "#/$defs/SessionId"
+          }
+        },
+        "required": [
+          "session",
+          "cwd",
+          "epoch"
+        ],
+        "title": "SessionOpenOutput",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "ResumeMode": {
+            "oneOf": [
+              {
+                "properties": {
+                  "type": {
+                    "const": "New",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "Latest",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "conversation_id": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "Conversation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "conversation_id"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cwd": {
+            "type": "string"
+          },
+          "resume": {
+            "$ref": "#/$defs/ResumeMode"
+          }
+        },
+        "required": [
+          "cwd",
+          "resume"
+        ],
+        "title": "SessionOpenParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "session.submit",
+      "output": {
+        "$defs": {
+          "TaskId": {
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/TaskId"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "title": "SessionSubmitOutput",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "Effort": {
+            "enum": [
+              "off",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "type": "string"
+          },
+          "InputAttachment": {
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "media_type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "media_type",
+              "data",
+              "label"
+            ],
+            "type": "object"
+          },
+          "LoginCredential": {
+            "oneOf": [
+              {
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "ApiKey",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "key"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "OAuth",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "Mode": {
+            "enum": [
+              "normal",
+              "plan"
+            ],
+            "type": "string"
+          },
+          "ModelTarget": {
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "effort": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Effort"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "model": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "provider",
+              "model",
+              "account"
+            ],
+            "type": "object"
+          },
+          "Op": {
+            "oneOf": [
+              {
+                "properties": {
+                  "attachments": {
+                    "items": {
+                      "$ref": "#/$defs/InputAttachment"
+                    },
+                    "type": "array"
+                  },
+                  "display": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "SubmitMessage",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "text"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "command": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "type": {
+                    "const": "SubmitShell",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "command"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "type": {
+                    "const": "Interrupt",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "Clear",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "target": {
+                    "$ref": "#/$defs/ModelTarget"
+                  },
+                  "type": {
+                    "const": "SelectModel",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "target"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "mode": {
+                    "$ref": "#/$defs/Mode"
+                  },
+                  "type": {
+                    "const": "SetMode",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "mode"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "call": {
+                    "$ref": "#/$defs/ToolCallId"
+                  },
+                  "decision": {
+                    "$ref": "#/$defs/PlanDecision"
+                  },
+                  "type": {
+                    "const": "ResolvePlan",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "call",
+                  "decision"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "credential": {
+                    "$ref": "#/$defs/LoginCredential"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "AddAccount",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "provider",
+                  "name",
+                  "credential"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "RemoveAccount",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "provider",
+                  "name"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "ListConversations",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "ListRewindPoints",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "checkpoint_id": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "scope": {
+                    "$ref": "#/$defs/RewindScope"
+                  },
+                  "type": {
+                    "const": "Rewind",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "checkpoint_id",
+                  "scope"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "ListFiles",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "conversation_id": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "Resume",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "conversation_id"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "ResumeLatest",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "RenameConversation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "title"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "answers": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "call": {
+                    "$ref": "#/$defs/ToolCallId"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "type": {
+                    "const": "Answer",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "call",
+                  "answers"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "instructions": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "type": {
+                    "const": "Compact",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "type": {
+                    "const": "DequeueMessage",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "process": {
+                    "$ref": "#/$defs/RunId"
+                  },
+                  "type": {
+                    "const": "ProcessKill",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "process"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "on": {
+                    "type": "boolean"
+                  },
+                  "process": {
+                    "$ref": "#/$defs/RunId"
+                  },
+                  "type": {
+                    "const": "ProcessWatch",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "process",
+                  "on"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "Shutdown",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "PlanDecision": {
+            "oneOf": [
+              {
+                "properties": {
+                  "type": {
+                    "const": "Approve",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "feedback": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "Reject",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "feedback"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "RewindScope": {
+            "enum": [
+              "code_and_conversation",
+              "conversation",
+              "code"
+            ],
+            "type": "string"
+          },
+          "RunId": {
+            "type": "string"
+          },
+          "SessionId": {
+            "type": "string"
+          },
+          "TaskId": {
+            "type": "string"
+          },
+          "ToolCallId": {
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "op": {
+            "$ref": "#/$defs/Op"
+          },
+          "session": {
+            "$ref": "#/$defs/SessionId"
+          }
+        },
+        "required": [
+          "session",
+          "op"
+        ],
+        "title": "SessionSubmitParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$defs": {
+          "AccountChoice": {
+            "properties": {
+              "display": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "target": {
+                "$ref": "#/$defs/ModelTarget"
+              }
+            },
+            "required": [
+              "id",
+              "display",
+              "target"
+            ],
+            "type": "object"
+          },
+          "AccountEntry": {
+            "properties": {
+              "accounts": {
+                "items": {
+                  "$ref": "#/$defs/AccountInfo"
+                },
+                "type": "array"
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "local": {
+                "type": "boolean"
+              },
+              "login": {
+                "$ref": "#/$defs/AuthMethod"
+              },
+              "provider": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "provider",
+              "display_name",
+              "accounts",
+              "local",
+              "login"
+            ],
+            "type": "object"
+          },
+          "AccountInfo": {
+            "properties": {
+              "method": {
+                "$ref": "#/$defs/AuthMethod"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "method"
+            ],
+            "type": "object"
+          },
+          "AskOption": {
+            "properties": {
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "label": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "label"
+            ],
+            "type": "object"
+          },
+          "AskQuestion": {
+            "properties": {
+              "multiple": {
+                "type": "boolean"
+              },
+              "options": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/AskOption"
+                },
+                "type": "array"
+              },
+              "question": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "question"
+            ],
+            "type": "object"
+          },
+          "AuthMethod": {
+            "enum": [
+              "none",
+              "api_key",
+              "o_auth",
+              "api_key_or_o_auth"
+            ],
+            "type": "string"
+          },
+          "ConversationSummary": {
+            "properties": {
+              "id": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "live": {
+                "default": false,
+                "type": "boolean"
+              },
+              "model": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "model",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "Cursor": {
+            "type": "string"
+          },
+          "Effort": {
+            "enum": [
+              "off",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "type": "string"
+          },
+          "Event": {
+            "oneOf": [
+              {
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "type": {
+                    "const": "TaskStarted",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "chunk": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "type": {
+                    "const": "TextDelta",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "chunk"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "TextDone",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "text"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "call": {
+                    "$ref": "#/$defs/ToolCall"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "type": {
+                    "const": "ToolStarted",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "call"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "call": {
+                    "$ref": "#/$defs/ToolCallId"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "outcome": {
+                    "$ref": "#/$defs/ToolOutcome"
+                  },
+                  "type": {
+                    "const": "ToolDone",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "call",
+                  "outcome"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "group": {
+                    "$ref": "#/$defs/ToolCallId"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "members": {
+                    "items": {
+                      "$ref": "#/$defs/SubagentGroupMember"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "SubagentGroupStarted",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "group",
+                  "members"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "output": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "ShellDone",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "output"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "interrupted": {
+                    "type": "boolean"
+                  },
+                  "type": {
+                    "const": "TaskDone",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "interrupted"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "call": {
+                    "$ref": "#/$defs/ToolCallId"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "parent": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "subagent_type": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "SubagentStarted",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "parent",
+                  "call",
+                  "subagent_type",
+                  "label"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "ok": {
+                    "type": "boolean"
+                  },
+                  "type": {
+                    "const": "SubagentDone",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "ok"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "entries": {
+                    "items": {
+                      "$ref": "#/$defs/ModelEntry"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "ModelListChanged",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "entries"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "target": {
+                    "$ref": "#/$defs/ModelTarget"
+                  },
+                  "type": {
+                    "const": "ModelSelected",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "target"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "mode": {
+                    "$ref": "#/$defs/Mode"
+                  },
+                  "plan_path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "type": {
+                    "const": "ModeChanged",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "mode"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "call": {
+                    "$ref": "#/$defs/ToolCallId"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "plan": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "PlanProposed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "call",
+                  "plan",
+                  "path"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "conversations": {
+                    "items": {
+                      "$ref": "#/$defs/ConversationSummary"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "ConversationsListed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "conversations"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "points": {
+                    "items": {
+                      "$ref": "#/$defs/RewindPoint"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "RewindPointsListed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "points"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "draft": {
+                    "$ref": "#/$defs/RewindDraft"
+                  },
+                  "type": {
+                    "const": "ConversationRewound",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "draft"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "entries": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "FilesListed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "entries"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "compaction_threshold": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "context_tokens": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "entries": {
+                    "items": {
+                      "$ref": "#/$defs/TranscriptEntry"
+                    },
+                    "type": "array"
+                  },
+                  "target": {
+                    "$ref": "#/$defs/ModelTarget"
+                  },
+                  "type": {
+                    "const": "ConversationRestored",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "target",
+                  "entries"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "chunk": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "type": {
+                    "const": "ThinkingDelta",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "chunk"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "providers": {
+                    "items": {
+                      "$ref": "#/$defs/LoginProvider"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "LoginProviders",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "providers"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "done": {
+                    "type": "boolean"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "ok": {
+                    "type": "boolean"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "LoginStatus",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "provider",
+                  "message",
+                  "done",
+                  "ok"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "providers": {
+                    "items": {
+                      "$ref": "#/$defs/AccountEntry"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "AccountsChanged",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "providers"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "skills": {
+                    "items": {
+                      "$ref": "#/$defs/SkillInfo"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "SkillsChanged",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "skills"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "hint": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "id": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/TaskId"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "Error",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "message"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "$ref": "#/$defs/NotifyKind"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "Notify",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "kind",
+                  "message"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "call": {
+                    "$ref": "#/$defs/ToolCallId"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "questions": {
+                    "items": {
+                      "$ref": "#/$defs/AskQuestion"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "AskStarted",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "call",
+                  "questions"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "call": {
+                    "$ref": "#/$defs/ToolCallId"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "type": {
+                    "const": "AskDismissed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "call"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "account": {
+                    "type": "string"
+                  },
+                  "compaction_threshold": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "context_window": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "Usage",
+                    "type": "string"
+                  },
+                  "usage": {
+                    "$ref": "#/$defs/Usage"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "provider",
+                  "account",
+                  "usage"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "account": {
+                    "type": "string"
+                  },
+                  "cached_at": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "snapshot": {
+                    "$ref": "#/$defs/RateLimitSnapshot"
+                  },
+                  "type": {
+                    "const": "RateLimits",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "provider",
+                  "account",
+                  "snapshot",
+                  "cached_at"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "attempt": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "delay_ms": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "max_attempts": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "resets_at": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "type": {
+                    "const": "Retrying",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "attempt",
+                  "max_attempts",
+                  "delay_ms",
+                  "reason"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "attachments": {
+                    "items": {
+                      "$ref": "#/$defs/InputAttachment"
+                    },
+                    "type": "array"
+                  },
+                  "display": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "system": {
+                    "type": "boolean"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "UserMessage",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "text"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "attachments": {
+                    "items": {
+                      "$ref": "#/$defs/InputAttachment"
+                    },
+                    "type": "array"
+                  },
+                  "display": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "system": {
+                    "type": "boolean"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "MessageDequeued",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "text"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "type": {
+                    "const": "CompactionStarted",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  "ok": {
+                    "type": "boolean"
+                  },
+                  "tokens_after": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "tokens_before": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "CompactionDone",
+                    "type": "string"
+                  },
+                  "usage": {
+                    "$ref": "#/$defs/Usage"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "ok",
+                  "tokens_before",
+                  "tokens_after",
+                  "usage"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "conversation_id": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "ConversationBound",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "conversation_id"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "command": {
+                    "type": "string"
+                  },
+                  "process": {
+                    "$ref": "#/$defs/RunId"
+                  },
+                  "type": {
+                    "const": "ProcessStarted",
+                    "type": "string"
+                  },
+                  "watched": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "type",
+                  "process",
+                  "command",
+                  "watched"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "chunk": {
+                    "type": "string"
+                  },
+                  "process": {
+                    "$ref": "#/$defs/RunId"
+                  },
+                  "type": {
+                    "const": "ProcessOutput",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "process",
+                  "chunk"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "code": {
+                    "format": "int32",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "process": {
+                    "$ref": "#/$defs/RunId"
+                  },
+                  "reason": {
+                    "$ref": "#/$defs/ProcessExitReason"
+                  },
+                  "type": {
+                    "const": "ProcessExited",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "process",
+                  "reason"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "processes": {
+                    "items": {
+                      "$ref": "#/$defs/ProcessInfo"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "ProcessListChanged",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "processes"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "GitFacts": {
+            "properties": {
+              "branch": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "head": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "pr": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "pr_url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "subject": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "upstream": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "InputAttachment": {
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "media_type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "media_type",
+              "data",
+              "label"
+            ],
+            "type": "object"
+          },
+          "LoginProvider": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "method": {
+                "$ref": "#/$defs/AuthMethod"
+              }
+            },
+            "required": [
+              "id",
+              "method"
+            ],
+            "type": "object"
+          },
+          "Mode": {
+            "enum": [
+              "normal",
+              "plan"
+            ],
+            "type": "string"
+          },
+          "ModelEntry": {
+            "properties": {
+              "accounts": {
+                "items": {
+                  "$ref": "#/$defs/AccountChoice"
+                },
+                "type": "array"
+              },
+              "context_window": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "efforts": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/Effort"
+                },
+                "type": "array"
+              },
+              "model": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "supports_images": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "provider",
+              "model",
+              "accounts"
+            ],
+            "type": "object"
+          },
+          "ModelTarget": {
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "effort": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Effort"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "model": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "provider",
+              "model",
+              "account"
+            ],
+            "type": "object"
+          },
+          "NotifyKind": {
+            "enum": [
+              "info",
+              "success",
+              "error"
+            ],
+            "type": "string"
+          },
+          "ProcessExitReason": {
+            "enum": [
+              "natural",
+              "killed",
+              "timeout",
+              "shutdown"
+            ],
+            "type": "string"
+          },
+          "ProcessInfo": {
+            "properties": {
+              "command": {
+                "type": "string"
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "id": {
+                "$ref": "#/$defs/RunId"
+              },
+              "state": {
+                "$ref": "#/$defs/ProcessState"
+              },
+              "watched": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "command",
+              "state",
+              "watched"
+            ],
+            "type": "object"
+          },
+          "ProcessState": {
+            "enum": [
+              "running",
+              "exited"
+            ],
+            "type": "string"
+          },
+          "RateLimitEntry": {
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "cached_at": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "snapshot": {
+                "$ref": "#/$defs/RateLimitSnapshot"
+              }
+            },
+            "required": [
+              "provider",
+              "account",
+              "snapshot",
+              "cached_at"
+            ],
+            "type": "object"
+          },
+          "RateLimitSnapshot": {
+            "properties": {
+              "representative": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "windows": {
+                "items": {
+                  "$ref": "#/$defs/RateWindow"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "windows"
+            ],
+            "type": "object"
+          },
+          "RateWindow": {
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "resets_at": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "used_percent": {
+                "format": "float",
+                "type": "number"
+              }
+            },
+            "required": [
+              "label",
+              "used_percent"
+            ],
+            "type": "object"
+          },
+          "RetryEntry": {
+            "properties": {
+              "attempt": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "delay_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "id": {
+                "$ref": "#/$defs/TaskId"
+              },
+              "max_attempts": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "resets_at": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "attempt",
+              "max_attempts",
+              "delay_ms",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "RewindDraft": {
+            "properties": {
+              "attachments": {
+                "items": {
+                  "$ref": "#/$defs/InputAttachment"
+                },
+                "type": "array"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "type": "object"
+          },
+          "RewindPoint": {
+            "properties": {
+              "checkpoint_id": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "code_changes": {
+                "type": "boolean"
+              },
+              "created_at": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "prompt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "checkpoint_id",
+              "prompt",
+              "created_at",
+              "code_changes"
+            ],
+            "type": "object"
+          },
+          "RunId": {
+            "type": "string"
+          },
+          "SessionId": {
+            "type": "string"
+          },
+          "SessionSnapshot": {
+            "properties": {
+              "accounts": {
+                "items": {
+                  "$ref": "#/$defs/AccountEntry"
+                },
+                "type": "array"
+              },
+              "active": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TaskId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "compaction_threshold": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "context_tokens": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "mode": {
+                "$ref": "#/$defs/Mode"
+              },
+              "models": {
+                "items": {
+                  "$ref": "#/$defs/ModelEntry"
+                },
+                "type": "array"
+              },
+              "pending": {
+                "items": {
+                  "$ref": "#/$defs/Event"
+                },
+                "type": "array"
+              },
+              "plan_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "processes": {
+                "items": {
+                  "$ref": "#/$defs/ProcessInfo"
+                },
+                "type": "array"
+              },
+              "rate_limits": {
+                "items": {
+                  "$ref": "#/$defs/RateLimitEntry"
+                },
+                "type": "array"
+              },
+              "retry": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RetryEntry"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "selected": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ModelTarget"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "session": {
+                "$ref": "#/$defs/SessionId"
+              },
+              "skills": {
+                "items": {
+                  "$ref": "#/$defs/SkillInfo"
+                },
+                "type": "array"
+              },
+              "target": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ModelTarget"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "transcript": {
+                "items": {
+                  "$ref": "#/$defs/TranscriptEntry"
+                },
+                "type": "array"
+              },
+              "usage": {
+                "items": {
+                  "$ref": "#/$defs/UsageEntry"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "session",
+              "cwd",
+              "transcript",
+              "pending",
+              "skills",
+              "accounts",
+              "models",
+              "mode",
+              "processes",
+              "usage",
+              "rate_limits"
+            ],
+            "type": "object"
+          },
+          "SkillBranchInfo": {
+            "properties": {
+              "arguments": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/SkillParameterInfo"
+                },
+                "type": "array"
+              },
+              "description": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "description"
+            ],
+            "type": "object"
+          },
+          "SkillChoiceInfo": {
+            "properties": {
+              "description": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "value"
+            ],
+            "type": "object"
+          },
+          "SkillCommandShape": {
+            "oneOf": [
+              {
+                "properties": {
+                  "items": {
+                    "items": {
+                      "$ref": "#/$defs/SkillParameterInfo"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "arguments",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "items"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "items": {
+                    "items": {
+                      "$ref": "#/$defs/SkillBranchInfo"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "subcommands",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "items"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "SkillInfo": {
+            "properties": {
+              "command": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SkillCommandShape"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "description": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "description"
+            ],
+            "type": "object"
+          },
+          "SkillParameterInfo": {
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "required": {
+                "default": false,
+                "type": "boolean"
+              },
+              "value": {
+                "$ref": "#/$defs/SkillParameterValue"
+              }
+            },
+            "required": [
+              "name",
+              "description",
+              "value"
+            ],
+            "type": "object"
+          },
+          "SkillParameterValue": {
+            "oneOf": [
+              {
+                "properties": {
+                  "type": {
+                    "const": "word",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "integer",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "options": {
+                    "items": {
+                      "$ref": "#/$defs/SkillChoiceInfo"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "choice",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "options"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "text_tail",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "SubagentGroupEntry": {
+            "properties": {
+              "member": {
+                "$ref": "#/$defs/SubagentGroupMember"
+              },
+              "outcome": {
+                "$ref": "#/$defs/ToolOutcome"
+              }
+            },
+            "required": [
+              "member",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          "SubagentGroupMember": {
+            "properties": {
+              "background": {
+                "type": "boolean"
+              },
+              "call": {
+                "$ref": "#/$defs/ToolCallId"
+              },
+              "label": {
+                "type": "string"
+              },
+              "subagent_type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "call",
+              "subagent_type",
+              "label",
+              "background"
+            ],
+            "type": "object"
+          },
+          "TaskId": {
+            "type": "string"
+          },
+          "ToolCall": {
+            "properties": {
+              "display": {
+                "$ref": "#/$defs/ToolDisplay"
+              },
+              "id": {
+                "$ref": "#/$defs/ToolCallId"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "display"
+            ],
+            "type": "object"
+          },
+          "ToolCallId": {
+            "type": "string"
+          },
+          "ToolDisplay": {
+            "properties": {
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "primary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "primary"
+            ],
+            "type": "object"
+          },
+          "ToolImageData": {
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "media_type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "media_type",
+              "data"
+            ],
+            "type": "object"
+          },
+          "ToolOutcome": {
+            "properties": {
+              "body": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "git": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/GitFacts"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "image": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ToolImageData"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "ok": {
+                "type": "boolean"
+              },
+              "summary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "ok"
+            ],
+            "type": "object"
+          },
+          "TranscriptEntry": {
+            "oneOf": [
+              {
+                "properties": {
+                  "attachments": {
+                    "items": {
+                      "$ref": "#/$defs/InputAttachment"
+                    },
+                    "type": "array"
+                  },
+                  "display": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "system": {
+                    "type": "boolean"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "User",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "text"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "Assistant",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "text"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "Thinking",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "text"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "call": {
+                    "$ref": "#/$defs/ToolCall"
+                  },
+                  "outcome": {
+                    "$ref": "#/$defs/ToolOutcome"
+                  },
+                  "type": {
+                    "const": "Tool",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "call",
+                  "outcome"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "group": {
+                    "$ref": "#/$defs/ToolCallId"
+                  },
+                  "members": {
+                    "items": {
+                      "$ref": "#/$defs/SubagentGroupEntry"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "SubagentGroup",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "group",
+                  "members"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "tokens_after": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "tokens_before": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "Compaction",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "tokens_before",
+                  "tokens_after"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "command": {
+                    "type": "string"
+                  },
+                  "output": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "Shell",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "command",
+                  "output"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "command": {
+                    "type": "string"
+                  },
+                  "output": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "Process",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "command",
+                  "output"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "Usage": {
+            "properties": {
+              "cache_read_tokens": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cache_write_tokens": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "input_tokens": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "input_tokens",
+              "output_tokens",
+              "cache_read_tokens",
+              "cache_write_tokens"
+            ],
+            "type": "object"
+          },
+          "UsageEntry": {
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "compaction_threshold": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "context_window": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "provider": {
+                "type": "string"
+              },
+              "usage": {
+                "$ref": "#/$defs/Usage"
+              }
+            },
+            "required": [
+              "provider",
+              "account",
+              "usage"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "properties": {
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              },
+              "reset": {
+                "type": "boolean"
+              },
+              "state": {
+                "$ref": "#/$defs/SessionSnapshot"
+              },
+              "t": {
+                "const": "snapshot",
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "cursor",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              },
+              "event": {
+                "$ref": "#/$defs/Event"
+              },
+              "t": {
+                "const": "event",
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "cursor",
+              "event"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "clients": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              },
+              "t": {
+                "const": "presence",
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "cursor",
+              "clients"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "WatchItem"
+      },
+      "name": "session.watch",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "Cursor": {
+            "type": "string"
+          },
+          "SessionId": {
+            "type": "string"
+          },
+          "WatchFrom": {
+            "oneOf": [
+              {
+                "properties": {
+                  "type": {
+                    "const": "Snapshot",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "cursor": {
+                    "$ref": "#/$defs/Cursor"
+                  },
+                  "type": {
+                    "const": "Cursor",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "cursor"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "from": {
+            "$ref": "#/$defs/WatchFrom"
+          },
+          "session": {
+            "$ref": "#/$defs/SessionId"
+          }
+        },
+        "required": [
+          "session",
+          "from"
+        ],
+        "title": "SessionWatchParams",
+        "type": "object"
+      },
+      "shape": "stream:reliable",
+      "version": 1
+    }
+  ]
+}

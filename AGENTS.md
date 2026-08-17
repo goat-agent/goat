@@ -205,7 +205,13 @@ Placements that contradict the naming:
 - `goat-api` is the method surface: `Method` contracts with per-method versions, a `Grant`, a
   `Direction`, and a `Shape`. `methods_fingerprint.txt` freezes every contract, so changing a param
   type without bumping its version fails CI — that is the only thing making "hash the envelope, not
-  the payload" safe. Its `Router` is built from *grants*, not from the transport: a router without
+  the payload" safe. `methods_schema.json` beside it is the same table as full JSON Schema, and it is
+  **the artifact non-Rust clients generate from**: the wire is length-delimited JSON, so a Mac app or
+  a Chrome panel needs no Rust, no FFI and no sidecar — read a four-byte length, decode JSON. Both
+  files are generated, both are frozen by a test, and the generator is
+  `cargo run -p goat-api --bin methods_schema crates/goat-api/src/methods_schema.json`. Adding a
+  method means adding a line to `registry()`; a route served without that line is invisible to both
+  files, which `goat-daemon`'s `every_served_method_is_a_frozen_contract` refuses. Its `Router` is built from *grants*, not from the transport: a router without
   `Grant::Admin` does not contain the admin routes at all, so a peer calling one gets
   `unknown_method` rather than a check someone can forget.
 - `goat-capability` is the daemon-side broker for capabilities that live on the human's machine
