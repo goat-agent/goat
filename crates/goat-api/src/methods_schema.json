@@ -253,6 +253,293 @@
         "title": "null",
         "type": "null"
       },
+      "name": "admin.credential_remove",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "removed"
+        ],
+        "title": "AdminCredentialRemoveOutput",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "CredentialKey": {
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "service": {
+                "$ref": "#/$defs/CredentialService",
+                "default": "model"
+              },
+              "slot": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "provider",
+              "account"
+            ],
+            "type": "object"
+          },
+          "CredentialService": {
+            "enum": [
+              "model",
+              "search",
+              "integration",
+              "channel",
+              "remote",
+              "mcp"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "key": {
+            "$ref": "#/$defs/CredentialKey"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "title": "AdminCredentialRemoveParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "admin",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "admin.credential_set",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "properties": {
+              "outcome": {
+                "const": "verified",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "outcome": {
+                "const": "not_verifiable",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "verification_failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "message"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "AdminCredentialSetOutput"
+      },
+      "params": {
+        "$defs": {
+          "CredentialKey": {
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "service": {
+                "$ref": "#/$defs/CredentialService",
+                "default": "model"
+              },
+              "slot": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "provider",
+              "account"
+            ],
+            "type": "object"
+          },
+          "CredentialService": {
+            "enum": [
+              "model",
+              "search",
+              "integration",
+              "channel",
+              "remote",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "CredentialValue": {
+            "oneOf": [
+              {
+                "properties": {
+                  "kind": {
+                    "const": "api_key",
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "secret"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "endpoint": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "api_key_with_endpoint",
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "secret",
+                  "endpoint"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "const": "oauth",
+                    "type": "string"
+                  },
+                  "tokens": {
+                    "$ref": "#/$defs/TokenSet"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "tokens"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "TokenSet": {
+            "properties": {
+              "access_token": {
+                "type": "string"
+              },
+              "client_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "expires_at": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "issuer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "refresh_token": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "scopes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "access_token"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "key": {
+            "$ref": "#/$defs/CredentialKey"
+          },
+          "value": {
+            "$ref": "#/$defs/CredentialValue"
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "title": "AdminCredentialSetParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "admin",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
       "name": "admin.daemon_stop",
       "output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1955,38 +2242,6 @@
             ],
             "type": "object"
           },
-          "LoginCredential": {
-            "oneOf": [
-              {
-                "properties": {
-                  "key": {
-                    "type": "string"
-                  },
-                  "type": {
-                    "const": "ApiKey",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type",
-                  "key"
-                ],
-                "type": "object"
-              },
-              {
-                "properties": {
-                  "type": {
-                    "const": "OAuth",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type"
-                ],
-                "type": "object"
-              }
-            ]
-          },
           "Mode": {
             "enum": [
               "normal",
@@ -2160,45 +2415,13 @@
               },
               {
                 "properties": {
-                  "credential": {
-                    "$ref": "#/$defs/LoginCredential"
-                  },
-                  "name": {
-                    "type": "string"
-                  },
-                  "provider": {
-                    "type": "string"
-                  },
                   "type": {
-                    "const": "AddAccount",
+                    "const": "RefreshAccounts",
                     "type": "string"
                   }
                 },
                 "required": [
-                  "type",
-                  "provider",
-                  "name",
-                  "credential"
-                ],
-                "type": "object"
-              },
-              {
-                "properties": {
-                  "name": {
-                    "type": "string"
-                  },
-                  "provider": {
-                    "type": "string"
-                  },
-                  "type": {
-                    "const": "RemoveAccount",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type",
-                  "provider",
-                  "name"
+                  "type"
                 ],
                 "type": "object"
               },
@@ -2801,38 +3024,6 @@
             ],
             "type": "object"
           },
-          "LoginCredential": {
-            "oneOf": [
-              {
-                "properties": {
-                  "key": {
-                    "type": "string"
-                  },
-                  "type": {
-                    "const": "ApiKey",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type",
-                  "key"
-                ],
-                "type": "object"
-              },
-              {
-                "properties": {
-                  "type": {
-                    "const": "OAuth",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type"
-                ],
-                "type": "object"
-              }
-            ]
-          },
           "Mode": {
             "enum": [
               "normal",
@@ -3006,45 +3197,13 @@
               },
               {
                 "properties": {
-                  "credential": {
-                    "$ref": "#/$defs/LoginCredential"
-                  },
-                  "name": {
-                    "type": "string"
-                  },
-                  "provider": {
-                    "type": "string"
-                  },
                   "type": {
-                    "const": "AddAccount",
+                    "const": "RefreshAccounts",
                     "type": "string"
                   }
                 },
                 "required": [
-                  "type",
-                  "provider",
-                  "name",
-                  "credential"
-                ],
-                "type": "object"
-              },
-              {
-                "properties": {
-                  "name": {
-                    "type": "string"
-                  },
-                  "provider": {
-                    "type": "string"
-                  },
-                  "type": {
-                    "const": "RemoveAccount",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type",
-                  "provider",
-                  "name"
+                  "type"
                 ],
                 "type": "object"
               },

@@ -2,18 +2,20 @@ use std::sync::Arc;
 
 use goat_api::{
     AdminAgentReload, AdminAgentReloadOutput, AdminAgentReloadParams, AdminConfigEdit,
-    AdminConfigEditOutput, AdminConfigEditParams, AdminDaemonStop, AdminDaemonStopOutput,
-    AdminDaemonStopParams, AdminDeviceList, AdminDeviceListOutput, AdminDevicePair,
-    AdminDevicePairOutput, AdminDevicePairParams, AdminDeviceRevoke, AdminDeviceRevokeOutput,
-    AdminDeviceRevokeParams, AgentWatch, AgentWatchParams, AnswerOutcome, AskAnswer,
-    AskAnswerOutput, AskAnswerParams, ConversationInfo, ConversationList, ConversationListOutput,
-    ConversationListParams, DaemonStatus, DaemonStatus2, DeviceInfo, DirEntry, DirEntryKind, Empty,
-    FsList, FsListOutput, FsListParams, FsRead, FsReadParams, FsWrite, FsWriteOutput,
-    FsWriteParams, GitDiff, GitDiffParams, Grant, PtyOpen, PtyOpenParams, PtyResize,
-    PtyResizeParams, PtyWrite, PtyWriteParams, ReloadFailure, Router, SessionControl,
-    SessionControlParams, SessionId, SessionInfo, SessionKill, SessionKillParams, SessionList,
-    SessionListOutput, SessionLiveState, SessionOpen, SessionOpenOutput, SessionOpenParams,
-    SessionSubmit, SessionSubmitOutput, SessionSubmitParams, SessionWatch, SessionWatchParams,
+    AdminConfigEditOutput, AdminConfigEditParams, AdminCredentialRemove,
+    AdminCredentialRemoveOutput, AdminCredentialRemoveParams, AdminCredentialSet,
+    AdminCredentialSetParams, AdminDaemonStop, AdminDaemonStopOutput, AdminDaemonStopParams,
+    AdminDeviceList, AdminDeviceListOutput, AdminDevicePair, AdminDevicePairOutput,
+    AdminDevicePairParams, AdminDeviceRevoke, AdminDeviceRevokeOutput, AdminDeviceRevokeParams,
+    AgentWatch, AgentWatchParams, AnswerOutcome, AskAnswer, AskAnswerOutput, AskAnswerParams,
+    ConversationInfo, ConversationList, ConversationListOutput, ConversationListParams,
+    DaemonStatus, DaemonStatus2, DeviceInfo, DirEntry, DirEntryKind, Empty, FsList, FsListOutput,
+    FsListParams, FsRead, FsReadParams, FsWrite, FsWriteOutput, FsWriteParams, GitDiff,
+    GitDiffParams, Grant, PtyOpen, PtyOpenParams, PtyResize, PtyResizeParams, PtyWrite,
+    PtyWriteParams, ReloadFailure, Router, SessionControl, SessionControlParams, SessionId,
+    SessionInfo, SessionKill, SessionKillParams, SessionList, SessionListOutput, SessionLiveState,
+    SessionOpen, SessionOpenOutput, SessionOpenParams, SessionSubmit, SessionSubmitOutput,
+    SessionSubmitParams, SessionWatch, SessionWatchParams,
 };
 use goat_capability::Broker;
 use goat_store::Store as _;
@@ -170,6 +172,8 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
     let kill_manager = manager.clone();
     let stop_manager = manager.clone();
     let edit_manager = manager.clone();
+    let credential_set_manager = manager.clone();
+    let credential_remove_manager = manager.clone();
     let submit_manager = manager.clone();
     let ask_manager = manager.clone();
     let activity_db = db_path.clone();
@@ -339,6 +343,25 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
             async move {
                 let changed = manager.edit_config(params.edits).map_err(refused)?;
                 Ok(AdminConfigEditOutput { changed })
+            }
+        })
+        .unary::<AdminCredentialSet, _, _>(move |params: AdminCredentialSetParams, _ctx| {
+            let manager = credential_set_manager.clone();
+            async move {
+                manager
+                    .set_credential(params.key, params.value)
+                    .await
+                    .map_err(refused)
+            }
+        })
+        .unary::<AdminCredentialRemove, _, _>(move |params: AdminCredentialRemoveParams, _ctx| {
+            let manager = credential_remove_manager.clone();
+            async move {
+                let removed = manager
+                    .remove_credential(&params.key)
+                    .await
+                    .map_err(refused)?;
+                Ok(AdminCredentialRemoveOutput { removed })
             }
         })
         .unary::<AdminDaemonStop, _, _>(move |params: AdminDaemonStopParams, _ctx| {

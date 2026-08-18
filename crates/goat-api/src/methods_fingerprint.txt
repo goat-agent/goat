@@ -1,5 +1,7 @@
 admin.agent_reload@1 unary admin to_daemon d8901cba39dcf5b1
 admin.config_edit@1 unary admin to_daemon 406549ecb646a241
+admin.credential_remove@1 unary admin to_daemon 57ceff3694f6d84b
+admin.credential_set@1 unary admin to_daemon fc6ac81f45989c0f
 admin.daemon_stop@1 unary admin to_daemon 481f399d850707af
 admin.device_list@1 unary admin to_daemon 808a5aa9ead18a03
 admin.device_pair@1 unary admin to_daemon a269b916790d85ca
@@ -21,9 +23,9 @@ host.notify@1 unary any to_client 5b2209de91ca04e3
 pty.open@1 stream:lossy any to_daemon fd9da051b9d0df69
 pty.resize@1 unary any to_daemon 26417e560a49647f
 pty.write@1 unary any to_daemon ab3c4f2b905bc65d
-session.control@1 unary any to_daemon 4f15772ed5ff5921
+session.control@1 unary any to_daemon 29a79d310461a55d
 session.kill@1 unary any to_daemon 8cd7d66a51ea5c8b
 session.list@1 unary any to_daemon cb99dd0327a76825
 session.open@1 unary any to_daemon ed6f0ae5a1f5d57f
-session.submit@1 unary any to_daemon 914d120f36f8071c
+session.submit@1 unary any to_daemon 3330c7a5014667ef
 session.watch@1 stream:reliable any to_daemon 0d7a0feae0fe35c1

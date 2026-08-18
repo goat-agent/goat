@@ -1,12 +1,13 @@
 use std::fmt::Write as _;
 
-use goat_auth::{Credential, CredentialKey, CredentialStore, SecretString};
+use goat_auth::{Credential, CredentialKey, CredentialValue, SecretString};
+use goat_client::AdminRequest;
 use goat_command::{Command, CommandEffect, CommandInvocation, Session};
 use goat_protocol::NotifyKind;
 
 enum SearchOutcome {
     Notice(String),
-    Edited(String, Vec<goat_api::ConfigEdit>),
+    Edited(String, Vec<AdminRequest>),
     Error(String),
 }
 use goat_config::Config;
@@ -23,16 +24,16 @@ impl Command for Search {
     }
 
     fn run(&self, invocation: CommandInvocation, session: &mut dyn Session) -> CommandEffect {
-        let (kind, message, edits) = match run_search(invocation.raw_args.trim()) {
+        let (kind, message, requests) = match run_search(invocation.raw_args.trim()) {
             SearchOutcome::Notice(message) => (NotifyKind::Info, message, Vec::new()),
-            SearchOutcome::Edited(message, edits) => (NotifyKind::Info, message, edits),
+            SearchOutcome::Edited(message, requests) => (NotifyKind::Info, message, requests),
             SearchOutcome::Error(message) => (NotifyKind::Error, message, Vec::new()),
         };
         session.notify(kind, message);
-        if edits.is_empty() {
+        if requests.is_empty() {
             return CommandEffect::Noop;
         }
-        CommandEffect::EditConfig(edits)
+        CommandEffect::Admin(requests)
     }
 }
 
@@ -65,24 +66,20 @@ fn run_search(args: &str) -> SearchOutcome {
     }
 }
 
-fn credential_store() -> Option<CredentialStore> {
-    goat_config::auth_path().map(CredentialStore::new)
-}
-
 fn add_api_key(provider: &str, key: &str) -> SearchOutcome {
     let account = "default";
-    let Some(store) = credential_store() else {
-        return SearchOutcome::Error(goat_config::HOME_NOT_FOUND.to_owned());
+    let stored = AdminRequest::CredentialSet {
+        key: CredentialKey::search(provider, account),
+        value: CredentialValue::from(Credential::ApiKey(SecretString::from(key.to_owned()))),
     };
-    let credential = Credential::ApiKey(SecretString::from(key.to_owned()));
-    if let Err(err) = store.store(&CredentialKey::search(provider, account), credential) {
-        return SearchOutcome::Error(format!("could not store {provider} credential: {err}"));
-    }
     match upsert_account(provider, account, None) {
-        Ok((target, edits)) => SearchOutcome::Edited(
-            format!("web search: configured {target} and set it as the default"),
-            edits,
-        ),
+        Ok((target, mut requests)) => {
+            requests.insert(0, stored);
+            SearchOutcome::Edited(
+                format!("web search: configured {target} and set it as the default"),
+                requests,
+            )
+        }
         Err(err) => SearchOutcome::Error(err),
     }
 }
@@ -101,7 +98,7 @@ fn upsert_account(
     provider: &str,
     account: &str,
     endpoint: Option<&str>,
-) -> Result<(String, Vec<goat_api::ConfigEdit>), String> {
+) -> Result<(String, Vec<AdminRequest>), String> {
     let config_account =
         goat_search_providers::build_search_account_config(provider, account, endpoint, None)?;
     let target = config_account.target();
@@ -113,7 +110,7 @@ fn upsert_account(
             target: Some(target.clone()),
         });
     }
-    Ok((target, edits))
+    Ok((target, vec![AdminRequest::ConfigEdit(edits)]))
 }
 
 fn should_take_default(current: Option<&str>) -> bool {
@@ -138,9 +135,11 @@ fn set_default(target: &str) -> SearchOutcome {
     }
     SearchOutcome::Edited(
         format!("web search: default is now {target}"),
-        vec![goat_api::ConfigEdit::SearchDefaultSet {
-            target: Some(target.to_owned()),
-        }],
+        vec![AdminRequest::ConfigEdit(vec![
+            goat_api::ConfigEdit::SearchDefaultSet {
+                target: Some(target.to_owned()),
+            },
+        ])],
     )
 }
 
@@ -154,17 +153,18 @@ fn remove(target: &str) -> SearchOutcome {
     {
         return SearchOutcome::Error(format!("no configured search account named {target}"));
     }
-    if let Some((provider, account)) = target.split_once('/')
-        && let Some(store) = credential_store()
-    {
-        let _ = store.remove(&CredentialKey::search(provider, account));
+    let mut requests = Vec::new();
+    if let Some((provider, account)) = target.split_once('/') {
+        requests.push(AdminRequest::CredentialRemove {
+            key: CredentialKey::search(provider, account),
+        });
     }
-    SearchOutcome::Edited(
-        format!("web search: removed {target}"),
-        vec![goat_api::ConfigEdit::SearchAccountRemove {
+    requests.push(AdminRequest::ConfigEdit(vec![
+        goat_api::ConfigEdit::SearchAccountRemove {
             target: target.to_owned(),
-        }],
-    )
+        },
+    ]));
+    SearchOutcome::Edited(format!("web search: removed {target}"), requests)
 }
 
 fn list() -> SearchOutcome {

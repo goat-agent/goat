@@ -1,5 +1,4 @@
 use std::io::IsTerminal;
-use std::time::Duration;
 
 use color_eyre::eyre::Result;
 use goat_auth::{
@@ -190,7 +189,7 @@ pub async fn run_provider(command: ProviderCommand) -> color_eyre::Result<()> {
         }
         ProviderCommand::Info { provider } => provider_info(&store, &user, &provider),
         ProviderCommand::Logout { provider, account } => {
-            logout(&store, &provider, &account, CredentialService::Model)
+            logout(&provider, &account, CredentialService::Model).await
         }
     }
 }
@@ -249,12 +248,11 @@ async fn add_custom(
     .await?;
     let account = account.unwrap_or_else(|| goat_providers::DEFAULT_ACCOUNT.to_owned());
     if let Some(key) = key.filter(|key| !key.trim().is_empty()) {
-        store
-            .store(
-                &CredentialKey::model(name.as_str(), account.as_str()),
-                Credential::ApiKey(SecretString::from(key)),
-            )
-            .map_err(storage_error)?;
+        save_credential(
+            &CredentialKey::model(name.as_str(), account.as_str()),
+            Credential::ApiKey(SecretString::from(key)),
+        )
+        .await?;
     }
     let verb = if existing.is_some() {
         "updated"
@@ -262,7 +260,6 @@ async fn add_custom(
         "added"
     };
     ui::success(&format!("{verb} provider {name}"));
-    verify(store, user, &name, &account).await;
     apply_to_daemon().await;
     Ok(())
 }
@@ -319,7 +316,7 @@ async fn remove_custom(
     .await?;
     for (key, _) in store.entries() {
         if key.service == CredentialService::Model && key.provider == name {
-            let _ = store.remove(&key);
+            drop_credential(&key).await?;
         }
     }
     ui::success(&format!("removed provider {name}"));
@@ -380,15 +377,13 @@ async fn login(
             };
             secret
         };
-        store
-            .store(
-                &CredentialKey::model(provider, account),
-                Credential::ApiKey(SecretString::from(secret)),
-            )
-            .map_err(storage_error)?;
         let verb = if replacing { "updated" } else { "stored" };
+        save_credential(
+            &CredentialKey::model(provider, account),
+            Credential::ApiKey(SecretString::from(secret)),
+        )
+        .await?;
         ui::success(&format!("{verb} credential for {provider} ({account})"));
-        verify(store, user, provider, account).await;
         return Ok(true);
     }
 
@@ -439,9 +434,7 @@ async fn login(
             });
             let tokens = registry.login(provider, status).await.map_err(ui::report)?;
             let _ = printer.await;
-            store
-                .store(&credential_key, Credential::OAuth(tokens))
-                .map_err(storage_error)?;
+            save_credential(&credential_key, Credential::OAuth(tokens)).await?;
         }
         AuthPick::ApiKey => {
             let secret = if let Some(key) = key {
@@ -456,15 +449,12 @@ async fn login(
                 return Ok(false);
             };
             let credential = api_key_credential(secret, Some(endpoint), metadata)?;
-            store
-                .store(&credential_key, credential)
-                .map_err(storage_error)?;
+            save_credential(&credential_key, credential).await?;
         }
     }
 
     let verb = if replacing { "updated" } else { "stored" };
     ui::success(&format!("{verb} credential for {provider} ({account})"));
-    verify(store, user, provider, account).await;
     Ok(true)
 }
 
@@ -539,31 +529,30 @@ fn api_key_credential(
     })
 }
 
-async fn verify(
-    store: &CredentialStore,
-    user: &goat_config::UserProviders,
-    provider: &str,
-    account: &str,
-) {
-    let registry = Registry::load(store, user, account);
-    let Some(provider) = registry.get(&ProviderId::from(provider)) else {
-        return;
-    };
-    let (tx, mut rx) = mpsc::channel(32);
-    let handle = provider.discover(tx);
-    let mut count = 0usize;
-    let collect = async {
-        while rx.recv().await.is_some() {
-            count += 1;
+async fn save_credential(key: &CredentialKey, credential: Credential) -> color_eyre::Result<()> {
+    let link = crate::remote::local()?;
+    let outcome = goat_client::set_credential(
+        &link,
+        key.clone(),
+        goat_auth::CredentialValue::from(credential),
+    )
+    .await
+    .map_err(storage_error)?;
+    match outcome {
+        goat_api::AdminCredentialSetOutput::Verified => ui::success("verified"),
+        goat_api::AdminCredentialSetOutput::NotVerifiable => {}
+        goat_api::AdminCredentialSetOutput::VerificationFailed { message } => {
+            ui::warning(&format!("could not verify credential: {message}"));
         }
-    };
-    let _ = tokio::time::timeout(Duration::from_secs(5), collect).await;
-    handle.abort();
-    if count > 0 {
-        ui::success(&format!("verified: {count} models"));
-    } else if provider.verifies_credentials() {
-        ui::warning("could not verify credential");
     }
+    Ok(())
+}
+
+async fn drop_credential(key: &CredentialKey) -> color_eyre::Result<bool> {
+    let link = crate::remote::local()?;
+    goat_client::remove_credential(&link, key.clone())
+        .await
+        .map_err(storage_error)
 }
 
 const ACCOUNT_WIDTH: usize = 22;
@@ -862,8 +851,7 @@ fn closest_provider_ids(provider: &str, ids: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn logout(
-    store: &CredentialStore,
+async fn logout(
     provider: &str,
     account: &str,
     service: CredentialService,
@@ -888,7 +876,7 @@ fn logout(
             ));
         }
     };
-    if store.remove(&key).map_err(storage_error)? {
+    if drop_credential(&key).await? {
         ui::success(&format!("disconnected {provider} ({account})"));
     } else if service == CredentialService::Model {
         ui::warning(&format!("no stored account for {provider} ({account})"));

@@ -517,17 +517,8 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
                     break;
                 }
             }
-            Op::AddAccount {
-                provider,
-                name,
-                credential,
-            } => {
-                accounts::handle_login(&ctx, provider, name, credential).await;
-                accounts::clear_account_registries(&ctx.account_registries);
-            }
-            Op::RemoveAccount { provider, name } => {
-                accounts::handle_remove_account(&ctx, provider, name).await;
-                accounts::clear_account_registries(&ctx.account_registries);
+            Op::RefreshAccounts {} => {
+                accounts::refresh_accounts(&ctx).await;
             }
             Op::ListConversations {} => {
                 conversations::handle_list_conversations(&ctx.store, &ctx.cwd, &ctx.events).await;

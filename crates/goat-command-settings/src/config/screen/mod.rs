@@ -1,7 +1,8 @@
 mod render;
 mod state;
 
-use goat_protocol::{AccountEntry, AuthMethod, LoginCredential};
+use goat_client::LoginMethod;
+use goat_protocol::{AccountEntry, AuthMethod};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -324,7 +325,7 @@ impl ConfigScreen {
             ConfigOutcome::AddAccount {
                 provider,
                 name,
-                credential: LoginCredential::OAuth {},
+                method: LoginMethod::OAuth,
             }
         } else {
             if key.is_empty() {
@@ -343,7 +344,7 @@ impl ConfigScreen {
             ConfigOutcome::AddAccount {
                 provider,
                 name,
-                credential: LoginCredential::ApiKey { key },
+                method: LoginMethod::ApiKey(key),
             }
         }
     }
@@ -658,17 +659,19 @@ impl ConfigScreen {
             ConfigOutcome::AddAccount {
                 provider,
                 name,
-                credential,
-            } => ScreenOutcome::Effect(CommandEffect::Dispatch(vec![
-                goat_protocol::Op::AddAccount {
+                method,
+            } => ScreenOutcome::Effect(CommandEffect::Admin(vec![
+                goat_client::AdminRequest::ProviderLogin {
                     provider,
-                    name,
-                    credential,
+                    account: name,
+                    method,
                 },
             ])),
             ConfigOutcome::RemoveAccount { provider, name } => {
-                ScreenOutcome::Effect(CommandEffect::Dispatch(vec![
-                    goat_protocol::Op::RemoveAccount { provider, name },
+                ScreenOutcome::Effect(CommandEffect::Admin(vec![
+                    goat_client::AdminRequest::CredentialRemove {
+                        key: goat_auth::CredentialKey::model(provider, name),
+                    },
                 ]))
             }
             ConfigOutcome::SetTheme { dark } => {
@@ -794,7 +797,8 @@ impl goat_command::Screen for ConfigScreen {
 
 #[cfg(test)]
 mod tests {
-    use goat_protocol::{AccountEntry, AccountInfo, AuthMethod, LoginCredential};
+    use goat_client::LoginMethod;
+    use goat_protocol::{AccountEntry, AccountInfo, AuthMethod};
 
     use super::{ConfigOutcome, ConfigScreen, ConfigScreenSettings, Field};
 
@@ -859,9 +863,9 @@ mod tests {
             out,
             ConfigOutcome::AddAccount {
                 ref provider,
-                ref credential,
+                ref method,
                 ..
-            } if provider == "anthropic" && matches!(credential, LoginCredential::OAuth {})
+            } if provider == "anthropic" && matches!(method, LoginMethod::OAuth)
         ));
         assert!(matches!(config.stage, super::InputStage::Waiting { .. }));
     }
@@ -926,8 +930,8 @@ mod tests {
         let out3 = config.enter();
         assert!(matches!(
             out3,
-            ConfigOutcome::AddAccount { ref provider, ref name, ref credential }
-            if provider == "anthropic" && name == "mykey" && matches!(credential, LoginCredential::ApiKey { key: k } if k == "sk-test")
+            ConfigOutcome::AddAccount { ref provider, ref name, ref method }
+            if provider == "anthropic" && name == "mykey" && matches!(method, LoginMethod::ApiKey(k) if k == "sk-test")
         ));
     }
 
