@@ -162,6 +162,8 @@ pub fn registry() -> Vec<MethodSchema> {
         describe::<m::AgentWatch>(),
         describe::<m::AdminAgentReload>(),
         describe::<m::AdminConfigEdit>(),
+        describe::<m::AdminCredentialSet>(),
+        describe::<m::AdminCredentialRemove>(),
         describe::<m::AdminDaemonStop>(),
         describe::<m::AdminDevicePair>(),
         describe::<m::AdminDeviceList>(),

@@ -476,13 +476,6 @@ pub struct AccountEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "type")]
-pub enum LoginCredential {
-    ApiKey { key: String },
-    OAuth {},
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SkillInfo {
     pub name: String,
     pub description: String,

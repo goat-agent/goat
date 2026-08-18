@@ -266,6 +266,73 @@ impl CodeSessionHub {
         Ok(true)
     }
 
+    pub(crate) async fn set_credential(
+        &self,
+        key: goat_auth::CredentialKey,
+        value: goat_auth::CredentialValue,
+    ) -> Result<goat_api::AdminCredentialSetOutput, String> {
+        let credentials = CredentialStore::new(self.inner.auth_path.clone());
+        credentials
+            .store(&key, goat_auth::Credential::from(value))
+            .map_err(|err| err.to_string())?;
+        self.refresh_accounts().await;
+        Ok(self.verify_model_credential(&credentials, &key).await)
+    }
+
+    async fn verify_model_credential(
+        &self,
+        credentials: &CredentialStore,
+        key: &goat_auth::CredentialKey,
+    ) -> goat_api::AdminCredentialSetOutput {
+        if key.service != goat_auth::CredentialService::Model {
+            return goat_api::AdminCredentialSetOutput::NotVerifiable;
+        }
+        let registry =
+            goat_providers::Registry::load(credentials, &self.inner.user_providers, &key.account);
+        let Some(provider) = registry.get(&goat_provider::ProviderId::from(key.provider.as_str()))
+        else {
+            return goat_api::AdminCredentialSetOutput::VerificationFailed {
+                message: format!("unknown provider '{}'", key.provider),
+            };
+        };
+        if !provider.verifies_credentials() {
+            return goat_api::AdminCredentialSetOutput::NotVerifiable;
+        }
+        match provider.validate().await {
+            Ok(Ok(_)) => goat_api::AdminCredentialSetOutput::Verified,
+            Ok(Err(err)) => goat_api::AdminCredentialSetOutput::VerificationFailed {
+                message: err.to_string(),
+            },
+            Err(join) => goat_api::AdminCredentialSetOutput::VerificationFailed {
+                message: join.to_string(),
+            },
+        }
+    }
+
+    pub(crate) async fn remove_credential(
+        &self,
+        key: &goat_auth::CredentialKey,
+    ) -> Result<bool, String> {
+        let removed = CredentialStore::new(self.inner.auth_path.clone())
+            .remove(key)
+            .map_err(|err| err.to_string())?;
+        if removed {
+            self.refresh_accounts().await;
+        }
+        Ok(removed)
+    }
+
+    async fn refresh_accounts(&self) {
+        let lives: Vec<LiveSession> = {
+            let table = self.inner.sessions.lock().await;
+            table.values().cloned().collect()
+        };
+        for live in lives {
+            let ops = live.inner.lock().await.ops.clone();
+            let _ = ops.send(Op::RefreshAccounts {}).await;
+        }
+    }
+
     pub(crate) async fn hold_for_attach(
         &self,
         session: SessionId,
@@ -1276,6 +1343,63 @@ mod tests {
         assert_eq!(info.state, None);
         assert_eq!(info.conversation_id, 5);
     }
+    #[tokio::test]
+    async fn a_credential_write_lands_in_the_store_and_a_remove_takes_it_back_out() {
+        let dir = std::env::temp_dir().join(format!("goat-credential-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth = dir.join("credentials.json");
+        let _ = std::fs::remove_file(&auth);
+        let hub = CodeSessionHub::new(
+            auth.clone(),
+            goat_config::UserProviders::at(dir.join("config.json")),
+            dir.join("goat.db"),
+        );
+
+        let key = goat_auth::CredentialKey::search("tavily", "default");
+        let value = goat_auth::CredentialValue::from(goat_auth::Credential::ApiKey(
+            goat_auth::SecretString::from("tvly-test".to_owned()),
+        ));
+        let outcome = hub.set_credential(key.clone(), value).await.unwrap();
+        assert!(matches!(
+            outcome,
+            goat_api::AdminCredentialSetOutput::NotVerifiable
+        ));
+
+        let store = goat_auth::CredentialStore::new(auth);
+        assert!(store.get(&key).is_some());
+
+        assert!(hub.remove_credential(&key).await.unwrap());
+        assert!(store.get(&key).is_none());
+        assert!(!hub.remove_credential(&key).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_model_provider_is_reported_rather_than_stored_silently() {
+        let dir = std::env::temp_dir().join(format!("goat-credential-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth = dir.join("credentials.json");
+        let _ = std::fs::remove_file(&auth);
+        let hub = CodeSessionHub::new(
+            auth.clone(),
+            goat_config::UserProviders::at(dir.join("config.json")),
+            dir.join("goat.db"),
+        );
+
+        let key = goat_auth::CredentialKey::model("not-a-provider", "default");
+        let value = goat_auth::CredentialValue::from(goat_auth::Credential::ApiKey(
+            goat_auth::SecretString::from("sk-test".to_owned()),
+        ));
+        let outcome = hub.set_credential(key.clone(), value).await.unwrap();
+        assert!(matches!(
+            outcome,
+            goat_api::AdminCredentialSetOutput::VerificationFailed { .. }
+        ));
+        assert!(
+            goat_auth::CredentialStore::new(auth).get(&key).is_some(),
+            "a credential that could not be verified is still stored"
+        );
+    }
+
     #[tokio::test]
     async fn subscriber_bridge_sends_backlog_before_live() {
         let (target_tx, mut target_rx) = mpsc::channel(8);

@@ -372,6 +372,30 @@ pub struct AdminConfigEditOutput {
     pub changed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AdminCredentialSetParams {
+    pub key: goat_auth::CredentialKey,
+    pub value: goat_auth::CredentialValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum AdminCredentialSetOutput {
+    Verified,
+    NotVerifiable,
+    VerificationFailed { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AdminCredentialRemoveParams {
+    pub key: goat_auth::CredentialKey,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AdminCredentialRemoveOutput {
+    pub removed: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AdminDaemonStopParams {
     #[serde(default)]
@@ -913,6 +937,28 @@ method!(
     Direction::ToDaemon,
     AdminConfigEditParams,
     AdminConfigEditOutput,
+    ()
+);
+method!(
+    AdminCredentialSet,
+    "admin.credential_set",
+    1,
+    Shape::Unary,
+    Grant::Admin,
+    Direction::ToDaemon,
+    AdminCredentialSetParams,
+    AdminCredentialSetOutput,
+    ()
+);
+method!(
+    AdminCredentialRemove,
+    "admin.credential_remove",
+    1,
+    Shape::Unary,
+    Grant::Admin,
+    Direction::ToDaemon,
+    AdminCredentialRemoveParams,
+    AdminCredentialRemoveOutput,
     ()
 );
 method!(

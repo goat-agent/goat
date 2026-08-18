@@ -129,7 +129,7 @@ enum ViewportAction {
 struct HostActions {
     copy: Option<String>,
     open: Option<String>,
-    edits: Vec<Vec<goat_api::ConfigEdit>>,
+    admin: Vec<goat_client::AdminRequest>,
 }
 
 struct SessionState {
@@ -330,7 +330,7 @@ impl App {
             host_actions: HostActions {
                 copy: None,
                 open: None,
-                edits: Vec::new(),
+                admin: Vec::new(),
             },
             session: SessionState {
                 session_id: origin.session,
@@ -569,8 +569,8 @@ impl App {
                 }
                 ops
             }
-            CommandEffect::EditConfig(edits) => {
-                self.host_actions.edits.push(edits);
+            CommandEffect::Admin(requests) => {
+                self.host_actions.admin.extend(requests);
                 Vec::new()
             }
             CommandEffect::Submit { display, prompt } => self.submit_command(display, prompt),
@@ -1083,8 +1083,8 @@ impl App {
         self.host_actions.copy.take()
     }
 
-    pub(crate) fn take_config_edits(&mut self) -> Vec<Vec<goat_api::ConfigEdit>> {
-        std::mem::take(&mut self.host_actions.edits)
+    pub(crate) fn take_admin_requests(&mut self) -> Vec<goat_client::AdminRequest> {
+        std::mem::take(&mut self.host_actions.admin)
     }
 
     pub(crate) fn take_pending_open(&mut self) -> Option<String> {
@@ -1853,7 +1853,7 @@ pub enum ExitReason {
 
 pub async fn run(
     ops: Sender<Op>,
-    edits: Sender<Vec<goat_api::ConfigEdit>>,
+    admin: Sender<goat_client::AdminRequest>,
     mut events: Receiver<EngineEvent>,
     mut presence: Receiver<usize>,
     theme: Theme,
@@ -1867,7 +1867,7 @@ pub async fn run(
     let result = event_loop(
         &mut terminal,
         &ops,
-        &edits,
+        &admin,
         &mut events,
         &mut presence,
         app,
@@ -1882,7 +1882,7 @@ pub async fn run(
 async fn event_loop(
     terminal: &mut DefaultTerminal,
     ops: &Sender<Op>,
-    edits: &Sender<Vec<goat_api::ConfigEdit>>,
+    admin: &Sender<goat_client::AdminRequest>,
     events: &mut Receiver<EngineEvent>,
     presence: &mut Receiver<usize>,
     mut app: App,
@@ -1934,8 +1934,8 @@ async fn event_loop(
             }
         }
 
-        for batch in app.take_config_edits() {
-            let _ = edits.send(batch).await;
+        for request in app.take_admin_requests() {
+            let _ = admin.send(request).await;
         }
         if let Some(notification) = app.take_notification() {
             crate::notification::spawn(notification);

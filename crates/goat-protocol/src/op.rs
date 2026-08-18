@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    InputAttachment, LoginCredential, Mode, ModelTarget, PlanDecision, RewindScope, RunId, TaskId,
-    ToolCallId,
+    InputAttachment, Mode, ModelTarget, PlanDecision, RewindScope, RunId, TaskId, ToolCallId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -34,15 +33,7 @@ pub enum Op {
         call: ToolCallId,
         decision: PlanDecision,
     },
-    AddAccount {
-        provider: String,
-        name: String,
-        credential: LoginCredential,
-    },
-    RemoveAccount {
-        provider: String,
-        name: String,
-    },
+    RefreshAccounts {},
     ListConversations {},
     ListRewindPoints {},
     Rewind {

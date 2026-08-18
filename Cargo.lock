@@ -2145,6 +2145,7 @@ name = "goat-api"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "goat-auth",
  "goat-protocol",
  "goat-wire",
  "schemars",
@@ -2308,8 +2309,11 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "goat-api",
+ "goat-auth",
+ "goat-config",
  "goat-process",
  "goat-protocol",
+ "goat-providers",
  "goat-remote",
  "goat-wire",
  "serde_json",
@@ -2544,6 +2548,7 @@ dependencies = [
  "goat-engine",
  "goat-process",
  "goat-protocol",
+ "goat-provider",
  "goat-providers",
  "goat-proxy",
  "goat-remote",
@@ -3693,7 +3698,6 @@ dependencies = [
  "color-eyre",
  "crossterm 0.29.0",
  "futures",
- "goat-api",
  "goat-client",
  "goat-command",
  "goat-commands",

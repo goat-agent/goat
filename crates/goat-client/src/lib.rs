@@ -14,9 +14,11 @@ use goat_wire::WireError;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
+mod admin;
 mod link;
 mod session;
 
+pub use admin::{AdminRequest, LoginMethod, edit_config, remove_credential, set_credential};
 pub use link::{EnvelopeConn, LOCAL, Link};
 pub use session::{ApiSession, open as open_api, open_serving};
 
@@ -147,7 +149,7 @@ fn identity_of(build: Option<BuildId>) -> Identity {
 
 pub struct Attachment {
     pub ops: mpsc::Sender<Op>,
-    pub edits: mpsc::Sender<Vec<goat_api::ConfigEdit>>,
+    pub admin: mpsc::Sender<AdminRequest>,
     pub events: mpsc::Receiver<Event>,
     pub presence: mpsc::Receiver<usize>,
     pub client_id: u64,
@@ -344,7 +346,7 @@ fn spawn_pumps(
     daemon: Identity,
 ) -> Attachment {
     let (ops_tx, ops_rx) = mpsc::channel::<Op>(OPS_CAPACITY);
-    let (edits_tx, edits_rx) = mpsc::channel::<Vec<goat_api::ConfigEdit>>(OPS_CAPACITY);
+    let (admin_tx, admin_rx) = mpsc::channel::<AdminRequest>(OPS_CAPACITY);
     let (events_tx, events_rx) = mpsc::channel::<Event>(EVENTS_CAPACITY);
     let (presence_tx, presence_rx) = mpsc::channel::<usize>(PRESENCE_CAPACITY);
 
@@ -360,14 +362,14 @@ fn spawn_pumps(
         shared,
         link,
         ops_rx,
-        edits_rx,
+        admin_rx,
         events_tx,
         presence_tx,
     ));
 
     Attachment {
         ops: ops_tx,
-        edits: edits_tx,
+        admin: admin_tx,
         events: events_rx,
         presence: presence_rx,
         client_id,
@@ -383,7 +385,7 @@ async fn run_pump(
     shared: Arc<Shared>,
     link: Arc<Link>,
     mut ops_rx: mpsc::Receiver<Op>,
-    mut edits_rx: mpsc::Receiver<Vec<goat_api::ConfigEdit>>,
+    mut admin_rx: mpsc::Receiver<AdminRequest>,
     events_tx: mpsc::Sender<Event>,
     presence_tx: mpsc::Sender<usize>,
 ) {
@@ -404,12 +406,9 @@ async fn run_pump(
         let keep_going = loop {
             tokio::select! {
                 biased;
-                edits = edits_rx.recv() => {
-                    let Some(edits) = edits else { break false };
-                    let _ = session
-                        .api
-                        .call::<goat_api::AdminConfigEdit>(goat_api::AdminConfigEditParams { edits })
-                        .await;
+                request = admin_rx.recv() => {
+                    let Some(request) = request else { break false };
+                    admin::dispatch(&session.api, &link, request, &events_tx).await;
                 }
                 op = ops_rx.recv() => {
                     let Some(op) = op else { break false };
@@ -678,6 +677,17 @@ where
     result.map_err(|err| ClientError::Refused(err.message))
 }
 
+async fn admin_call<T, F, Fut>(link: &Link, call: F) -> Result<T, ClientError>
+where
+    F: FnOnce(Api) -> Fut,
+    Fut: std::future::Future<Output = Result<T, goat_wire::envelope::CallError>>,
+{
+    let (session, _, _, _) = ensure(link, OnStale::Attach).await?;
+    let result = call(session.api.clone()).await;
+    session.shutdown();
+    result.map_err(|err| ClientError::Refused(err.message))
+}
+
 pub async fn status(link: &Link) -> Result<Vec<goat_api::SessionInfo>, ClientError> {
     one_shot(link, |api| async move {
         api.call::<SessionList>(Empty {})
@@ -738,21 +748,6 @@ pub async fn reload(
             .await
     })
     .await
-}
-
-pub async fn edit_config(
-    link: &Link,
-    edits: Vec<goat_api::ConfigEdit>,
-) -> Result<bool, ClientError> {
-    let (session, _, _, _) = ensure(link, OnStale::Attach).await?;
-    let answered = session
-        .api
-        .call::<goat_api::AdminConfigEdit>(goat_api::AdminConfigEditParams { edits })
-        .await;
-    session.shutdown();
-    answered
-        .map(|out| out.changed)
-        .map_err(|err| ClientError::Refused(err.message))
 }
 
 pub async fn kill_session(link: &Link, session: u64) -> Result<(), ClientError> {

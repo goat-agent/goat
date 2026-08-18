@@ -1,4 +1,5 @@
-use goat_protocol::{AuthMethod, LoginCredential};
+use goat_client::LoginMethod;
+use goat_protocol::AuthMethod;
 
 pub(crate) const FIELD_LABEL_W: usize = 7;
 
@@ -46,7 +47,7 @@ pub enum ConfigOutcome {
     AddAccount {
         provider: String,
         name: String,
-        credential: LoginCredential,
+        method: LoginMethod,
     },
     RemoveAccount {
         provider: String,

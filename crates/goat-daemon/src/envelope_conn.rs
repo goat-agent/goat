@@ -236,9 +236,13 @@ mod tests {
         .await;
 
         assert!(local.speaks("admin.daemon_stop", 1));
+        assert!(local.speaks("admin.credential_set", 1));
+        assert!(local.speaks("admin.credential_remove", 1));
         assert!(local.grants.iter().any(|grant| grant == "admin"));
 
         assert!(!remote.speaks("admin.daemon_stop", 1));
+        assert!(!remote.speaks("admin.credential_set", 1));
+        assert!(!remote.speaks("admin.credential_remove", 1));
         assert!(!remote.grants.iter().any(|grant| grant == "admin"));
         assert!(remote.speaks("session.open", 1));
     }

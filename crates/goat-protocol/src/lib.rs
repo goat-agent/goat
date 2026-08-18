@@ -9,8 +9,7 @@ pub use types::*;
 #[cfg(test)]
 mod tests {
     use super::{
-        Event, GitFacts, LoginCredential, Op, TaskId, ToolCallId, ToolImageData, ToolOutcome,
-        TranscriptEntry,
+        Event, GitFacts, Op, TaskId, ToolCallId, ToolImageData, ToolOutcome, TranscriptEntry,
     };
 
     #[test]
@@ -189,17 +188,6 @@ mod tests {
                 attachments: Vec::new(),
             }
         );
-    }
-
-    #[test]
-    fn login_credential_api_key_serializes_with_type() {
-        let cred = LoginCredential::ApiKey {
-            key: "sk-x".to_owned(),
-        };
-        let json = serde_json::to_string(&cred).unwrap();
-        assert_eq!(json, r#"{"type":"ApiKey","key":"sk-x"}"#);
-        let back: LoginCredential = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, cred);
     }
 
     #[test]

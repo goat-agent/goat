@@ -25,6 +25,7 @@ goat-remote = { workspace = true }
 goat-engine = { workspace = true }
 goat-auth = { workspace = true }
 goat-code-store = { workspace = true }
+goat-provider = { workspace = true }
 goat-providers = { workspace = true }
 goat-proxy = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
