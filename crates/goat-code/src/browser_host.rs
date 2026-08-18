@@ -3,6 +3,7 @@ use std::sync::Arc;
 use color_eyre::eyre::eyre;
 use goat_api::{BrowserEvent, BrowserEventParams, CdpEvent};
 use goat_browser_host::native::{Bridge, NativeError, Reassembler, frame, read_message};
+use goat_browser_host::panel::Panel;
 use goat_browser_host::{BrowserHost, NativePort, advertise, advertisement, withdrawal};
 use goat_wire::envelope::{CallError, ErrorCode, Execution, Hello, Role};
 use serde_json::Value;
@@ -46,6 +47,10 @@ impl<W: AsyncWrite + Unpin + Send + Sync> NativePort for StdoutPort<W> {
         writer.flush().await.map_err(|err| err.to_string())?;
         Ok(())
     }
+}
+
+fn panel_cwd() -> color_eyre::Result<String> {
+    std::env::var("HOME").map_err(|_| eyre!("$HOME is not set"))
 }
 
 pub fn parse_event(body: &Value) -> Option<CdpEvent> {
@@ -96,8 +101,8 @@ pub async fn run(instance: Option<String>, label: Option<String>) -> color_eyre:
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or_default();
 
-    let port = Arc::new(StdoutPort::new(tokio::io::stdout()));
-    let host = Arc::new(BrowserHost::new(port));
+    let port: Arc<dyn NativePort> = Arc::new(StdoutPort::new(tokio::io::stdout()));
+    let host = Arc::new(BrowserHost::new(port.clone()));
 
     let hello = Hello::new(
         Role::Client,
@@ -117,6 +122,8 @@ pub async fn run(instance: Option<String>, label: Option<String>) -> color_eyre:
     )
     .await
     .map_err(|err| eyre!("{err}"))?;
+
+    let panel = Arc::new(Panel::new(session.api.clone(), port, panel_cwd()?));
 
     let mut stdin = tokio::io::stdin();
     let mut reassembler = Reassembler::new();
@@ -141,6 +148,8 @@ pub async fn run(instance: Option<String>, label: Option<String>) -> color_eyre:
                     event,
                 })
                 .await;
+        } else {
+            panel.accept(&body).await;
         }
     }
 
