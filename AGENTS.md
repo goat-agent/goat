@@ -186,8 +186,13 @@ kept here.
 
 Placements that contradict the naming:
 
-- `goat-skill` (singular) is a code crate; `goat-skills` (plural) is an agent crate. Different
-  scopes, different parsers.
+- `goat-skill` (singular) is a code crate; `goat-skills` (plural) is an agent crate. **They parse
+  the same `SKILL.md` twice, and that is a hazard, not a design.** Both strip a leading `---`, read
+  `name`/`description`/`arguments[{name, description, required}]` out of the YAML, and substitute
+  into the body; `goat-skills`' `SkillArgument` is a strict subset of `goat-skill`'s
+  `ManifestParameter`, so `value:` and `subcommands:` are honoured for a code skill and silently
+  dropped for an agent one. The scopes really do differ (agent skills are per-agent and carry
+  diagnostics and resources), so the fix is one parser and two scopes, not two crates.
 - `goat-provider-openai-compat` registers nothing — it is the chat/Responses wire base.
   `goat-provider-builtin` is the product's provider table built over it: one `Row` per data-only
   provider, eleven hosted plus the local trio (ollama, lmstudio, llama-cpp).
