@@ -523,5 +523,9 @@ unit-tested in `goat-code`'s `headless` module. `goat-daemon`'s `remote_e2e` dri
 same test that covers the server half.
 
 Tests are inline `#[cfg(test)]` modules by default, concentrated in `goat-tui` and `goat-engine`.
-The only `tests/` directories are `goat-daemon`, `goat-remote`, and `goat-tool-browser` (real
-Chrome).
+The only `tests/` directories are `goat-daemon`, `goat-remote` and `goat-code`, and they exist
+because those tests need a real socket: `roundtrip`/`lifecycle` bind one, `remote_e2e` and
+`goat-remote`'s `remote` add mTLS, `browser_capability` drives a `BrowserPort` through the broker,
+and `goat-code`'s `browser_host` spawns the actual `goat browser-host` process against a scripted
+Chrome on its stdio. Nothing here drives a real Chrome — the browser vocabulary is covered by
+`goat-tool-browser`'s `transport::fake`, and the extension's end of the pipe is not covered at all.
