@@ -109,15 +109,28 @@ async fn to_chrome(chrome: &mut Chrome, seq: u64, body: Value) {
         .expect("the host reads its stdin");
 }
 
-async fn answer_one(chrome: &mut Chrome, reply: Value) -> Value {
+async fn from_chrome(chrome: &mut Chrome) -> Value {
     let message = read_message(&mut chrome.stdout)
         .await
-        .expect("the host writes a request");
-    let bridge: Bridge = serde_json::from_value(message).expect("the host frames its requests");
+        .expect("the host writes a message");
+    let bridge: Bridge = serde_json::from_value(message).expect("the host frames its messages");
     let Bridge::Message { body, .. } = bridge else {
-        panic!("a small request must not be chunked")
+        panic!("a small message must not be chunked")
     };
-    assert_eq!(body["type"], "browser.request");
+    body
+}
+
+async fn await_request(chrome: &mut Chrome) -> Value {
+    loop {
+        let body = from_chrome(chrome).await;
+        if body["type"] == "browser.request" {
+            return body;
+        }
+    }
+}
+
+async fn answer_one(chrome: &mut Chrome, reply: Value) -> Value {
+    let body = await_request(chrome).await;
     let request_id = body["request_id"]
         .as_str()
         .expect("a request carries an id")
@@ -217,13 +230,7 @@ async fn a_browser_that_never_started_the_work_reports_a_safe_retry() {
     );
 
     let refusing = async {
-        let message = read_message(&mut chrome.stdout)
-            .await
-            .expect("the host writes a request");
-        let bridge: Bridge = serde_json::from_value(message).expect("the host frames its requests");
-        let Bridge::Message { body, .. } = bridge else {
-            panic!("a small request must not be chunked")
-        };
+        let body = await_request(&mut chrome).await;
         let request_id = body["request_id"]
             .as_str()
             .expect("a request carries an id")
@@ -245,5 +252,52 @@ async fn a_browser_that_never_started_the_work_reports_a_safe_retry() {
     assert!(
         err.to_string().contains("no active tab"),
         "the browser's own message survives the wire: {err}"
+    );
+}
+
+#[tokio::test]
+async fn the_side_panel_and_the_browser_share_one_port() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let hub = start_daemon(home).await;
+
+    let mut chrome = spawn_browser_host(home, "chrome-panel");
+    let client = await_advertisement(&home.join(".goat/daemon.sock"), "chrome-panel").await;
+
+    to_chrome(&mut chrome, 1, json!({ "type": "panel.open" })).await;
+    let item = tokio::time::timeout(Duration::from_secs(10), from_chrome(&mut chrome))
+        .await
+        .expect("the panel's session reaches the port");
+    assert_eq!(item["type"], "panel.item");
+    assert_eq!(item["item"]["t"], "snapshot");
+    assert_eq!(
+        item["item"]["state"]["transcript"]
+            .as_array()
+            .expect("a snapshot carries a transcript")
+            .len(),
+        0,
+        "a panel opening on a fresh tree starts an empty conversation"
+    );
+
+    let holder = Holder::agent("panel-e2e");
+    client
+        .api
+        .call::<CapabilityBind>(CapabilityBindParams {
+            holder: holder.clone(),
+            capability: CAPABILITY.to_owned(),
+            instance: "chrome-panel".to_owned(),
+        })
+        .await
+        .expect("the advertised browser binds");
+
+    let relay = BrowserRelay::new(hub.broker(), hub.browser_events(), holder);
+    let (answered, dispatched) = tokio::join!(
+        relay.call(BrowserCommand::TabList {}),
+        answer_one(&mut chrome, json!({ "reply": "tabs", "tabs": [] })),
+    );
+    assert_eq!(dispatched["command"], "tab_list");
+    assert_eq!(
+        answered.expect("the browser answers on the port the panel is already using"),
+        HostBrowserOutput::Tabs { tabs: Vec::new() }
     );
 }

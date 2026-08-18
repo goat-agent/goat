@@ -2209,6 +2209,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-api",
+ "goat-protocol",
  "goat-wire",
  "serde",
  "serde_json",

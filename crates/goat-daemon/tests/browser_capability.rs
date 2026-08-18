@@ -7,7 +7,7 @@ use goat_api::{
     SessionId, SessionOpen, SessionOpenParams,
 };
 use goat_browser_host::{
-    BrowserHost, BrowserPort, CAPABILITY, advertise, advertisement, withdrawal,
+    BrowserHost, CAPABILITY, NativePort, advertise, advertisement, withdrawal,
 };
 use goat_client::Link;
 use goat_wire::envelope::{Hello, Role};
@@ -52,10 +52,14 @@ struct RecordingPort {
 }
 
 #[async_trait::async_trait]
-impl BrowserPort for RecordingPort {
-    async fn dispatch(&self, request_id: u64, params: Value) -> Result<(), String> {
+impl NativePort for RecordingPort {
+    async fn emit(&self, body: &Value) -> Result<(), String> {
+        let request_id = body["request_id"]
+            .as_str()
+            .and_then(|text| text.parse::<u64>().ok())
+            .ok_or("a request carries a numeric id")?;
         self.sent
-            .send((request_id, params))
+            .send((request_id, body["params"].clone()))
             .map_err(|_| "the browser closed".to_owned())
     }
 }

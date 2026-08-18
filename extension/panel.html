@@ -5,20 +5,80 @@
 <title>goat</title>
 <style>
   :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 12px;
+    margin: 0;
+    height: 100vh;
+    display: flex; flex-direction: column;
     background: #010102; color: #f7f8f8;
     font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
-  .state { color: #8a8f98; font-size: 13px; }
-  .hint { margin-top: 12px; color: #62666d; font-size: 12px; }
+  .log {
+    flex: 1; overflow-y: auto;
+    padding: 12px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .msg { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.user {
+    align-self: flex-end; max-width: 85%;
+    padding: 6px 10px; border-radius: 10px;
+    background: #1c1c1f;
+  }
+  .msg.thinking { color: #8a8f98; font-style: italic; }
+  .note { color: #62666d; font-size: 12px; }
+  .note.error { color: #eb5757; font-style: normal; }
+  .tool {
+    border-left: 2px solid #2a2b30; padding-left: 8px;
+    font-size: 13px; color: #8a8f98;
+  }
+  .tool.running { border-left-color: #5e6ad2; }
+  .tool.failed { border-left-color: #eb5757; }
+  .tool-head { color: #f7f8f8; }
+  .tool-detail, .tool-result { overflow-wrap: anywhere; }
+  .shell {
+    border-left: 2px solid #2a2b30; padding-left: 8px;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap; overflow-wrap: anywhere; color: #8a8f98;
+  }
+  .ask { border: 1px solid #2a2b30; border-radius: 8px; padding: 10px; }
+  .ask.settled { opacity: 0.5; pointer-events: none; }
+  .ask-question { margin-bottom: 6px; }
+  .ask-options { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  .ask-option {
+    padding: 3px 8px; border-radius: 999px;
+    border: 1px solid #2a2b30; background: #131316; color: #f7f8f8;
+    font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .ask-option.picked { border-color: #5e6ad2; background: #23243a; }
+  .ask-text, .composer textarea {
+    width: 100%; resize: none;
+    border: 1px solid #2a2b30; border-radius: 8px;
+    padding: 6px 8px;
+    background: #131316; color: #f7f8f8; font: inherit;
+  }
+  .ask-send, .composer button {
+    border: 1px solid #2a2b30; border-radius: 8px;
+    padding: 4px 10px;
+    background: #131316; color: #f7f8f8; font: inherit; font-size: 12px;
+    cursor: pointer;
+  }
+  .ask-send:disabled { opacity: 0.4; cursor: default; }
+  .composer {
+    border-top: 1px solid #131316; padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .composer .row { display: flex; align-items: center; gap: 8px; }
+  .state { flex: 1; color: #62666d; font-size: 12px; }
 </style>
 </head>
 <body>
-<div class="state" id="state">connecting to goat…</div>
-<div class="hint">
-  goat drives this browser through your own signed-in profile.
-  Chrome shows a debugging banner while an action is running.
+<div class="log" id="log"></div>
+<div class="composer">
+  <textarea id="input" rows="2" placeholder="Message goat"></textarea>
+  <div class="row">
+    <div class="state" id="state">connecting to goat…</div>
+    <button id="stop" hidden>Stop</button>
+  </div>
 </div>
 <script src="panel.js"></script>
 </body>
