@@ -162,12 +162,12 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
      `goat-provider-xai`).
   2. a test binding the document's `redirect_uris` to that port list and its `client_id` to the URL
      verbatim, so the pair cannot drift silently.
-  3. the document actually served at that HTTPS URL before the constant naming it lands. Per-agent binding lives in the agent's
-  `integrations` config map and now carries only connection-scoped keys (`account`,
-  `organization_slug`, `user_id`, `host`, …) — watch policy keys moved to the `watch` section, and
-  a stale one fails validation with a pointer there. Raw observations persist losslessly in
-  `integration_observations`, and the `observation` agent tool reads them back — a briefing cites
-  `observation:<id>`, and that reference resolves.
+  3. the document actually served at that HTTPS URL before the constant naming it lands.
+- Per-agent binding lives in the agent's `integrations` config map and carries only
+  connection-scoped keys (`account`, `organization_slug`, `user_id`, `host`, …) — watch policy keys
+  live in the `watch` section, and a stale one fails validation with a pointer there. Raw
+  observations persist losslessly in `integration_observations`, and the `observation` agent tool
+  reads them back — a briefing cites `observation:<id>`, and that reference resolves.
 - Channel bindings are per-agent, and **no secret ever lives in `config.json`.** The `channels.<kind>`
   map records *that* an agent uses a channel — an empty object is a complete binding, so never delete
   one for looking empty — while every secret sits in `credentials.json` under
