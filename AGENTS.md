@@ -446,13 +446,27 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   as opaque JSON so `goat-api` never learns a concrete provider name. `goat provider`,
   `goat search` and `goat agent integration` call it, and a local target autostarts the daemon so a
   write still works from a cold machine.
-- **Two writers are left, both in the TUI, both blocked on the same missing piece.** `/search`
-  writes `config.json` directly and `/config`'s account rows still go out as
-  `Op::AddAccount`/`RemoveAccount` — engine vocabulary that has nothing to do with a coding turn.
-  Neither can move until `Attachment` carries an admin channel beside its `Op` sender; today a slash
-  command can only reach the daemon through `CommandEffect::Dispatch(Vec<Op>)`. `browser_enabled` is
-  the last toggle in that shape and disappears with the CDP browser backend. Do not add a new direct
-  writer.
+- **Credentials cross the same door, and `Attachment` carries it.** `admin.credential_set` /
+  `admin.credential_remove` take a `goat_auth::CredentialKey` plus a `CredentialValue` — the same
+  `#[serde(tag = "kind")]` encoding `credentials.json` uses on disk, reused rather than mirrored so
+  the two cannot drift. `Credential` itself stays unserializable; that is the guardrail keeping a
+  secret out of a log line. **Acquisition is the client's, storage is the daemon's**: OAuth
+  loopback, prompts and device flows run where the human is, and only the acquired credential
+  crosses. A write fans `Op::RefreshAccounts {}` out to every live session, which is why a
+  `goat provider login` in one terminal reaches a running `goat code` in another. Storing keeps a
+  credential that failed validation and reports `verification_failed` — a network blip must not
+  delete a key.
+- **A slash command reaches the daemon through `CommandEffect::Admin(Vec<AdminRequest>)`,** a
+  batch so `/search` can write a key and its config rows in one order. `Attachment` carries
+  `admin: Sender<AdminRequest>` beside its `Op` sender, and `goat-client`'s pump is where an
+  `AdminRequest::ProviderLogin` turns into a local OAuth run plus one `admin.credential_set`. A
+  remote link refuses `ProviderLogin` outright — a remote daemon reads its own credentials.
+  `goat-tui` and `goat-command-*` name credential keys but never construct a `CredentialStore`, so
+  a client-side write is unrepresentable rather than merely absent.
+- **`goat mcp` is the one direct writer left, and deliberately so.** Its server secrets and
+  `mcp.json` move as a pair with rollback, and `ConfigEdit` has no MCP vocabulary — splitting the
+  pair across a process boundary would buy nothing and lose the rollback. Device key material in
+  `goat remote` is not an exception at all: the client reads it, so the client owns it.
 
 ## Vestigial — present in code, does nothing
 
