@@ -22,7 +22,7 @@ goat-memory  = { workspace = true }
 goat-bus     = { workspace = true }
 goat-agent-config = { workspace = true }
 goat-agent-tool    = { workspace = true }
-goat-skills  = { workspace = true }
+goat-skill  = { workspace = true }
 tokio        = { workspace = true }
 tokio-util   = { workspace = true }
 async-trait  = { workspace = true }

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use goat_agent_tool::{
     ToolCall, ToolCaller, ToolFactory, ToolHandler, ToolName, ToolOutput, ToolSpec,
 };
-use goat_skills::{SkillCallArgs, SkillIndex, format_activated_skill, resolve_call_args};
+use goat_skill::{Call, Scopes, SkillSet};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -32,18 +32,18 @@ impl ToolHandler for SkillTool {
         if args.skill.trim().is_empty() {
             return ToolOutput::error("skill name must not be empty");
         }
-        let call_args = match (args.arguments, args.args) {
-            (Some(named), _) => Some(SkillCallArgs::Named(named)),
-            (None, Some(raw)) => Some(SkillCallArgs::Raw(raw)),
+        let call = match (args.arguments, args.args) {
+            (Some(named), _) => Some(Call::Named(named)),
+            (None, Some(raw)) => Some(Call::Raw(raw)),
             (None, None) => None,
         };
-        let idx = SkillIndex::discover_root(&ctx.goat_root);
-        let skill = match idx.activate(ctx.agent, &args.skill) {
+        let skills = SkillSet::load(&Scopes::agent(&ctx.goat_root, &ctx.agent_slug));
+        let skill = match skills.activate(&args.skill) {
             Ok(skill) => skill,
             Err(e) => return ToolOutput::error(e.to_string()),
         };
-        match resolve_call_args(&skill.arguments, call_args.as_ref()) {
-            Ok(resolved) => ToolOutput::text(format_activated_skill(&skill, resolved.as_ref())),
+        match goat_skill::resolve(&skill.arguments, call.as_ref()) {
+            Ok(resolved) => ToolOutput::text(goat_skill::render(skill, resolved.as_ref())),
             Err(e) => ToolOutput::error(e.to_string()),
         }
     }
@@ -199,7 +199,7 @@ mod tests {
         std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
         std::fs::write(
             &skill,
-            "---\nname: remind\ndescription: Remind me\narguments:\n  - name: task\n    description: what to do\n    required: true\n---\nTask: $task",
+            "---\nname: remind\ndescription: Remind me\narguments:\n  - name: task\n    description: what to do\n    required: true\n    value: text_tail\n---\nTask: $task",
         )
         .unwrap();
 
@@ -243,6 +243,6 @@ mod tests {
             )
             .await;
         assert!(out.is_error);
-        assert!(out.text_for_model().contains("skill not found"));
+        assert!(out.text_for_model().contains("no skill named `missing`"));
     }
 }

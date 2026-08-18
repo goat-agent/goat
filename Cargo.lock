@@ -1919,7 +1919,7 @@ dependencies = [
  "goat-provider",
  "goat-providers",
  "goat-runtime",
- "goat-skills",
+ "goat-skill",
  "goat-store",
  "goat-types",
  "goat-wire",
@@ -1952,7 +1952,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-agent-command",
- "goat-skills",
+ "goat-skill",
  "goat-types",
  "inventory",
  "serde_json",
@@ -2132,7 +2132,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "goat-agent-tool",
- "goat-skills",
+ "goat-skill",
  "goat-types",
  "inventory",
  "serde",
@@ -2193,7 +2193,7 @@ dependencies = [
  "goat-provider",
  "goat-providers",
  "goat-render",
- "goat-skills",
+ "goat-skill",
  "goat-store",
  "goat-types",
  "serde_json",
@@ -3359,7 +3359,6 @@ dependencies = [
  "goat-providers",
  "goat-proxy",
  "goat-render",
- "goat-skills",
  "goat-sleep",
  "goat-store",
  "goat-types",
@@ -3451,22 +3450,9 @@ dependencies = [
 name = "goat-skill"
 version = "0.1.0"
 dependencies = [
- "goat-config",
- "goat-protocol",
  "serde",
  "serde_yaml",
  "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "goat-skills"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "goat-types",
- "serde",
- "serde_yaml",
  "thiserror 2.0.19",
  "tracing",
 ]
@@ -3648,7 +3634,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.19",
  "tokio",
 ]
 

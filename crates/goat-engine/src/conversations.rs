@@ -1,7 +1,7 @@
 use goat_code_store::CodeStore as Store;
 use goat_protocol::{
     ConversationSummary, Effort, Event, ModelTarget, NotifyKind, RewindDraft, RewindPoint,
-    RewindScope, SkillInfo, ToolCall, ToolCallId, ToolOutcome, TranscriptEntry,
+    RewindScope, ToolCall, ToolCallId, ToolOutcome, TranscriptEntry,
 };
 use goat_provider::{ContentBlock, Message, MessageRole};
 use goat_tool::{ToolBatchCall, ToolHistoryGroup};
@@ -518,7 +518,7 @@ pub(crate) async fn handle_resume(
     state: &mut crate::SessionState,
 ) {
     let store = &ctx.store;
-    let skills: &[SkillInfo] = &ctx.skills;
+    let skills = &ctx.skills;
     let tools = &ctx.tools;
     let instructions = ctx.instructions.as_deref();
     let date = ctx.date.as_str();

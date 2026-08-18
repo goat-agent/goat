@@ -5128,115 +5128,7 @@
             ],
             "type": "object"
           },
-          "SkillBranchInfo": {
-            "properties": {
-              "arguments": {
-                "default": [],
-                "items": {
-                  "$ref": "#/$defs/SkillParameterInfo"
-                },
-                "type": "array"
-              },
-              "description": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "name",
-              "description"
-            ],
-            "type": "object"
-          },
-          "SkillChoiceInfo": {
-            "properties": {
-              "description": {
-                "default": null,
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "value": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "value"
-            ],
-            "type": "object"
-          },
-          "SkillCommandShape": {
-            "oneOf": [
-              {
-                "properties": {
-                  "items": {
-                    "items": {
-                      "$ref": "#/$defs/SkillParameterInfo"
-                    },
-                    "type": "array"
-                  },
-                  "type": {
-                    "const": "arguments",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type",
-                  "items"
-                ],
-                "type": "object"
-              },
-              {
-                "properties": {
-                  "items": {
-                    "items": {
-                      "$ref": "#/$defs/SkillBranchInfo"
-                    },
-                    "type": "array"
-                  },
-                  "type": {
-                    "const": "subcommands",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type",
-                  "items"
-                ],
-                "type": "object"
-              }
-            ]
-          },
-          "SkillInfo": {
-            "properties": {
-              "command": {
-                "anyOf": [
-                  {
-                    "$ref": "#/$defs/SkillCommandShape"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "description": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "name",
-              "description"
-            ],
-            "type": "object"
-          },
-          "SkillParameterInfo": {
+          "SkillArgument": {
             "properties": {
               "description": {
                 "type": "string"
@@ -5249,7 +5141,7 @@
                 "type": "boolean"
               },
               "value": {
-                "$ref": "#/$defs/SkillParameterValue"
+                "$ref": "#/$defs/SkillArgumentValue"
               }
             },
             "required": [
@@ -5259,7 +5151,7 @@
             ],
             "type": "object"
           },
-          "SkillParameterValue": {
+          "SkillArgumentValue": {
             "oneOf": [
               {
                 "properties": {
@@ -5289,7 +5181,7 @@
                 "properties": {
                   "options": {
                     "items": {
-                      "$ref": "#/$defs/SkillChoiceInfo"
+                      "$ref": "#/$defs/SkillChoice"
                     },
                     "type": "array"
                   },
@@ -5317,6 +5209,46 @@
                 "type": "object"
               }
             ]
+          },
+          "SkillChoice": {
+            "properties": {
+              "description": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "value"
+            ],
+            "type": "object"
+          },
+          "SkillInfo": {
+            "properties": {
+              "arguments": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/SkillArgument"
+                },
+                "type": "array"
+              },
+              "description": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "description"
+            ],
+            "type": "object"
           },
           "SubagentGroupEntry": {
             "properties": {

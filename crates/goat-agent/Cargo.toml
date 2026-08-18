@@ -28,7 +28,7 @@ goat-integration-mcp = { workspace = true }
 open        = { workspace = true }
 goat-provider = { workspace = true }
 goat-providers = { workspace = true }
-goat-skills     = { workspace = true }
+goat-skill     = { workspace = true }
 goat-types      = { workspace = true }
 goat-channel    = { workspace = true }
 goat-channel-discord  = { workspace = true }

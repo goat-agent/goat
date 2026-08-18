@@ -1050,7 +1050,7 @@ async fn spawn_agent(
 
     let mut handles: Vec<Arc<dyn ChannelHandle>> = Vec::new();
     let mut joins: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-    let commands = Arc::new(build_command_registry(&shared.goat_root, raw.id));
+    let commands = Arc::new(build_command_registry(&shared.goat_root, &raw.slug));
     let command_specs = commands.specs();
 
     for binding in &raw.bindings {
@@ -1165,12 +1165,9 @@ async fn spawn_agent(
     Ok(joins)
 }
 
-fn build_command_registry(
-    goat_root: &std::path::Path,
-    agent: goat_types::AgentId,
-) -> CommandRegistry {
+fn build_command_registry(goat_root: &std::path::Path, agent_slug: &str) -> CommandRegistry {
     let mut registry = CommandRegistry::new();
-    let ctx = CommandProviderContext::new(goat_root.to_path_buf(), agent);
+    let ctx = CommandProviderContext::new(goat_root.to_path_buf(), agent_slug.to_owned());
     for factory in inventory::iter::<CommandFactory>() {
         (factory.register)(&mut registry, &ctx);
         info!(

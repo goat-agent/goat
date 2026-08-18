@@ -9,10 +9,9 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
-goat-config = { workspace = true }
-goat-protocol = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

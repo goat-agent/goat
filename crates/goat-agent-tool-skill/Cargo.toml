@@ -11,7 +11,7 @@ publish.workspace = true
 [dependencies]
 goat-types   = { workspace = true }
 goat-agent-tool    = { workspace = true }
-goat-skills  = { workspace = true }
+goat-skill   = { workspace = true }
 async-trait  = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }

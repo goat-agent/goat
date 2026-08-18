@@ -191,7 +191,6 @@ goat-agent-config       = { path = "crates/goat-agent-config" }
 goat-runtime            = { path = "crates/goat-runtime" }
 goat-agent              = { path = "crates/goat-agent" }
 goat-memory             = { path = "crates/goat-memory" }
-goat-skills             = { path = "crates/goat-skills" }
 goat-loop               = { path = "crates/goat-loop" }
 goat-sleep              = { path = "crates/goat-sleep" }
 goat-embedding              = { path = "crates/goat-embedding" }

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use goat_types::{AgentId, CommandCall, CommandName};
+use goat_types::{CommandCall, CommandName};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -134,12 +134,15 @@ impl CommandRegistry {
 #[non_exhaustive]
 pub struct CommandProviderContext {
     pub goat_root: PathBuf,
-    pub agent: AgentId,
+    pub agent_slug: String,
 }
 
 impl CommandProviderContext {
-    pub fn new(goat_root: PathBuf, agent: AgentId) -> Self {
-        Self { goat_root, agent }
+    pub fn new(goat_root: PathBuf, agent_slug: String) -> Self {
+        Self {
+            goat_root,
+            agent_slug,
+        }
     }
 }
 

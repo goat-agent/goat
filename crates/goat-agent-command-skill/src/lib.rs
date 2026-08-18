@@ -8,75 +8,84 @@ use goat_agent_command::{
     CommandArgSpec, CommandError, CommandFactory, CommandHandler, CommandOutput,
     CommandProviderContext, CommandRegistry, CommandSpec,
 };
-use goat_skills::{SkillCallArgs, SkillIndex, format_activated_skill, resolve_call_args};
-use goat_types::{AgentId, CommandCall, CommandName};
+use goat_skill::{Argument, ArgumentValue, Call, Scopes, SkillSet};
+use goat_types::{CommandCall, CommandName};
 use tracing::warn;
 
 pub const ID: &str = "skill";
 
 fn register_from_context(registry: &mut CommandRegistry, ctx: &CommandProviderContext) {
-    register(registry, &ctx.goat_root, ctx.agent);
+    register(registry, &ctx.goat_root, &ctx.agent_slug);
 }
 
 inventory::submit! {
     CommandFactory { id: ID, register: register_from_context }
 }
 
-pub fn register(registry: &mut CommandRegistry, goat_root: &Path, agent: AgentId) {
-    let index = SkillIndex::discover_root(goat_root);
-    for entry in index.effective_entries(agent) {
-        let name = match CommandName::new(entry.name.clone()) {
+pub fn register(registry: &mut CommandRegistry, goat_root: &Path, agent_slug: &str) {
+    for skill in SkillSet::load(&Scopes::agent(goat_root, agent_slug)).iter() {
+        let name = match CommandName::new(skill.name.clone()) {
             Ok(name) => name,
             Err(e) => {
-                warn!(skill = %entry.name, error = ?e, "skipping skill command");
+                warn!(skill = %skill.name, error = ?e, "skipping skill command");
                 continue;
             }
         };
-        let spec = if entry.arguments.is_empty() {
-            CommandSpec::raw_string(name, entry.description.clone())
+        let spec = if skill.arguments.is_empty() {
+            CommandSpec::raw_string(name, skill.description.clone())
         } else {
             CommandSpec::named(
                 name,
-                entry.description.clone(),
-                entry
-                    .arguments
-                    .iter()
-                    .map(|a| CommandArgSpec::new(a.name.clone(), a.description.clone(), a.required))
-                    .collect(),
+                skill.description.clone(),
+                skill.arguments.iter().map(arg_spec).collect(),
             )
         };
         let handler = Arc::new(SkillCommand {
             goat_root: goat_root.to_path_buf(),
-            agent,
-            skill: entry.name.clone(),
+            agent_slug: agent_slug.to_owned(),
+            skill: skill.name.clone(),
         });
         if let Err(e) = registry.insert(spec, handler) {
-            warn!(skill = %entry.name, error = ?e, "skipping duplicate skill command");
+            warn!(skill = %skill.name, error = ?e, "skipping duplicate skill command");
         }
     }
 }
 
+fn arg_spec(argument: &Argument) -> CommandArgSpec {
+    let description = match &argument.value {
+        ArgumentValue::Choice(options) => format!(
+            "{} (one of {})",
+            argument.description,
+            options
+                .iter()
+                .map(|option| option.value.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => argument.description.clone(),
+    };
+    CommandArgSpec::new(argument.name.clone(), description, argument.required)
+}
+
 struct SkillCommand {
     goat_root: PathBuf,
-    agent: AgentId,
+    agent_slug: String,
     skill: String,
 }
 
 #[async_trait]
 impl CommandHandler for SkillCommand {
     async fn call(&self, call: CommandCall) -> Result<CommandOutput, CommandError> {
-        let index = SkillIndex::discover_root(&self.goat_root);
-        let skill = index
-            .activate(self.agent, &self.skill)
+        let skills = SkillSet::load(&Scopes::agent(&self.goat_root, &self.agent_slug));
+        let skill = skills
+            .activate(&self.skill)
             .map_err(|e| CommandError::Failed(e.to_string()))?;
-        let call_args = named_values(&call.raw).map_or_else(
-            || SkillCallArgs::Raw(call.args.clone()),
-            SkillCallArgs::Named,
-        );
-        let resolved = resolve_call_args(&skill.arguments, Some(&call_args))
+        let args =
+            named_values(&call.raw).map_or_else(|| Call::Raw(call.args.clone()), Call::Named);
+        let resolved = goat_skill::resolve(&skill.arguments, Some(&args))
             .map_err(|e| CommandError::Failed(e.to_string()))?;
         Ok(CommandOutput::Query {
-            content: format_activated_skill(&skill, resolved.as_ref()),
+            content: goat_skill::render(skill, resolved.as_ref()),
         })
     }
 }
@@ -125,7 +134,7 @@ mod tests {
         .unwrap();
 
         let mut registry = CommandRegistry::new();
-        register(&mut registry, &root, AgentId::from_slug("dev"));
+        register(&mut registry, &root, "dev");
         assert!(
             registry
                 .specs()
@@ -156,12 +165,12 @@ mod tests {
         std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
         std::fs::write(
             &skill,
-            "---\nname: remind\ndescription: Remind me\narguments:\n  - name: task\n    description: what to do\n    required: true\n---\nTask: $task",
+            "---\nname: remind\ndescription: Remind me\narguments:\n  - name: task\n    description: what to do\n    required: true\n    value: text_tail\n---\nTask: $task",
         )
         .unwrap();
 
         let mut registry = CommandRegistry::new();
-        register(&mut registry, &root, AgentId::from_slug("dev"));
+        register(&mut registry, &root, "dev");
         let spec = registry
             .specs()
             .into_iter()

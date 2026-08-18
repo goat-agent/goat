@@ -959,7 +959,7 @@ mod tests {
             vec![SkillInfo {
                 name: "deploy".to_owned(),
                 description: "ship".to_owned(),
-                command: None,
+                arguments: Vec::new(),
             }],
         ));
         assert!(
@@ -981,7 +981,7 @@ mod tests {
             vec![SkillInfo {
                 name: "deploy".to_owned(),
                 description: "ship".to_owned(),
-                command: None,
+                arguments: Vec::new(),
             }],
         ));
         assert!(

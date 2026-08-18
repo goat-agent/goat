@@ -1,23 +1,25 @@
+use std::collections::BTreeMap;
+
+use goat_skill::{Call, Scopes, SkillError, SkillSet};
 use goat_tool::{Tool, ToolError, ToolErrorClass, ToolFuture, ToolOutput, ToolSandbox};
 use serde::Deserialize;
 
 pub struct SkillTool;
 
-#[derive(Debug, thiserror::Error)]
-enum SkillError {
-    #[error("unknown skill: {name}")]
-    Unknown { name: String },
-}
-
-impl From<SkillError> for ToolError {
-    fn from(error: SkillError) -> Self {
-        ToolError::new(ToolErrorClass::NotFound, error.to_string())
+fn class(error: &SkillError) -> ToolErrorClass {
+    match error {
+        SkillError::NotFound(_) => ToolErrorClass::NotFound,
+        _ => ToolErrorClass::InvalidInput,
     }
 }
 
 #[derive(Deserialize)]
 struct Input {
     name: String,
+    #[serde(default)]
+    args: Option<String>,
+    #[serde(default)]
+    arguments: Option<BTreeMap<String, String>>,
 }
 
 impl Tool for SkillTool {
@@ -33,7 +35,19 @@ impl Tool for SkillTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "name": {"type": "string"}
+                "name": {
+                    "type": "string",
+                    "description": "The exact skill name from the system prompt's skill catalog."
+                },
+                "args": {
+                    "type": "string",
+                    "description": "Optional raw argument line. Use for a skill that declares no arguments but substitutes $ARGUMENTS, $ARGUMENTS[n], or $n."
+                },
+                "arguments": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "description": "Named values for a skill that lists <argument> entries. Unknown names and missing required arguments are errors."
+                }
             },
             "required": ["name"]
         })
@@ -49,11 +63,23 @@ impl Tool for SkillTool {
     fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a> {
         Box::pin(async move {
             let args: Input = serde_json::from_str(input)?;
-            let skills = goat_skill::load(&ctx.cwd);
-            match skills.get(&args.name) {
-                Some(skill) => Ok(ToolOutput::text(skill.body.clone())),
-                None => Err(SkillError::Unknown { name: args.name }.into()),
-            }
+            let root = goat_config::root()
+                .ok_or_else(|| ToolError::new(ToolErrorClass::Io, goat_config::HOME_NOT_FOUND))?;
+            let skills = SkillSet::load(&Scopes::code(root, &ctx.cwd));
+            let skill = skills
+                .activate(&args.name)
+                .map_err(|error| ToolError::new(class(&error), error.to_string()))?;
+            let call = match (args.arguments, args.args) {
+                (Some(named), _) => Some(Call::Named(named)),
+                (None, Some(raw)) => Some(Call::Raw(raw)),
+                (None, None) => None,
+            };
+            let resolved = goat_skill::resolve(&skill.arguments, call.as_ref())
+                .map_err(|error| ToolError::new(class(&error), error.to_string()))?;
+            Ok(ToolOutput::text(goat_skill::render(
+                skill,
+                resolved.as_ref(),
+            )))
         })
     }
 }
@@ -68,7 +94,7 @@ mod tests {
     use goat_tool::{Tool, ToolErrorClass, ToolSandbox};
 
     fn write_project_skill(dir: &std::path::Path, name: &str, contents: &str) {
-        let skill_dir = dir.join(goat_config::PROJECT_SKILLS_SUBDIR).join(name);
+        let skill_dir = dir.join(goat_skill::PROJECT_SUBDIR).join(name);
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), contents).unwrap();
     }
@@ -83,7 +109,48 @@ mod tests {
         );
         let ctx = ToolSandbox::new(dir.path()).unwrap();
         let out = SkillTool.run(r#"{"name":"demo"}"#, &ctx).await.unwrap();
-        assert_eq!(out.as_text().unwrap(), "The full instructions.");
+        let text = out.as_text().unwrap();
+        assert!(text.contains("<skill_content name=\"demo\">"));
+        assert!(text.contains("The full instructions."));
+    }
+
+    #[tokio::test]
+    async fn declared_arguments_substitute_into_the_body() {
+        let dir = tempfile::tempdir().unwrap();
+        write_project_skill(
+            dir.path(),
+            "audit",
+            "---\ndescription: audits\narguments:\n  - name: target\n    description: what to audit\n    required: true\n    value: text_tail\n---\nAudit $target now.",
+        );
+        let ctx = ToolSandbox::new(dir.path()).unwrap();
+        let out = SkillTool
+            .run(
+                r#"{"name":"audit","arguments":{"target":"the payments service"}}"#,
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.as_text()
+                .unwrap()
+                .contains("Audit the payments service now.")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_required_argument_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        write_project_skill(
+            dir.path(),
+            "audit",
+            "---\ndescription: audits\narguments:\n  - name: target\n    description: what to audit\n    required: true\n    value: word\n---\nAudit $target now.",
+        );
+        let ctx = ToolSandbox::new(dir.path()).unwrap();
+        let result = SkillTool.run(r#"{"name":"audit"}"#, &ctx).await;
+        assert!(matches!(
+            result,
+            Err(error) if error.class() == ToolErrorClass::InvalidInput
+        ));
     }
 
     #[tokio::test]

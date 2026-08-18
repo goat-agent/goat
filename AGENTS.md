@@ -188,13 +188,15 @@ kept here.
 
 The parts you cannot infer from the crate name:
 
-- `goat-skill` (singular) is a code crate; `goat-skills` (plural) is an agent crate. **They parse
-  the same `SKILL.md` twice, and that is a hazard, not a design.** Both strip a leading `---`, read
-  `name`/`description`/`arguments[{name, description, required}]` out of the YAML, and substitute
-  into the body; `goat-skills`' `SkillArgument` is a strict subset of `goat-skill`'s
-  `ManifestParameter`, so `value:` and `subcommands:` are honoured for a code skill and silently
-  dropped for an agent one. The scopes really do differ (agent skills are per-agent and carry
-  diagnostics and resources), so the fix is one parser and two scopes, not two crates.
+- `goat-skill` is the only `SKILL.md` crate — one parser, one renderer, and every scope. A caller
+  picks scopes rather than a crate: `Scopes::agent(root, slug)` layers builtin < `~/.agents/skills`
+  < `~/.goat/skills` < that agent's own, `Scopes::code(root, cwd)` swaps the last layer for
+  `<repo>/.goat/skills`, and `survey(root)` walks every agent at once for `goat doctor`. It depends
+  on serde, thiserror and tracing only — never on `goat-config` or `goat-protocol` — so a caller
+  hands it paths and the agent tool does not inherit the engine vocabulary. `arguments` is one
+  grammar with two front ends: `goat-commands` turns it into a TUI slash command,
+  `goat-agent-command-skill` into a Discord/Slack one, and `value:` (`word`, `integer`, `choice`,
+  `text_tail`) is mandatory because both of them need to know what a value is.
 - `goat-provider-openai-compat` registers nothing — it is the chat/Responses wire base.
   `goat-provider-builtin` is the product's provider table built over it: one `Row` per data-only
   provider, eleven hosted plus the local trio (ollama, lmstudio, llama-cpp).
@@ -317,8 +319,9 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
 - Subagent definitions for the code engine live at `~/.goat/subagents/*.md` plus the project-local
   `.goat/subagents/`, loaded by `SubagentRegistry::load`. Boot migrates the old layout (loose
   `agents/*.md`, `profiles/<slug>/skills/`) via `goat-runtime::layout`.
-- `~/.agents/skills` is a third, separate skill scope. `<repo>/.goat/worktrees/` is created inside
-  the *target* repository and is unrelated to the home tree.
+- `~/.agents/skills` is a skill scope outside the goat tree, layered between the builtins and
+  `~/.goat/skills`. `<repo>/.goat/worktrees/` is created inside the *target* repository and is
+  unrelated to the home tree.
 - `goat.db` is one file holding three table sets: unprefixed agent tables, `code_`, and `proxy_`.
 
 ## Non-obvious behavior
@@ -339,8 +342,8 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   `tokio::select!` arm body, and a chosen arm runs to completion — cancelling the token is only
   observed on the next loop. What a respawn does interrupt is the channel pump, so inbound messages
   during the swap can be lost.
-- `agent.md` and skills are re-read on every turn (`Brain::agent_definition`,
-  `SkillIndex::discover_root`), so neither is part of a reload. The `AgentCard` loaded at boot is
+- `agent.md` and skills are re-read on every turn (`Brain::agent_definition`, `SkillSet::load`),
+  so neither is part of a reload. The `AgentCard` loaded at boot is
   only the fallback for a read that fails.
 - **Embedding is configured per agent and applied globally, and that is a bug.** `boot_inner`
   collects an `EmbeddingSettings` per agent and then takes `embedders.values().next()` for the one

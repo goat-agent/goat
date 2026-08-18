@@ -19,7 +19,7 @@ use goat_provider::{
     ToolChoice, ToolDefinition,
 };
 use goat_render::{OutgoingSink, RenderSummary, StreamRenderer};
-use goat_skills::SkillIndex;
+use goat_skill::{Scopes, SkillSet};
 use goat_store::{
     Direction, HistoryRow, MessageSender, ScheduleRunStatus, ScheduleStatus, Store,
     ToolInvocationRecord, ToolInvocationStatus,
@@ -807,7 +807,7 @@ impl Brain {
 
         let provider = self.providers.route(&self.default_model)?;
         let skill_prompt =
-            SkillIndex::discover_root(&self.goat_root).system_prompt_block(self.agent);
+            SkillSet::load(&Scopes::agent(&self.goat_root, &self.agent_slug)).catalog();
         let tool_specs: Vec<ToolSpec> = self
             .llm_tool_specs(skill_prompt.is_some(), &mode)
             .into_iter()

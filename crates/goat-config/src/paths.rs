@@ -80,8 +80,8 @@ pub fn log_dir() -> Option<PathBuf> {
     resolved().map(|p| p.logs_dir)
 }
 
-pub fn skills_dir() -> Option<PathBuf> {
-    resolved().map(|p| p.skills_dir)
+pub fn root() -> Option<PathBuf> {
+    resolved().map(|p| p.root)
 }
 
 pub fn socket_path() -> Option<PathBuf> {
@@ -120,7 +120,6 @@ pub fn global_instructions_file() -> Option<PathBuf> {
     resolved().map(|p| p.root.join(PROJECT_INSTRUCTIONS_FILE))
 }
 
-pub const PROJECT_SKILLS_SUBDIR: &str = ".goat/skills";
 pub const PROJECT_SUBAGENTS_SUBDIR: &str = ".goat/subagents";
 pub const PROJECT_INSTRUCTIONS_FILE: &str = "AGENTS.md";
 pub const PROJECT_INSTRUCTIONS_OVERRIDE_FILE: &str = "AGENTS.override.md";

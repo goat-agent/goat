@@ -5,7 +5,6 @@ use clap::Args as ClapArgs;
 use goat_auth::{CredentialKind, CredentialService, CredentialStore};
 use goat_config::{GoatPaths, LoadedConfig};
 use goat_providers::Registry;
-use goat_skills::SkillIndex;
 
 use super::ui::{self, Footer, Palette, Table};
 use super::verify::{self, VerifyOutcome};
@@ -288,9 +287,9 @@ fn render_agents(
 }
 
 fn render_skills(paths: &GoatPaths, warnings: &mut usize) {
-    let idx = SkillIndex::discover_root(&paths.root);
-    let entries = idx.all_entries();
-    let diagnostics = idx.diagnostics();
+    let survey = goat_skill::survey(&paths.root);
+    let entries = survey.skills;
+    let diagnostics = survey.diagnostics;
 
     if entries.is_empty() && diagnostics.is_empty() {
         ui::line(&ui::dim("none discovered"));

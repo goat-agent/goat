@@ -480,44 +480,29 @@ pub struct SkillInfo {
     pub name: String,
     pub description: String,
     #[serde(default)]
-    pub command: Option<SkillCommandShape>,
+    pub arguments: Vec<SkillArgument>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SkillCommandShape {
-    Arguments { items: Vec<SkillParameterInfo> },
-    Subcommands { items: Vec<SkillBranchInfo> },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct SkillBranchInfo {
-    pub name: String,
-    pub description: String,
-    #[serde(default)]
-    pub arguments: Vec<SkillParameterInfo>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct SkillParameterInfo {
+pub struct SkillArgument {
     pub name: String,
     pub description: String,
     #[serde(default)]
     pub required: bool,
-    pub value: SkillParameterValue,
+    pub value: SkillArgumentValue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum SkillParameterValue {
+pub enum SkillArgumentValue {
     Word {},
     Integer {},
-    Choice { options: Vec<SkillChoiceInfo> },
+    Choice { options: Vec<SkillChoice> },
     TextTail {},
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct SkillChoiceInfo {
+pub struct SkillChoice {
     pub value: String,
     #[serde(default)]
     pub description: Option<String>,

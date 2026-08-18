@@ -38,7 +38,6 @@ goat-agent-tool-memory      = { workspace = true }
 goat-agent-tool-pty         = { workspace = true }
 goat-loop             = { workspace = true }
 goat-sleep            = { workspace = true }
-goat-skills           = { workspace = true }
 goat-brain            = { workspace = true }
 goat-agent-config     = { workspace = true }
 chrono                = { workspace = true }
