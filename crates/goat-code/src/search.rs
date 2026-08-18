@@ -74,7 +74,7 @@ async fn login(
     let account = resolution.name.as_str();
     let entry =
         build_search_account_config(provider, account, endpoint, engine).map_err(ui::report)?;
-    store_search_key(provider, account, key, metadata.credential)?;
+    store_search_key(provider, account, key, metadata.credential).await?;
     let target = entry.target();
     let mut edits = vec![goat_api::ConfigEdit::SearchAccountSet {
         account: serde_json::to_value(&entry)
@@ -115,7 +115,7 @@ fn existing_search_accounts(provider: &str) -> Vec<String> {
     accounts
 }
 
-fn store_search_key(
+async fn store_search_key(
     provider: &str,
     account: &str,
     key: Option<String>,
@@ -142,19 +142,15 @@ fn store_search_key(
         };
         secret
     };
-    let path = goat_config::auth_path().ok_or_else(|| ui::report(goat_config::HOME_NOT_FOUND))?;
-    let store = CredentialStore::new(path);
-    store
-        .store(
-            &CredentialKey::search(provider, account),
-            Credential::ApiKey(SecretString::from(secret)),
-        )
-        .map_err(|err| {
-            ui::report_hint(
-                format!("could not update credential store: {err}"),
-                "check permissions on ~/.goat",
-            )
-        })
+    let link = crate::remote::local()?;
+    goat_client::set_credential(
+        &link,
+        CredentialKey::search(provider, account),
+        goat_auth::CredentialValue::from(Credential::ApiKey(SecretString::from(secret))),
+    )
+    .await
+    .map_err(storage_error)?;
+    Ok(())
 }
 
 async fn set_default(target: &str) -> color_eyre::Result<()> {
@@ -293,10 +289,11 @@ async fn logout(provider: &str, account: &str) -> color_eyre::Result<()> {
             metadata.credential,
             SearchCredentialMetadata::EnvApiKey { .. }
         )
-        && let Some(path) = goat_config::auth_path()
     {
-        let store = CredentialStore::new(path);
-        let _ = store.remove(&CredentialKey::search(provider, account));
+        let link = crate::remote::local()?;
+        goat_client::remove_credential(&link, CredentialKey::search(provider, account))
+            .await
+            .map_err(storage_error)?;
     }
     ui::success(&format!("disconnected search target {target}"));
     Ok(())
@@ -444,6 +441,13 @@ impl SearchTarget {
 
 fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
+}
+
+fn storage_error(err: impl std::fmt::Display) -> color_eyre::Report {
+    ui::report_hint(
+        format!("could not update credential store: {err}"),
+        "check permissions on ~/.goat",
+    )
 }
 
 async fn write_config(edits: Vec<goat_api::ConfigEdit>) -> color_eyre::Result<()> {
