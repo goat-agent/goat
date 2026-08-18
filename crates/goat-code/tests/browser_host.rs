@@ -109,15 +109,28 @@ async fn to_chrome(chrome: &mut Chrome, seq: u64, body: Value) {
         .expect("the host reads its stdin");
 }
 
-async fn answer_one(chrome: &mut Chrome, reply: Value) -> Value {
+async fn from_chrome(chrome: &mut Chrome) -> Value {
     let message = read_message(&mut chrome.stdout)
         .await
-        .expect("the host writes a request");
-    let bridge: Bridge = serde_json::from_value(message).expect("the host frames its requests");
+        .expect("the host writes a message");
+    let bridge: Bridge = serde_json::from_value(message).expect("the host frames its messages");
     let Bridge::Message { body, .. } = bridge else {
-        panic!("a small request must not be chunked")
+        panic!("a small message must not be chunked")
     };
-    assert_eq!(body["type"], "browser.request");
+    body
+}
+
+async fn await_request(chrome: &mut Chrome) -> Value {
+    loop {
+        let body = from_chrome(chrome).await;
+        if body["type"] == "browser.request" {
+            return body;
+        }
+    }
+}
+
+async fn answer_one(chrome: &mut Chrome, reply: Value) -> Value {
+    let body = await_request(chrome).await;
     let request_id = body["request_id"]
         .as_str()
         .expect("a request carries an id")
@@ -217,13 +230,7 @@ async fn a_browser_that_never_started_the_work_reports_a_safe_retry() {
     );
 
     let refusing = async {
-        let message = read_message(&mut chrome.stdout)
-            .await
-            .expect("the host writes a request");
-        let bridge: Bridge = serde_json::from_value(message).expect("the host frames its requests");
-        let Bridge::Message { body, .. } = bridge else {
-            panic!("a small request must not be chunked")
-        };
+        let body = await_request(&mut chrome).await;
         let request_id = body["request_id"]
             .as_str()
             .expect("a request carries an id")
