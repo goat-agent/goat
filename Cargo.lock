@@ -2164,6 +2164,7 @@ dependencies = [
  "fs2",
  "percent-encoding",
  "rand 0.10.2",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.11.0",

@@ -25,7 +25,7 @@ pub fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct SecretString(String);
 
@@ -53,7 +53,9 @@ impl From<&str> for SecretString {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialService {
     #[default]
@@ -65,7 +67,7 @@ pub enum CredentialService {
     Mcp,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CredentialKey {
     #[serde(default)]
     pub service: CredentialService,
@@ -160,7 +162,7 @@ pub enum CredentialKind {
     OAuth,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TokenSet {
     #[serde(deserialize_with = "deserialize_access_token")]
     access_token: SecretString,
@@ -335,9 +337,9 @@ impl Credential {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum StoredValue {
+pub enum CredentialValue {
     ApiKey {
         secret: SecretString,
     },
@@ -351,26 +353,26 @@ enum StoredValue {
     },
 }
 
-impl From<Credential> for StoredValue {
+impl From<Credential> for CredentialValue {
     fn from(value: Credential) -> Self {
         match value {
-            Credential::ApiKey(secret) => StoredValue::ApiKey { secret },
+            Credential::ApiKey(secret) => CredentialValue::ApiKey { secret },
             Credential::ApiKeyWithEndpoint { secret, endpoint } => {
-                StoredValue::ApiKeyWithEndpoint { secret, endpoint }
+                CredentialValue::ApiKeyWithEndpoint { secret, endpoint }
             }
-            Credential::OAuth(tokens) => StoredValue::OAuth { tokens },
+            Credential::OAuth(tokens) => CredentialValue::OAuth { tokens },
         }
     }
 }
 
-impl From<StoredValue> for Credential {
-    fn from(value: StoredValue) -> Self {
+impl From<CredentialValue> for Credential {
+    fn from(value: CredentialValue) -> Self {
         match value {
-            StoredValue::ApiKey { secret } => Credential::ApiKey(secret),
-            StoredValue::ApiKeyWithEndpoint { secret, endpoint } => {
+            CredentialValue::ApiKey { secret } => Credential::ApiKey(secret),
+            CredentialValue::ApiKeyWithEndpoint { secret, endpoint } => {
                 Credential::ApiKeyWithEndpoint { secret, endpoint }
             }
-            StoredValue::OAuth { tokens } => Credential::OAuth(tokens),
+            CredentialValue::OAuth { tokens } => Credential::OAuth(tokens),
         }
     }
 }
@@ -378,7 +380,7 @@ impl From<StoredValue> for Credential {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredEntry {
     key: CredentialKey,
-    value: StoredValue,
+    value: CredentialValue,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -722,7 +724,7 @@ impl CredentialStore {
     fn file_set(&self, key: &CredentialKey, value: Credential) -> Result<(), AuthError> {
         let _lock = FileLock::acquire(&self.path)?;
         let mut file = self.load_file()?;
-        let stored = StoredValue::from(value);
+        let stored = CredentialValue::from(value);
         if let Some(entry) = file.credentials.iter_mut().find(|entry| &entry.key == key) {
             entry.value = stored;
         } else {
@@ -738,8 +740,8 @@ impl CredentialStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        Credential, CredentialKey, CredentialKind, CredentialService, CredentialStore, Pkce,
-        SecretString, StoredValue, TokenSet, ensure_valid, now_secs,
+        Credential, CredentialKey, CredentialKind, CredentialService, CredentialStore,
+        CredentialValue, Pkce, SecretString, TokenSet, ensure_valid, now_secs,
     };
 
     fn token_set(access: &str, refresh: Option<&str>, expires_at: Option<i64>) -> TokenSet {
@@ -884,7 +886,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn an_oauth_credential_is_stored_under_the_plain_spelling() {
-        let stored = StoredValue::from(Credential::OAuth(token_set("at", None, None)));
+        let stored = CredentialValue::from(Credential::OAuth(token_set("at", None, None)));
         assert_eq!(serde_json::to_value(&stored).unwrap()["kind"], "oauth");
     }
 
@@ -894,7 +896,7 @@ mod tests {
             "kind": "o_auth",
             "tokens": { "access_token": "at", "refresh_token": null, "expires_at": null }
         });
-        let stored: StoredValue = serde_json::from_value(legacy).unwrap();
+        let stored: CredentialValue = serde_json::from_value(legacy).unwrap();
         let credential = Credential::from(stored);
         assert!(matches!(credential, Credential::OAuth(t) if t.access_token().expose() == "at"));
     }
