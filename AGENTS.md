@@ -53,8 +53,11 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
 - `goat-console` is the only styling and prompt system. Do not add a second, and do not push domain
   concepts (providers, accounts, agents) into it — domain UI belongs in each binary's `ui` facade.
 - `goat-types::Event` and the channel/command/integration surface types are `#[non_exhaustive]`;
-  append variants and keep wildcard handling. `goat-protocol::Event` and `goat-provider::StreamChunk`
-  are not — changing them breaks the whole wire and provider surface at once.
+  append variants and keep wildcard handling. `goat-protocol::Op`/`Event` and
+  `goat-provider::StreamChunk` are not: they are the engine and provider vocabularies, so a variant
+  added to one moves every method contract or provider that carries it at once. For `Op`/`Event`
+  that shows up as `methods_fingerprint.txt` refusing to match on `session.submit` and
+  `session.watch`, which is the point — the payload is typed even though the envelope is opaque.
 - Do not skip hooks with `--no-verify`. Do not force-push. Neither is mechanically enforced; there
   are no git hooks in this repository.
 
@@ -95,8 +98,11 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
     (constructor-injected like `CredentialStore`, re-read on every registry build).
     `goat-search-providers::metadata` stays a hardcoded list.
   - code tools: `ToolRegistry::builtin()` aggregates fs, shell, search, skill, and web.
-    `goat-tool-browser` bypasses it and is wired directly into `CodingEngine::new` behind
-    `config.browser_enabled`.
+    `goat-tool-browser` bypasses it — `CodingEngine::new` takes a
+    `browser: Option<Arc<dyn Transport>>` and pushes the tool only when one is there, so the gate is
+    "a capability provider is attached", not a config flag. The agent reaches the same browser
+    through `goat_agent_tool_browser::register`, which needs the `CodeSessionHub` and so belongs to
+    the explicit-`register()` group above.
 - **A channel owes no tools.** It is a presence, not a reach: it holds a resident connection under a
   bot identity and turns inbound traffic into `IncomingMessage`. Workspace-wide search and posting
   where the bot is not a member belong to the matching integration. `slack` is deliberately both —
@@ -172,7 +178,7 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
 
 ## Where things live
 
-`crates/` is flat, 107 crates, every one prefixed `goat-`. The prefix tells you the family:
+`crates/` is flat, 110 crates, every one prefixed `goat-`. The prefix tells you the family:
 `goat-agent*` is the autonomous actor, `goat-code`/`goat-core`/`goat-engine`/`goat-tui` and the
 `goat-tool-*`/`goat-command-*` families are coding, and `goat-provider*`/`goat-store`/`goat-config`/
 `goat-auth`/`goat-console`/`goat-protocol`/`goat-proxy` are shared. `ls crates/` beats any list
@@ -184,20 +190,19 @@ Placements that contradict the naming:
   scopes, different parsers.
 - `goat-provider-openai-compat` registers nothing — it is the chat/Responses wire base.
   `goat-provider-builtin` is the product's provider table built over it: one `Row` per data-only
-  provider, covering thirteen hosted providers plus the local trio (ollama, lmstudio, llama-cpp).
+  provider, eleven hosted plus the local trio (ollama, lmstudio, llama-cpp).
 - `goat-integration-mcp` registers nothing either — same idea, one family over. It is the shared base
   every hosted-MCP integration builds on, so a leaf is a `McpService` descriptor plus its parser.
-- `goat-wire` is one surface. `envelope.rs` + `peer.rs` are the whole crate: six frame kinds
+- `goat-wire` is one surface and there is no second one. `envelope.rs` holds six frame kinds
   (`hello`, `req`, `res`, `data`, `end`, `cancel`) whose payloads are opaque JSON, so
-  `envelope_fingerprint` moves only when the envelope itself changes. A test asserts the envelope
+  `envelope_fingerprint` moves only when the envelope itself changes; `codec.rs` is the
+  length-delimited JSON framing and `transport.rs` the unix socket. A test asserts the envelope
   schema never mentions engine vocabulary; keep it that way or the whole point is lost. `peer.rs` is
   the duplex state machine: one reader task that never awaits a handler, three outbound lanes
   (control > data > requests) so a flooding stream cannot starve a response, and an id space split
-  by parity — odd is client-originated, even is daemon-originated. There used to be a second surface
-  here — `ClientFrame`/`ServerFrame` hashed into a `wire_fingerprint` alongside `Op` and `Event`,
-  which is why adding one `Event` variant refused every older client. It is gone; the types that
-  survived it were daemon-internal all along and now live in `goat-daemon`'s `wire.rs`, except
-  `BuildId` and `Busy`, which the client also reads and so sit in `goat-api`.
+  by parity — odd is client-originated, even is daemon-originated. Types that never leave the daemon
+  live in `goat-daemon`'s `wire.rs`; `BuildId` and `Busy`, which the client also reads, sit in
+  `goat-api`.
 - **The daemon's subscriber bus is `session::Update`, not a wire type.** Four variants — snapshot,
   event, presence, error — which `api::watch_item` stamps with a cursor to make a `WatchItem`. That
   mapping is total: every update reaches the client, including the error a stopping engine emits.
@@ -216,7 +221,7 @@ Placements that contradict the naming:
   `Grant::Admin` does not contain the admin routes at all, so a peer calling one gets
   `unknown_method` rather than a check someone can forget.
 - `goat-capability` is the daemon-side broker for capabilities that live on the human's machine
-  (`host.browser`, later `host.simulator`). Routing is a **lease** keyed by device, provider
+  (`host.browser` today, `host.computer` next). Routing is a **lease** keyed by device, provider
   instance and boot epoch, not a permanent pin: a disconnected provider pauses the lease instead of
   killing the session, and the same instance returning with a new boot epoch (a different browser
   profile) requires an explicit rebind. Side-effecting calls never fail over to another machine, and
@@ -306,9 +311,9 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   the running agents keep the settings they already had. That guarantee is why the reload asks the
   filesystem which agents exist rather than trusting `scan_agents`, which silently drops an agent
   whose `config.json` stopped parsing — a directory that still holds an `agent.md` is a load failure
-  to report, not a removal to act on. The trigger is a local-only `ClientFrame::ReloadAgents`, and
-  every CLI that writes config calls it after writing, so nothing tells the user to restart the
-  daemon any more. Only a new binary still needs one.
+  to report, not a removal to act on. The trigger is `admin.agent_reload`, and every CLI that writes
+  config calls it after writing, so nothing tells the user to restart the daemon any more. Only a
+  new binary still needs one.
 - An agent respawn does not kill the turn in flight. `Brain::run` awaits `handle_turn` inside a
   `tokio::select!` arm body, and a chosen arm runs to completion — cancelling the token is only
   observed on the next loop. What a respawn does interrupt is the channel pump, so inbound messages
@@ -380,13 +385,19 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   (one code, one agent), boots the agent runtime via `AgentRuntime::boot_with_code_metered`, backfills
   `rate_limits.json` and serves the proxy dashboard — all under one shutdown token. Binding before
   the boot is deliberate: nothing that touches the network may come before the socket, or every
-  client wait budget is a lie. `Welcome.ready` is false until the agent runtime is up; code sessions
-  never wait on it. The `code_task` tool drives that same `CodeSessionHub` in-process, no wire hop.
-- **The daemon greets first and never judges a client.** On accept it sends `ServerFrame::Welcome`
-  carrying the wire fingerprint, the exe identity, and a `Busy` snapshot; there is no `Hello` and no
-  version gate. The client decides (`goat_client::decide`): a different wire means they cannot talk,
-  a different exe means the daemon runs older logic, and `Busy` decides whether replacing it is
-  allowed. `StopDaemon` is never gated by any of that — it is the escape hatch. `goat daemon stop`
+  client wait budget is a lie. `daemon.status` reports `ready: false` until the agent runtime is up;
+  code sessions never wait on it. The `code_task` tool drives that same `CodeSessionHub` in-process,
+  no wire hop.
+- **The daemon greets first with its method table, and nobody gates a version.** On accept it sends
+  one `Hello` carrying every `(method, versions)` its router holds, its grant set, and an `info`
+  object (`build`, `epoch`, `pid`, `client_id`); `Api::negotiated` picks a version per method from
+  it. Skew is therefore per method and typed — calling something the daemon does not serve fails
+  with `ErrorCode::UnsupportedVersion` before the call leaves the client — instead of one
+  connection-wide compatible/incompatible verdict. `build` rides in `info` rather than as a `Hello`
+  field so `envelope_fingerprint` does not move every time a deployment fact is added; it decides
+  nothing and only feeds a human-readable line. Destructive judgment belongs to the state's owner:
+  `admin.daemon_stop { if_idle }` lets the daemon refuse while a turn is running, which a client
+  reading a connect-time snapshot could not do without racing a `cron` turn. `goat daemon stop`
   waits for EOF, which the daemon sends only after it has fully drained.
 - **The lock, not the socket, is the handoff barrier.** `transport::cleanup` unlinks the socket
   while the runtime still has up to 10 s of drain left, so "socket gone" does not mean "process
@@ -420,18 +431,15 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   `{service: remote, provider: <remote name>, account: "device", slot: "key"|"cert"|"ca"}`.
   The three slots are stored together on purpose — a half-restored remote is a broken remote.
   `config.json` keeps only addressing: `host`, `fingerprint`, `last_dir`.
-- **A remote client never sends its own cwd.** `ServerFrame::SessionOpened` carries the cwd the
-  daemon actually normalized, the client records it as that remote's `last_dir`, and the next
+- **A remote client never sends its own cwd.** `session.open` answers with the cwd the daemon
+  actually normalized, the client records it as that remote's `last_dir`, and the next
   `goat code --remote <name>` reuses it (`--dir` overrides). Sending the local cwd would open a
   session on a path that does not exist on the daemon host, which `goat-tool`'s `ToolSandbox`
   then fails on for every call. `-w` is refused for remote targets because worktrees are local git.
 - `goat-client` is transport-agnostic: `Link::{Local,Remote}` dials either a unix socket or
-  mTLS+WebSocket and hands back the same `Sink<ClientFrame>`/`Stream<ServerFrame>` pair, so nothing
-  above it knows which it got. Local-daemon autostart lives behind `Link::dial_or_spawn` and fires
-  only for `Link::Local` — a remote target that cannot connect must fail, never silently start a
-  second daemon here.
-- `Hello`/`Welcome` carry `build` alongside `PROTOCOL_VERSION`. A protocol mismatch is fatal; a
-  build mismatch is only reported, because remote client and daemon update independently.
+  mTLS+WebSocket and hands back the same `Api`, so nothing above it knows which it got. Local-daemon
+  autostart lives behind `Link::dial_or_spawn` and fires only for `Link::Local` — a remote target
+  that cannot connect must fail, never silently start a second daemon here.
 - **Two config files, split by who reads them.** `~/.goat/config.json` is the daemon's — `search`,
   `web_fetch`, `proxy`, `integrations`, `providers`, `devices`, all read inside the daemon.
   `~/.goat/client.json` is the client's — `theme`, `mouse_capture_enabled`, `remotes`,
