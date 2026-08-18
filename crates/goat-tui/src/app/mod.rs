@@ -2959,7 +2959,7 @@ mod tests {
             skills: vec![goat_protocol::SkillInfo {
                 name: "demo".to_owned(),
                 description: "a demo".to_owned(),
-                command: None,
+                arguments: Vec::new(),
             }],
         });
         app.composer.insert_str("/demo");

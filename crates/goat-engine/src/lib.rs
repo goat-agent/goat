@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use goat_auth::CredentialStore;
 use goat_code_store::CodeStore as Store;
 use goat_core::Engine;
-use goat_protocol::{Event, ModelTarget, Op, SkillInfo, TaskId, ToolCallId};
+use goat_protocol::{Event, ModelTarget, Op, TaskId, ToolCallId};
 use goat_provider::{Provider, ToolDefinition};
 use goat_providers::Registry;
 use goat_tool::{SandboxPolicy, Tool, ToolRegistry};
@@ -149,7 +149,7 @@ pub(crate) struct SessionServices {
     pub(crate) subagents: SubagentRegistry,
     pub(crate) store: Store,
     pub(crate) events: mpsc::Sender<Event>,
-    pub(crate) skills: Vec<SkillInfo>,
+    pub(crate) skills: goat_skill::SkillSet,
     pub(crate) instructions: Option<String>,
     pub(crate) semaphore: Arc<Semaphore>,
     pub(crate) child_ids: AtomicU64,
@@ -364,7 +364,7 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
             .await;
     }
 
-    let skills = prompt::load_skill_infos(&cwd);
+    let skills = prompt::load_skills(&cwd);
     let subagents = SubagentRegistry::load(&cwd);
     let project_instructions = instructions::load_project_instructions(&cwd);
     let session_date = prompt::current_utc_date();
@@ -400,7 +400,7 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
     let checkpoints = checkpoint::CheckpointTracker::new(store.clone());
     let _ = events
         .send(Event::SkillsChanged {
-            skills: skills.clone(),
+            skills: skills.iter().map(prompt::skill_info).collect(),
         })
         .await;
 

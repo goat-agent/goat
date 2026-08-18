@@ -8,9 +8,7 @@ use goat_command::{CommandInvocation, ParsedValue, parse_line};
 pub use goat_command_app::PlanScreen;
 pub use goat_command_conversation::RewindScreen;
 pub use goat_command_settings::AccountScreen;
-use goat_protocol::{
-    SkillBranchInfo, SkillCommandShape, SkillInfo, SkillParameterInfo, SkillParameterValue,
-};
+use goat_protocol::{SkillArgument, SkillArgumentValue, SkillInfo};
 
 pub struct CommandRegistry {
     builtins: Vec<Box<dyn Command>>,
@@ -114,7 +112,7 @@ fn resolve_skill(
     args: &str,
     session: &mut dyn goat_command::Session,
 ) -> CommandEffect {
-    if skill.command.is_none() {
+    if skill.arguments.is_empty() {
         return CommandEffect::Submit {
             display: skill_display(&skill.name, args),
             prompt: skill_invocation(&skill.name, args),
@@ -149,14 +147,15 @@ fn skill_spec(skill: &SkillInfo) -> CommandSpec {
         name: skill.name.clone(),
         description: skill.description.clone(),
         aliases: Vec::new(),
-        shape: skill
-            .command
-            .as_ref()
-            .map_or_else(default_skill_shape, skill_shape),
+        shape: if skill.arguments.is_empty() {
+            free_form_shape()
+        } else {
+            CommandShape::Parameters(skill.arguments.iter().map(skill_parameter).collect())
+        },
     }
 }
 
-fn default_skill_shape() -> CommandShape {
+fn free_form_shape() -> CommandShape {
     CommandShape::Parameters(vec![ParameterSpec {
         name: "instructions".to_owned(),
         description: "instructions for the skill".to_owned(),
@@ -165,39 +164,20 @@ fn default_skill_shape() -> CommandShape {
     }])
 }
 
-fn skill_shape(command: &SkillCommandShape) -> CommandShape {
-    match command {
-        SkillCommandShape::Arguments { items: arguments } => {
-            CommandShape::Parameters(arguments.iter().map(skill_parameter).collect())
-        }
-        SkillCommandShape::Subcommands { items: subcommands } => {
-            CommandShape::Branches(subcommands.iter().map(skill_branch).collect())
-        }
-    }
-}
-
-fn skill_branch(branch: &SkillBranchInfo) -> BranchSpec {
-    BranchSpec {
-        name: branch.name.clone(),
-        description: branch.description.clone(),
-        parameters: branch.arguments.iter().map(skill_parameter).collect(),
-    }
-}
-
-fn skill_parameter(parameter: &SkillParameterInfo) -> ParameterSpec {
+fn skill_parameter(argument: &SkillArgument) -> ParameterSpec {
     ParameterSpec {
-        name: parameter.name.clone(),
-        description: parameter.description.clone(),
-        required: parameter.required,
-        value: skill_value(&parameter.value),
+        name: argument.name.clone(),
+        description: argument.description.clone(),
+        required: argument.required,
+        value: skill_value(&argument.value),
     }
 }
 
-fn skill_value(value: &SkillParameterValue) -> ParameterValue {
+fn skill_value(value: &SkillArgumentValue) -> ParameterValue {
     match value {
-        SkillParameterValue::Word {} => ParameterValue::Word,
-        SkillParameterValue::Integer {} => ParameterValue::Integer,
-        SkillParameterValue::Choice { options: choices } => ParameterValue::Choice(
+        SkillArgumentValue::Word {} => ParameterValue::Word,
+        SkillArgumentValue::Integer {} => ParameterValue::Integer,
+        SkillArgumentValue::Choice { options: choices } => ParameterValue::Choice(
             choices
                 .iter()
                 .map(|choice| ChoiceSpec {
@@ -206,7 +186,7 @@ fn skill_value(value: &SkillParameterValue) -> ParameterValue {
                 })
                 .collect(),
         ),
-        SkillParameterValue::TextTail {} => ParameterValue::TextTail,
+        SkillArgumentValue::TextTail {} => ParameterValue::TextTail,
     }
 }
 
@@ -250,9 +230,7 @@ fn parsed_value(value: ParsedValue) -> String {
 mod tests {
     use super::{CommandEffect, CommandRegistry};
     use goat_command::{CommandShape, EmptySession, ParameterValue};
-    use goat_protocol::{
-        SkillBranchInfo, SkillCommandShape, SkillInfo, SkillParameterInfo, SkillParameterValue,
-    };
+    use goat_protocol::{SkillArgument, SkillArgumentValue, SkillInfo};
 
     fn resolve(registry: &CommandRegistry, raw: &str) -> CommandEffect {
         registry.resolve_line(raw, &mut EmptySession::default())
@@ -262,7 +240,7 @@ mod tests {
         SkillInfo {
             name: name.to_owned(),
             description: "a demo".to_owned(),
-            command: None,
+            arguments: Vec::new(),
         }
     }
 
@@ -333,12 +311,12 @@ mod tests {
         registry.set_skills(&[SkillInfo {
             name: "old".to_owned(),
             description: "x".to_owned(),
-            command: None,
+            arguments: Vec::new(),
         }]);
         registry.set_skills(&[SkillInfo {
             name: "new".to_owned(),
             description: "y".to_owned(),
-            command: None,
+            arguments: Vec::new(),
         }]);
         assert!(matches!(resolve(&registry, "/old"), CommandEffect::Noop));
         assert!(matches!(
@@ -396,14 +374,12 @@ mod tests {
         registry.set_skills(&[SkillInfo {
             name: "review".to_owned(),
             description: "review".to_owned(),
-            command: Some(SkillCommandShape::Arguments {
-                items: vec![SkillParameterInfo {
-                    name: "target".to_owned(),
-                    description: "target".to_owned(),
-                    required: true,
-                    value: SkillParameterValue::Word {},
-                }],
-            }),
+            arguments: vec![SkillArgument {
+                name: "target".to_owned(),
+                description: "target".to_owned(),
+                required: true,
+                value: SkillArgumentValue::Word {},
+            }],
         }]);
         let CommandEffect::Submit { display, prompt } = resolve(&registry, "/review src/lib.rs")
         else {
@@ -417,52 +393,29 @@ mod tests {
     }
 
     #[test]
-    fn structured_skill_invocation_formats_subcommands() {
+    fn a_declared_choice_refuses_a_value_it_does_not_offer() {
         let mut registry = CommandRegistry::builtin();
         registry.set_skills(&[SkillInfo {
-            name: "review".to_owned(),
-            description: "review".to_owned(),
-            command: Some(SkillCommandShape::Subcommands {
-                items: vec![SkillBranchInfo {
-                    name: "security".to_owned(),
-                    description: "security".to_owned(),
-                    arguments: vec![SkillParameterInfo {
-                        name: "focus".to_owned(),
-                        description: "focus".to_owned(),
-                        required: false,
-                        value: SkillParameterValue::TextTail {},
+            name: "deploy".to_owned(),
+            description: "deploy".to_owned(),
+            arguments: vec![SkillArgument {
+                name: "env".to_owned(),
+                description: "env".to_owned(),
+                required: true,
+                value: SkillArgumentValue::Choice {
+                    options: vec![goat_protocol::SkillChoice {
+                        value: "prod".to_owned(),
+                        description: None,
                     }],
-                }],
-            }),
-        }]);
-        let CommandEffect::Submit { display, prompt } =
-            resolve(&registry, "/review security auth flow")
-        else {
-            panic!("expected submit command");
-        };
-        assert_eq!(display, "/review security auth flow");
-        assert_eq!(
-            prompt,
-            "/review security auth flow\n\nArguments:\nfocus: auth flow"
-        );
-    }
-
-    #[test]
-    fn unknown_skill_subcommand_errors() {
-        let mut registry = CommandRegistry::builtin();
-        registry.set_skills(&[SkillInfo {
-            name: "review".to_owned(),
-            description: "review".to_owned(),
-            command: Some(SkillCommandShape::Subcommands {
-                items: vec![SkillBranchInfo {
-                    name: "security".to_owned(),
-                    description: "security".to_owned(),
-                    arguments: Vec::new(),
-                }],
-            }),
+                },
+            }],
         }]);
         assert!(matches!(
-            resolve(&registry, "/review nope"),
+            resolve(&registry, "/deploy prod"),
+            CommandEffect::Submit { .. }
+        ));
+        assert!(matches!(
+            resolve(&registry, "/deploy staging"),
             CommandEffect::Noop
         ));
     }

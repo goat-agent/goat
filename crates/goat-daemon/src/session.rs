@@ -965,7 +965,7 @@ mod tests {
             skills: vec![goat_protocol::SkillInfo {
                 name: "deploy".to_owned(),
                 description: "ship it".to_owned(),
-                command: None,
+                arguments: Vec::new(),
             }],
         });
         assert!(inner.state_ready);
@@ -985,7 +985,7 @@ mod tests {
             skills: vec![goat_protocol::SkillInfo {
                 name: "deploy".to_owned(),
                 description: "ship it".to_owned(),
-                command: None,
+                arguments: Vec::new(),
             }],
         });
         inner.record_and_fanout(Event::RateLimits {

@@ -1,7 +1,8 @@
 use std::fmt::Write as _;
 
-use goat_protocol::SkillInfo;
+use goat_protocol::{SkillArgument, SkillArgumentValue, SkillChoice, SkillInfo};
 use goat_provider::ContentBlock;
+use goat_skill::{Argument, ArgumentValue, Scopes, Skill, SkillSet};
 
 pub(crate) const PRINCIPLES: &str = concat!(
     "You are Goat, a software-engineering agent working in a terminal workspace. ",
@@ -65,18 +66,15 @@ fn civil_date_from_unix_days(days: i64) -> (i64, u32, u32) {
 
 pub(crate) fn build_system_prompt(
     cwd: &std::path::Path,
-    skills: &[SkillInfo],
+    skills: &SkillSet,
     instructions: Option<&str>,
     date: &str,
     plan: Option<&std::path::Path>,
 ) -> String {
     let mut prompt = String::from(PRINCIPLES);
     prompt.push_str(&env_segment(cwd, std::env::consts::OS, date));
-    if !skills.is_empty() {
-        prompt.push_str("\n\n# Skills\n\nLoad a skill with the Skill tool before following it:");
-        for skill in skills {
-            let _ = write!(prompt, "\n- {}: {}", skill.name, skill.description);
-        }
+    if let Some(catalog) = skills.catalog() {
+        let _ = write!(prompt, "\n\n# Skills\n\n{catalog}");
     }
     if let Some(content) = instructions {
         let _ = write!(prompt, "\n\n{content}");
@@ -131,18 +129,68 @@ pub(crate) fn compose_child_system(base_prompt: &str, instructions: Option<&str>
     prompt
 }
 
-pub(crate) fn load_skill_infos(cwd: &std::path::Path) -> Vec<SkillInfo> {
-    goat_skill::load(cwd).iter().map(SkillInfo::from).collect()
+pub(crate) fn load_skills(cwd: &std::path::Path) -> SkillSet {
+    let Some(root) = goat_config::root() else {
+        return SkillSet::default();
+    };
+    SkillSet::load(&Scopes::code(root, cwd))
+}
+
+pub(crate) fn skill_info(skill: &Skill) -> SkillInfo {
+    SkillInfo {
+        name: skill.name.clone(),
+        description: skill.description.clone(),
+        arguments: skill.arguments.iter().map(skill_argument).collect(),
+    }
+}
+
+fn skill_argument(argument: &Argument) -> SkillArgument {
+    SkillArgument {
+        name: argument.name.clone(),
+        description: argument.description.clone(),
+        required: argument.required,
+        value: match &argument.value {
+            ArgumentValue::Word => SkillArgumentValue::Word {},
+            ArgumentValue::Integer => SkillArgumentValue::Integer {},
+            ArgumentValue::TextTail => SkillArgumentValue::TextTail {},
+            ArgumentValue::Choice(options) => SkillArgumentValue::Choice {
+                options: options
+                    .iter()
+                    .map(|option| SkillChoice {
+                        value: option.value.clone(),
+                        description: option.description.clone(),
+                    })
+                    .collect(),
+            },
+        },
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{Scopes, SkillSet};
     use std::path::Path;
+
+    fn set_with_demo(root: &Path) -> SkillSet {
+        let dir = root.join("skills/demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: demo\ndescription: does the demo\n---\nthe demo body",
+        )
+        .unwrap();
+        SkillSet::load(&Scopes::code(root, root).with_agents_user(None))
+    }
 
     #[test]
     fn system_prompt_starts_with_principles_and_lists_environment() {
-        let prompt =
-            super::build_system_prompt(Path::new("/work/project"), &[], None, "2025-01-15", None);
+        let prompt = super::build_system_prompt(
+            Path::new("/work/project"),
+            &SkillSet::default(),
+            None,
+            "2025-01-15",
+            None,
+        );
         assert!(prompt.starts_with(super::PRINCIPLES));
         assert!(prompt.contains("# Environment"));
         assert!(prompt.contains("cwd: /work/project"));
@@ -180,33 +228,46 @@ mod tests {
 
     #[test]
     fn system_prompt_carries_authority_principle() {
-        let prompt = super::build_system_prompt(Path::new("/work"), &[], None, "2025-01-15", None);
+        let prompt = super::build_system_prompt(
+            Path::new("/work"),
+            &SkillSet::default(),
+            None,
+            "2025-01-15",
+            None,
+        );
         assert!(prompt.contains("authoritative over your trained memory"));
         assert!(prompt.contains("mirror what the project already does"));
     }
 
     #[test]
     fn system_prompt_lists_skills() {
+        let dir = tempfile::tempdir().unwrap();
         let prompt = super::build_system_prompt(
             Path::new("/work"),
-            &[goat_protocol::SkillInfo {
-                name: "demo".to_owned(),
-                description: "does the demo".to_owned(),
-                command: None,
-            }],
+            &set_with_demo(dir.path()),
             None,
             "2025-01-15",
             None,
         );
         assert!(prompt.contains("# Skills"));
-        assert!(prompt.contains("demo"));
+        assert!(prompt.contains("<name>demo</name>"));
         assert!(prompt.contains("does the demo"));
-        assert!(prompt.contains("Skill tool"));
+        assert!(prompt.contains("`Skill` tool"));
+        assert!(
+            !prompt.contains("the demo body"),
+            "the catalog announces a skill; the Skill tool delivers it"
+        );
     }
 
     #[test]
     fn plan_segment_is_absent_outside_plan_mode() {
-        let prompt = super::build_system_prompt(Path::new("/work"), &[], None, "2025-01-15", None);
+        let prompt = super::build_system_prompt(
+            Path::new("/work"),
+            &SkillSet::default(),
+            None,
+            "2025-01-15",
+            None,
+        );
         assert!(!prompt.contains("계획 모드"));
         assert!(!prompt.contains("ProposePlan"));
     }
@@ -215,7 +276,7 @@ mod tests {
     fn plan_segment_names_the_plan_file_and_lands_last() {
         let prompt = super::build_system_prompt(
             Path::new("/work"),
-            &[],
+            &SkillSet::default(),
             Some("# Project instructions (repo/AGENTS.md)\n\nrule"),
             "2025-01-15",
             Some(Path::new("/plans/1-demo.md")),
@@ -242,7 +303,7 @@ mod tests {
     fn system_prompt_includes_project_instructions() {
         let prompt = super::build_system_prompt(
             Path::new("/work"),
-            &[],
+            &SkillSet::default(),
             Some("always use snake_case"),
             "2025-01-15",
             None,
@@ -252,7 +313,13 @@ mod tests {
 
     #[test]
     fn system_prompt_no_instructions_omits_section() {
-        let prompt = super::build_system_prompt(Path::new("/work"), &[], None, "2025-01-15", None);
+        let prompt = super::build_system_prompt(
+            Path::new("/work"),
+            &SkillSet::default(),
+            None,
+            "2025-01-15",
+            None,
+        );
         assert!(!prompt.contains("Project instructions"));
     }
 
@@ -262,7 +329,7 @@ mod tests {
         let instructions = format!("{heading}\n\nalways use snake_case");
         let prompt = super::build_system_prompt(
             Path::new("/work"),
-            &[],
+            &SkillSet::default(),
             Some(&instructions),
             "2025-01-15",
             None,
@@ -295,7 +362,13 @@ mod tests {
 
     #[test]
     fn principles_carry_build_discipline() {
-        let prompt = super::build_system_prompt(Path::new("/work"), &[], None, "2025-01-15", None);
+        let prompt = super::build_system_prompt(
+            Path::new("/work"),
+            &SkillSet::default(),
+            None,
+            "2025-01-15",
+            None,
+        );
         assert!(prompt.contains("Build only what the request needs"));
         assert!(prompt.contains("reduced or staged version"));
         assert!(prompt.contains("never drop validation, security, or data-safety"));
@@ -304,13 +377,10 @@ mod tests {
 
     #[test]
     fn system_prompt_orders_sections() {
+        let dir = tempfile::tempdir().unwrap();
         let prompt = super::build_system_prompt(
             Path::new("/work"),
-            &[goat_protocol::SkillInfo {
-                name: "demo".to_owned(),
-                description: "does the demo".to_owned(),
-                command: None,
-            }],
+            &set_with_demo(dir.path()),
             Some("# Project instructions (repo/AGENTS.md)\n\nrule"),
             "2025-01-15",
             None,
@@ -326,7 +396,13 @@ mod tests {
 
     #[test]
     fn system_prompt_carries_language_policy() {
-        let prompt = super::build_system_prompt(Path::new("/work"), &[], None, "2025-01-15", None);
+        let prompt = super::build_system_prompt(
+            Path::new("/work"),
+            &SkillSet::default(),
+            None,
+            "2025-01-15",
+            None,
+        );
         assert!(prompt.contains("Reply to the user in their language"));
         assert!(prompt.contains("keep code, identifiers, paths, commands, tool arguments"));
         assert!(prompt.contains("project's prevailing language"));
