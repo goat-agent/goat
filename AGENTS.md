@@ -58,6 +58,8 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
   added to one moves every method contract or provider that carries it at once. For `Op`/`Event`
   that shows up as `methods_fingerprint.txt` refusing to match on `session.submit` and
   `session.watch`, which is the point — the payload is typed even though the envelope is opaque.
+- Migration files are never deleted or edited once applied — `sqlx::migrate!` checksums them. A
+  removal is a new migration.
 - Do not skip hooks with `--no-verify`. Do not force-push. Neither is mechanically enforced; there
   are no git hooks in this repository.
 
@@ -334,6 +336,11 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
 - `agent.md` and skills are re-read on every turn (`Brain::agent_definition`,
   `SkillIndex::discover_root`), so neither is part of a reload. The `AgentCard` loaded at boot is
   only the fallback for a read that fails.
+- **Embedding is configured per agent and applied globally, and that is a bug.** `boot_inner`
+  collects an `EmbeddingSettings` per agent and then takes `embedders.values().next()` for the one
+  global `MemoryEngine`, so with two configured agents the winner is arbitrary. Only `openai` is
+  implemented; other values warn and are skipped. The fix is to decide whether embedding is global
+  or per-agent — not to delete the field and not to document around it.
 - `Engine`'s only method takes `self` by value, so it is not callable through a trait object;
   nothing uses `dyn Engine`. Decoupling comes from generics plus bounded `tokio::mpsc` channels
   (32 ops, 512 events) carrying `goat-protocol`. The trait avoids `async_trait` and `Stream` —
@@ -489,28 +496,6 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   pair across a process boundary would buy nothing and lose the rollback. Device key material in
   `goat remote` is not an exception at all: the client reads it, so the client owns it.
 
-## Vestigial — present in code, does nothing
-
-Do not build on these, and do not describe them as features:
-
-- Per-agent `EmbeddingSettings` — collected per agent, then `boot_inner` takes
-  `embedders.values().next()` for the single global `MemoryEngine`, so with more than one configured
-  agent the winner is arbitrary. Only `openai` is implemented; other values warn and are skipped.
-  This one is a design bug rather than dead code: the fix is to decide whether embedding is global
-  or per-agent, not to delete a field.
-
-Everything else this section used to list has been removed rather than documented —
-`AutonomyConfig`, `MemoryConfig.episodic_k`, goal review (`goals_due_for_review`,
-`idx_goals_review`, `goals.parent`), `set_paused`/`is_paused` and its three gates, `core_memory`,
-`Event::ProcessObserved`, `Op::Login`, `GoatPaths::agent_dir`, `GoatPaths::memory_dir`, and
-`Model::with_account`. Schema removals ride `0027_drop_vestigial.sql`; migration files are never
-deleted, since `sqlx::migrate!` checksums the ones already applied. If you find yourself adding an
-entry here, delete the thing instead.
-
-There is no `self-tick` and no goal-review scheduling. Both were removed in `7c2a7ad`; the only
-schedule kinds are `once` and `cron`, and an agent gets them only by calling the `schedule` tool.
-Two `goat-brain` test names still say `self_tick` — they exercise `TurnMode::Schedule`.
-
 ## Testing
 
 The full-screen TUI needs a real tty, so it is not driven headlessly. Test the pure `App::update`
@@ -529,3 +514,6 @@ because those tests need a real socket: `roundtrip`/`lifecycle` bind one, `remot
 and `goat-code`'s `browser_host` spawns the actual `goat browser-host` process against a scripted
 Chrome on its stdio. Nothing here drives a real Chrome — the browser vocabulary is covered by
 `goat-tool-browser`'s `transport::fake`, and the extension's end of the pipe is not covered at all.
+
+Two `goat-brain` test names still say `self_tick`; they exercise `TurnMode::Schedule`. There is no
+self-tick.
