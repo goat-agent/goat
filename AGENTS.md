@@ -237,7 +237,13 @@ The parts you cannot infer from the crate name:
   answer is a durable resource settled by a compare-and-set, never a connection-scoped reverse call.
   One browser is one connection: `extension/background.js` owns the single native-messaging port and
   the side panel asks it over `chrome.runtime` rather than opening a second one, because two ports
-  would advertise `host.browser` twice and the lease would read them as two browsers.
+  would advertise `host.browser` twice and the lease would read them as two browsers. Riding that
+  port costs nothing extra — `open_serving` is already bidirectional, so the panel's calls are the
+  outward direction of the connection whose inward direction serves `host.browser`. But the panel is
+  a **closed set of verbs, not a method proxy**: `goat-browser-host`'s `panel` module accepts
+  `panel.open`/`submit`/`interrupt`/`answer` and nothing else. That connection is local, so it
+  carries `Grant::Admin`; a relay that forwarded whatever method arrived would put
+  `admin.credential_set` one message away from a surface that renders pages the human did not write.
 - **`goat-tool-browser` launches nothing.** It is the whole browser vocabulary — actions, snapshots
   and the `data-goat-ref` lifecycle, navigation settling, dialogs, network and console observation —
   over a `Transport` trait that carries one typed `BrowserCommand` (a CDP command in `goat-api`) and
