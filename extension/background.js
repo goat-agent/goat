@@ -145,7 +145,12 @@ async function perform(params, begin) {
 
 async function onMessage(raw) {
   const message = reassemble(raw);
-  if (!message || message.type !== "browser.request") return;
+  if (!message) return;
+  if (typeof message.type === "string" && message.type.startsWith("panel.")) {
+    chrome.runtime.sendMessage(message).catch(() => {});
+    return;
+  }
+  if (message.type !== "browser.request") return;
 
   let started = false;
   try {
@@ -181,8 +186,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, respond) => {
-  if (message?.t !== "status") return false;
-  respond({ connected: port !== null, driving: attached !== null });
+  if (message?.t === "status") {
+    respond({ connected: port !== null, driving: attached !== null });
+    return false;
+  }
+  if (message?.t === "panel") send(message.body);
   return false;
 });
 
