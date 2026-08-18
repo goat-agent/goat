@@ -1,4 +1,5 @@
 pub mod native;
+pub mod panel;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
