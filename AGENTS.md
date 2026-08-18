@@ -184,7 +184,7 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
 `goat-auth`/`goat-console`/`goat-protocol`/`goat-proxy` are shared. `ls crates/` beats any list
 kept here.
 
-Placements that contradict the naming:
+The parts you cannot infer from the crate name:
 
 - `goat-skill` (singular) is a code crate; `goat-skills` (plural) is an agent crate. **They parse
   the same `SKILL.md` twice, and that is a hazard, not a design.** Both strip a leading `---`, read
@@ -236,6 +236,14 @@ Placements that contradict the naming:
   One browser is one connection: `extension/background.js` owns the single native-messaging port and
   the side panel asks it over `chrome.runtime` rather than opening a second one, because two ports
   would advertise `host.browser` twice and the lease would read them as two browsers.
+- **`goat-tool-browser` launches nothing.** It is the whole browser vocabulary — actions, snapshots
+  and the `data-goat-ref` lifecycle, navigation settling, dialogs, network and console observation —
+  over a `Transport` trait that carries one typed `BrowserCommand` (a CDP command in `goat-api`) and
+  returns its result. The only production implementation reaches the human's Chrome through
+  `host.browser`; the only other one is `transport::fake`, which is what makes the vocabulary
+  testable without a browser at all. `goat-tool-web` and `goat-search-provider-duckduckgo` do still
+  launch a throwaway headless Chrome through `chromiumoxide`, and that is not a second backend —
+  they fetch anonymously and never touch the human's session.
 - **Desktop control is `host.computer`, provided by a signed client app — never by this binary.**
   There was a `goat-tool-computer` that drove the desktop in-process with synthetic input and
   pixel coordinates. It was deleted because three things were wrong at once and none could be fixed
