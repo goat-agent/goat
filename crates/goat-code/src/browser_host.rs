@@ -3,9 +3,9 @@ use std::sync::Arc;
 use color_eyre::eyre::eyre;
 use goat_api::{BrowserEvent, BrowserEventParams, CdpEvent};
 use goat_browser_host::native::{Bridge, NativeError, Reassembler, frame, read_message};
-use goat_browser_host::{BrowserHost, BrowserPort, advertise, advertisement, withdrawal};
+use goat_browser_host::{BrowserHost, NativePort, advertise, advertisement, withdrawal};
 use goat_wire::envelope::{CallError, ErrorCode, Execution, Hello, Role};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 
@@ -21,7 +21,10 @@ impl<W: AsyncWrite + Unpin + Send> StdoutPort<W> {
             seq: std::sync::atomic::AtomicU64::new(0),
         }
     }
+}
 
+#[async_trait::async_trait]
+impl<W: AsyncWrite + Unpin + Send + Sync> NativePort for StdoutPort<W> {
     async fn emit(&self, body: &Value) -> Result<(), String> {
         let seq = self
             .seq
@@ -42,18 +45,6 @@ impl<W: AsyncWrite + Unpin + Send> StdoutPort<W> {
         }
         writer.flush().await.map_err(|err| err.to_string())?;
         Ok(())
-    }
-}
-
-#[async_trait::async_trait]
-impl<W: AsyncWrite + Unpin + Send + Sync> BrowserPort for StdoutPort<W> {
-    async fn dispatch(&self, request_id: u64, params: Value) -> Result<(), String> {
-        self.emit(&json!({
-            "type": "browser.request",
-            "request_id": request_id.to_string(),
-            "params": params,
-        }))
-        .await
     }
 }
 
@@ -162,7 +153,7 @@ pub async fn run(instance: Option<String>, label: Option<String>) -> color_eyre:
 #[cfg(test)]
 mod tests {
     use super::{StdoutPort, parse_event, parse_reply};
-    use goat_browser_host::BrowserPort;
+    use goat_browser_host::NativePort;
     use goat_browser_host::native::Bridge;
     use goat_wire::envelope::{ErrorCode, Execution};
     use serde_json::json;
@@ -180,32 +171,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_dispatch_writes_one_length_prefixed_request() {
+    async fn a_body_is_written_whole_behind_one_length_prefix() {
         let mut buffer = Vec::new();
         {
             let port = StdoutPort::new(&mut buffer);
-            port.dispatch(7, json!({"action": "navigate"}))
+            port.emit(&json!({"type": "browser.request", "request_id": "7"}))
                 .await
                 .unwrap();
         }
         let frames = decode_frames(&buffer);
         assert_eq!(frames.len(), 1);
         let Bridge::Message { seq, body } = &frames[0] else {
-            panic!("a small request must not be chunked")
+            panic!("a small body must not be chunked")
         };
         assert_eq!(*seq, 1);
         assert_eq!(body["type"], "browser.request");
         assert_eq!(body["request_id"], "7");
-        assert_eq!(body["params"]["action"], "navigate");
     }
 
     #[tokio::test]
-    async fn successive_dispatches_get_distinct_sequence_numbers() {
+    async fn successive_bodies_get_distinct_sequence_numbers() {
         let mut buffer = Vec::new();
         {
             let port = StdoutPort::new(&mut buffer);
-            port.dispatch(1, json!({})).await.unwrap();
-            port.dispatch(2, json!({})).await.unwrap();
+            port.emit(&json!({"type": "browser.request"}))
+                .await
+                .unwrap();
+            port.emit(&json!({"type": "panel.item"})).await.unwrap();
         }
         let frames = decode_frames(&buffer);
         let seqs: Vec<u64> = frames
@@ -218,11 +210,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_large_request_is_chunked_over_the_port() {
+    async fn a_large_body_is_chunked_over_the_port() {
         let mut buffer = Vec::new();
         {
             let port = StdoutPort::new(&mut buffer);
-            port.dispatch(1, json!({"blob": "x".repeat(1024 * 1024)}))
+            port.emit(&json!({"blob": "x".repeat(1024 * 1024)}))
                 .await
                 .unwrap();
         }

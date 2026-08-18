@@ -7,7 +7,7 @@ use std::time::Duration;
 use goat_api::{CapabilityAdvertise, CapabilityAdvertiseParams, CapabilityOffer, Empty};
 use goat_wire::envelope::{CallError, ErrorCode, Execution};
 use goat_wire::peer::{CallResult, Handler, Request, unknown_method};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::{Mutex, oneshot};
 
 pub const CAPABILITY: &str = "host.browser";
@@ -15,12 +15,12 @@ pub const CAPABILITY_VERSION: u16 = 1;
 pub const MAX_IN_FLIGHT: usize = 8;
 
 #[async_trait::async_trait]
-pub trait BrowserPort: Send + Sync {
-    async fn dispatch(&self, request_id: u64, params: Value) -> Result<(), String>;
+pub trait NativePort: Send + Sync {
+    async fn emit(&self, body: &Value) -> Result<(), String>;
 }
 
 pub struct BrowserHost {
-    port: Arc<dyn BrowserPort>,
+    port: Arc<dyn NativePort>,
     next: AtomicU64,
     waiting: Mutex<std::collections::HashMap<u64, oneshot::Sender<Result<Value, CallError>>>>,
     deadline: Duration,
@@ -28,12 +28,12 @@ pub struct BrowserHost {
 
 impl BrowserHost {
     #[must_use]
-    pub fn new(port: Arc<dyn BrowserPort>) -> Self {
+    pub fn new(port: Arc<dyn NativePort>) -> Self {
         Self::with_deadline(port, Duration::from_secs(90))
     }
 
     #[must_use]
-    pub fn with_deadline(port: Arc<dyn BrowserPort>, deadline: Duration) -> Self {
+    pub fn with_deadline(port: Arc<dyn NativePort>, deadline: Duration) -> Self {
         Self {
             port,
             next: AtomicU64::new(0),
@@ -74,7 +74,12 @@ impl BrowserHost {
         let (tx, rx) = oneshot::channel();
         self.waiting.lock().await.insert(request_id, tx);
 
-        if let Err(reason) = self.port.dispatch(request_id, params).await {
+        let body = json!({
+            "type": "browser.request",
+            "request_id": request_id.to_string(),
+            "params": params,
+        });
+        if let Err(reason) = self.port.emit(&body).await {
             self.waiting.lock().await.remove(&request_id);
             return Err(
                 CallError::new(ErrorCode::HostGone, format!("browser port: {reason}"))
@@ -153,7 +158,7 @@ pub async fn advertise(
 
 #[cfg(test)]
 mod tests {
-    use super::{BrowserHost, BrowserPort, CAPABILITY, advertisement, withdrawal};
+    use super::{BrowserHost, CAPABILITY, NativePort, advertisement, withdrawal};
     use goat_wire::envelope::{CallError, ErrorCode, Execution};
     use goat_wire::peer::{Handler, RejectAll, Request, spawn};
     use goat_wire::{WireConn, envelope::Frame, envelope::Role};
@@ -176,12 +181,16 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl BrowserPort for Recorder {
-        async fn dispatch(&self, request_id: u64, params: Value) -> Result<(), String> {
+    impl NativePort for Recorder {
+        async fn emit(&self, body: &Value) -> Result<(), String> {
             if self.fail {
                 return Err("port closed".to_owned());
             }
-            let _ = self.sent.send((request_id, params));
+            let request_id = body["request_id"]
+                .as_str()
+                .and_then(|text| text.parse::<u64>().ok())
+                .ok_or("a request carries a numeric id")?;
+            let _ = self.sent.send((request_id, body["params"].clone()));
             Ok(())
         }
     }
