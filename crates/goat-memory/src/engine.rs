@@ -403,6 +403,30 @@ mod tests {
         }
     }
 
+    struct CrowdingEmbedder;
+
+    #[async_trait]
+    impl Embedder for CrowdingEmbedder {
+        fn identity(&self) -> &'static str {
+            "test/crowding"
+        }
+
+        fn dim(&self) -> usize {
+            2
+        }
+
+        async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+            let distance = if text == "semantic query" {
+                0.0
+            } else if text.contains("visible") {
+                0.5
+            } else {
+                0.01
+            };
+            Ok(vec![distance, 0.0])
+        }
+    }
+
     async fn engine_with_embedder() -> (tempfile::TempDir, MemoryEngine) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("goat.db");
@@ -622,6 +646,54 @@ mod tests {
 
         assert_eq!(visible.len(), 1);
         assert!(hidden.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unauthorized_nearer_vectors_do_not_crowd_out_a_visible_hit() {
+        let dir = tempfile::tempdir().unwrap();
+        let eng = MemoryEngine::open(
+            &dir.path().join("goat.db"),
+            dir.path(),
+            Some(Arc::new(CrowdingEmbedder)),
+            180.0,
+        )
+        .await
+        .unwrap();
+        let person_a = Audience::principal("person-a").unwrap();
+        let person_b = Audience::principal("person-b").unwrap();
+        for index in 0..21 {
+            eng.assert_fact(&NewFact {
+                scope: Scope::Owner,
+                audience: person_a.clone(),
+                subject: None,
+                text: format!("private vector {index}"),
+                origin: FactOrigin::OwnerStated,
+                source_kind: "message".into(),
+                source_ref: format!("private-{index}"),
+                importance: 1.0,
+            })
+            .await
+            .unwrap();
+        }
+        eng.assert_fact(&NewFact {
+            scope: Scope::Owner,
+            audience: person_b.clone(),
+            subject: None,
+            text: "visible vector".into(),
+            origin: FactOrigin::OwnerStated,
+            source_kind: "message".into(),
+            source_ref: "visible".into(),
+            importance: 1.0,
+        })
+        .await
+        .unwrap();
+
+        let hits = eng
+            .recall(&person_b, &[Scope::Owner], "semantic query", 5)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].text, "visible vector");
     }
 
     #[tokio::test]
