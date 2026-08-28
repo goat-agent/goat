@@ -491,8 +491,8 @@ mod tests {
     struct EmptySource;
 
     impl WatchSource for EmptySource {
-        async fn fetch(&self) -> IntegrationResult<WatchPage> {
-            Ok(WatchPage::default())
+        fn fetch(&self) -> impl Future<Output = IntegrationResult<WatchPage>> + Send {
+            std::future::ready(Ok(WatchPage::default()))
         }
     }
 

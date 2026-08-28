@@ -28,9 +28,9 @@ pub(crate) enum Era {
 #[derive(Debug)]
 pub(crate) enum Failed {
     TimedOut,
-    Wire(ClientInitializeError),
-    Rejected(ClientInitializeError),
-    Fatal(ClientInitializeError),
+    Wire(Box<ClientInitializeError>),
+    Rejected(Box<ClientInitializeError>),
+    Fatal(Box<ClientInitializeError>),
 }
 
 pub(crate) async fn open<T, E, A>(era: Era, transport: T) -> Result<Client, Failed>
@@ -72,11 +72,11 @@ pub(crate) fn into_error(server: &str, failure: &Failed) -> McpError {
 
 fn sort(error: ClientInitializeError) -> Failed {
     if peer_is_modern(&error) || giving_up(&error) {
-        Failed::Fatal(error)
+        Failed::Fatal(Box::new(error))
     } else if wire_failed(&error) {
-        Failed::Wire(error)
+        Failed::Wire(Box::new(error))
     } else {
-        Failed::Rejected(error)
+        Failed::Rejected(Box::new(error))
     }
 }
 

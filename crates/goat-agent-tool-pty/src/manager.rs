@@ -119,8 +119,7 @@ impl PtyManager {
         self.get(id).ok_or_else(|| format!("no session: {id}"))
     }
 
-    #[allow(clippy::unused_async)]
-    pub async fn open(
+    pub fn open(
         &self,
         command: &str,
         rows: Option<u16>,
