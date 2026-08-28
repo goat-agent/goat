@@ -647,6 +647,23 @@ impl CredentialStore {
         Ok(removed)
     }
 
+    pub fn remove_service_account(
+        &self,
+        service: CredentialService,
+        account: &str,
+    ) -> Result<usize, AuthError> {
+        let _lock = FileLock::acquire(&self.path)?;
+        let mut file = self.load_file()?;
+        let before = file.credentials.len();
+        file.credentials
+            .retain(|entry| entry.key.service != service || entry.key.account != account);
+        let removed = before - file.credentials.len();
+        if removed > 0 {
+            self.save_file(&file)?;
+        }
+        Ok(removed)
+    }
+
     fn load_file(&self) -> Result<AuthFile, AuthError> {
         let raw = match fs::read_to_string(&self.path) {
             Ok(raw) => raw,
@@ -850,6 +867,32 @@ mod tests {
         assert!(store.get(&bot).is_none());
         assert_eq!(store.get(&app).unwrap().bearer(), "xapp-1");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn removing_a_service_account_clears_every_provider_and_slot_in_that_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("credentials.json"));
+        let dev_discord = CredentialKey::channel("discord", "dev", "bot_token");
+        let dev_slack = CredentialKey::channel("slack", "dev", "app_token");
+        let work_slack = CredentialKey::channel("slack", "work", "app_token");
+        let dev_model = CredentialKey::model("openai", "dev");
+        for key in [&dev_discord, &dev_slack, &work_slack, &dev_model] {
+            store
+                .store(key, Credential::ApiKey(SecretString::from("secret")))
+                .unwrap();
+        }
+
+        assert_eq!(
+            store
+                .remove_service_account(CredentialService::Channel, "dev")
+                .unwrap(),
+            2
+        );
+        assert!(store.get(&dev_discord).is_none());
+        assert!(store.get(&dev_slack).is_none());
+        assert!(store.get(&work_slack).is_some());
+        assert!(store.get(&dev_model).is_some());
     }
 
     #[test]

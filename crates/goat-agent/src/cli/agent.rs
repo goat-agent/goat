@@ -2,7 +2,7 @@ use std::io::IsTerminal;
 
 use anyhow::{Result, anyhow};
 use clap::Subcommand;
-use goat_auth::CredentialStore;
+use goat_auth::{CredentialService, CredentialStore};
 use goat_config::{GoatPaths, write_atomic};
 use goat_model::{Model, ProviderId};
 use goat_providers::Registry;
@@ -18,7 +18,7 @@ pub enum Cmd {
     Add { slug: Option<String> },
     #[command(about = "Print an agent's definition and channel bindings")]
     Show { slug: String },
-    #[command(visible_alias = "rm", aliases = ["del", "delete"], about = "Archive an agent")]
+    #[command(visible_alias = "rm", aliases = ["del", "delete"], about = "Delete an agent")]
     Remove { slug: String },
     #[command(subcommand, about = "Manage an agent's channel bindings")]
     Channel(super::channel::Cmd),
@@ -37,9 +37,19 @@ pub async fn run(cmd: Cmd) -> Result<()> {
     let paths = GoatPaths::default_layout()?;
     match cmd {
         Cmd::List => list(&paths),
-        Cmd::Add { slug } => add(&paths, slug),
+        Cmd::Add { slug } => {
+            if let Some(slug) = add(&paths, slug)? {
+                super::apply::config_changed(Some(&slug)).await;
+            }
+            Ok(())
+        }
         Cmd::Show { slug } => show(&paths, &slug),
-        Cmd::Remove { slug } => remove(&paths, &slug),
+        Cmd::Remove { slug } => {
+            if remove(&paths, &slug)? {
+                super::apply::config_changed(None).await;
+            }
+            Ok(())
+        }
         Cmd::Channel(c) => super::channel::run(c).await,
         Cmd::Integration(c) => super::integration::run(c).await,
         Cmd::Status => super::governance::status().await,
@@ -55,9 +65,7 @@ pub fn create_interactive(paths: &GoatPaths) -> Result<String> {
 
 fn write_agent(paths: &GoatPaths, slug: &str) -> Result<String> {
     let slug = slug.trim().to_string();
-    if slug.is_empty() {
-        return Err(anyhow!("empty slug"));
-    }
+    validate_slug(&slug)?;
     let dir = paths.agents_dir.join(&slug);
     if dir.join("agent.md").exists() {
         return Err(anyhow!("`{slug}` already exists at {}", dir.display()));
@@ -191,18 +199,21 @@ fn bindings_for(dir: &std::path::Path) -> Result<Vec<String>> {
     Ok(out)
 }
 
-fn add(paths: &GoatPaths, slug: Option<String>) -> Result<()> {
+fn add(paths: &GoatPaths, slug: Option<String>) -> Result<Option<String>> {
+    let mut created = None;
     ui::cell("Agent Add", || {
         let slug = match slug {
             Some(s) => write_agent(paths, &s)?,
             None => create_interactive(paths)?,
         };
-        let _ = slug;
+        created = Some(slug);
         Ok(Footer::Hint("Created", "goat agent channel add".into()))
-    })
+    })?;
+    Ok(created)
 }
 
 fn show(paths: &GoatPaths, slug: &str) -> Result<()> {
+    validate_slug(slug)?;
     ui::cell(&format!("Agent {slug}"), || {
         let dir = paths.agents_dir.join(slug);
         let agent_md = dir.join("agent.md");
@@ -228,7 +239,9 @@ fn show(paths: &GoatPaths, slug: &str) -> Result<()> {
     })
 }
 
-fn remove(paths: &GoatPaths, slug: &str) -> Result<()> {
+fn remove(paths: &GoatPaths, slug: &str) -> Result<bool> {
+    validate_slug(slug)?;
+    let mut removed = false;
     ui::cell(&format!("Agent Remove {slug}"), || {
         let dir = paths.agents_dir.join(slug);
         if !dir.exists() {
@@ -237,9 +250,19 @@ fn remove(paths: &GoatPaths, slug: &str) -> Result<()> {
         if !ui::confirm(&format!("delete {}?", dir.display()), false)? {
             return Ok(Footer::Cancel);
         }
-        std::fs::remove_dir_all(&dir)?;
+        delete_agent(paths, slug)?;
+        removed = true;
         Ok(Footer::Ok("Removed"))
-    })
+    })?;
+    Ok(removed)
+}
+
+fn delete_agent(paths: &GoatPaths, slug: &str) -> Result<()> {
+    validate_slug(slug)?;
+    let store = CredentialStore::new(paths.credentials_json.clone());
+    store.remove_service_account(CredentialService::Channel, slug)?;
+    std::fs::remove_dir_all(paths.agents_dir.join(slug))?;
+    Ok(())
 }
 
 pub(crate) fn list_agents(paths: &GoatPaths) -> Result<Vec<String>> {
@@ -264,7 +287,19 @@ pub(crate) fn list_agents(paths: &GoatPaths) -> Result<Vec<String>> {
 }
 
 pub(crate) fn agent_exists(paths: &GoatPaths, slug: &str) -> bool {
-    paths.agents_dir.join(slug).join("agent.md").exists()
+    validate_slug(slug).is_ok() && paths.agents_dir.join(slug).join("agent.md").exists()
+}
+
+fn validate_slug(slug: &str) -> Result<()> {
+    let mut components = std::path::Path::new(slug).components();
+    let valid = matches!(components.next(), Some(std::path::Component::Normal(part)) if part == slug)
+        && components.next().is_none()
+        && !slug.contains('\\');
+    if valid {
+        Ok(())
+    } else {
+        Err(anyhow!("agent slug must be one directory name"))
+    }
 }
 
 pub(crate) fn resolve_agent(paths: &GoatPaths, explicit: Option<&str>) -> Result<String> {
@@ -495,5 +530,52 @@ mod tests {
         std::fs::write(dir.path().join("config.json"), "[]").unwrap();
 
         assert!(read_agent_config(dir.path()).is_err());
+    }
+
+    #[test]
+    fn deleting_an_agent_removes_its_channel_secrets_only() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = GoatPaths::from_root(root.path().join("goat"));
+        let dev = paths.agents_dir.join("dev");
+        std::fs::create_dir_all(&dev).unwrap();
+        std::fs::write(dev.join("agent.md"), "dev").unwrap();
+        let store = CredentialStore::new(paths.credentials_json.clone());
+        let dev_channel = goat_auth::CredentialKey::channel("slack", "dev", "stale_slot");
+        let work_channel = goat_auth::CredentialKey::channel("slack", "work", "stale_slot");
+        let dev_model = goat_auth::CredentialKey::model("openai", "dev");
+        for key in [&dev_channel, &work_channel, &dev_model] {
+            store
+                .store(
+                    key,
+                    goat_auth::Credential::ApiKey(goat_auth::SecretString::from("secret")),
+                )
+                .unwrap();
+        }
+
+        delete_agent(&paths, "dev").unwrap();
+
+        assert!(!dev.exists());
+        assert!(store.get(&dev_channel).is_none());
+        assert!(store.get(&work_channel).is_some());
+        assert!(store.get(&dev_model).is_some());
+    }
+
+    #[test]
+    fn an_agent_slug_is_exactly_one_directory_name() {
+        for slug in ["dev", "my-agent", ".hidden"] {
+            assert!(validate_slug(slug).is_ok(), "{slug}");
+        }
+        for slug in [
+            "",
+            ".",
+            "..",
+            "../outside",
+            "nested/agent",
+            "/tmp/agent",
+            "agent/",
+            r"nested\agent",
+        ] {
+            assert!(validate_slug(slug).is_err(), "{slug}");
+        }
     }
 }
