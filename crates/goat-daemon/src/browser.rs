@@ -1,13 +1,16 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use goat_api::{BrowserCommand, BrowserEvent, BrowserEventParams, CdpEvent, Empty, Holder, Router};
+use goat_api::{
+    BrowserCommand, BrowserEvent, BrowserEventParams, CdpEvent, Empty, Holder, HostBrowser, Method,
+    Router,
+};
 use goat_capability::{Broker, DEFAULT_CALL_DEADLINE};
 use goat_tool_browser::{BrowserError, Transport, TransportFuture};
 use tokio::sync::broadcast;
 
 const EVENT_QUEUE: usize = 256;
-pub const CAPABILITY: &str = "host.browser";
+pub const CAPABILITY: &str = HostBrowser::NAME;
 
 #[derive(Default)]
 pub struct BrowserEvents {
