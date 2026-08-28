@@ -14,7 +14,6 @@ goat-api = { workspace = true }
 serde_json = { workspace = true }
 goat-config = { workspace = true }
 goat-auth = { workspace = true }
-goat-search-provider = { workspace = true }
 goat-search-providers = { workspace = true }
 goat-protocol = { workspace = true }
 goat-client = { workspace = true }

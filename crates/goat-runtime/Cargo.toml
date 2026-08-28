@@ -18,7 +18,6 @@ goat-embedding    = { workspace = true }
 goat-config           = { workspace = true }
 goat-model            = { workspace = true }
 goat-auth         = { workspace = true }
-goat-provider     = { workspace = true }
 goat-providers    = { workspace = true }
 goat-proxy        = { workspace = true }
 goat-channel          = { workspace = true }
@@ -33,14 +32,12 @@ goat-agent-tool-goal        = { workspace = true }
 goat-agent-tool-code        = { workspace = true }
 goat-agent-tool-browser     = { workspace = true }
 goat-daemon             = { workspace = true }
-goat-wire             = { workspace = true }
 goat-agent-tool-memory      = { workspace = true }
 goat-agent-tool-pty         = { workspace = true }
 goat-loop             = { workspace = true }
 goat-sleep            = { workspace = true }
 goat-brain            = { workspace = true }
 goat-agent-config     = { workspace = true }
-chrono                = { workspace = true }
 tokio                 = { workspace = true }
 tokio-util            = { workspace = true }
 async-trait           = { workspace = true }
@@ -50,7 +47,6 @@ tracing-subscriber    = { workspace = true }
 tracing-appender      = { workspace = true }
 inventory             = { workspace = true }
 futures               = { workspace = true }
-uuid                  = { workspace = true }
 serde_json            = { workspace = true }
 
 [dev-dependencies]

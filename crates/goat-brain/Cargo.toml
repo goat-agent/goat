@@ -13,8 +13,6 @@ goat-agent-command = { workspace = true }
 goat-types   = { workspace = true }
 goat-model   = { workspace = true }
 goat-provider = { workspace = true }
-goat-providers = { workspace = true }
-goat-auth = { workspace = true }
 goat-channel = { workspace = true }
 goat-render  = { workspace = true }
 goat-store   = { workspace = true }

@@ -11,10 +11,6 @@ publish.workspace = true
 [dependencies]
 goat-protocol = { workspace = true }
 tokio = { workspace = true }
-tracing = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

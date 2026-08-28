@@ -19,10 +19,6 @@ tracing      = { workspace = true }
 
 [dev-dependencies]
 goat-channel = { workspace = true, features = ["test-support"] }
-goat-provider = { workspace = true }
-goat-types   = { workspace = true }
-tokio        = { workspace = true, features = ["macros", "rt"] }
-futures      = { workspace = true }
 
 [lints]
 workspace = true

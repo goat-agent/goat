@@ -20,7 +20,6 @@ futures = { workspace = true }
 eventsource-stream = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 open = { workspace = true }
 
 [lints]

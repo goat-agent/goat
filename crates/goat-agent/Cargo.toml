@@ -16,11 +16,9 @@ path = "src/lib.rs"
 goat-runtime    = { workspace = true }
 goat-client     = { workspace = true }
 goat-api        = { workspace = true }
-goat-wire       = { workspace = true }
 goat-config     = { workspace = true }
 goat-console    = { workspace = true }
 goat-store      = { workspace = true }
-sqlx            = { workspace = true }
 goat-model      = { workspace = true }
 goat-auth   = { workspace = true }
 goat-integration = { workspace = true }
@@ -29,21 +27,11 @@ open        = { workspace = true }
 goat-provider = { workspace = true }
 goat-providers = { workspace = true }
 goat-skill     = { workspace = true }
-goat-types      = { workspace = true }
 goat-channel    = { workspace = true }
-goat-channel-discord  = { workspace = true }
-goat-channel-slack    = { workspace = true }
-goat-agent-tool-fs       = { workspace = true }
-goat-agent-tool-shell    = { workspace = true }
-goat-agent-tool-skill    = { workspace = true }
-goat-agent-command-skill  = { workspace = true }
 tokio           = { workspace = true }
 anyhow          = { workspace = true }
-clap            = { version = "4", features = ["derive"] }
-inventory       = { workspace = true }
-dialoguer       = "0.12"
+clap            = { workspace = true }
 serde_json      = { workspace = true }
-unicode-width   = "0.2"
 
 [dev-dependencies]
 tempfile        = { workspace = true }

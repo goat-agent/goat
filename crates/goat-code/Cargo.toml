@@ -69,8 +69,6 @@ rustls = { workspace = true }
 tokio = { workspace = true, features = ["io-std"] }
 rand = { workspace = true }
 clap = { workspace = true }
-dialoguer = { workspace = true }
-console = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 color-eyre = { workspace = true }
@@ -86,7 +84,6 @@ tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 qrcode = { workspace = true }
 open = { workspace = true }
-unicode-width = { workspace = true }
 
 [dev-dependencies]
 goat-tool-browser = { workspace = true }

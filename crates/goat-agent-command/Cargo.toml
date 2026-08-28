@@ -12,10 +12,8 @@ publish.workspace = true
 goat-types = { workspace = true }
 async-trait = { workspace = true }
 serde      = { workspace = true }
-serde_json = { workspace = true }
 thiserror  = { workspace = true }
 inventory  = { workspace = true }
-tracing    = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
