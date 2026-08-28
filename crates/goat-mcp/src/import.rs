@@ -538,14 +538,19 @@ mod tests {
     #[test]
     fn imports_jsonc_comments_and_trailing_commas() {
         let set = parse_import(
-            br#"{
-                // shared project config
+            concat!(
+                r#"{
+                "#,
+                "/",
+                r#"/ shared project config
                 "servers": {
                     "a": {
                         "command": "https://example.test//not-a-comment",
                     },
                 },
-            }"#,
+            }"#
+            )
+            .as_bytes(),
         )
         .unwrap();
         assert!(set.candidates[0].usable());
@@ -553,6 +558,6 @@ mod tests {
 
     #[test]
     fn rejects_unclosed_jsonc_comments() {
-        assert!(parse_import(br#"{"servers": {}} /*"#).is_err());
+        assert!(parse_import(concat!(r#"{"servers": {}} /"#, "*").as_bytes()).is_err());
     }
 }
