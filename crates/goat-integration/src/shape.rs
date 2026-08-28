@@ -14,12 +14,25 @@ pub fn envelope<'a>(data: &'a Value, extra: &[&str]) -> Option<&'a Vec<Value>> {
         return Some(array);
     }
     let keys = || extra.iter().chain(ENVELOPE_KEYS);
-    if let Some(array) = keys().find_map(|key| data.get(*key).and_then(Value::as_array)) {
+    if let Some(array) =
+        preferred_array(keys().filter_map(|key| data.get(*key).and_then(Value::as_array)))
+    {
         return Some(array);
     }
-    keys()
-        .filter_map(|key| data.get(*key))
-        .find_map(|nested| keys().find_map(|key| nested.get(*key).and_then(Value::as_array)))
+    keys().filter_map(|key| data.get(*key)).find_map(|nested| {
+        preferred_array(keys().filter_map(|key| nested.get(*key).and_then(Value::as_array)))
+    })
+}
+
+fn preferred_array<'a>(arrays: impl Iterator<Item = &'a Vec<Value>>) -> Option<&'a Vec<Value>> {
+    let mut empty = None;
+    for array in arrays {
+        if !array.is_empty() {
+            return Some(array);
+        }
+        empty.get_or_insert(array);
+    }
+    empty
 }
 
 pub fn items<'a>(
@@ -102,6 +115,12 @@ mod tests {
     fn a_service_specific_key_is_tried_before_the_shared_ones() {
         let wrapped = json!({ "deployments": [{ "id": "1" }], "items": [] });
         assert_eq!(envelope(&wrapped, &["deployments"]).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_empty_preferred_key_does_not_hide_a_populated_alias() {
+        let wrapped = json!({ "content": [], "notes": [{ "id": "1" }] });
+        assert_eq!(envelope(&wrapped, &["content", "notes"]).unwrap().len(), 1);
     }
 
     #[test]
