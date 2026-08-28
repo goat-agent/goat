@@ -2386,6 +2386,7 @@ dependencies = [
  "goat-worktree",
  "open",
  "qrcode",
+ "rand 0.10.2",
  "reqwest 0.12.28",
  "rustix 1.1.4",
  "rustls",
