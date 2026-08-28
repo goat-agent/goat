@@ -5,7 +5,9 @@ goat is a single-user, single-host personal AI product in Rust with two capabili
 - **agent** — an autonomous actor holding a resident chat connection (Discord gateway, Slack Socket
   Mode). It reacts to
   messages, runs `once`/`cron` tasks it registers for itself through the `schedule` tool,
-  consolidates memory nightly at 04:00, and delegates coding to the code engine in-process.
+  consolidates memory nightly at 04:00, and starts coding tasks asynchronously in-process through
+  the code engine. Coding-task progress and results stay in the code conversation rather than
+  returning to the agent chat.
 - **code** — a terminal coding agent rendered as a full-screen TUI, always spoken to through the
   resident daemon. The daemon it speaks to need not be on this machine: `goat remote` names other
   hosts' daemons and `goat code --remote <name>` attaches to one over mTLS.
@@ -180,7 +182,7 @@ For a narrow change run the smallest relevant check; for a broad one run all fou
 
 ## Where things live
 
-`crates/` is flat, 110 crates, every one prefixed `goat-`. The prefix tells you the family:
+`crates/` is flat and every crate is prefixed `goat-`. The prefix tells you the family:
 `goat-agent*` is the autonomous actor, `goat-code`/`goat-core`/`goat-engine`/`goat-tui` and the
 `goat-tool-*`/`goat-command-*` families are coding, and `goat-provider*`/`goat-store`/`goat-config`/
 `goat-auth`/`goat-console`/`goat-protocol`/`goat-proxy` are shared. `ls crates/` beats any list
@@ -483,7 +485,7 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   daemon is the only place that opens the file. One method rather than nine keeps the table small;
   the enum is the vocabulary. Provider-shaped payloads (a search account, an integration entry) cross
   as opaque JSON so `goat-api` never learns a concrete provider name. `goat provider`,
-  `goat search` and `goat agent integration` call it, and a local target autostarts the daemon so a
+  `goat code search` and `goat agent integration` call it, and a local target autostarts the daemon so a
   write still works from a cold machine.
 - **Credentials cross the same door, and `Attachment` carries it.** `admin.credential_set` /
   `admin.credential_remove` take a `goat_auth::CredentialKey` plus a `CredentialValue` — the same

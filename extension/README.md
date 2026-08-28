@@ -4,7 +4,7 @@ Two halves:
 
 - `background.js` is a service worker. It owns the native-messaging port, so the
   port survives the side panel being closed. It is a relay, not a browser
-  vocabulary: it forwards CDP commands to `chrome.debugger`, answers the five tab
+  vocabulary: it forwards CDP commands to `chrome.debugger`, answers the four tab
   operations from `chrome.tabs`, and pushes `chrome.debugger.onEvent` back up the
   port. Every decision about what to send lives in Rust.
 - `panel.html` / `panel.js` are the side panel, which shrinks the page and puts
