@@ -19,9 +19,11 @@ pub(crate) enum Update {
         event: Box<Event>,
     },
     Presence {
+        watermark: u64,
         clients: usize,
     },
     Error {
+        watermark: u64,
         message: String,
     },
 }
@@ -1086,9 +1088,11 @@ mod tests {
         let lagged = tokio_util::sync::CancellationToken::new();
         subscriber_upsert(&mut inner.subscribers, ClientId(9), sender, lagged.clone());
         inner.fanout(&Update::Error {
+            watermark: inner.next_seq,
             message: "first".to_owned(),
         });
         inner.fanout(&Update::Error {
+            watermark: inner.next_seq,
             message: "second".to_owned(),
         });
         tokio::time::timeout(std::time::Duration::from_secs(1), lagged.cancelled())

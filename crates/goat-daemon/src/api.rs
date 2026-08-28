@@ -599,15 +599,15 @@ pub(crate) fn watch_item(
             state,
         },
         crate::session::Update::Event { seq, event } => goat_api::WatchItem::Event {
-            cursor: goat_api::cursor_for(epoch, seq),
+            cursor: goat_api::cursor_for(epoch, seq.saturating_add(1)),
             event,
         },
-        crate::session::Update::Presence { clients } => goat_api::WatchItem::Presence {
-            cursor: goat_api::cursor_for(epoch, 0),
+        crate::session::Update::Presence { watermark, clients } => goat_api::WatchItem::Presence {
+            cursor: goat_api::cursor_for(epoch, watermark),
             clients,
         },
-        crate::session::Update::Error { message } => goat_api::WatchItem::Event {
-            cursor: goat_api::cursor_for(epoch, 0),
+        crate::session::Update::Error { watermark, message } => goat_api::WatchItem::Event {
+            cursor: goat_api::cursor_for(epoch, watermark),
             event: Box::new(goat_protocol::Event::Error {
                 id: None,
                 message,
@@ -1154,29 +1154,38 @@ mod tests {
             "e3",
             false,
         );
-        assert_eq!(event.cursor().to_string(), "e3:41");
+        assert_eq!(event.cursor().to_string(), "e3:42");
 
-        let presence =
-            super::watch_item(crate::session::Update::Presence { clients: 2 }, "e3", false);
+        let presence = super::watch_item(
+            crate::session::Update::Presence {
+                watermark: 42,
+                clients: 2,
+            },
+            "e3",
+            false,
+        );
         assert!(matches!(
-            presence,
+            &presence,
             goat_api::WatchItem::Presence { clients: 2, .. }
         ));
+        assert_eq!(presence.cursor().to_string(), "e3:42");
 
         let stopped = super::watch_item(
             crate::session::Update::Error {
+                watermark: 42,
                 message: "engine stopped".to_owned(),
             },
             "e3",
             false,
         );
-        let goat_api::WatchItem::Event { event, .. } = stopped else {
+        let goat_api::WatchItem::Event { ref event, .. } = stopped else {
             panic!("expected an event item")
         };
         assert!(matches!(
-            *event,
+            **event,
             goat_protocol::Event::Error { ref message, .. } if message == "engine stopped"
         ));
+        assert_eq!(stopped.cursor().to_string(), "e3:42");
     }
 
     #[tokio::test]
