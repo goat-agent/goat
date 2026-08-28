@@ -337,7 +337,7 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
   whose `config.json` stopped parsing — a directory that still holds an `agent.md` is a load failure
   to report, not a removal to act on. The trigger is `admin.agent_reload`, and every CLI that writes
   config calls it after writing, so nothing tells the user to restart the daemon any more. Only a
-  new binary still needs one.
+  new binary or a changed global embedding configuration still needs one.
 - An agent respawn does not kill the turn in flight. `Brain::run` awaits `handle_turn` inside a
   `tokio::select!` arm body, and a chosen arm runs to completion — cancelling the token is only
   observed on the next loop. What a respawn does interrupt is the channel pump, so inbound messages
@@ -345,11 +345,13 @@ that moves it. Read `crates/goat-config/src/paths.rs` for the full list. The par
 - `agent.md` and skills are re-read on every turn (`Brain::agent_definition`, `SkillSet::load`),
   so neither is part of a reload. The `AgentCard` loaded at boot is
   only the fallback for a read that fails.
-- **Embedding is configured per agent and applied globally, and that is a bug.** `boot_inner`
-  collects an `EmbeddingSettings` per agent and then takes `embedders.values().next()` for the one
-  global `MemoryEngine`, so with two configured agents the winner is arbitrary. Only `openai` is
-  implemented; other values warn and are skipped. The fix is to decide whether embedding is global
-  or per-agent — not to delete the field and not to document around it.
+- **Embedding settings are declared per agent but select one global memory index configuration.**
+  Every memory-enabled agent that declares embedding must name the same provider and model; boot
+  rejects conflicts deterministically. Reload rejects a conflict or a change from the running
+  configuration before replacing any live settings, because the global `MemoryEngine` is built at
+  boot. Only `openai` is implemented; an unsupported provider or a failed probe leaves vector recall
+  disabled while core and full-text memory remain available. The stored embedding identity includes
+  provider and model, and changing it rebuilds the derived vector index even when dimensions match.
 - `Engine`'s only method takes `self` by value, so it is not callable through a trait object;
   nothing uses `dyn Engine`. Decoupling comes from generics plus bounded `tokio::mpsc` channels
   (32 ops, 512 events) carrying `goat-protocol`. The trait avoids `async_trait` and `Stream` —

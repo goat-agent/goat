@@ -7,7 +7,7 @@ mod embed;
 mod layout;
 use embed::OpenAiEmbedderAdapter;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use goat_agent_command::{CommandFactory, CommandProviderContext, CommandRegistry};
 use goat_agent_config::AgentConfig;
 use goat_agent_tool::ToolRegistry;
@@ -89,7 +89,9 @@ impl AgentRuntime {
 
         let credentials = goat_auth::CredentialStore::new(cfg.paths.credentials_json.clone());
         let user_providers = goat_config::UserProviders::at(cfg.paths.config_json.clone());
-        let embedders = build_embedders(&cfg.agents, &credentials).await;
+        let global_embedding =
+            select_global_embedding(&cfg.agents).context("selecting global memory embedder")?;
+        let memory_embedder = build_global_embedder(global_embedding.as_ref(), &credentials).await;
 
         let bus = EventBus::new();
         let (scheduler_handle, prepared_scheduler) =
@@ -99,12 +101,11 @@ impl AgentRuntime {
 
         let cancel = CancellationToken::new();
 
-        let mem_embedder: Option<Arc<dyn Embedder>> = embedders.values().next().cloned();
         let memory_engine = Arc::new(
             goat_memory::MemoryEngine::open(
                 &cfg.paths.state_db,
                 &cfg.paths.root,
-                mem_embedder,
+                memory_embedder,
                 180.0,
             )
             .await
@@ -143,6 +144,7 @@ impl AgentRuntime {
             shared,
             agents: HashMap::new(),
             shared_key: shared_fingerprint(&cfg.paths.config_json, &cfg.agents),
+            global_embedding,
             cancel: cancel.clone(),
             models: Arc::new(std::sync::Mutex::new(Vec::new())),
         };
@@ -343,11 +345,8 @@ fn build_provider_registry(
     Arc::new(registry)
 }
 
-async fn build_embedders(
-    agents: &[AgentConfig],
-    store: &goat_auth::CredentialStore,
-) -> Arc<HashMap<AgentId, Arc<dyn Embedder>>> {
-    let mut map: HashMap<AgentId, Arc<dyn Embedder>> = HashMap::new();
+fn select_global_embedding(agents: &[AgentConfig]) -> Result<Option<(String, String)>> {
+    let mut configurations = std::collections::BTreeMap::new();
     for agent in agents {
         if !agent.memory.enabled {
             continue;
@@ -355,35 +354,71 @@ async fn build_embedders(
         let Some(settings) = agent.memory.embedding.as_ref() else {
             continue;
         };
-        if settings.provider != "openai" {
-            warn!(
-                agent = %agent.slug,
-                provider = %settings.provider,
-                "memory: unsupported embedding provider; episodic memory disabled for this agent",
-            );
-            continue;
-        }
-        match OpenAiEmbedderAdapter::new(store.clone(), settings.model.clone()).await {
-            Ok(embedder) => {
-                info!(
-                    agent = %agent.slug,
-                    provider = %settings.provider,
-                    model = %settings.model,
-                    dim = embedder.dim(),
-                    "memory: embedder ready",
-                );
-                map.insert(agent.id, Arc::new(embedder));
-            }
-            Err(e) => warn!(
-                agent = %agent.slug,
-                provider = %settings.provider,
-                model = %settings.model,
-                error = ?e,
-                "memory: embedding probe failed; episodic memory disabled for this agent",
-            ),
-        }
+        configurations
+            .entry((settings.provider.clone(), settings.model.clone()))
+            .or_insert_with(Vec::new)
+            .push(agent.slug.clone());
     }
-    Arc::new(map)
+    for slugs in configurations.values_mut() {
+        slugs.sort();
+    }
+    if configurations.len() > 1 {
+        let conflicts = configurations
+            .iter()
+            .map(|((provider, model), slugs)| {
+                format!("{provider}/{model} for {}", slugs.join(", "))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        bail!("conflicting embedding configurations for the global memory index: {conflicts}");
+    }
+    Ok(configurations.into_keys().next())
+}
+
+fn validate_reloaded_embedding(
+    current: Option<&(String, String)>,
+    agents: &[AgentConfig],
+) -> Result<()> {
+    let requested = select_global_embedding(agents)?;
+    if requested.as_ref() != current {
+        bail!("global memory embedding configuration changed; restart the daemon to apply it");
+    }
+    Ok(())
+}
+
+async fn build_global_embedder(
+    selected: Option<&(String, String)>,
+    store: &goat_auth::CredentialStore,
+) -> Option<Arc<dyn Embedder>> {
+    let (provider, model) = selected?;
+    if provider != "openai" {
+        warn!(
+            provider = %provider,
+            model = %model,
+            "memory: unsupported embedding provider; vector memory disabled",
+        );
+        return None;
+    }
+    let embedder = match OpenAiEmbedderAdapter::new(store.clone(), model.clone()).await {
+        Ok(embedder) => embedder,
+        Err(error) => {
+            warn!(
+                provider = %provider,
+                model = %model,
+                ?error,
+                "memory: embedding probe failed; vector memory disabled",
+            );
+            return None;
+        }
+    };
+    info!(
+        provider = %provider,
+        model = %model,
+        dim = embedder.dim(),
+        "memory: global embedder ready",
+    );
+    let embedder: Arc<dyn Embedder> = Arc::new(embedder);
+    Some(embedder)
 }
 
 fn build_channel_registry() -> HashMap<String, Arc<dyn Channel>> {
@@ -848,6 +883,7 @@ struct Supervisor {
     shared: RuntimeShared,
     agents: HashMap<String, AgentTasks>,
     shared_key: String,
+    global_embedding: Option<(String, String)>,
     cancel: CancellationToken,
     models: Arc<std::sync::Mutex<Vec<(AgentId, goat_model::Model)>>>,
 }
@@ -974,6 +1010,17 @@ impl Supervisor {
                 };
             }
         };
+
+        if let Err(error) = validate_reloaded_embedding(self.global_embedding.as_ref(), &cfg.agents)
+        {
+            return goat_daemon::ReloadReport {
+                failed: vec![goat_daemon::ReloadFailure {
+                    agent: "*".to_owned(),
+                    reason: format!("{error:#}"),
+                }],
+                ..Default::default()
+            };
+        }
 
         let shared_key = shared_fingerprint(&self.base.paths.config_json, &cfg.agents);
         let mut only = only;
@@ -1211,6 +1258,19 @@ mod tests {
         }
     }
 
+    fn embedding_agent(slug: &str, provider: &str, model: &str) -> AgentConfig {
+        let mut configured = agent(slug, "gpt-x");
+        configured.memory = MemoryConfig {
+            enabled: true,
+            embedding: Some(EmbeddingSettings {
+                provider: provider.into(),
+                model: model.into(),
+            }),
+            summarize: false,
+        };
+        configured
+    }
+
     static FAKE_VOCABULARY: goat_integration::query::WatchVocabulary =
         goat_integration::query::WatchVocabulary {
             integration: "fake",
@@ -1424,22 +1484,79 @@ mod tests {
     #[tokio::test]
     async fn embedder_probe_failure_degrades_to_core_only() {
         let dir = tempfile::tempdir().unwrap();
-        let mut p = agent("bob", "openai/gpt-5.1");
-        p.memory = MemoryConfig {
-            enabled: true,
-            embedding: Some(EmbeddingSettings {
-                provider: "openai".into(),
-                model: "text-embedding-3-small".into(),
-            }),
-            summarize: false,
-        };
         let cfg = LoadedConfig {
             paths: paths_in(dir.path()),
-            agents: vec![p],
+            agents: vec![embedding_agent("bob", "openai", "text-embedding-3-small")],
         };
         let goat = AgentRuntime::boot_inner(cfg, None, None, None)
             .await
             .expect("boot");
         assert_eq!(goat.join_handles.len(), 3);
+    }
+
+    #[test]
+    fn matching_multi_agent_embedding_settings_select_one_global_configuration() {
+        let agents = vec![
+            embedding_agent("bob", "openai", "text-embedding-3-small"),
+            embedding_agent("alice", "openai", "text-embedding-3-small"),
+        ];
+
+        assert_eq!(
+            select_global_embedding(&agents).unwrap(),
+            Some(("openai".to_owned(), "text-embedding-3-small".to_owned()))
+        );
+    }
+
+    #[test]
+    fn reload_rejects_a_change_to_the_running_global_embedding() {
+        let current = Some(("openai".to_owned(), "text-embedding-3-small".to_owned()));
+        let unchanged = vec![
+            embedding_agent("alice", "openai", "text-embedding-3-small"),
+            embedding_agent("bob", "openai", "text-embedding-3-small"),
+        ];
+        validate_reloaded_embedding(current.as_ref(), &unchanged).unwrap();
+
+        let changed = vec![
+            embedding_agent("alice", "openai", "text-embedding-3-large"),
+            embedding_agent("bob", "openai", "text-embedding-3-large"),
+        ];
+        assert_eq!(
+            validate_reloaded_embedding(current.as_ref(), &changed)
+                .unwrap_err()
+                .to_string(),
+            "global memory embedding configuration changed; restart the daemon to apply it"
+        );
+    }
+
+    #[tokio::test]
+    async fn conflicting_multi_agent_embedding_settings_are_rejected_deterministically() {
+        let alice = embedding_agent("alice", "openai", "text-embedding-3-small");
+        let bob = embedding_agent("bob", "openai", "text-embedding-3-large");
+        let forward = select_global_embedding(&[bob.clone(), alice.clone()])
+            .unwrap_err()
+            .to_string();
+        let reverse = select_global_embedding(&[alice.clone(), bob.clone()])
+            .unwrap_err()
+            .to_string();
+        assert_eq!(forward, reverse);
+        assert_eq!(
+            forward,
+            "conflicting embedding configurations for the global memory index: \
+             openai/text-embedding-3-large for bob; openai/text-embedding-3-small for alice"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = LoadedConfig {
+            paths: paths_in(dir.path()),
+            agents: vec![alice, bob],
+        };
+        let error = AgentRuntime::boot_inner(cfg, None, None, None)
+            .await
+            .err()
+            .expect("conflicting configuration must fail boot");
+        assert_eq!(
+            format!("{error:#}"),
+            format!("selecting global memory embedder: {forward}")
+        );
     }
 }

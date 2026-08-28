@@ -84,27 +84,37 @@ impl MemoryEngine {
 
     async fn ensure_vector_index(&self) -> MemoryResult<()> {
         let Some(dim) = self.dim() else {
+            vector::drop_vec_table(&self.pool).await?;
+            sqlx::query("DELETE FROM mem_index_meta")
+                .execute(&*self.pool)
+                .await?;
             return Ok(());
         };
-        let model = self.embedder.as_ref().map_or("none", |_| "configured");
+        let identity = self
+            .embedder
+            .as_ref()
+            .map(|embedder| embedder.identity())
+            .unwrap_or_default();
 
         let existing: Option<(String, i64)> =
             sqlx::query_as("SELECT embed_model, embed_dim FROM mem_index_meta WHERE id = 1")
                 .fetch_optional(&*self.pool)
                 .await?;
 
-        let needs_rebuild = match &existing {
-            Some((_m, d)) => *d as usize != dim,
-            None => false,
-        };
+        let needs_rebuild = existing
+            .as_ref()
+            .is_none_or(|(stored_identity, stored_dim)| {
+                stored_identity != identity || *stored_dim as usize != dim
+            });
 
         if needs_rebuild {
-            info!("embedding dimension changed; rebuilding vector index");
+            info!("embedding configuration changed; rebuilding vector index");
             vector::drop_vec_table(&self.pool).await?;
         }
         vector::ensure_vec_table(&self.pool, dim).await?;
 
-        if existing.is_none() || needs_rebuild {
+        if needs_rebuild {
+            self.reindex().await?;
             let now = Utc::now().to_rfc3339();
             sqlx::query(
                 "INSERT INTO mem_index_meta (id, embed_model, embed_dim, built_at) \
@@ -113,14 +123,11 @@ impl MemoryEngine {
                    embed_model = excluded.embed_model, \
                    embed_dim = excluded.embed_dim, built_at = excluded.built_at",
             )
-            .bind(model)
+            .bind(identity)
             .bind(i64::try_from(dim).unwrap_or(i64::MAX))
             .bind(&now)
             .execute(&*self.pool)
             .await?;
-            if needs_rebuild {
-                self.reindex().await?;
-            }
         }
         Ok(())
     }
@@ -343,6 +350,7 @@ mod tests {
     use super::*;
     use crate::facts::FactOrigin;
     use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     async fn engine() -> (tempfile::TempDir, MemoryEngine) {
         let dir = tempfile::tempdir().unwrap();
@@ -357,6 +365,10 @@ mod tests {
 
     #[async_trait]
     impl Embedder for KeywordEmbedder {
+        fn identity(&self) -> &'static str {
+            "test/keywords"
+        }
+
         fn dim(&self) -> usize {
             3
         }
@@ -367,6 +379,27 @@ mod tests {
                 if t.contains("lunch") { 1.0 } else { 0.0 },
                 0.1,
             ])
+        }
+    }
+
+    struct CountingEmbedder {
+        identity: &'static str,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Embedder for CountingEmbedder {
+        fn identity(&self) -> &str {
+            self.identity
+        }
+
+        fn dim(&self) -> usize {
+            3
+        }
+
+        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(vec![1.0, 0.0, 0.0])
         }
     }
 
@@ -408,6 +441,104 @@ mod tests {
             hits[0].text.contains("budget"),
             "vector+fts should rank budget note first"
         );
+    }
+
+    #[tokio::test]
+    async fn enabling_embeddings_backfills_existing_index_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("goat.db");
+        let without = MemoryEngine::open(&path, dir.path(), None, 180.0)
+            .await
+            .unwrap();
+        without
+            .assert_fact(&NewFact {
+                scope: Scope::Owner,
+                audience: Audience::global(),
+                subject: Some("project".into()),
+                text: "project is ready".into(),
+                origin: FactOrigin::OwnerStated,
+                source_kind: "message".into(),
+                source_ref: "first".into(),
+                importance: 1.0,
+            })
+            .await
+            .unwrap();
+        drop(without);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let with = MemoryEngine::open(
+            &path,
+            dir.path(),
+            Some(Arc::new(CountingEmbedder {
+                identity: "test/first",
+                calls: calls.clone(),
+            })),
+            180.0,
+        )
+        .await
+        .unwrap();
+        let indexed: i64 = sqlx::query_scalar("SELECT count(*) FROM mem_index")
+            .fetch_one(&*with.pool())
+            .await
+            .unwrap();
+        let vectorized: i64 = sqlx::query_scalar("SELECT count(*) FROM mem_vec")
+            .fetch_one(&*with.pool())
+            .await
+            .unwrap();
+        assert_eq!(indexed, 1);
+        assert_eq!(vectorized, indexed);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn same_dimension_embedding_identity_change_reindexes_existing_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("goat.db");
+        let first = MemoryEngine::open(
+            &path,
+            dir.path(),
+            Some(Arc::new(CountingEmbedder {
+                identity: "test/first",
+                calls: Arc::new(AtomicUsize::new(0)),
+            })),
+            180.0,
+        )
+        .await
+        .unwrap();
+        first
+            .assert_fact(&NewFact {
+                scope: Scope::Owner,
+                audience: Audience::global(),
+                subject: Some("project".into()),
+                text: "project is ready".into(),
+                origin: FactOrigin::OwnerStated,
+                source_kind: "message".into(),
+                source_ref: "first".into(),
+                importance: 1.0,
+            })
+            .await
+            .unwrap();
+        drop(first);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let reopened = MemoryEngine::open(
+            &path,
+            dir.path(),
+            Some(Arc::new(CountingEmbedder {
+                identity: "test/second",
+                calls: calls.clone(),
+            })),
+            180.0,
+        )
+        .await
+        .unwrap();
+        let identity: String =
+            sqlx::query_scalar("SELECT embed_model FROM mem_index_meta WHERE id = 1")
+                .fetch_one(&*reopened.pool())
+                .await
+                .unwrap();
+        assert_eq!(identity, "test/second");
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
