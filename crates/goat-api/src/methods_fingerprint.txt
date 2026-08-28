@@ -19,7 +19,6 @@ fs.read@1 unary any to_daemon c237b7eff0c2fe31
 fs.write@1 unary any to_daemon 274704ccfd4cfcda
 git.diff@1 unary any to_daemon cfcd06fb2cf3c1c8
 host.browser@1 unary any to_client fdd2baa86932f2d8
-host.notify@1 unary any to_client 5b2209de91ca04e3
 pty.open@1 stream:lossy any to_daemon fd9da051b9d0df69
 pty.resize@1 unary any to_daemon 26417e560a49647f
 pty.write@1 unary any to_daemon ab3c4f2b905bc65d

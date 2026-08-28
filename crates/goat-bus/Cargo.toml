@@ -11,7 +11,6 @@ publish.workspace = true
 [dependencies]
 goat-types  = { workspace = true }
 tokio       = { workspace = true }
-async-trait = { workspace = true }
 tracing     = { workspace = true }
 
 [dev-dependencies]

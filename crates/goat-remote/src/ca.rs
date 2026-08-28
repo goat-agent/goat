@@ -4,6 +4,7 @@ use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, DnType, IsCa, Issuer,
     KeyPair, KeyUsagePurpose, SanType,
 };
+use rustls::pki_types::{CertificateDer, pem::PemObject};
 use sha2::{Digest, Sha256};
 
 use crate::RemoteError;
@@ -149,11 +150,7 @@ fn san_for(value: &str) -> SanType {
 }
 
 pub fn fingerprint_pem(pem: &str) -> Result<String, RemoteError> {
-    let mut reader = pem.as_bytes();
-    let item = rustls_pemfile::certs(&mut reader)
-        .next()
-        .ok_or(RemoteError::Pem)?
-        .map_err(|_| RemoteError::Pem)?;
+    let item = CertificateDer::from_pem_slice(pem.as_bytes()).map_err(|_| RemoteError::Pem)?;
     Ok(fingerprint_der(item.as_ref()))
 }
 

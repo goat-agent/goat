@@ -17,18 +17,11 @@ serde        = { workspace = true }
 serde_json   = { workspace = true }
 tokio        = { workspace = true }
 tokio-util   = { workspace = true }
-tracing      = { workspace = true }
-thiserror    = { workspace = true }
 pty-process  = { workspace = true }
 vt100        = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
-
-[dev-dependencies]
-goat-types   = { workspace = true }
-tempfile     = { workspace = true }
-tokio        = { workspace = true, features = ["rt", "macros"] }
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

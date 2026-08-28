@@ -599,15 +599,15 @@ pub(crate) fn watch_item(
             state,
         },
         crate::session::Update::Event { seq, event } => goat_api::WatchItem::Event {
-            cursor: goat_api::cursor_for(epoch, seq),
+            cursor: goat_api::cursor_for(epoch, seq.saturating_add(1)),
             event,
         },
-        crate::session::Update::Presence { clients } => goat_api::WatchItem::Presence {
-            cursor: goat_api::cursor_for(epoch, 0),
+        crate::session::Update::Presence { watermark, clients } => goat_api::WatchItem::Presence {
+            cursor: goat_api::cursor_for(epoch, watermark),
             clients,
         },
-        crate::session::Update::Error { message } => goat_api::WatchItem::Event {
-            cursor: goat_api::cursor_for(epoch, 0),
+        crate::session::Update::Error { watermark, message } => goat_api::WatchItem::Event {
+            cursor: goat_api::cursor_for(epoch, watermark),
             event: Box::new(goat_protocol::Event::Error {
                 id: None,
                 message,
@@ -1154,29 +1154,38 @@ mod tests {
             "e3",
             false,
         );
-        assert_eq!(event.cursor().to_string(), "e3:41");
+        assert_eq!(event.cursor().to_string(), "e3:42");
 
-        let presence =
-            super::watch_item(crate::session::Update::Presence { clients: 2 }, "e3", false);
+        let presence = super::watch_item(
+            crate::session::Update::Presence {
+                watermark: 42,
+                clients: 2,
+            },
+            "e3",
+            false,
+        );
         assert!(matches!(
-            presence,
+            &presence,
             goat_api::WatchItem::Presence { clients: 2, .. }
         ));
+        assert_eq!(presence.cursor().to_string(), "e3:42");
 
         let stopped = super::watch_item(
             crate::session::Update::Error {
+                watermark: 42,
                 message: "engine stopped".to_owned(),
             },
             "e3",
             false,
         );
-        let goat_api::WatchItem::Event { event, .. } = stopped else {
+        let goat_api::WatchItem::Event { ref event, .. } = stopped else {
             panic!("expected an event item")
         };
         assert!(matches!(
-            *event,
+            **event,
             goat_protocol::Event::Error { ref message, .. } if message == "engine stopped"
         ));
+        assert_eq!(stopped.cursor().to_string(), "e3:42");
     }
 
     #[tokio::test]
@@ -1224,17 +1233,42 @@ mod tests {
     #[test]
     fn every_served_method_is_a_frozen_contract() {
         let router = build(daemon_api(CancellationToken::new()), &LOCAL_GRANTS);
-        let served: std::collections::BTreeSet<String> = router.advertised().into_keys().collect();
-        let frozen: std::collections::BTreeSet<String> = goat_api::registry()
+        let served: std::collections::BTreeSet<(String, u16)> = router
+            .advertised()
+            .into_iter()
+            .flat_map(|(name, versions)| {
+                versions
+                    .into_iter()
+                    .map(move |version| (name.clone(), version))
+            })
+            .collect();
+        let frozen: std::collections::BTreeSet<(String, u16)> = goat_api::registry()
             .into_iter()
             .filter(|schema| schema.direction == goat_api::Direction::ToDaemon)
-            .map(|schema| schema.name.to_owned())
+            .map(|schema| (schema.name.to_owned(), schema.version))
             .collect();
         assert_eq!(
             served, frozen,
             "the daemon router and goat-api's registry disagree; a method served but not registered \
              is invisible to methods_fingerprint.txt, and one registered but not served is advertised \
              to nobody"
+        );
+    }
+
+    #[test]
+    fn every_reverse_method_is_offered_by_a_capability_provider() {
+        let published: std::collections::BTreeSet<(String, u16)> = goat_api::registry()
+            .into_iter()
+            .filter(|schema| schema.direction == goat_api::Direction::ToClient)
+            .map(|schema| (schema.name.to_owned(), schema.version))
+            .collect();
+        let offered = std::collections::BTreeSet::from([(
+            goat_browser_host::CAPABILITY.to_owned(),
+            goat_browser_host::CAPABILITY_VERSION,
+        )]);
+        assert_eq!(
+            published, offered,
+            "a reverse method without a capability provider is an unusable published contract"
         );
     }
 }

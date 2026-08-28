@@ -1,7 +1,6 @@
-use goat_integration::{IntegrationError, IntegrationResult};
+use goat_integration::{IntegrationError, IntegrationResult, shape};
 use serde_json::Value;
 
-const ENVELOPE_KEYS: [&str; 5] = ["content", "notes", "results", "items", "data"];
 const MAX_NAMED_PARTICIPANTS: usize = 4;
 
 #[derive(Clone, Debug)]
@@ -20,7 +19,7 @@ impl Note {
         let head = if self.title.is_empty() {
             "untitled note".to_string()
         } else {
-            squeeze(&self.title, 160)
+            shape::squeeze(&self.title, 160)
         };
         let mut parts = Vec::new();
         if let Some(detail) = self.detail() {
@@ -117,42 +116,16 @@ fn scalar(value: &Value) -> Option<String> {
 }
 
 pub fn parse_notes(data: &Value) -> IntegrationResult<Vec<Note>> {
-    note_array(data)
+    shape::envelope(data, &["content", "notes"])
         .ok_or_else(|| {
             IntegrationError::Service(format!(
                 "tiro response has no note list: {}",
-                squeeze(&data.to_string(), 400)
+                shape::squeeze(&data.to_string(), 400)
             ))
         })?
         .iter()
         .map(parse_note)
         .collect()
-}
-
-fn note_array(data: &Value) -> Option<&Vec<Value>> {
-    if let Some(array) = data.as_array() {
-        return Some(array);
-    }
-    if let Some(array) = direct_arrays(data).find(|array| !array.is_empty()) {
-        return Some(array);
-    }
-    if let Some(array) = direct_arrays(data).next() {
-        return Some(array);
-    }
-    ENVELOPE_KEYS
-        .iter()
-        .filter_map(|key| data.get(key))
-        .find_map(|nested| {
-            direct_arrays(nested)
-                .find(|array| !array.is_empty())
-                .or_else(|| direct_arrays(nested).next())
-        })
-}
-
-fn direct_arrays(data: &Value) -> impl Iterator<Item = &Vec<Value>> {
-    ENVELOPE_KEYS
-        .iter()
-        .filter_map(move |key| data.get(*key).and_then(Value::as_array))
 }
 
 fn parse_note(node: &Value) -> IntegrationResult<Note> {
@@ -209,15 +182,6 @@ fn numeric_field(node: &Value, key: &str) -> Option<u64> {
         Some(Value::String(value)) => value.parse().ok(),
         _ => None,
     }
-}
-
-fn squeeze(text: &str, max: usize) -> String {
-    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max {
-        return flat;
-    }
-    let kept: String = flat.chars().take(max).collect();
-    format!("{kept}…")
 }
 
 #[cfg(test)]

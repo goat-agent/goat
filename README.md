@@ -15,7 +15,8 @@ A single-user, single-host personal AI in Rust with two capabilities in one prod
   a schedule, and hands coding work to the engine below.
 - **code** — a terminal coding agent (full-screen TUI) backed by a resident daemon.
 
-One binary, one daemon, one database, everything local under `~/.goat/`.
+One binary, one daemon, one database. Runtime state stays local; daemon state and user-scoped
+configuration live under `~/.goat/`.
 
 ## Install
 
@@ -23,8 +24,8 @@ One binary, one daemon, one database, everything local under `~/.goat/`.
 curl -fsSL https://raw.githubusercontent.com/goat-agent/goat/main/install.sh | sh
 ```
 
-The installer downloads the latest release binary, verifies its checksum when local tooling is
-available, and installs `goat` into `~/.goat/bin`. macOS and Linux on x86_64 and arm64; there is no
+The installer downloads the latest release binary, verifies its checksum, and installs `goat` into
+`~/.goat/bin`. macOS and Linux on x86_64 and arm64; there is no
 Windows build. Nothing is registered as a system service — `goat code` spawns the daemon on demand,
 `goat daemon start` brings it up on its own, and either way it detaches from the terminal and stays
 resident until `goat daemon stop`. A daemon left over from an older build is replaced automatically
@@ -40,12 +41,17 @@ goat code worktree       manage git worktrees
 goat code search         manage search providers
 goat code session        list or end live coding sessions
 goat agent add | list    manage agents
-goat agent show | remove inspect or archive an agent
+goat agent show | remove inspect or delete an agent
 goat agent channel       bind an agent to a chat channel (verifies the secrets)
+goat agent integration   bind an agent to a connected service
 goat agent status | log  show state and recent actions
+goat integration         manage shared external-service connections
 goat provider            manage LLM keys
+goat mcp                 manage MCP servers
+goat reload              validate and apply manual config changes
 goat daemon              start | stop | status | serve the local daemon
-goat remote              manage paired devices
+goat device              manage devices allowed to reach this daemon
+goat remote              manage daemons this machine connects to
 goat doctor | update     diagnose config; update the binary
 ```
 
@@ -86,8 +92,8 @@ sleep jobs distil the day into notes, extract facts, decay unrecalled ones, and 
 ## Coding
 
 The agent delegates multi-step coding to the code engine in-process — same daemon, no wire hop.
-Delegated work runs in any project directory and streams progress, questions, and results back to
-the chat, while the full transcript stays in the code conversation.
+Delegated work runs asynchronously in any project directory. It does not return progress,
+questions, or results to the chat; the full transcript stays in the code conversation.
 
 ## Release
 

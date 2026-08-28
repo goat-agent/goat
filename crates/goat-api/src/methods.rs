@@ -628,13 +628,6 @@ pub struct AdminDeviceRevokeOutput {
     pub ok: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct HostOrigin {
-    pub session: SessionId,
-    pub task: TaskId,
-    pub label: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum BrowserCommand {
@@ -688,13 +681,6 @@ pub enum HostBrowserOutput {
 pub struct BrowserEventParams {
     pub instance: String,
     pub event: CdpEvent,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct HostNotifyParams {
-    pub origin: HostOrigin,
-    pub title: String,
-    pub body: String,
 }
 
 method!(
@@ -1014,17 +1000,6 @@ method!(
     Direction::ToClient,
     BrowserCommand,
     HostBrowserOutput,
-    ()
-);
-method!(
-    HostNotify,
-    "host.notify",
-    1,
-    Shape::Unary,
-    Grant::Any,
-    Direction::ToClient,
-    HostNotifyParams,
-    Empty,
     ()
 );
 method!(

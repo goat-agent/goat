@@ -7,9 +7,9 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 
-use crate::RemoteError;
 use crate::verify::PinnedServer;
 use crate::ws;
+use crate::{RemoteError, load_certs, load_key};
 
 #[derive(Debug, Clone)]
 pub struct DeviceCredentials {
@@ -192,20 +192,6 @@ fn reason(status: u16, body: &[u8]) -> String {
     }
     serde_json::from_slice::<Failure>(body)
         .map_or_else(|_| format!("server returned {status}"), |it| it.error)
-}
-
-fn load_certs(pem: &str) -> Result<Vec<CertificateDer<'static>>, RemoteError> {
-    let mut reader = pem.as_bytes();
-    rustls_pemfile::certs(&mut reader)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| RemoteError::Pem)
-}
-
-fn load_key(pem: &str) -> Result<PrivateKeyDer<'static>, RemoteError> {
-    let mut reader = pem.as_bytes();
-    rustls_pemfile::private_key(&mut reader)
-        .map_err(|_| RemoteError::Pem)?
-        .ok_or(RemoteError::Pem)
 }
 
 #[derive(serde::Serialize)]

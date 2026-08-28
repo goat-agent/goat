@@ -19,7 +19,7 @@ An integration is a global connection to an outside service; a binding attaches 
 
 ## Watchers and observations
 
-A watcher polls a bound integration and publishes an update only when something deterministically changed. What deserves watching is declared in your binding, never decided by the watcher. Every raw observation is stored losslessly: cite it as `observation:<id>` and the reference will resolve later through the observation tool. Keep durable conclusions as facts in the integration's `domain:<id>` scope; leave the observation itself as the evidence trail.
+A watcher polls a bound integration and publishes an update only when something deterministically changed. What deserves watching is declared in your top-level `watch` policy; the integration binding carries only connection-scoped values. Every raw observation is stored losslessly: cite it as `observation:<id>` and the reference will resolve later through the observation tool. Keep durable conclusions as facts in the integration's `domain:<id>` scope; leave the observation itself as the evidence trail.
 
 ## Schedules
 

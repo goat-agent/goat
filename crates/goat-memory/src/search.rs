@@ -141,7 +141,9 @@ pub async fn recall(
                 1.0 / (RRF_K + f64::from(u32::try_from(rank).unwrap_or(u32::MAX)));
         }
         if let Some(emb) = query_embedding {
-            let hits = vector::knn_in_scope(pool, &scope.as_key(), emb, pool_limit).await?;
+            let hits =
+                vector::knn_visible_in_scope(pool, audience, &scope.as_key(), emb, pool_limit)
+                    .await?;
             for (rank, hit) in hits.iter().enumerate() {
                 *id_scores.entry(hit.index_id).or_insert(0.0) +=
                     1.0 / (RRF_K + f64::from(u32::try_from(rank + 1).unwrap_or(u32::MAX)));

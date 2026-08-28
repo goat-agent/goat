@@ -117,8 +117,7 @@ fn is_hidden(entry: &DirEntry, root: &Path) -> bool {
     entry
         .path()
         .strip_prefix(root)
-        .ok()
-        .is_some_and(common::is_hidden_component)
+        .is_ok_and(common::is_hidden_component)
 }
 
 fn spec() -> ToolSpec {

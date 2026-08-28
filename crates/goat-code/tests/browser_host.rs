@@ -55,13 +55,13 @@ async fn start_daemon(home: &Path) -> CodeSessionHub {
     panic!("the daemon never bound {}", socket.display());
 }
 
-fn spawn_browser_host(home: &Path, instance: &str) -> Chrome {
+fn spawn_browser_host(home: &Path, instance: &str, label: &str) -> Chrome {
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_goat"))
         .arg("browser-host")
         .arg("--instance")
         .arg(instance)
         .arg("--label")
-        .arg("Test Chrome")
+        .arg(label)
         .env("HOME", home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -78,7 +78,7 @@ fn spawn_browser_host(home: &Path, instance: &str) -> Chrome {
     }
 }
 
-async fn await_advertisement(socket: &Path, instance: &str) -> ApiSession {
+async fn await_advertisement(socket: &Path, instance: &str, label: &str) -> ApiSession {
     let client = goat_client::open_api(&Link::local(socket.to_path_buf(), PathBuf::new()), "test")
         .await
         .expect("the daemon greets a client");
@@ -93,7 +93,7 @@ async fn await_advertisement(socket: &Path, instance: &str) -> ApiSession {
         if listed
             .providers
             .iter()
-            .any(|provider| provider.instance == instance)
+            .any(|provider| provider.instance == instance && provider.label == label)
         {
             return client;
         }
@@ -155,8 +155,9 @@ async fn a_real_browser_host_carries_a_cdp_command_and_its_events() {
     let home = dir.path();
     let hub = start_daemon(home).await;
 
-    let mut chrome = spawn_browser_host(home, "chrome-e2e");
-    let client = await_advertisement(&home.join(".goat/daemon.sock"), "chrome-e2e").await;
+    let mut chrome = spawn_browser_host(home, "chrome-e2e", "Test Chrome");
+    let client =
+        await_advertisement(&home.join(".goat/daemon.sock"), "chrome-e2e", "Test Chrome").await;
 
     let holder = Holder::agent("browser-e2e");
     client
@@ -220,8 +221,13 @@ async fn a_browser_that_never_started_the_work_reports_a_safe_retry() {
     let home = dir.path();
     let hub = start_daemon(home).await;
 
-    let mut chrome = spawn_browser_host(home, "chrome-refuses");
-    let _client = await_advertisement(&home.join(".goat/daemon.sock"), "chrome-refuses").await;
+    let mut chrome = spawn_browser_host(home, "chrome-refuses", "Test Chrome");
+    let _client = await_advertisement(
+        &home.join(".goat/daemon.sock"),
+        "chrome-refuses",
+        "Test Chrome",
+    )
+    .await;
 
     let relay = BrowserRelay::new(
         hub.broker(),
@@ -261,8 +267,13 @@ async fn the_side_panel_and_the_browser_share_one_port() {
     let home = dir.path();
     let hub = start_daemon(home).await;
 
-    let mut chrome = spawn_browser_host(home, "chrome-panel");
-    let client = await_advertisement(&home.join(".goat/daemon.sock"), "chrome-panel").await;
+    let mut chrome = spawn_browser_host(home, "chrome-panel", "Test Chrome");
+    let client = await_advertisement(
+        &home.join(".goat/daemon.sock"),
+        "chrome-panel",
+        "Test Chrome",
+    )
+    .await;
 
     to_chrome(&mut chrome, 1, json!({ "type": "panel.open" })).await;
     let item = tokio::time::timeout(Duration::from_secs(10), from_chrome(&mut chrome))
@@ -298,6 +309,62 @@ async fn the_side_panel_and_the_browser_share_one_port() {
     assert_eq!(dispatched["command"], "tab_list");
     assert_eq!(
         answered.expect("the browser answers on the port the panel is already using"),
+        HostBrowserOutput::Tabs { tabs: Vec::new() }
+    );
+}
+
+#[tokio::test]
+async fn restarting_the_same_browser_instance_requires_a_rebind() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let hub = start_daemon(home).await;
+    let socket = home.join(".goat/daemon.sock");
+
+    let first = spawn_browser_host(home, "chrome-restarted", "First Chrome");
+    let client = await_advertisement(&socket, "chrome-restarted", "First Chrome").await;
+    let holder = Holder::agent("restart-e2e");
+    client
+        .api
+        .call::<CapabilityBind>(CapabilityBindParams {
+            holder: holder.clone(),
+            capability: CAPABILITY.to_owned(),
+            instance: "chrome-restarted".to_owned(),
+        })
+        .await
+        .expect("the first browser binds");
+
+    drop(first);
+    let mut second = spawn_browser_host(home, "chrome-restarted", "Second Chrome");
+    let _client = await_advertisement(&socket, "chrome-restarted", "Second Chrome").await;
+    let relay = BrowserRelay::new(hub.broker(), hub.browser_events(), holder.clone());
+    let err = relay
+        .call(BrowserCommand::TabList {})
+        .await
+        .expect_err("a restarted provider cannot inherit the old lease");
+    assert!(err.to_string().to_ascii_lowercase().contains("rebind"));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), await_request(&mut second))
+            .await
+            .is_err()
+    );
+
+    client
+        .api
+        .call::<CapabilityBind>(CapabilityBindParams {
+            holder: holder.clone(),
+            capability: CAPABILITY.to_owned(),
+            instance: "chrome-restarted".to_owned(),
+        })
+        .await
+        .expect("the restarted browser rebinds explicitly");
+    let rebound = BrowserRelay::new(hub.broker(), hub.browser_events(), holder);
+    let (answered, dispatched) = tokio::join!(
+        rebound.call(BrowserCommand::TabList {}),
+        answer_one(&mut second, json!({ "reply": "tabs", "tabs": [] })),
+    );
+    assert_eq!(dispatched["command"], "tab_list");
+    assert_eq!(
+        answered.expect("the rebound browser answers"),
         HostBrowserOutput::Tabs { tabs: Vec::new() }
     );
 }

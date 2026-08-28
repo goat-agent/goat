@@ -19,8 +19,5 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 async-trait = { workspace = true }
 
-[dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
-
 [lints]
 workspace = true

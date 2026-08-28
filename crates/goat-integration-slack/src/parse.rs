@@ -1,4 +1,4 @@
-use goat_integration::{IntegrationError, IntegrationResult};
+use goat_integration::{IntegrationResult, shape};
 use serde_json::Value;
 
 #[derive(Clone, Debug)]
@@ -28,50 +28,27 @@ impl Mention {
         } else {
             format!("<@{}>", self.user)
         };
-        format!("{place} — {who}: {}", squeeze(&self.text, 160))
+        format!("{place} — {who}: {}", shape::squeeze(&self.text, 160))
     }
 }
 
 pub fn parse_mentions(data: &Value) -> IntegrationResult<Vec<Mention>> {
-    match_array(data)
-        .ok_or_else(|| {
-            IntegrationError::Service(format!("slack response has no message list: {data}"))
-        })?
+    shape::items("slack", data, &["matches", "messages"])?
         .iter()
         .map(parse_match)
         .collect()
 }
 
-fn match_array(data: &Value) -> Option<&Vec<Value>> {
-    if let Some(array) = data.as_array() {
-        return Some(array);
-    }
-    if let Some(array) = data
-        .get("messages")
-        .and_then(|messages| messages.get("matches"))
-        .and_then(Value::as_array)
-    {
-        return Some(array);
-    }
-    ["matches", "messages", "results", "items", "nodes"]
-        .iter()
-        .find_map(|key| data.get(key).and_then(Value::as_array))
-}
-
 fn parse_match(node: &Value) -> IntegrationResult<Mention> {
-    let ts = string_field(node, "ts")
-        .or_else(|| string_field(node, "timestamp"))
-        .ok_or_else(|| IntegrationError::Service("slack message match missing `ts`".into()))?;
+    let ts = shape::required("slack", node, &["ts", "timestamp"])?;
     let (channel, channel_name) = parse_channel(node);
     Ok(Mention {
         key: format!("{channel}:{ts}"),
         channel,
         channel_name,
         ts,
-        user: string_field(node, "user")
-            .or_else(|| string_field(node, "user_id"))
-            .unwrap_or_default(),
-        text: string_field(node, "text").unwrap_or_default(),
+        user: shape::text(node, &["user", "user_id"]),
+        text: shape::text(node, &["text"]),
         raw: node.clone(),
     })
 }
@@ -79,7 +56,10 @@ fn parse_match(node: &Value) -> IntegrationResult<Mention> {
 fn parse_channel(node: &Value) -> (String, String) {
     let Some(channel) = node.get("channel") else {
         return (
-            string_field(node, "channel_id").unwrap_or_else(|| "?".into()),
+            match shape::text(node, &["channel_id"]) {
+                value if value.is_empty() => "?".into(),
+                value => value,
+            },
             String::new(),
         );
     };
@@ -87,25 +67,12 @@ fn parse_channel(node: &Value) -> (String, String) {
         return (id.to_string(), String::new());
     }
     (
-        string_field(channel, "id").unwrap_or_else(|| "?".into()),
-        string_field(channel, "name").unwrap_or_default(),
+        match shape::text(channel, &["id"]) {
+            value if value.is_empty() => "?".into(),
+            value => value,
+        },
+        shape::text(channel, &["name"]),
     )
-}
-
-fn string_field(node: &Value, key: &str) -> Option<String> {
-    node.get(key)
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn squeeze(text: &str, max: usize) -> String {
-    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max {
-        return flat;
-    }
-    let kept: String = flat.chars().take(max).collect();
-    format!("{kept}…")
 }
 
 #[cfg(test)]

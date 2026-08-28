@@ -5,14 +5,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use goat_api::{CapabilityAdvertise, CapabilityAdvertiseParams, CapabilityOffer, Empty};
+use goat_api::{
+    CapabilityAdvertise, CapabilityAdvertiseParams, CapabilityOffer, Empty, HostBrowser, Method,
+};
 use goat_wire::envelope::{CallError, ErrorCode, Execution};
 use goat_wire::peer::{CallResult, Handler, Request, unknown_method};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, oneshot};
 
-pub const CAPABILITY: &str = "host.browser";
-pub const CAPABILITY_VERSION: u16 = 1;
+pub const CAPABILITY: &str = HostBrowser::NAME;
+pub const CAPABILITY_VERSION: u16 = HostBrowser::VERSION;
 pub const MAX_IN_FLIGHT: usize = 8;
 
 #[async_trait::async_trait]
@@ -118,6 +120,16 @@ impl Handler for BrowserHost {
         if request.method != CAPABILITY {
             return Err(unknown_method(&request.method, request.version));
         }
+        if request.version != CAPABILITY_VERSION {
+            return Err(CallError::new(
+                ErrorCode::UnsupportedVersion,
+                format!(
+                    "{}@{} is not served; this peer speaks [{}]",
+                    request.method, request.version, CAPABILITY_VERSION
+                ),
+            )
+            .with_execution(Execution::NotStarted));
+        }
         self.drive(request.params, &request.cancel).await
     }
 }
@@ -159,7 +171,9 @@ pub async fn advertise(
 
 #[cfg(test)]
 mod tests {
-    use super::{BrowserHost, CAPABILITY, NativePort, advertisement, withdrawal};
+    use super::{
+        BrowserHost, CAPABILITY, CAPABILITY_VERSION, NativePort, advertisement, withdrawal,
+    };
     use goat_wire::envelope::{CallError, ErrorCode, Execution};
     use goat_wire::peer::{Handler, RejectAll, Request, spawn};
     use goat_wire::{WireConn, envelope::Frame, envelope::Role};
@@ -194,6 +208,26 @@ mod tests {
             let _ = self.sent.send((request_id, body["params"].clone()));
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn the_browser_host_rejects_unadvertised_versions_without_reaching_chrome() {
+        let (port, mut sent) = Recorder::new(false);
+        let host = BrowserHost::new(port);
+        let peer = idle_peer();
+        let error = host
+            .call(Request {
+                method: CAPABILITY.to_owned(),
+                version: CAPABILITY_VERSION + 1,
+                params: Value::Null,
+                peer: peer.handle.clone(),
+                cancel: CancellationToken::new(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedVersion);
+        assert_eq!(error.execution, Some(Execution::NotStarted));
+        assert!(sent.try_recv().is_err());
     }
 
     type Conn = WireConn<tokio::io::DuplexStream, Frame, Frame>;

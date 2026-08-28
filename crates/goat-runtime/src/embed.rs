@@ -7,6 +7,7 @@ use goat_memory::Embedder;
 pub struct OpenAiEmbedderAdapter {
     provider: OpenAiEmbeddingProvider,
     model: String,
+    identity: String,
     dim: usize,
 }
 
@@ -18,9 +19,11 @@ impl OpenAiEmbedderAdapter {
             .await
             .map_err(|e| anyhow!(e.to_string()))?;
         let dim = probe.len();
+        let identity = format!("openai/{model}");
         Ok(Self {
             provider,
             model,
+            identity,
             dim,
         })
     }
@@ -28,6 +31,10 @@ impl OpenAiEmbedderAdapter {
 
 #[async_trait]
 impl Embedder for OpenAiEmbedderAdapter {
+    fn identity(&self) -> &str {
+        &self.identity
+    }
+
     fn dim(&self) -> usize {
         self.dim
     }

@@ -5,6 +5,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub const MAX_TO_CHROME: usize = 1024 * 1024;
 pub const MAX_FROM_CHROME: usize = 64 * 1024 * 1024;
 pub const CHUNK_PAYLOAD: usize = 512 * 1024;
+const MAX_CHUNKS: usize = MAX_FROM_CHROME.div_ceil(CHUNK_PAYLOAD);
 
 #[derive(Debug, thiserror::Error)]
 pub enum NativeError {
@@ -16,6 +17,8 @@ pub enum NativeError {
     Encode(serde_json::Error),
     #[error("decode error: {0}")]
     Decode(serde_json::Error),
+    #[error("invalid bridge frame: {0}")]
+    InvalidFrame(String),
     #[error("the browser closed the port")]
     Closed,
 }
@@ -102,15 +105,18 @@ pub fn frame(seq: u64, body: &Value) -> Vec<Bridge> {
         .collect()
 }
 
-#[derive(Default)]
 pub struct Reassembler {
     pending: std::collections::HashMap<u64, Vec<Option<String>>>,
+    max_body: usize,
 }
 
 impl Reassembler {
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            pending: std::collections::HashMap::new(),
+            max_body: MAX_FROM_CHROME,
+        }
     }
 
     pub fn accept(&mut self, frame: Bridge) -> Result<Option<Value>, NativeError> {
@@ -122,17 +128,34 @@ impl Reassembler {
                 total,
                 body,
             } => {
-                let slots = self
-                    .pending
-                    .entry(seq)
-                    .or_insert_with(|| vec![None; total as usize]);
-                if slots.len() != total as usize {
+                let total = total as usize;
+                let index = index as usize;
+                if total == 0 || total > MAX_CHUNKS {
+                    return Err(NativeError::InvalidFrame(format!(
+                        "chunk total {total} is outside 1..={MAX_CHUNKS}"
+                    )));
+                }
+                if index >= total {
+                    return Err(NativeError::InvalidFrame(format!(
+                        "chunk index {index} is outside total {total}"
+                    )));
+                }
+                let slots = self.pending.entry(seq).or_insert_with(|| vec![None; total]);
+                if slots.len() != total {
                     self.pending.remove(&seq);
                     return Ok(None);
                 }
-                if let Some(slot) = slots.get_mut(index as usize) {
-                    *slot = Some(body);
+                let replaced = slots[index].as_ref().map_or(0, String::len);
+                let buffered = slots.iter().flatten().map(String::len).sum::<usize>() - replaced;
+                if buffered.saturating_add(body.len()) > self.max_body {
+                    self.pending.remove(&seq);
+                    return Err(NativeError::InvalidFrame(format!(
+                        "reassembled body exceeds {} bytes",
+                        self.max_body
+                    )));
                 }
+                let slots = self.pending.get_mut(&seq).expect("the group exists");
+                slots[index] = Some(body);
                 if slots.iter().any(Option::is_none) {
                     return Ok(None);
                 }
@@ -150,6 +173,12 @@ impl Reassembler {
     #[must_use]
     pub fn pending(&self) -> usize {
         self.pending.len()
+    }
+}
+
+impl Default for Reassembler {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -281,6 +310,52 @@ mod tests {
                 .unwrap(),
             None
         );
+        assert_eq!(reassembler.pending(), 0);
+    }
+
+    #[test]
+    fn invalid_chunk_bounds_are_rejected_before_allocation() {
+        for (index, total) in [(0, 0), (0, u32::MAX), (2, 2)] {
+            let mut reassembler = Reassembler::new();
+            let err = reassembler
+                .accept(Bridge::Chunk {
+                    seq: 1,
+                    index,
+                    total,
+                    body: String::new(),
+                })
+                .unwrap_err();
+            assert!(matches!(err, NativeError::InvalidFrame(_)));
+            assert_eq!(reassembler.pending(), 0);
+        }
+    }
+
+    #[test]
+    fn an_oversized_reassembled_body_drops_the_group() {
+        let mut reassembler = Reassembler {
+            pending: std::collections::HashMap::new(),
+            max_body: 5,
+        };
+        assert_eq!(
+            reassembler
+                .accept(Bridge::Chunk {
+                    seq: 1,
+                    index: 0,
+                    total: 2,
+                    body: "abc".to_owned(),
+                })
+                .unwrap(),
+            None
+        );
+        let err = reassembler
+            .accept(Bridge::Chunk {
+                seq: 1,
+                index: 1,
+                total: 2,
+                body: "def".to_owned(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, NativeError::InvalidFrame(_)));
         assert_eq!(reassembler.pending(), 0);
     }
 

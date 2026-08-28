@@ -331,6 +331,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn deterministic_ids_pin_the_product_namespace() {
+        let expected = "584e2842-7ed9-5e0e-8a2d-48187c3d51c1";
+        assert_eq!(AgentId::from_slug("default").to_string(), expected);
+        assert_eq!(InstanceId::from_slug("default").to_string(), expected);
+    }
+
+    #[test]
     fn conversation_key_round_trip() {
         let instance = InstanceId::new();
         let id = ConversationId::new(ChannelId::new("test"), instance, "chat:123:thread:5");

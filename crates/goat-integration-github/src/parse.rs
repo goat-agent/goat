@@ -1,4 +1,4 @@
-use goat_integration::{IntegrationError, IntegrationResult};
+use goat_integration::{IntegrationError, IntegrationResult, shape};
 use serde_json::Value;
 
 #[derive(Clone, Debug)]
@@ -19,7 +19,7 @@ impl Item {
             "{} {kind} #{} — {}",
             self.repo,
             self.number,
-            squeeze(&self.title, 160)
+            shape::squeeze(&self.title, 160)
         )
     }
 }
@@ -35,22 +35,10 @@ pub fn truncated(data: &Value) -> bool {
 }
 
 pub fn parse_items(data: &Value) -> IntegrationResult<Vec<Item>> {
-    item_array(data)
-        .ok_or_else(|| {
-            IntegrationError::Service(format!("github response has no item list: {data}"))
-        })?
+    shape::items("github", data, &[])?
         .iter()
         .map(parse_item)
         .collect()
-}
-
-fn item_array(data: &Value) -> Option<&Vec<Value>> {
-    if let Some(array) = data.as_array() {
-        return Some(array);
-    }
-    ["items", "results", "nodes"]
-        .iter()
-        .find_map(|key| data.get(key).and_then(Value::as_array))
 }
 
 fn parse_item(node: &Value) -> IntegrationResult<Item> {
@@ -58,14 +46,13 @@ fn parse_item(node: &Value) -> IntegrationResult<Item> {
         .get("number")
         .and_then(Value::as_u64)
         .ok_or_else(|| IntegrationError::Service("github item missing `number`".into()))?;
-    let updated_at = string_field(node, "updated_at")
-        .ok_or_else(|| IntegrationError::Service("github item missing `updated_at`".into()))?;
+    let updated_at = shape::required("github", node, &["updated_at"])?;
     let repo = parse_repo(node);
     Ok(Item {
         key: format!("{repo}#{number}"),
         repo,
         number,
-        title: string_field(node, "title").unwrap_or_default(),
+        title: shape::text(node, &["title"]),
         updated_at,
         is_pr: node.get("pull_request").is_some_and(|node| !node.is_null()),
         raw: node.clone(),
@@ -73,34 +60,16 @@ fn parse_item(node: &Value) -> IntegrationResult<Item> {
 }
 
 fn parse_repo(node: &Value) -> String {
-    if let Some(full_name) = node
-        .get("repository")
-        .and_then(|repository| repository.get("full_name"))
-        .and_then(Value::as_str)
-    {
-        return full_name.to_string();
+    let full_name = shape::text(node, &["repository.full_name"]);
+    if !full_name.is_empty() {
+        return full_name;
     }
-    let Some(url) = string_field(node, "repository_url") else {
+    let url = shape::text(node, &["repository_url"]);
+    if url.is_empty() {
         return "?".to_string();
-    };
+    }
     url.rsplit_once("/repos/")
         .map_or(url.clone(), |(_, tail)| tail.to_string())
-}
-
-fn string_field(node: &Value, key: &str) -> Option<String> {
-    node.get(key)
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn squeeze(text: &str, max: usize) -> String {
-    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max {
-        return flat;
-    }
-    let kept: String = flat.chars().take(max).collect();
-    format!("{kept}…")
 }
 
 #[cfg(test)]

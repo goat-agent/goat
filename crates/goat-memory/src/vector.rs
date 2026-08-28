@@ -3,6 +3,7 @@ use sqlx::sqlite::SqlitePool;
 use zerocopy::AsBytes;
 
 use crate::MemoryResult;
+use crate::audience::Audience;
 
 pub fn embedding_bytes(embedding: &[f32]) -> Vec<u8> {
     embedding.as_bytes().to_vec()
@@ -59,7 +60,40 @@ pub struct VecHit {
     pub distance: f64,
 }
 
-pub async fn knn_in_scope(
+pub async fn knn_visible_in_scope(
+    pool: &SqlitePool,
+    audience: &Audience,
+    scope_key: &str,
+    query: &[f32],
+    k: usize,
+) -> MemoryResult<Vec<VecHit>> {
+    let rows = sqlx::query(
+        "SELECT index_id, distance FROM mem_vec \
+         WHERE index_id IN (\
+             SELECT id FROM mem_index WHERE scope = ? \
+             AND (scope != 'owner' OR audience_kind = 'global' \
+                  OR (audience_kind = ? AND audience_ref = ?))\
+         ) AND scope = ? AND embedding MATCH ? AND k = ? ORDER BY distance",
+    )
+    .bind(scope_key)
+    .bind(audience.kind())
+    .bind(audience.reference())
+    .bind(scope_key)
+    .bind(embedding_bytes(query))
+    .bind(i64::try_from(k).unwrap_or(i64::MAX))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| VecHit {
+            index_id: r.get::<i64, _>(0),
+            distance: r.get::<f64, _>(1),
+        })
+        .collect())
+}
+
+#[cfg(test)]
+async fn knn_in_scope(
     pool: &SqlitePool,
     scope_key: &str,
     query: &[f32],

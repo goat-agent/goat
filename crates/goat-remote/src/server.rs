@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
@@ -10,7 +9,7 @@ use crate::ca::Authority;
 use crate::devices::{Device, Devices};
 use crate::pairing::Pairing;
 use crate::verify::DeviceVerifier;
-use crate::{RemoteConfig, RemoteError, RemoteHandler};
+use crate::{RemoteConfig, RemoteError, RemoteHandler, load_certs, load_key};
 
 pub struct RemoteServer {
     authority: Arc<Authority>,
@@ -373,20 +372,6 @@ where
     tls.write_all(response.as_bytes()).await?;
     tls.flush().await?;
     Ok(())
-}
-
-fn load_certs(pem: &str) -> Result<Vec<CertificateDer<'static>>, RemoteError> {
-    let mut reader = pem.as_bytes();
-    rustls_pemfile::certs(&mut reader)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| RemoteError::Pem)
-}
-
-fn load_key(pem: &str) -> Result<PrivateKeyDer<'static>, RemoteError> {
-    let mut reader = pem.as_bytes();
-    rustls_pemfile::private_key(&mut reader)
-        .map_err(|_| RemoteError::Pem)?
-        .ok_or(RemoteError::Pem)
 }
 
 fn now_ms() -> i64 {

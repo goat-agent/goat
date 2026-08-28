@@ -96,10 +96,7 @@ pub async fn run(instance: Option<String>, label: Option<String>) -> color_eyre:
     let link = crate::remote::resolve(None)?;
     let instance = instance.unwrap_or_else(|| "chrome-default".to_owned());
     let label = label.unwrap_or_else(|| "Chrome".to_owned());
-    let boot_epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or_default();
+    let boot_epoch = rand::random();
 
     let port: Arc<dyn NativePort> = Arc::new(StdoutPort::new(tokio::io::stdout()));
     let host = Arc::new(BrowserHost::new(port.clone()));

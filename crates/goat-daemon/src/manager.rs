@@ -1041,7 +1041,10 @@ fn rewrite_resurrected_answer(inner: &mut SessionInner, op: &Op) -> Option<(u64,
 }
 
 fn broadcast_presence(inner: &mut SessionInner, clients: usize) {
-    inner.fanout(&Update::Presence { clients });
+    inner.fanout(&Update::Presence {
+        watermark: inner.next_seq,
+        clients,
+    });
 }
 
 fn spawn_pump(
@@ -1100,6 +1103,7 @@ fn spawn_pump(
         {
             let mut guard = inner.lock().await;
             let frame = Update::Error {
+                watermark: guard.next_seq,
                 message: "session engine stopped".to_owned(),
             };
             guard.fanout(&frame);
@@ -1407,23 +1411,25 @@ mod tests {
         let replay_sent = spawn_subscriber_bridge(
             target_tx,
             vec![Update::Error {
+                watermark: 0,
                 message: "backlog".to_owned(),
             }],
             live_rx,
         );
         live_tx
             .send(Update::Error {
+                watermark: 0,
                 message: "live".to_owned(),
             })
             .await
             .unwrap();
         replay_sent.await.unwrap();
         match target_rx.recv().await.unwrap() {
-            Update::Error { message } => assert_eq!(message, "backlog"),
+            Update::Error { message, .. } => assert_eq!(message, "backlog"),
             _ => panic!("expected backlog frame"),
         }
         match target_rx.recv().await.unwrap() {
-            Update::Error { message } => assert_eq!(message, "live"),
+            Update::Error { message, .. } => assert_eq!(message, "live"),
             _ => panic!("expected live frame"),
         }
     }

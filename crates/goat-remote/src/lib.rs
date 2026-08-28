@@ -12,6 +12,7 @@ use std::pin::Pin;
 
 use futures::{Sink, Stream};
 use goat_wire::WireError;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 
 pub use ca::{Authority, SignedDevice, fingerprint_der, fingerprint_pem};
 pub use devices::{Device, Devices};
@@ -58,3 +59,13 @@ pub struct RemoteConfig {
 }
 
 pub use server::RemoteServer;
+
+fn load_certs(pem: &str) -> Result<Vec<CertificateDer<'static>>, RemoteError> {
+    CertificateDer::pem_slice_iter(pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| RemoteError::Pem)
+}
+
+fn load_key(pem: &str) -> Result<PrivateKeyDer<'static>, RemoteError> {
+    PrivateKeyDer::from_pem_slice(pem.as_bytes()).map_err(|_| RemoteError::Pem)
+}

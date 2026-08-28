@@ -105,10 +105,15 @@ enum DataTarget {
     Absent,
 }
 
+struct QueuedRequest {
+    frame: Frame,
+    sent: oneshot::Sender<()>,
+}
+
 struct Shared {
     control: mpsc::Sender<Frame>,
     data: mpsc::Sender<Frame>,
-    requests: mpsc::Sender<Frame>,
+    requests: mpsc::Sender<QueuedRequest>,
     pending: Mutex<HashMap<Id, Pending>>,
     alloc: Mutex<IdAllocator>,
     inbound: Mutex<HashMap<Id, CancellationToken>>,
@@ -180,9 +185,7 @@ impl PeerHandle {
     ) -> CallResult {
         let (id, rx) = self.register_unary().await;
         if self
-            .shared
-            .requests
-            .send(Frame::req(id, method, version, params))
+            .send_request(Frame::req(id, method, version, params))
             .await
             .is_err()
         {
@@ -218,9 +221,7 @@ impl PeerHandle {
     ) -> Result<StreamHandle, CallError> {
         let (id, rx) = self.register_stream().await;
         if self
-            .shared
-            .requests
-            .send(Frame::req(id, method, version, params))
+            .send_request(Frame::req(id, method, version, params))
             .await
             .is_err()
         {
@@ -258,6 +259,16 @@ impl PeerHandle {
         (id, rx)
     }
 
+    async fn send_request(&self, frame: Frame) -> Result<(), ()> {
+        let (sent, written) = oneshot::channel();
+        self.shared
+            .requests
+            .send(QueuedRequest { frame, sent })
+            .await
+            .map_err(|_| ())?;
+        written.await.map_err(|_| ())
+    }
+
     pub async fn send_hello(&self, hello: crate::envelope::Hello) -> Result<(), CallError> {
         self.shared
             .control
@@ -290,7 +301,7 @@ where
 {
     let (control_tx, control_rx) = mpsc::channel::<Frame>(CONTROL_CAPACITY);
     let (data_tx, data_rx) = mpsc::channel::<Frame>(DATA_CAPACITY);
-    let (request_tx, request_rx) = mpsc::channel::<Frame>(REQUEST_CAPACITY);
+    let (request_tx, request_rx) = mpsc::channel::<QueuedRequest>(REQUEST_CAPACITY);
     let (hello_tx, hello_rx) = mpsc::channel::<crate::envelope::Hello>(4);
 
     let shared = Arc::new(Shared {
@@ -333,22 +344,25 @@ async fn write_loop<Tx>(
     mut sink: Tx,
     mut control: mpsc::Receiver<Frame>,
     mut data: mpsc::Receiver<Frame>,
-    mut requests: mpsc::Receiver<Frame>,
+    mut requests: mpsc::Receiver<QueuedRequest>,
     closed: CancellationToken,
 ) where
     Tx: Sink<Frame> + Unpin + Send + 'static,
 {
     loop {
-        let frame = tokio::select! {
+        let request = tokio::select! {
             biased;
             () = closed.cancelled() => break,
-            Some(frame) = control.recv() => frame,
-            Some(frame) = data.recv() => frame,
-            Some(frame) = requests.recv() => frame,
+            Some(frame) = control.recv() => (frame, None),
+            Some(frame) = data.recv() => (frame, None),
+            Some(request) = requests.recv() => (request.frame, Some(request.sent)),
             else => break,
         };
-        if sink.send(frame).await.is_err() {
+        if sink.send(request.0).await.is_err() {
             break;
+        }
+        if let Some(sent) = request.1 {
+            let _ = sent.send(());
         }
     }
     closed.cancel();
@@ -382,7 +396,20 @@ async fn read_loop<Rx>(
                 version,
                 params,
             } => {
-                serve_inbound(&shared, &handler, &handle, id, method, version, params);
+                let token = CancellationToken::new();
+                shared.inbound.lock().await.insert(id, token.clone());
+                serve_inbound(
+                    &shared,
+                    &handler,
+                    id,
+                    Request {
+                        method,
+                        version,
+                        params,
+                        peer: handle.clone(),
+                        cancel: token,
+                    },
+                );
             }
             Frame::Res { id, outcome } | Frame::End { id, outcome } => {
                 let pending = shared.pending.lock().await.remove(&id);
@@ -419,7 +446,7 @@ async fn read_loop<Rx>(
                 }
             }
             Frame::Cancel { id, .. } => {
-                let token = shared.inbound.lock().await.remove(&id);
+                let token = shared.inbound.lock().await.get(&id).cloned();
                 if let Some(token) = token {
                     token.cancel();
                 }
@@ -430,29 +457,11 @@ async fn read_loop<Rx>(
     fail_all_pending(&shared).await;
 }
 
-fn serve_inbound(
-    shared: &Arc<Shared>,
-    handler: &Arc<dyn Handler>,
-    handle: &PeerHandle,
-    id: Id,
-    method: String,
-    version: u16,
-    params: Value,
-) {
+fn serve_inbound(shared: &Arc<Shared>, handler: &Arc<dyn Handler>, id: Id, request: Request) {
     let shared = shared.clone();
     let handler = handler.clone();
-    let handle = handle.clone();
     tokio::spawn(async move {
-        let token = CancellationToken::new();
-        shared.inbound.lock().await.insert(id, token.clone());
-        let streaming = handler.is_stream(&method, version);
-        let request = Request {
-            method,
-            version,
-            params,
-            peer: handle,
-            cancel: token,
-        };
+        let streaming = handler.is_stream(&request.method, request.version);
         let (frame, lane) = if streaming {
             let sink = StreamSink {
                 id,
@@ -873,6 +882,20 @@ mod tests {
             .unwrap();
         assert_eq!(entered.recv().await.as_deref(), Some("hangstream"));
         drop(stream);
+        assert_eq!(cancelled.recv().await.as_deref(), Some("hangstream"));
+    }
+
+    #[tokio::test]
+    async fn dropping_a_just_opened_stream_cannot_overtake_its_request() {
+        let (never, mut entered, mut cancelled) = Never::new();
+        let (client, _daemon, _c, _d) = pair(Arc::new(Echo), never);
+        let stream = client
+            .handle
+            .open_stream("hangstream", 1, Value::Null)
+            .await
+            .unwrap();
+        drop(stream);
+        assert_eq!(entered.recv().await.as_deref(), Some("hangstream"));
         assert_eq!(cancelled.recv().await.as_deref(), Some("hangstream"));
     }
 

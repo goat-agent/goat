@@ -63,7 +63,7 @@ impl ToolHandler for PtyTool {
                 {
                     return ToolOutput::error(format!("command denied: {reason}"));
                 }
-                match self.manager.open(cmd, args.rows, args.cols).await {
+                match self.manager.open(cmd, args.rows, args.cols) {
                     Ok((id, rows, cols)) => ToolOutput::structured(json!({
                         "session_id": id,
                         "status": "running",

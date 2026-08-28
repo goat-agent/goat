@@ -22,7 +22,6 @@ async-trait = { workspace = true }
 
 [dev-dependencies]
 sha2 = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

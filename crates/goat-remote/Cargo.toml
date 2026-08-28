@@ -9,7 +9,6 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
-goat-protocol = { workspace = true }
 goat-wire = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -20,10 +19,8 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
-rustls-pemfile = { workspace = true }
 rcgen = { workspace = true }
 tokio-tungstenite = { workspace = true }
-qrcode = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }

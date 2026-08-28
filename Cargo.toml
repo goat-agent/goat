@@ -81,7 +81,6 @@ termbg = "0.6"
 
 clap = { version = "4", features = ["derive"] }
 dialoguer = "0.12"
-console = "0.15"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -133,7 +132,6 @@ thiserror = "2"
 
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-rustls-pemfile = "2"
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 qrcode = { version = "0.14", default-features = false }
@@ -194,7 +192,6 @@ goat-memory             = { path = "crates/goat-memory" }
 goat-loop               = { path = "crates/goat-loop" }
 goat-sleep              = { path = "crates/goat-sleep" }
 goat-embedding              = { path = "crates/goat-embedding" }
-tokio-stream            = { version = "0.1" }
 pty-process             = { version = "0.5", features = ["async"] }
 inventory               = "0.3"
 anyhow                  = "1"
@@ -202,8 +199,6 @@ sqlx                    = { version = "0.9", default-features = false, features 
 sqlite-vec              = "0.1"
 libsqlite3-sys          = "0.37"
 zerocopy                = "0.7"
-tiny_http               = "0.12"
-urlencoding             = "2"
 chrono                  = { version = "0.4", features = ["serde"] }
 chrono-tz               = "0.10"
 cron                    = "0.15"

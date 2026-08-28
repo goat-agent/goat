@@ -12,13 +12,9 @@ publish.workspace = true
 goat-wire = { workspace = true }
 goat-api = { workspace = true }
 tokio-util = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

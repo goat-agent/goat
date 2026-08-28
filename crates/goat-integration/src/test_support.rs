@@ -75,9 +75,9 @@ impl ScriptedSource {
 }
 
 impl WatchSource for ScriptedSource {
-    async fn fetch(&self) -> IntegrationResult<WatchPage> {
+    fn fetch(&self) -> impl Future<Output = IntegrationResult<WatchPage>> + Send {
         let next = self.pages.lock().unwrap().pop_front();
-        match next {
+        std::future::ready(match next {
             Some(Ok(page)) => {
                 *self.last.lock().unwrap() = Some(page.clone());
                 Ok(page)
@@ -90,7 +90,7 @@ impl WatchSource for ScriptedSource {
                 let last = self.last.lock().unwrap().clone();
                 Ok(last.unwrap_or_default())
             }
-        }
+        })
     }
 }
 

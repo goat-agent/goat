@@ -19,12 +19,9 @@ tokio            = { workspace = true }
 async-trait      = { workspace = true }
 serde            = { workspace = true }
 serde_json       = { workspace = true }
-anyhow           = { workspace = true }
 tracing          = { workspace = true }
 inventory        = { workspace = true }
-uuid             = { workspace = true }
 chrono           = { workspace = true }
-futures          = { workspace = true }
 url              = { workspace = true }
 
 [lints]

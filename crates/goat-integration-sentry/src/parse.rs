@@ -17,13 +17,13 @@ pub struct Issue {
 impl Issue {
     pub fn summary(&self) -> String {
         let head = if self.short_id.is_empty() {
-            squeeze(&self.title, 160)
+            shape::squeeze(&self.title, 160)
         } else {
-            format!("{} {}", self.short_id, squeeze(&self.title, 160))
+            format!("{} {}", self.short_id, shape::squeeze(&self.title, 160))
         };
         let mut parts = Vec::new();
         if !self.culprit.is_empty() {
-            parts.push(squeeze(&self.culprit, 80));
+            parts.push(shape::squeeze(&self.culprit, 80));
         }
         if let Some(volume) = self.volume() {
             parts.push(volume);
@@ -53,12 +53,8 @@ pub fn parse_issues(data: &Value) -> IntegrationResult<Vec<Issue>> {
 }
 
 fn parse_issue(node: &Value) -> IntegrationResult<Issue> {
-    let short_id = string_field(node, "shortId")
-        .or_else(|| string_field(node, "short_id"))
-        .unwrap_or_default();
-    let id = string_field(node, "id")
-        .or_else(|| string_field(node, "issueId"))
-        .unwrap_or_default();
+    let short_id = shape::text(node, &["shortId", "short_id"]);
+    let id = shape::text(node, &["id", "issueId"]);
     let key = if short_id.is_empty() {
         id.clone()
     } else {
@@ -72,44 +68,13 @@ fn parse_issue(node: &Value) -> IntegrationResult<Issue> {
     Ok(Issue {
         key,
         short_id,
-        title: string_field(node, "title")
-            .or_else(|| {
-                node.get("metadata")
-                    .and_then(|meta| string_field(meta, "type"))
-            })
-            .unwrap_or_default(),
-        culprit: string_field(node, "culprit").unwrap_or_default(),
-        count: numeric_field(node, "count"),
-        user_count: numeric_field(node, "userCount"),
-        last_seen: string_field(node, "lastSeen")
-            .or_else(|| string_field(node, "last_seen"))
-            .unwrap_or_default(),
+        title: shape::text(node, &["title", "metadata.type"]),
+        culprit: shape::text(node, &["culprit"]),
+        count: shape::text(node, &["count"]),
+        user_count: shape::text(node, &["userCount"]),
+        last_seen: shape::text(node, &["lastSeen", "last_seen"]),
         raw: node.clone(),
     })
-}
-
-fn string_field(node: &Value, key: &str) -> Option<String> {
-    node.get(key)
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn numeric_field(node: &Value, key: &str) -> String {
-    match node.get(key) {
-        Some(Value::String(value)) => value.clone(),
-        Some(Value::Number(value)) => value.to_string(),
-        _ => String::new(),
-    }
-}
-
-fn squeeze(text: &str, max: usize) -> String {
-    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max {
-        return flat;
-    }
-    let kept: String = flat.chars().take(max).collect();
-    format!("{kept}…")
 }
 
 #[cfg(test)]

@@ -73,3 +73,36 @@ where
         (sink, stream)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::WireConn;
+    use serde_json::Value;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn messages_use_a_big_endian_four_byte_length_prefix() {
+        let (stream, mut raw) = tokio::io::duplex(64);
+        let mut conn = WireConn::<_, Value, Value>::new(stream);
+        conn.send(&serde_json::json!({"ok": true})).await.unwrap();
+
+        let mut prefix = [0; 4];
+        raw.read_exact(&mut prefix).await.unwrap();
+        let len = u32::from_be_bytes(prefix);
+        let mut body = vec![0; usize::try_from(len).unwrap()];
+        raw.read_exact(&mut body).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            serde_json::json!({"ok": true})
+        );
+    }
+
+    #[tokio::test]
+    async fn a_big_endian_length_delimited_message_decodes() {
+        let (stream, mut raw) = tokio::io::duplex(64);
+        let mut conn = WireConn::<_, Value, Value>::new(stream);
+        raw.write_all(&4_u32.to_be_bytes()).await.unwrap();
+        raw.write_all(b"null").await.unwrap();
+        assert_eq!(conn.recv().await.unwrap(), Value::Null);
+    }
+}
