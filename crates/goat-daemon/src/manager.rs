@@ -394,7 +394,11 @@ impl CodeSessionHub {
             }
         }
         let id = self
-            .open_session(cwd, normalized.clone(), conversation_id)
+            .open_session(
+                PathBuf::from(&normalized),
+                normalized.clone(),
+                conversation_id,
+            )
             .await?;
         Ok((id, self.live_cwd(id, &normalized).await))
     }

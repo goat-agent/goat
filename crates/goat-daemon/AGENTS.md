@@ -70,6 +70,9 @@ Keyed by `SessionId`, with a secondary index by `conversation_id`. **There is no
 `goat code` opens a new session by default, and only `-c` resolves cwd to the latest conversation
 through a database query. Several live sessions can share a cwd.
 
+Canonicalize the working directory before constructing the engine. Persistence and conversation
+lookup must use that same path, including aliases such as macOS `/tmp` and `/private/tmp`.
+
 ## Tests
 
 `tests/` exists because these need a real socket: `roundtrip`/`lifecycle` bind one; `remote_e2e` adds
