@@ -17,10 +17,12 @@ goat-wire = { workspace = true }
 goat-api = { workspace = true }
 goat-store = { workspace = true }
 goat-types = { workspace = true }
+goat-channel-desktop = { workspace = true }
 chrono = { workspace = true }
 pty-process = { workspace = true }
 goat-capability = { workspace = true }
 goat-tool-browser = { workspace = true }
+goat-tool-computer = { workspace = true }
 goat-remote = { workspace = true }
 goat-engine = { workspace = true }
 goat-auth = { workspace = true }
@@ -39,8 +41,10 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+goat-channel = { workspace = true }
 goat-client = { workspace = true }
 goat-browser-host = { workspace = true }
+goat-computer-host = { workspace = true }
 async-trait = { workspace = true }
 rustls = { workspace = true }
 bytes = { workspace = true }

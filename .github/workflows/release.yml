@@ -74,8 +74,27 @@ jobs:
           path: goat-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
+  desktop:
+    needs: verify
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install tauri-cli --locked
+      - run: bun install --frozen-lockfile --cwd crates/goat-desktop/ui
+      - name: bundle desktop app
+        working-directory: crates/goat-desktop
+        run: cargo tauri build --config tauri.ci.conf.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: goat-desktop-macos
+          path: target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
   publish:
-    needs: [verify, build]
+    needs: [verify, build, desktop]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -87,7 +106,7 @@ jobs:
       - name: checksums
         working-directory: artifacts
         run: |
-          sha256sum goat-*.tar.gz > SHA256SUMS
+          sha256sum -- goat-*.tar.gz *.dmg > SHA256SUMS
           cat SHA256SUMS
       - name: create release
         env:

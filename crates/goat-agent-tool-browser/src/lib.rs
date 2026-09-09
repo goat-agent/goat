@@ -65,10 +65,9 @@ impl ToolHandler for AgentBrowser {
 fn deliver(output: goat_tool::ToolOutput) -> ToolOutput {
     match output.content {
         goat_tool::ToolContent::Text(text) => ToolOutput::text(text),
-        goat_tool::ToolContent::Image(_) => ToolOutput::error(
-            "an agent turn carries no images, so a screenshot cannot be delivered; read the page \
-             with read_content, read_viewport, find_text, or inspect instead",
-        ),
+        goat_tool::ToolContent::Image(image) => {
+            ToolOutput::image("screenshot", image.media_type, image.data)
+        }
     }
 }
 
@@ -92,9 +91,11 @@ mod tests {
     }
 
     #[test]
-    fn a_screenshot_is_refused_with_the_readable_alternatives() {
+    fn a_screenshot_reaches_the_agent_as_an_image() {
         let delivered = deliver(goat_tool::ToolOutput::png("iVBOR"));
-        assert!(delivered.is_error);
-        assert!(delivered.text_for_model().contains("read_content"));
+        assert!(!delivered.is_error);
+        assert!(matches!(&delivered.content[1],
+            goat_agent_tool::ToolContent::Image { media_type, data }
+            if media_type == "image/png" && data == "iVBOR"));
     }
 }

@@ -28,6 +28,11 @@ to that filter.
 
 CI adds `--locked`, runs `actionlint`, smoke-tests `goat --version`, and rechecks on the pinned MSRV.
 
+Development builds use optimization level 1 with line tables and normal unwinding. Unoptimized CLI
+code exceeds macOS compact-unwind's 24-bit DWARF offset range; light optimization reduces the actual
+unwind metadata rather than suppressing the linker warning. Some local variables may be optimized
+out while debugging.
+
 ## Rules
 
 **No comments.** Not `//`, `///`, `//!`, block comments, or TOML `#`. Carry intent in names and

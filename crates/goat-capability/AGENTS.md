@@ -1,7 +1,7 @@
 # AGENTS.md — goat-capability
 
-The daemon-side broker for capabilities living on the human's machine: `host.browser` today,
-`host.computer` next.
+The daemon-side broker for capabilities living on the human's machine: `host.browser` and
+`host.computer`.
 
 ## Routing is a lease, not a pin
 
@@ -47,9 +47,13 @@ things were wrong at once, none fixable here:
 
 A signed `.app` has a stable identity and holds its grants across updates.
 
-The contract is **element tree, refs and named actions**, with screenshots as a secondary channel.
-Not pixel coordinates. The provider must refuse to automate terminal apps, which is what keeps the
-shell sandbox meaningful.
+`goat-desktop` provides **screenshots, logical point coordinates and accessibility-tree refs**.
+The model-facing tool maps pixels of its latest screenshot back to display points. AX handles and
+reference minting stay inside the app.
+
+By product decision, there are no terminal-app exclusions or per-action approval gates. Desktop
+control can bypass the shell sandbox. Both macOS permissions gate advertisement; the global
+`Cmd+Shift+Escape` stop shortcut halts the provider and withdraws it. Resume is an explicit app action.
 
 This split differs from `host.browser`. CDP is already a wire protocol, so the browser vocabulary
 stays in Rust and only commands cross. `AXUIElement` handles are process-local opaque pointers, so

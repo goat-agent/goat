@@ -6,6 +6,10 @@ the same `Api`, so nothing above it knows which it got.
 Local-daemon autostart lives behind `Link::dial_or_spawn` and fires only for `Link::Local`. A remote
 target that cannot connect must fail, never silently start a second daemon here.
 
+`ApiSession` owns its peer connection: dropping it cancels the wire pumps. Keeping a cloned `Api`
+alone does not keep the session alive. Desktop attachment closure relies on this to release presence
+without killing the daemon's coding session.
+
 ## The admin pump
 
 A slash command reaches the daemon through `CommandEffect::Admin(Vec<AdminRequest>)`. It is a batch,

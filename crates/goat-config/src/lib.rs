@@ -14,8 +14,8 @@ pub use agent::AGENT_DEFINITION_FILE;
 pub use paths::{
     GoatPaths, HOME_NOT_FOUND, INSTRUCTIONS_MAX_BYTES, PROJECT_INSTRUCTIONS_FILE,
     PROJECT_INSTRUCTIONS_OVERRIDE_FILE, PROJECT_SUBAGENTS_SUBDIR, agents_dir, auth_path, bin_dir,
-    client_path, config_path, global_instructions_file, log_dir, plans_dir, rate_limits_path,
-    remote_dir, root, socket_path, subagents_dir, update_dir,
+    client_path, config_path, desktop_path, global_instructions_file, log_dir, plans_dir,
+    rate_limits_path, remote_dir, root, socket_path, subagents_dir, update_dir,
 };
 pub use settings::{
     ClientConfig, Config, DeviceConfig, LOCAL_REMOTE, RemoteEntry, SearchAccountConfig,

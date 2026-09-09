@@ -583,6 +583,11 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
             })
         });
 
+    let root = db_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    let router = crate::agent_chat::routes(router, root, db_path, epoch.to_owned());
     let router = goat_capability::routes(router, broker.clone(), device);
     crate::browser::routes(router, broker, browser_events)
 }
@@ -1262,10 +1267,13 @@ mod tests {
             .filter(|schema| schema.direction == goat_api::Direction::ToClient)
             .map(|schema| (schema.name.to_owned(), schema.version))
             .collect();
-        let offered = std::collections::BTreeSet::from([(
-            goat_browser_host::CAPABILITY.to_owned(),
-            goat_browser_host::CAPABILITY_VERSION,
-        )]);
+        let offered: std::collections::BTreeSet<_> =
+            goat_browser_host::advertisement("browser".into(), "Chrome".into(), 1)
+                .offers
+                .into_iter()
+                .chain(goat_computer_host::advertisement("computer", "Mac", 1).offers)
+                .map(|offer| (offer.id, offer.version))
+                .collect();
         assert_eq!(
             published, offered,
             "a reverse method without a capability provider is an unusable published contract"

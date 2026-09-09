@@ -78,6 +78,7 @@ pub struct EngineDeps {
     pub cwd: PathBuf,
     pub meter: Option<goat_proxy::Meter>,
     pub browser: Option<Arc<dyn goat_tool_browser::Transport>>,
+    pub computer: Option<Arc<dyn goat_tool_computer::Transport>>,
 }
 
 impl CodingEngine {
@@ -91,6 +92,7 @@ impl CodingEngine {
             cwd,
             meter,
             browser,
+            computer,
         } = deps;
         let config = goat_config::Config::load();
         let project_root = goat_worktree::workspace(&cwd)
@@ -119,6 +121,9 @@ impl CodingEngine {
         }
         if let Some(browser) = browser {
             tools.push(Box::new(goat_tool_browser::browser_tool(browser)));
+        }
+        if let Some(computer) = computer {
+            tools.push(goat_tool_computer::computer_tool(computer));
         }
         Self {
             registry,
@@ -1560,6 +1565,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             meter: None,
             browser: None,
+            computer: None,
         }
     }
 

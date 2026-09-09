@@ -470,6 +470,8 @@ pub trait Store: Send + Sync + 'static {
         limit: i64,
     ) -> StoreResult<Vec<ObservationRecord>>;
 
+    async fn start_activity(&self, agent: AgentId, trigger: &str) -> StoreResult<i64>;
+
     async fn record_activity(&self, new: NewActivity) -> StoreResult<i64>;
 
     async fn activity_since(
@@ -564,7 +566,7 @@ pub struct SqliteStore {
 
 impl SqliteStore {
     pub async fn open(path: &Path) -> StoreResult<Self> {
-        goat_sqlite_vec::register();
+        let _initializing = goat_sqlite_vec::initialization_guard().await;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -1543,8 +1545,30 @@ impl Store for SqliteStore {
             .collect()
     }
 
+    async fn start_activity(&self, agent: AgentId, trigger: &str) -> StoreResult<i64> {
+        let agent = agent.to_string();
+        let mut transaction = self.pool.begin().await?;
+        let (id,): (i64,) = sqlx::query_as(
+            r"INSERT INTO agent_activity (agent_id, kind, run_id, detail, at)
+               VALUES (?, 'turn_started', 0, ?, ?) RETURNING id",
+        )
+        .bind(&agent)
+        .bind(trigger)
+        .bind(Utc::now().to_rfc3339())
+        .fetch_one(&mut *transaction)
+        .await?;
+        sqlx::query("UPDATE agent_activity SET run_id = id WHERE id = ?")
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+        prune_activity(&mut transaction, &agent).await?;
+        transaction.commit().await?;
+        Ok(id)
+    }
+
     async fn record_activity(&self, new: NewActivity) -> StoreResult<i64> {
         let agent = new.agent.to_string();
+        let mut transaction = self.pool.begin().await?;
         let row: (i64,) = sqlx::query_as(
             r"INSERT INTO agent_activity (agent_id, kind, run_id, detail, ok, at)
                VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
@@ -1555,24 +1579,11 @@ impl Store for SqliteStore {
         .bind(new.detail.as_deref())
         .bind(new.ok.map(i64::from))
         .bind(Utc::now().to_rfc3339())
-        .fetch_one(&*self.pool)
+        .fetch_one(&mut *transaction)
         .await?;
 
-        sqlx::query(
-            r"DELETE FROM agent_activity
-               WHERE agent_id = ?
-                 AND id <= (
-                   SELECT id FROM agent_activity
-                    WHERE agent_id = ?
-                    ORDER BY id DESC
-                    LIMIT 1 OFFSET ?
-                 )",
-        )
-        .bind(&agent)
-        .bind(&agent)
-        .bind(ACTIVITY_RETAINED_PER_AGENT)
-        .execute(&*self.pool)
-        .await?;
+        prune_activity(&mut transaction, &agent).await?;
+        transaction.commit().await?;
 
         Ok(row.0)
     }
@@ -1638,6 +1649,25 @@ impl Store for SqliteStore {
             .await?;
         Ok(row.0.unwrap_or(0))
     }
+}
+
+async fn prune_activity(connection: &mut sqlx::SqliteConnection, agent: &str) -> StoreResult<()> {
+    sqlx::query(
+        r"DELETE FROM agent_activity
+           WHERE agent_id = ?
+             AND id <= (
+               SELECT id FROM agent_activity
+                WHERE agent_id = ?
+                ORDER BY id DESC
+                LIMIT 1 OFFSET ?
+             )",
+    )
+    .bind(agent)
+    .bind(agent)
+    .bind(ACTIVITY_RETAINED_PER_AGENT)
+    .execute(connection)
+    .await?;
+    Ok(())
 }
 
 async fn load_schedule(pool: &SqlitePool, id: i64) -> StoreResult<Schedule> {
@@ -1839,6 +1869,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_store_owners_initialize_one_database_and_keep_independent_data() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("goat.db");
+        let (agent_store, code_store, memory_store, proxy_store) = tokio::join!(
+            SqliteStore::open(&database),
+            goat_code_store::CodeStore::open(&database),
+            goat_memory::MemoryEngine::open(&database, directory.path(), None, 180.0),
+            goat_proxy_store::ProxyStore::open(&database),
+        );
+        let agent_store = agent_store.unwrap();
+        let code_store = code_store.unwrap();
+        let _memory_store = memory_store.unwrap();
+        let _proxy_store = proxy_store.unwrap();
+        let agent = fixture_agent(&agent_store).await;
+        let run = agent_store.start_activity(agent, "desktop").await.unwrap();
+        let conversation = code_store
+            .create_conversation(goat_code_store::NewConversation {
+                cwd: "/project".into(),
+                title: Some("Concurrent startup".into()),
+                provider: "fixture".into(),
+                model: "fixture-model".into(),
+                account: "default".into(),
+                effort: None,
+                created_at: 1,
+                updated_at: 1,
+            })
+            .await
+            .unwrap();
+        let activity = agent_store.activity_since(&[agent], 0, 10).await.unwrap();
+        assert_eq!(activity[0].run_id, run);
+        assert_eq!(activity[0].detail.as_deref(), Some("desktop"));
+        let conversations = code_store
+            .list_conversations_in("/project".into(), 10)
+            .await
+            .unwrap();
+        assert_eq!(conversations[0].id, conversation);
+        assert_eq!(
+            conversations[0].title.as_deref(),
+            Some("Concurrent startup")
+        );
+    }
+
+    #[tokio::test]
     async fn activity_is_a_monotonic_feed_readable_by_cursor() {
         let s = fresh().await;
         let agent = fixture_agent(&s).await;
@@ -1846,21 +1919,12 @@ mod tests {
         assert_eq!(s.activity_watermark().await.unwrap(), 0);
         assert!(s.activity_since(&[], 0, 10).await.unwrap().is_empty());
 
-        let first = s
-            .record_activity(NewActivity {
-                agent,
-                kind: ActivityKind::TurnStarted,
-                run_id: 41,
-                detail: Some("discord".to_owned()),
-                ok: None,
-            })
-            .await
-            .unwrap();
+        let first = s.start_activity(agent, "discord").await.unwrap();
         let second = s
             .record_activity(NewActivity {
                 agent,
                 kind: ActivityKind::TurnFinished,
-                run_id: 41,
+                run_id: first,
                 detail: None,
                 ok: Some(true),
             })
@@ -1872,7 +1936,9 @@ mod tests {
         let all = s.activity_since(&[], 0, 10).await.unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].kind, ActivityKind::TurnStarted);
-        assert_eq!(all[0].run_id, 41);
+        assert_eq!(all[0].id, first);
+        assert_eq!(all[0].run_id, first);
+        assert_eq!(all[1].run_id, first);
         assert_eq!(all[0].detail.as_deref(), Some("discord"));
         assert_eq!(all[1].kind, ActivityKind::TurnFinished);
         assert_eq!(all[1].ok, Some(true));
@@ -1882,6 +1948,27 @@ mod tests {
         assert_eq!(resumed[0].id, second);
 
         assert!(s.activity_since(&[], second, 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn activity_start_rolls_back_if_assigning_its_run_id_fails() {
+        let s = fresh().await;
+        let agent = fixture_agent(&s).await;
+        let first = s.start_activity(agent, "desktop").await.unwrap();
+        sqlx::query(
+            r"CREATE TRIGGER reject_activity_run_id BEFORE UPDATE OF run_id ON agent_activity
+               BEGIN SELECT RAISE(ABORT, 'run id rejected'); END",
+        )
+        .execute(&*s.pool)
+        .await
+        .unwrap();
+
+        assert!(s.start_activity(agent, "schedule").await.is_err());
+        assert_eq!(s.activity_watermark().await.unwrap(), first);
+        assert!(s.activity_since(&[], first, 10).await.unwrap().is_empty());
+        let records = s.activity_since(&[], 0, 10).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].run_id, records[0].id);
     }
 
     #[tokio::test]
@@ -1937,15 +2024,7 @@ mod tests {
         let agent = fixture_agent(&s).await;
         let overflow = ACTIVITY_RETAINED_PER_AGENT + 25;
         for _ in 0..overflow {
-            s.record_activity(NewActivity {
-                agent,
-                kind: ActivityKind::TurnStarted,
-                run_id: 1,
-                detail: None,
-                ok: None,
-            })
-            .await
-            .unwrap();
+            s.start_activity(agent, "schedule").await.unwrap();
         }
         let kept = s.activity_since(&[], 0, overflow * 2).await.unwrap().len();
         let retained = i64::try_from(kept).unwrap_or(i64::MAX);

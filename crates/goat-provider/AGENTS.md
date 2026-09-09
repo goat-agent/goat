@@ -21,6 +21,11 @@ compiler is the checklist.
 redacted payload must survive round-tripping back to the provider, so collapsing them into text loses
 the turn.
 
+Tool results are multimodal: preserve every text and image block at the wire boundary.
+`tool_result_text` is only the textual portion. When a wire format forbids images in a tool
+response, place labeled image parts after the complete tool-response batch rather than dropping
+them or interrupting the batch's call/result ordering.
+
 ## Classify, never render
 
 Map a wire failure into a `StreamError` variant — `RateLimited`, `Overloaded`, `ContextOverflow`,

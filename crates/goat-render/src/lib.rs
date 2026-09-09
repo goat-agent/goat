@@ -1,11 +1,11 @@
 use std::sync::Arc;
-use std::time::Instant;
 
 use async_trait::async_trait;
 use futures::StreamExt;
 use goat_channel::{ChannelError, ChannelHandle, ChannelResult, SentRef};
 use goat_provider::{ChunkStream, StreamChunk};
 use goat_types::{ConversationId, MessageId, OutgoingBody};
+use tokio::time::Instant;
 use tracing::warn;
 
 #[derive(Clone, Debug, Default)]
@@ -34,8 +34,13 @@ pub trait OutgoingSink: Send + Sync {
 
 pub struct DefaultStreamRenderer;
 
-const MIN_CHARS_PER_FLUSH: usize = 80;
 const CODE_FENCE_WRAP_CHARS: usize = 4;
+
+struct CurrentMessage {
+    reference: SentRef,
+    text: String,
+    edited_at: Instant,
+}
 
 #[async_trait]
 impl StreamRenderer for DefaultStreamRenderer {
@@ -50,13 +55,39 @@ impl StreamRenderer for DefaultStreamRenderer {
         let caps = handle.capabilities();
         let mut buf = String::new();
         let mut current_block_chars: usize = 0;
-        let mut current: Option<SentRef> = None;
-        let mut current_reply = reply_to.clone();
-        let mut last_flush = Instant::now();
+        let mut current: Option<CurrentMessage> = None;
+        let mut current_reply = reply_to;
+        let mut dirty = false;
         let mut full_text = String::new();
         let mut summary = RenderSummary::default();
 
-        while let Some(item) = stream.next().await {
+        loop {
+            let next_flush = current
+                .as_ref()
+                .map_or_else(Instant::now, |sent| sent.edited_at + caps.edit_min_interval);
+            let item = tokio::select! {
+                biased;
+                () = tokio::time::sleep_until(next_flush), if dirty => {
+                    flush(
+                        handle.as_ref(),
+                        &conv,
+                        &mut current,
+                        &buf,
+                        current_reply.clone(),
+                        &mut summary,
+                    )
+                    .await?;
+                    dirty = false;
+                    if let Some(sink) = &sink {
+                        sink.record(&full_text).await;
+                    }
+                    continue;
+                }
+                item = stream.next() => item,
+            };
+            let Some(item) = item else {
+                break;
+            };
             let chunk = match item {
                 Ok(c) => c,
                 Err(e) => {
@@ -73,46 +104,29 @@ impl StreamRenderer for DefaultStreamRenderer {
 
                 while current_block_chars > caps.max_message_chars {
                     let (head, tail) = split_for_channel(&buf, caps.max_message_chars);
-                    if let Some(sent) = current.as_ref() {
-                        handle.edit(sent, OutgoingBody::Text(head)).await?;
-                        summary.edits += 1;
-                    } else {
-                        handle
-                            .send(&conv, OutgoingBody::Text(head), current_reply.clone())
-                            .await?;
-                        summary.messages_sent += 1;
-                    }
-                    buf = tail;
-                    current_block_chars = buf.chars().count();
-                    current = None;
-                    current_reply = None;
-                    last_flush = Instant::now();
-                    if let Some(sink) = &sink {
-                        sink.record(&full_text).await;
-                    }
-                }
-
-                let due = last_flush.elapsed() >= caps.edit_min_interval;
-                let big_enough = buf.chars().count() >= MIN_CHARS_PER_FLUSH;
-                if due && big_enough {
                     flush(
                         handle.as_ref(),
                         &conv,
                         &mut current,
-                        &buf,
+                        &head,
                         current_reply.clone(),
                         &mut summary,
                     )
                     .await?;
-                    last_flush = Instant::now();
+                    buf = tail;
+                    current_block_chars = buf.chars().count();
+                    current = None;
+                    current_reply = None;
                     if let Some(sink) = &sink {
                         sink.record(&full_text).await;
                     }
                 }
+
+                dirty |= !text.is_empty() && !buf.is_empty();
             }
         }
 
-        if !buf.is_empty() {
+        if dirty {
             flush(
                 handle.as_ref(),
                 &conv,
@@ -122,6 +136,9 @@ impl StreamRenderer for DefaultStreamRenderer {
                 &mut summary,
             )
             .await?;
+            if let Some(sink) = &sink {
+                sink.record(&full_text).await;
+            }
         }
 
         summary.final_text = full_text;
@@ -132,7 +149,7 @@ impl StreamRenderer for DefaultStreamRenderer {
 async fn flush(
     handle: &dyn ChannelHandle,
     conv: &ConversationId,
-    current: &mut Option<SentRef>,
+    current: &mut Option<CurrentMessage>,
     text: &str,
     reply_to: Option<MessageId>,
     summary: &mut RenderSummary,
@@ -141,16 +158,27 @@ async fn flush(
         return Ok(());
     }
     if let Some(sent) = current {
+        if sent.text == text {
+            return Ok(());
+        }
+        tokio::time::sleep_until(sent.edited_at + handle.capabilities().edit_min_interval).await;
         handle
-            .edit(sent, OutgoingBody::Text(text.to_string()))
+            .edit(&sent.reference, OutgoingBody::Text(text.to_string()))
             .await?;
         summary.edits += 1;
+        sent.text.clear();
+        sent.text.push_str(text);
+        sent.edited_at = Instant::now();
     } else {
         let sent = handle
             .send(conv, OutgoingBody::Text(text.to_string()), reply_to)
             .await?;
         summary.messages_sent += 1;
-        *current = Some(sent);
+        *current = Some(CurrentMessage {
+            reference: sent,
+            text: text.to_string(),
+            edited_at: Instant::now(),
+        });
     }
     Ok(())
 }
@@ -213,9 +241,57 @@ fn has_unclosed_code_fence(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::SinkExt;
     use futures::stream;
     use goat_channel::test_support::{MockChannelHandle, MockEvent};
     use goat_channel::{ChannelCapabilities, ChannelIdentity};
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_text_flushes_on_the_edit_deadline_without_duplicate_final_edits() {
+        let interval = std::time::Duration::from_millis(50);
+        let handle = mock_handle(ChannelCapabilities::new(4096, interval, None));
+        let conversation = conv(handle.instance());
+        let (mut tx, rx) = futures::channel::mpsc::unbounded();
+        let rendering =
+            DefaultStreamRenderer.render(handle.clone(), conversation, None, Box::pin(rx), None);
+        tokio::pin!(rendering);
+        tx.send(Ok(text_delta("first"))).await.unwrap();
+        assert!(futures::poll!(&mut rendering).is_pending());
+        if handle.events().await.is_empty() {
+            tokio::time::advance(std::time::Duration::from_millis(1)).await;
+            assert!(futures::poll!(&mut rendering).is_pending());
+        }
+        let events = handle.events().await;
+        assert!(
+            matches!(&events[..], [MockEvent::Send { body: OutgoingBody::Text(text), .. }] if text == "first")
+        );
+
+        tx.send(Ok(text_delta(" second"))).await.unwrap();
+        assert!(futures::poll!(&mut rendering).is_pending());
+        tokio::time::advance(
+            interval
+                .checked_sub(std::time::Duration::from_millis(1))
+                .unwrap(),
+        )
+        .await;
+        assert!(futures::poll!(&mut rendering).is_pending());
+        assert_eq!(handle.events().await.len(), 1);
+        tokio::time::advance(std::time::Duration::from_millis(1)).await;
+        assert!(futures::poll!(&mut rendering).is_pending());
+        let events = handle.events().await;
+        assert!(matches!(&events[..], [
+            MockEvent::Send { sent_id, .. },
+            MockEvent::Edit { sent, body: OutgoingBody::Text(text) },
+        ] if sent_id == &sent.message_id && text == "first second"));
+
+        drop(tx);
+        let summary = rendering.await.unwrap();
+        assert_eq!(summary.final_text, "first second");
+        assert_eq!(summary.messages_sent, 1);
+        assert_eq!(summary.edits, 1);
+        assert_eq!(handle.events().await.len(), 2);
+    }
+
     use goat_provider::{StreamChunk, StreamError};
     use goat_types::{AgentId, ChannelId, ConversationId, InstanceId};
 

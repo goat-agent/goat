@@ -228,11 +228,38 @@ pub fn build_request(req: &Request) -> InnerRequest {
             MessageRole::User => {
                 let mut parts: Vec<Value> = Vec::new();
                 let mut pending_fr: Vec<Value> = Vec::new();
+                let mut result_images: Vec<Value> = Vec::new();
                 for block in &msg.content {
                     let (override_role, part) =
                         content_block_to_part(block, &id_to_name, &mut synthetic_counter);
                     if override_role.is_some() {
                         pending_fr.push(part);
+                        if let ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            ..
+                        } = block
+                        {
+                            let mut labeled = false;
+                            for image in content {
+                                if matches!(image, ContentBlock::Image { .. }) {
+                                    if !labeled {
+                                        result_images.push(json!({
+                                            "text": format!("Image output from tool call {tool_use_id}")
+                                        }));
+                                        labeled = true;
+                                    }
+                                    result_images.push(
+                                        content_block_to_part(
+                                            image,
+                                            &id_to_name,
+                                            &mut synthetic_counter,
+                                        )
+                                        .1,
+                                    );
+                                }
+                            }
+                        }
                     } else {
                         parts.push(part);
                     }
@@ -242,6 +269,9 @@ pub fn build_request(req: &Request) -> InnerRequest {
                 }
                 if !pending_fr.is_empty() {
                     contents.push(json!({ "role": "user", "parts": pending_fr }));
+                }
+                if !result_images.is_empty() {
+                    contents.push(json!({ "role": "user", "parts": result_images }));
                 }
             }
             MessageRole::Assistant => {
@@ -462,6 +492,73 @@ mod tests {
             max_tokens: None,
             system: None,
         }
+    }
+
+    #[test]
+    fn tool_result_images_follow_all_function_responses_without_losing_text() {
+        let request = make_request(vec![
+            Message {
+                role: MessageRole::Assistant,
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "screen".into(),
+                        name: "computer".into(),
+                        input: json!({}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "browser".into(),
+                        name: "browser".into(),
+                        input: json!({}),
+                    },
+                ],
+            },
+            Message {
+                role: MessageRole::User,
+                content: vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "screen".into(),
+                        content: vec![
+                            ContentBlock::Text {
+                                text: "screenshot dimensions".into(),
+                            },
+                            ContentBlock::Image {
+                                media_type: "image/png".into(),
+                                data: "c2NyZWVu".into(),
+                            },
+                            ContentBlock::Image {
+                                media_type: "image/jpeg".into(),
+                                data: "em9vbQ==".into(),
+                            },
+                        ],
+                        is_error: false,
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "browser".into(),
+                        content: vec![ContentBlock::Text {
+                            text: "permission denied".into(),
+                        }],
+                        is_error: true,
+                    },
+                ],
+            },
+        ]);
+        let body = inner_request_to_value(build_request(&request));
+        assert_eq!(
+            body["contents"][1]["parts"],
+            json!([
+                {"functionResponse": {"name": "computer", "id": "screen", "response": {"output": "screenshot dimensions"}}},
+                {"functionResponse": {"name": "browser", "id": "browser", "response": {"error": "permission denied"}}},
+            ])
+        );
+        let image_parts = body["contents"][2]["parts"].as_array().unwrap();
+        assert!(image_parts[0]["text"].as_str().unwrap().contains("screen"));
+        assert_eq!(
+            &image_parts[1..],
+            &[
+                json!({"inlineData": {"mimeType": "image/png", "data": "c2NyZWVu"}}),
+                json!({"inlineData": {"mimeType": "image/jpeg", "data": "em9vbQ=="}}),
+            ]
+        );
     }
 
     #[test]

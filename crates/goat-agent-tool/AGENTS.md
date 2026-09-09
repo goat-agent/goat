@@ -9,7 +9,7 @@ parallel, not shared. A tool serving both goes through `goat-mcp-tools`.
 ## Registration is split
 
 `inventory` + `pub const NAME: ToolName` covers `fs`, `shell` and `skill` only. `goal`, `memory`,
-`pty`, `code`, `schedule` and the browser tool need injected runtime deps, and are wired by explicit
+`pty`, `code`, `schedule`, browser and computer tools need injected runtime deps, and are wired by explicit
 `register()` calls in `goat-runtime`. Adding one of those means editing that crate, not just
 declaring an inventory item.
 
@@ -25,3 +25,6 @@ Carries `agent: AgentId`, `agent_slug`, `conversation`, `goat_root`, `read_state
 | `read_state` | A shared `HashMap<PathBuf, ToolReadSnapshot>` across tool calls, recording what a tool has already seen of a file. |
 
 Pass `AgentId` through the constructor, never ambiently.
+
+Tool results may contain text and base64 images. `text_for_model` is a text-only preview; the brain
+must preserve the content blocks and error status when constructing provider tool results.

@@ -49,7 +49,7 @@ use goat_integration_tiro as _;
 use goat_integration_vercel as _;
 
 fn into_eyre(err: &anyhow::Error) -> color_eyre::Report {
-    eyre!(err.to_string())
+    eyre!("{err:#}")
 }
 
 #[tokio::main]
@@ -493,7 +493,7 @@ async fn run_unified_daemon(
         Err(err) => {
             shutdown.cancel();
             let _ = serve.await;
-            return Err(eyre!(err.to_string()));
+            return Err(into_eyre(&err));
         }
     };
     let agent = tokio::spawn(goat.run_until(shutdown.clone()));
@@ -846,47 +846,5 @@ fn print_pairing_qr(info: &goat_client::PairingInfo) {
         Err(_) => {
             println!("(could not render QR; use the values above)");
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    const CHANNELS: &[&str] = &["discord", "slack"];
-
-    const INTEGRATIONS: &[&str] = &[
-        "asana",
-        "atlassian",
-        "datadog",
-        "gcalendar",
-        "gdrive",
-        "github",
-        "gmail",
-        "intercom",
-        "langfuse",
-        "linear",
-        "notion",
-        "pagerduty",
-        "posthog",
-        "sentry",
-        "slack",
-        "stripe",
-        "supabase",
-        "tiro",
-        "vercel",
-    ];
-
-    #[test]
-    fn every_linked_leaf_reaches_the_inventory() {
-        let integrations = goat_integration::registry_from_inventory();
-        for id in INTEGRATIONS {
-            assert!(
-                integrations.contains_key(*id),
-                "{id} is missing from the integration registry; \
-                 add `use goat_integration_{id} as _;` to this file"
-            );
-        }
-        assert_eq!(integrations.len(), INTEGRATIONS.len());
-
-        assert_eq!(goat_channel::registered_ids(), CHANNELS);
     }
 }

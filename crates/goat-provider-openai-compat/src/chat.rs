@@ -270,6 +270,13 @@ fn role_label(role: MessageRole) -> &'static str {
     }
 }
 
+fn image_content(media_type: &str, data: &str) -> serde_json::Value {
+    json!({
+        "type": "image_url",
+        "image_url": { "url": format!("data:{media_type};base64,{data}") },
+    })
+}
+
 fn text_and_images_content(message: &Message) -> serde_json::Value {
     let images: Vec<(&String, &String)> = message
         .content
@@ -288,10 +295,7 @@ fn text_and_images_content(message: &Message) -> serde_json::Value {
         content.push(json!({ "type": "text", "text": text }));
     }
     for (media_type, data) in images {
-        content.push(json!({
-            "type": "image_url",
-            "image_url": { "url": format!("data:{media_type};base64,{data}") },
-        }));
+        content.push(image_content(media_type, data));
     }
     serde_json::Value::Array(content)
 }
@@ -312,7 +316,8 @@ fn to_chat_messages_with_system(
 
 fn to_chat_messages(messages: &[Message]) -> Vec<serde_json::Value> {
     let mut out = Vec::new();
-    for message in messages {
+    let mut tool_content = Vec::new();
+    for (index, message) in messages.iter().enumerate() {
         let has_tool_use = message
             .content
             .iter()
@@ -342,19 +347,50 @@ fn to_chat_messages(messages: &[Message]) -> Vec<serde_json::Value> {
             }));
         } else if has_tool_result {
             for block in &message.content {
-                if let ContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                    ..
-                } = block
-                {
-                    let output_text = ContentBlock::tool_result_text(content);
-                    out.push(json!({
-                        "role": "tool",
-                        "tool_call_id": tool_use_id,
-                        "content": output_text,
-                    }));
+                match block {
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } => {
+                        out.push(json!({
+                            "role": "tool",
+                            "tool_call_id": tool_use_id,
+                            "content": ContentBlock::tool_result_text(content),
+                        }));
+                        let mut labeled = false;
+                        for item in content {
+                            if let ContentBlock::Image { media_type, data } = item {
+                                if !labeled {
+                                    tool_content.push(json!({
+                                        "type": "text",
+                                        "text": format!("Images from tool_call_id: {tool_use_id}"),
+                                    }));
+                                    labeled = true;
+                                }
+                                tool_content.push(image_content(media_type, data));
+                            }
+                        }
+                    }
+                    ContentBlock::Text { text } => {
+                        tool_content.push(json!({ "type": "text", "text": text }));
+                    }
+                    ContentBlock::Image { media_type, data } => {
+                        tool_content.push(image_content(media_type, data));
+                    }
+                    _ => {}
                 }
+            }
+            if !tool_content.is_empty()
+                && !messages.get(index + 1).is_some_and(|next| {
+                    next.content
+                        .iter()
+                        .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+                })
+            {
+                let mut followup = json!({ "role": "user" });
+                followup["content"] = serde_json::Value::Array(std::mem::take(&mut tool_content));
+                out.push(followup);
             }
         } else {
             out.push(json!({
@@ -896,6 +932,124 @@ mod tests {
         assert_eq!(out[0]["role"], "tool");
         assert_eq!(out[0]["tool_call_id"], "call_1");
         assert_eq!(out[0]["content"], "file body");
+    }
+
+    const PNG_RED: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+    const PNG_GREEN: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNg+M8AAAICAQB7CYF4AAAAAElFTkSuQmCC";
+
+    fn screenshot_result(id: &str, text: &str, is_error: bool) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_use_id: id.to_owned(),
+            content: vec![
+                ContentBlock::Text {
+                    text: text.to_owned(),
+                },
+                ContentBlock::Image {
+                    media_type: "image/png".to_owned(),
+                    data: PNG_RED.to_owned(),
+                },
+                ContentBlock::Text {
+                    text: "second view".to_owned(),
+                },
+                ContentBlock::Image {
+                    media_type: "image/png".to_owned(),
+                    data: PNG_GREEN.to_owned(),
+                },
+            ],
+            is_error,
+        }
+    }
+
+    #[test]
+    fn tool_result_images_follow_all_batched_tool_responses() {
+        for split_results in [false, true] {
+            let mut req = request();
+            req.model = "gpt-4o".to_owned();
+            req.messages = vec![
+                Message {
+                    role: MessageRole::User,
+                    content: vec![
+                        ContentBlock::Text {
+                            text: "compare".to_owned(),
+                        },
+                        ContentBlock::Image {
+                            media_type: "image/png".to_owned(),
+                            data: PNG_RED.to_owned(),
+                        },
+                    ],
+                },
+                Message {
+                    role: MessageRole::Assistant,
+                    content: [("call_computer", "computer"), ("call_browser", "browser")]
+                        .into_iter()
+                        .map(|(id, name)| ContentBlock::ToolUse {
+                            id: id.to_owned(),
+                            name: name.to_owned(),
+                            input: json!({}),
+                        })
+                        .collect(),
+                },
+            ];
+            let results = vec![
+                screenshot_result("call_computer", "screenshot 1x1", false),
+                screenshot_result("call_browser", "click failed", true),
+            ];
+            if split_results {
+                req.messages
+                    .extend(results.into_iter().map(|result| Message {
+                        role: MessageRole::User,
+                        content: vec![result],
+                    }));
+            } else {
+                req.messages.push(Message {
+                    role: MessageRole::User,
+                    content: results,
+                });
+            }
+            req.messages
+                .push(Message::text(MessageRole::Assistant, "compared"));
+            let body = build_chat_body(&req, &ChatOptions::default()).unwrap();
+            let out = body["messages"].as_array().unwrap();
+            assert_eq!(out.len(), 6);
+            assert_eq!(&out[..4], json!([
+                {
+                    "role": "user",
+                    "content": [
+                        { "type": "text", "text": "compare" },
+                        { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{PNG_RED}") } },
+                    ],
+                },
+                {
+                    "role": "assistant", "content": null,
+                    "tool_calls": [
+                        { "id": "call_computer", "type": "function", "function": { "name": "computer", "arguments": "{}" } },
+                        { "id": "call_browser", "type": "function", "function": { "name": "browser", "arguments": "{}" } },
+                    ],
+                },
+                { "role": "tool", "tool_call_id": "call_computer", "content": "screenshot 1x1\nsecond view" },
+                { "role": "tool", "tool_call_id": "call_browser", "content": "click failed\nsecond view" },
+            ]).as_array().unwrap().as_slice());
+            assert_eq!(out[4]["role"], "user");
+            let content = out[4]["content"].as_array().unwrap();
+            assert_eq!(content.len(), 6);
+            for (id, parts) in ["call_computer", "call_browser"]
+                .into_iter()
+                .zip(content.as_chunks::<3>().0)
+            {
+                assert_eq!(parts[0]["type"], "text");
+                let label = parts[0]["text"].as_str().unwrap();
+                assert!(label.contains("tool_call_id"));
+                assert!(label.contains(id));
+                assert_eq!(&parts[1..], json!([
+                    { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{PNG_RED}") } },
+                    { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{PNG_GREEN}") } },
+                ]).as_array().unwrap().as_slice());
+            }
+            assert_eq!(
+                out[5],
+                json!({ "role": "assistant", "content": "compared" })
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>NSAccessibilityUsageDescription</key><string>goat drives apps on this Mac when a session or the agent uses the computer tool.</string>
+<key>NSScreenCaptureUsageDescription</key><string>goat captures the screen so the model can see it.</string>
+</dict></plist>

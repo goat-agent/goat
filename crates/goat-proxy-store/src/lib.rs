@@ -135,7 +135,7 @@ async fn run_migrations(pool: &SqlitePool) -> ProxyResult<()> {
 
 impl ProxyStore {
     pub async fn open(path: &Path) -> ProxyResult<Self> {
-        goat_sqlite_vec::register();
+        let _initializing = goat_sqlite_vec::initialization_guard().await;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }

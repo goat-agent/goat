@@ -3,12 +3,13 @@
 `GoatPaths` in `paths.rs` lays out `~/.goat/`; `HOME` is the only thing that moves it. Read
 `paths.rs` rather than duplicating the list.
 
-## Two config files, split by who reads them
+## Config files, split by who reads them
 
 | File | Owner | Keys |
 |---|---|---|
 | `~/.goat/config.json` | the daemon | `search`, `web_fetch`, `proxy`, `integrations`, `providers`, `devices` |
 | `~/.goat/client.json` | the client | `theme`, `mouse_capture_enabled`, `remotes`, `default_remote` |
+| `~/.goat/desktop.json` | the desktop app | recent `projects` with paths and added timestamps |
 
 One file with two owners is why "who writes this" had no principled answer.
 

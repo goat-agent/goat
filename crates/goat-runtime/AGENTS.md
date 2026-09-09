@@ -47,8 +47,13 @@ model, so changing either rebuilds the derived vector index even when dimensions
 ## Explicit registration lives here
 
 Agent tools needing injected runtime deps are wired by explicit `register()` calls in this crate:
-`goal`, `memory`, `pty`, `code`, `schedule`, and `goat_agent_tool_browser::register` (which needs the
-`CodeSessionHub`). Only `fs`/`shell`/`skill` use `inventory` + `pub const NAME: ToolName`.
+`goal`, `memory`, `pty`, `code`, `schedule`, `goat_agent_tool_browser::register`, and
+`goat_agent_tool_computer::register` (the host tools need `CodeSessionHub`). Only
+`fs`/`shell`/`skill` use `inventory` + `pub const NAME: ToolName`.
+
+Every agent also gets an empty `desktop` binding unless one is already configured. This is a runtime
+binding only, never a config rewrite, and it is appended alongside Discord/Slack bindings rather
+than replacing them.
 
 ## Also here
 
