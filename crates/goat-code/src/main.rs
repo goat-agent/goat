@@ -49,7 +49,7 @@ use goat_integration_tiro as _;
 use goat_integration_vercel as _;
 
 fn into_eyre(err: &anyhow::Error) -> color_eyre::Report {
-    eyre!(err.to_string())
+    eyre!("{err:#}")
 }
 
 #[tokio::main]
@@ -493,7 +493,7 @@ async fn run_unified_daemon(
         Err(err) => {
             shutdown.cancel();
             let _ = serve.await;
-            return Err(eyre!(err.to_string()));
+            return Err(into_eyre(&err));
         }
     };
     let agent = tokio::spawn(goat.run_until(shutdown.clone()));
