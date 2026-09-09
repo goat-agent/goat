@@ -566,7 +566,7 @@ pub struct SqliteStore {
 
 impl SqliteStore {
     pub async fn open(path: &Path) -> StoreResult<Self> {
-        goat_sqlite_vec::register();
+        let _initializing = goat_sqlite_vec::initialization_guard().await;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -1866,6 +1866,49 @@ mod tests {
         let p = AgentId::new();
         store.ensure_agent(p, "dev", "dev").await.unwrap();
         p
+    }
+
+    #[tokio::test]
+    async fn concurrent_store_owners_initialize_one_database_and_keep_independent_data() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("goat.db");
+        let (agent_store, code_store, memory_store, proxy_store) = tokio::join!(
+            SqliteStore::open(&database),
+            goat_code_store::CodeStore::open(&database),
+            goat_memory::MemoryEngine::open(&database, directory.path(), None, 180.0),
+            goat_proxy_store::ProxyStore::open(&database),
+        );
+        let agent_store = agent_store.unwrap();
+        let code_store = code_store.unwrap();
+        let _memory_store = memory_store.unwrap();
+        let _proxy_store = proxy_store.unwrap();
+        let agent = fixture_agent(&agent_store).await;
+        let run = agent_store.start_activity(agent, "desktop").await.unwrap();
+        let conversation = code_store
+            .create_conversation(goat_code_store::NewConversation {
+                cwd: "/project".into(),
+                title: Some("Concurrent startup".into()),
+                provider: "fixture".into(),
+                model: "fixture-model".into(),
+                account: "default".into(),
+                effort: None,
+                created_at: 1,
+                updated_at: 1,
+            })
+            .await
+            .unwrap();
+        let activity = agent_store.activity_since(&[agent], 0, 10).await.unwrap();
+        assert_eq!(activity[0].run_id, run);
+        assert_eq!(activity[0].detail.as_deref(), Some("desktop"));
+        let conversations = code_store
+            .list_conversations_in("/project".into(), 10)
+            .await
+            .unwrap();
+        assert_eq!(conversations[0].id, conversation);
+        assert_eq!(
+            conversations[0].title.as_deref(),
+            Some("Concurrent startup")
+        );
     }
 
     #[tokio::test]

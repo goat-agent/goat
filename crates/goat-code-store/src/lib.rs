@@ -243,7 +243,7 @@ async fn run_migrations(pool: &SqlitePool) -> CodeResult<()> {
 
 impl CodeStore {
     pub async fn open(path: &Path) -> CodeResult<Self> {
-        goat_sqlite_vec::register();
+        let _initializing = goat_sqlite_vec::initialization_guard().await;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }

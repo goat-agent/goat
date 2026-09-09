@@ -31,7 +31,7 @@ impl MemoryEngine {
         embedder: Option<Arc<dyn Embedder>>,
         note_half_life_days: f64,
     ) -> MemoryResult<Self> {
-        goat_sqlite_vec::register();
+        let _initializing = goat_sqlite_vec::initialization_guard().await;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }

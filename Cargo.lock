@@ -3340,6 +3340,7 @@ version = "0.1.0"
 dependencies = [
  "libsqlite3-sys",
  "sqlite-vec",
+ "tokio",
 ]
 
 [[package]]

@@ -18,6 +18,12 @@ table against the memory list before adding it.
 Never edit or delete an applied migration; `sqlx::migrate!` checksums them. Express a removal as a new
 migration. This holds in all four crates.
 
+All four file-backed store owners hold `goat_sqlite_vec::initialization_guard` while opening pools
+and running migrations. The process-wide gate prevents concurrent code/agent/memory/proxy schema
+initialization; a per-crate mutex cannot protect their shared database file. A busy timeout cannot
+fix a transaction whose read snapshot is already stale. Ordinary queries and independent in-memory
+stores do not hold this gate.
+
 ## Insert-only tables
 
 `code_messages` is insert-only, and compactions live in `code_compactions`; see
