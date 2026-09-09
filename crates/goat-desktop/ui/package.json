@@ -1,0 +1,28 @@
+{
+  "name": "goat-desktop-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "types": "bun scripts/types.ts",
+    "dev": "bun run types && vite --host 127.0.0.1 --port 5173 --strictPort",
+    "build": "bun run types && svelte-check --tsconfig ./tsconfig.json && vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "@tauri-apps/plugin-opener": "^2.5.0",
+    "dompurify": "^3.2.7",
+    "marked": "^16.3.0",
+    "svelte": "^5.39.0"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^6.2.0",
+    "@types/bun": "^1.2.22",
+    "json-schema-to-typescript": "^15.0.4",
+    "svelte-check": "^4.3.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5"
+  }
+}

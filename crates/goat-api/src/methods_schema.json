@@ -744,6 +744,378 @@
       "grant": "any",
       "item": {
         "$defs": {
+          "AgentMessage": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "outgoing": {
+                "type": "boolean"
+              },
+              "reply_to": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "ts": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "outgoing",
+              "text",
+              "ts"
+            ],
+            "type": "object"
+          },
+          "Cursor": {
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "properties": {
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              },
+              "messages": {
+                "items": {
+                  "$ref": "#/$defs/AgentMessage"
+                },
+                "type": "array"
+              },
+              "t": {
+                "const": "snapshot",
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "cursor",
+              "messages"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              },
+              "message": {
+                "$ref": "#/$defs/AgentMessage"
+              },
+              "t": {
+                "const": "message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "cursor",
+              "message"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              },
+              "id": {
+                "type": "string"
+              },
+              "t": {
+                "const": "update",
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "cursor",
+              "id",
+              "text"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "active": {
+                "type": "boolean"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              },
+              "t": {
+                "const": "typing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "cursor",
+              "active"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "AgentChatItem"
+      },
+      "name": "agent.chat",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "Cursor": {
+            "type": "string"
+          },
+          "WatchFrom": {
+            "oneOf": [
+              {
+                "properties": {
+                  "type": {
+                    "const": "Snapshot",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "cursor": {
+                    "$ref": "#/$defs/Cursor"
+                  },
+                  "type": {
+                    "const": "Cursor",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "cursor"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "from": {
+            "$ref": "#/$defs/WatchFrom"
+          }
+        },
+        "required": [
+          "agent",
+          "from"
+        ],
+        "title": "AgentChatParams",
+        "type": "object"
+      },
+      "shape": "stream:reliable",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "agent.list",
+      "output": {
+        "$defs": {
+          "AgentEntry": {
+            "properties": {
+              "channels": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "display": {
+                "type": "string"
+              },
+              "integrations": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "slug": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "slug",
+              "display",
+              "channels",
+              "integrations"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "agents": {
+            "items": {
+              "$ref": "#/$defs/AgentEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "agents"
+        ],
+        "title": "AgentListOutput",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "agent.schedules",
+      "output": {
+        "$defs": {
+          "ScheduleEntry": {
+            "properties": {
+              "id": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "instruction": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "next_run": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "when": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "instruction",
+              "kind",
+              "when"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "schedules": {
+            "items": {
+              "$ref": "#/$defs/ScheduleEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "schedules"
+        ],
+        "title": "AgentSchedulesOutput",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "agent": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent"
+        ],
+        "title": "AgentSchedulesParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "agent.send",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "AgentSendOutput",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "text"
+        ],
+        "title": "AgentSendParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$defs": {
           "Cursor": {
             "type": "string"
           }
@@ -1947,6 +2319,627 @@
           }
         ],
         "title": "BrowserCommand"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_client",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "host.computer",
+      "output": {
+        "$defs": {
+          "AxNode": {
+            "properties": {
+              "actions": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "depth": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "focused": {
+                "type": "boolean"
+              },
+              "frame": {
+                "$ref": "#/$defs/Rect"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "value": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "reference",
+              "role",
+              "depth",
+              "frame",
+              "enabled",
+              "focused",
+              "actions"
+            ],
+            "type": "object"
+          },
+          "Rect": {
+            "properties": {
+              "height": {
+                "format": "double",
+                "type": "number"
+              },
+              "width": {
+                "format": "double",
+                "type": "number"
+              },
+              "x": {
+                "format": "double",
+                "type": "number"
+              },
+              "y": {
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "y",
+              "width",
+              "height"
+            ],
+            "type": "object"
+          },
+          "RunningApp": {
+            "properties": {
+              "bundle_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "frontmost": {
+                "type": "boolean"
+              },
+              "name": {
+                "type": "string"
+              },
+              "pid": {
+                "format": "int32",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "name",
+              "pid",
+              "frontmost"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "display": {
+                "$ref": "#/$defs/Rect"
+              },
+              "height": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "media_type": {
+                "type": "string"
+              },
+              "reply": {
+                "const": "screenshot",
+                "type": "string"
+              },
+              "width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "reply",
+              "media_type",
+              "data",
+              "width",
+              "height",
+              "display"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "app": {
+                "$ref": "#/$defs/RunningApp"
+              },
+              "nodes": {
+                "items": {
+                  "$ref": "#/$defs/AxNode"
+                },
+                "type": "array"
+              },
+              "reply": {
+                "const": "snapshot",
+                "type": "string"
+              },
+              "snapshot_id": {
+                "type": "string"
+              },
+              "window": {
+                "$ref": "#/$defs/Rect"
+              },
+              "window_title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "reply",
+              "snapshot_id",
+              "app",
+              "window",
+              "nodes"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "apps": {
+                "items": {
+                  "$ref": "#/$defs/RunningApp"
+                },
+                "type": "array"
+              },
+              "reply": {
+                "const": "apps",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reply",
+              "apps"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "reply": {
+                "const": "point",
+                "type": "string"
+              },
+              "x": {
+                "format": "double",
+                "type": "number"
+              },
+              "y": {
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "reply",
+              "x",
+              "y"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "reply": {
+                "const": "done",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reply"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "HostComputerOutput"
+      },
+      "params": {
+        "$defs": {
+          "ComputerTarget": {
+            "oneOf": [
+              {
+                "properties": {
+                  "target": {
+                    "const": "point",
+                    "type": "string"
+                  },
+                  "x": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "target",
+                  "x",
+                  "y"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "reference": {
+                    "type": "string"
+                  },
+                  "snapshot_id": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "const": "ref",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "target",
+                  "snapshot_id",
+                  "reference"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "MouseButton": {
+            "enum": [
+              "left",
+              "right",
+              "middle"
+            ],
+            "type": "string"
+          },
+          "Point": {
+            "properties": {
+              "x": {
+                "format": "double",
+                "type": "number"
+              },
+              "y": {
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "y"
+            ],
+            "type": "object"
+          },
+          "Rect": {
+            "properties": {
+              "height": {
+                "format": "double",
+                "type": "number"
+              },
+              "width": {
+                "format": "double",
+                "type": "number"
+              },
+              "x": {
+                "format": "double",
+                "type": "number"
+              },
+              "y": {
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "y",
+              "width",
+              "height"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "properties": {
+              "command": {
+                "const": "screenshot",
+                "type": "string"
+              },
+              "max_width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command",
+              "max_width"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "command": {
+                "const": "zoom",
+                "type": "string"
+              },
+              "max_width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "region": {
+                "$ref": "#/$defs/Rect"
+              }
+            },
+            "required": [
+              "command",
+              "region",
+              "max_width"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "app": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "command": {
+                "const": "snapshot",
+                "type": "string"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "command": {
+                "const": "apps",
+                "type": "string"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "app": {
+                "type": "string"
+              },
+              "command": {
+                "const": "focus_app",
+                "type": "string"
+              }
+            },
+            "required": [
+              "command",
+              "app"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "at": {
+                "$ref": "#/$defs/ComputerTarget"
+              },
+              "button": {
+                "$ref": "#/$defs/MouseButton"
+              },
+              "command": {
+                "const": "click",
+                "type": "string"
+              },
+              "count": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command",
+              "at",
+              "button",
+              "count"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "command": {
+                "const": "mouse_move",
+                "type": "string"
+              },
+              "to": {
+                "$ref": "#/$defs/Point"
+              }
+            },
+            "required": [
+              "command",
+              "to"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "command": {
+                "const": "drag",
+                "type": "string"
+              },
+              "from": {
+                "$ref": "#/$defs/Point"
+              },
+              "to": {
+                "$ref": "#/$defs/Point"
+              }
+            },
+            "required": [
+              "command",
+              "from",
+              "to"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "at": {
+                "$ref": "#/$defs/Point"
+              },
+              "command": {
+                "const": "scroll",
+                "type": "string"
+              },
+              "dx": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "dy": {
+                "format": "int32",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command",
+              "at",
+              "dx",
+              "dy"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "command": {
+                "const": "type",
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "command",
+              "text"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "chord": {
+                "type": "string"
+              },
+              "command": {
+                "const": "key",
+                "type": "string"
+              }
+            },
+            "required": [
+              "command",
+              "chord"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "command": {
+                "const": "press",
+                "type": "string"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "snapshot_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "command",
+              "snapshot_id",
+              "reference"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "command": {
+                "const": "set_value",
+                "type": "string"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "snapshot_id": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "command",
+              "snapshot_id",
+              "reference",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "command": {
+                "const": "cursor_position",
+                "type": "string"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "ComputerCommand"
       },
       "shape": "unary",
       "version": 1

@@ -769,6 +769,7 @@ async fn build_shared(base: &RuntimeBase, agents: &[AgentConfig]) -> RuntimeShar
     goat_agent_tool_pty::register(&mut tools_reg, base.pty_manager.clone());
     if let Some(manager) = base.code.clone() {
         goat_agent_tool_browser::register(&mut tools_reg, manager.clone());
+        goat_agent_tool_computer::register(&mut tools_reg, manager.clone());
         goat_agent_tool_code::register(&mut tools_reg, manager);
     }
 
@@ -1100,7 +1101,15 @@ async fn spawn_agent(
     let commands = Arc::new(build_command_registry(&shared.goat_root, &raw.slug));
     let command_specs = commands.specs();
 
-    for binding in &raw.bindings {
+    let desktop_binding = (!raw
+        .bindings
+        .iter()
+        .any(|binding| binding.name == goat_channel_desktop::ID.as_str()))
+    .then(|| goat_agent_config::AgentBinding {
+        name: goat_channel_desktop::ID.as_str().into(),
+        config: serde_json::json!({}),
+    });
+    for binding in raw.bindings.iter().chain(desktop_binding.iter()) {
         let Some(channel) = shared.channels.get(binding.name.as_str()) else {
             warn!(
                 agent = %raw.slug,

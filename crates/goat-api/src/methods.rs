@@ -683,6 +683,277 @@ pub struct BrowserEventParams {
     pub event: CdpEvent,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "target", rename_all = "snake_case")]
+pub enum ComputerTarget {
+    Point {
+        x: f64,
+        y: f64,
+    },
+    Ref {
+        snapshot_id: String,
+        reference: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub enum ComputerCommand {
+    Screenshot {
+        max_width: u32,
+    },
+    Zoom {
+        region: Rect,
+        max_width: u32,
+    },
+    Snapshot {
+        app: Option<String>,
+    },
+    Apps {},
+    FocusApp {
+        app: String,
+    },
+    Click {
+        at: ComputerTarget,
+        button: MouseButton,
+        count: u8,
+    },
+    MouseMove {
+        to: Point,
+    },
+    Drag {
+        from: Point,
+        to: Point,
+    },
+    Scroll {
+        at: Point,
+        dx: i32,
+        dy: i32,
+    },
+    Type {
+        text: String,
+    },
+    Key {
+        chord: String,
+    },
+    Press {
+        snapshot_id: String,
+        reference: String,
+    },
+    SetValue {
+        snapshot_id: String,
+        reference: String,
+        value: String,
+    },
+    CursorPosition {},
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RunningApp {
+    pub name: String,
+    pub pid: i32,
+    pub bundle_id: Option<String>,
+    pub frontmost: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AxNode {
+    pub reference: String,
+    pub role: String,
+    pub title: Option<String>,
+    pub value: Option<String>,
+    pub depth: u8,
+    pub frame: Rect,
+    pub enabled: bool,
+    pub focused: bool,
+    pub actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "reply", rename_all = "snake_case")]
+pub enum HostComputerOutput {
+    Screenshot {
+        media_type: String,
+        data: String,
+        width: u32,
+        height: u32,
+        display: Rect,
+    },
+    Snapshot {
+        snapshot_id: String,
+        app: RunningApp,
+        window_title: Option<String>,
+        window: Rect,
+        nodes: Vec<AxNode>,
+    },
+    Apps {
+        apps: Vec<RunningApp>,
+    },
+    Point {
+        x: f64,
+        y: f64,
+    },
+    Done {},
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentEntry {
+    pub slug: String,
+    pub display: String,
+    pub channels: Vec<String>,
+    pub integrations: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentListOutput {
+    pub agents: Vec<AgentEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentSendParams {
+    pub agent: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentSendOutput {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentChatParams {
+    pub agent: String,
+    pub from: WatchFrom,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentMessage {
+    pub id: String,
+    pub outgoing: bool,
+    pub text: String,
+    pub ts: String,
+    pub reply_to: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "t", rename_all = "snake_case")]
+pub enum AgentChatItem {
+    Snapshot {
+        cursor: Cursor,
+        messages: Vec<AgentMessage>,
+    },
+    Message {
+        cursor: Cursor,
+        message: AgentMessage,
+    },
+    Update {
+        cursor: Cursor,
+        id: String,
+        text: String,
+    },
+    Typing {
+        cursor: Cursor,
+        active: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentSchedulesParams {
+    pub agent: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ScheduleEntry {
+    pub id: i64,
+    pub instruction: String,
+    pub kind: String,
+    pub when: String,
+    pub next_run: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentSchedulesOutput {
+    pub schedules: Vec<ScheduleEntry>,
+}
+
+method!(
+    HostComputer,
+    "host.computer",
+    1,
+    Shape::Unary,
+    Grant::Any,
+    Direction::ToClient,
+    ComputerCommand,
+    HostComputerOutput,
+    ()
+);
+method!(
+    AgentList,
+    "agent.list",
+    1,
+    Shape::Unary,
+    Grant::Any,
+    Direction::ToDaemon,
+    Empty,
+    AgentListOutput,
+    ()
+);
+method!(
+    AgentSend,
+    "agent.send",
+    1,
+    Shape::Unary,
+    Grant::Any,
+    Direction::ToDaemon,
+    AgentSendParams,
+    AgentSendOutput,
+    ()
+);
+method!(
+    AgentChat,
+    "agent.chat",
+    1,
+    Shape::Stream(StreamClass::Reliable),
+    Grant::Any,
+    Direction::ToDaemon,
+    AgentChatParams,
+    Empty,
+    AgentChatItem
+);
+method!(
+    AgentSchedules,
+    "agent.schedules",
+    1,
+    Shape::Unary,
+    Grant::Any,
+    Direction::ToDaemon,
+    AgentSchedulesParams,
+    AgentSchedulesOutput,
+    ()
+);
+
 method!(
     DaemonStatus,
     "daemon.status",

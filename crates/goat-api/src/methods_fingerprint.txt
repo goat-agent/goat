@@ -6,6 +6,10 @@ admin.daemon_stop@1 unary admin to_daemon 481f399d850707af
 admin.device_list@1 unary admin to_daemon 808a5aa9ead18a03
 admin.device_pair@1 unary admin to_daemon a269b916790d85ca
 admin.device_revoke@1 unary admin to_daemon 863c6f11ba2a2d7f
+agent.chat@1 stream:reliable any to_daemon 6c94bb3813d59fa4
+agent.list@1 unary any to_daemon a9c1e1db36ce5462
+agent.schedules@1 unary any to_daemon c47820f385cac12f
+agent.send@1 unary any to_daemon c23a9d0cae129aeb
 agent.watch@1 stream:reliable any to_daemon 9aec81778f254ad8
 ask.answer@1 unary any to_daemon 9bfe53a9718c5063
 browser.event@1 unary any to_daemon 6db09693b3d1fe6f
@@ -19,6 +23,7 @@ fs.read@1 unary any to_daemon c237b7eff0c2fe31
 fs.write@1 unary any to_daemon 274704ccfd4cfcda
 git.diff@1 unary any to_daemon cfcd06fb2cf3c1c8
 host.browser@1 unary any to_client fdd2baa86932f2d8
+host.computer@1 unary any to_client 872baa86a2d78ad0
 pty.open@1 stream:lossy any to_daemon fd9da051b9d0df69
 pty.resize@1 unary any to_daemon 26417e560a49647f
 pty.write@1 unary any to_daemon ab3c4f2b905bc65d

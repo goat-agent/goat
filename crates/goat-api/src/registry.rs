@@ -160,6 +160,10 @@ pub fn registry() -> Vec<MethodSchema> {
         describe::<m::CapabilityList>(),
         describe::<m::CapabilityBind>(),
         describe::<m::AgentWatch>(),
+        describe::<m::AgentList>(),
+        describe::<m::AgentSend>(),
+        describe::<m::AgentChat>(),
+        describe::<m::AgentSchedules>(),
         describe::<m::AdminAgentReload>(),
         describe::<m::AdminConfigEdit>(),
         describe::<m::AdminCredentialSet>(),
@@ -169,6 +173,7 @@ pub fn registry() -> Vec<MethodSchema> {
         describe::<m::AdminDeviceList>(),
         describe::<m::AdminDeviceRevoke>(),
         describe::<m::HostBrowser>(),
+        describe::<m::HostComputer>(),
         describe::<m::BrowserEvent>(),
     ];
     all.sort_by(|a, b| (a.name, a.version).cmp(&(b.name, b.version)));

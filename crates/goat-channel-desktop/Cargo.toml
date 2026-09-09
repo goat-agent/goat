@@ -1,0 +1,25 @@
+[package]
+name = "goat-channel-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+goat-api = { workspace = true }
+goat-channel = { workspace = true }
+goat-types = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+inventory = { workspace = true }
+parking_lot = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[lints]
+workspace = true

@@ -9,7 +9,7 @@ parallel, not shared. A tool serving both goes through `goat-mcp-tools`.
 ## Registration is split
 
 `inventory` + `pub const NAME: ToolName` covers `fs`, `shell` and `skill` only. `goal`, `memory`,
-`pty`, `code`, `schedule` and the browser tool need injected runtime deps, and are wired by explicit
+`pty`, `code`, `schedule`, browser and computer tools need injected runtime deps, and are wired by explicit
 `register()` calls in `goat-runtime`. Adding one of those means editing that crate, not just
 declaring an inventory item.
 

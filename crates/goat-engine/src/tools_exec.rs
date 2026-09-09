@@ -223,10 +223,17 @@ async fn execute_tool(
                 }]
             }
             ToolContent::Image(img) => {
-                vec![ContentBlock::Image {
+                let mut content = Vec::with_capacity(1 + usize::from(output.summary.is_some()));
+                if let Some(summary) = output.summary {
+                    content.push(ContentBlock::Text {
+                        text: cap_tool_result(summary),
+                    });
+                }
+                content.push(ContentBlock::Image {
                     media_type: img.media_type,
                     data: img.data,
-                }]
+                });
+                content
             }
         },
         Err(msg) => vec![ContentBlock::Text { text: msg }],

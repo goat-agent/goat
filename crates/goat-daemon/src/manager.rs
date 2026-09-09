@@ -453,6 +453,10 @@ impl CodeSessionHub {
             self.inner.browser_events.clone(),
             goat_api::Holder::session(goat_api::SessionId(id.0)),
         ));
+        let computer = Arc::new(crate::computer::ComputerRelay::new(
+            self.inner.broker.clone(),
+            goat_api::Holder::session(goat_api::SessionId(id.0)),
+        ));
         let agent = CodingEngine::new(goat_engine::EngineDeps {
             registry,
             store,
@@ -462,6 +466,7 @@ impl CodeSessionHub {
             cwd: cwd.clone(),
             meter: self.inner.meter.get().cloned(),
             browser: Some(browser),
+            computer: Some(computer),
         })
         .await;
         let session = Session::spawn(agent);

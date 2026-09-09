@@ -64,6 +64,26 @@ goat-remote = { path = "crates/goat-remote" }
 goat-api = { path = "crates/goat-api" }
 goat-capability = { path = "crates/goat-capability" }
 goat-browser-host = { path = "crates/goat-browser-host" }
+goat-computer-host = { path = "crates/goat-computer-host" }
+goat-tool-computer = { path = "crates/goat-tool-computer" }
+goat-agent-tool-computer = { path = "crates/goat-agent-tool-computer" }
+goat-channel-desktop = { path = "crates/goat-channel-desktop" }
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-build = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-macos-permissions = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+hostname = "0.4"
+axuielement = "0.9"
+screencapturekit = { version = "9", features = ["macos_14_0"] }
+enigo = "0.6"
+goat-computer-host-apps = { path = "crates/goat-computer-host-apps" }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSWorkspace", "NSRunningApplication", "libc"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSEnumerator"] }
+parking_lot = "0.12"
+core-graphics = "0.25"
 
 tokio                   = { version = "1.47", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt", "codec"] }
