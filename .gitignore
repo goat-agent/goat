@@ -14,3 +14,4 @@ src/.omc/
 .omo/
 /local/
 daemon-design-trimmed.md
+/crates/goat-desktop/gen/

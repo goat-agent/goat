@@ -42,6 +42,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
+      - name: desktop system libraries
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -57,6 +59,9 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
+      - name: desktop system libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -78,9 +83,25 @@ jobs:
       RUSTUP_TOOLCHAIN: "1.95"
     steps:
       - uses: actions/checkout@v7
+      - name: desktop system libraries
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev
       - run: rustup toolchain install 1.95 --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - run: cargo check --workspace --locked
+
+  desktop:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - run: bun install --frozen-lockfile --cwd crates/goat-desktop/ui
+      - run: bun run --cwd crates/goat-desktop/ui build
+      - run: cargo build -p goat-desktop --locked
