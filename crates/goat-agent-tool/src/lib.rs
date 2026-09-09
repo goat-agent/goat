@@ -118,6 +118,7 @@ pub struct ToolCall {
 #[non_exhaustive]
 pub enum ToolContent {
     Text { text: String },
+    Image { media_type: String, data: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -133,6 +134,24 @@ impl ToolOutput {
     pub fn text(text: impl Into<String>) -> Self {
         Self {
             content: vec![ToolContent::Text { text: text.into() }],
+            structured_content: None,
+            is_error: false,
+        }
+    }
+
+    pub fn image(
+        text: impl Into<String>,
+        media_type: impl Into<String>,
+        data: impl Into<String>,
+    ) -> Self {
+        Self {
+            content: vec![
+                ToolContent::Text { text: text.into() },
+                ToolContent::Image {
+                    media_type: media_type.into(),
+                    data: data.into(),
+                },
+            ],
             structured_content: None,
             is_error: false,
         }
@@ -166,6 +185,7 @@ impl ToolOutput {
                     }
                     out.push_str(text);
                 }
+                ToolContent::Image { .. } => {}
             }
         }
         if out.is_empty()

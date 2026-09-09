@@ -25,3 +25,6 @@ Carries `agent: AgentId`, `agent_slug`, `conversation`, `goat_root`, `read_state
 | `read_state` | A shared `HashMap<PathBuf, ToolReadSnapshot>` across tool calls, recording what a tool has already seen of a file. |
 
 Pass `AgentId` through the constructor, never ambiently.
+
+Tool results may contain text and base64 images. `text_for_model` is a text-only preview; the brain
+must preserve the content blocks and error status when constructing provider tool results.

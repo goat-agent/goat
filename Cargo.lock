@@ -2156,6 +2156,8 @@ dependencies = [
  "goat-store",
  "goat-types",
  "serde_json",
+ "sqlx",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",

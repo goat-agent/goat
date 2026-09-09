@@ -2,9 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, anyhow};
-use futures::{StreamExt, stream};
+use futures::{SinkExt, StreamExt, channel::mpsc, stream};
 use goat_agent_command::{CommandOutput, CommandRegistry};
 use goat_agent_config::AgentCard;
 use goat_agent_tool::{
@@ -12,7 +13,7 @@ use goat_agent_tool::{
     validate_tool_selectors,
 };
 use goat_bus::{EventBus, EventFilter};
-use goat_channel::ChannelHandle;
+use goat_channel::{ChannelError, ChannelHandle};
 use goat_model::{Model, canonicalize_provider_id};
 use goat_provider::{
     ChunkStream, ContentBlock, Message, MessageRole, Provider, Request, StreamChunk, StreamError,
@@ -21,8 +22,8 @@ use goat_provider::{
 use goat_render::{OutgoingSink, RenderSummary, StreamRenderer};
 use goat_skill::{Scopes, SkillSet};
 use goat_store::{
-    Direction, HistoryRow, MessageSender, ScheduleRunStatus, ScheduleStatus, Store,
-    ToolInvocationRecord, ToolInvocationStatus,
+    ActivityKind, Direction, HistoryRow, MessageSender, NewActivity, ScheduleRunStatus,
+    ScheduleStatus, Store, ToolInvocationRecord, ToolInvocationStatus,
 };
 use goat_types::{
     AgentId, ConversationId, Event, IncomingMessage, IntegrationId, IntegrationUpdateKind,
@@ -49,7 +50,8 @@ enum ContentPart {
     },
     ToolResult {
         id: String,
-        content: String,
+        content: Vec<goat_agent_tool::ToolContent>,
+        is_error: bool,
     },
 }
 
@@ -94,12 +96,28 @@ fn content_to_sdk(part: &ContentPart) -> ContentBlock {
             name: name.clone(),
             input: arguments.clone(),
         },
-        ContentPart::ToolResult { id, content } => ContentBlock::ToolResult {
+        ContentPart::ToolResult {
+            id,
+            content,
+            is_error,
+        } => ContentBlock::ToolResult {
             tool_use_id: id.clone(),
-            content: vec![ContentBlock::Text {
-                text: content.clone(),
-            }],
-            is_error: false,
+            content: content
+                .iter()
+                .filter_map(|part| match part {
+                    goat_agent_tool::ToolContent::Text { text } => {
+                        Some(ContentBlock::Text { text: text.clone() })
+                    }
+                    goat_agent_tool::ToolContent::Image { media_type, data } => {
+                        Some(ContentBlock::Image {
+                            media_type: media_type.clone(),
+                            data: data.clone(),
+                        })
+                    }
+                    _ => None,
+                })
+                .collect(),
+            is_error: *is_error,
         },
     }
 }
@@ -289,6 +307,33 @@ impl OutgoingSink for StoreSink {
             warn!(agent = %self.agent, error = ?e, "recording outgoing text");
         }
     }
+}
+
+struct RoundSink {
+    sink: Option<Arc<StoreSink>>,
+    prefix: String,
+    visible: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl OutgoingSink for RoundSink {
+    async fn record(&self, text: &str) {
+        self.visible.store(true, Ordering::Relaxed);
+        if let Some(sink) = &self.sink {
+            if self.prefix.is_empty() {
+                sink.record(text).await;
+            } else {
+                sink.record(&format!("{}{text}", self.prefix)).await;
+            }
+        }
+    }
+}
+
+struct LiveRender<'a> {
+    handle: Arc<dyn ChannelHandle>,
+    route: &'a TurnRoute,
+    sink: Option<Arc<StoreSink>>,
+    prefix: &'a str,
 }
 
 pub struct Brain {
@@ -493,13 +538,17 @@ impl Brain {
         msg: IncomingMessage,
     ) -> Result<()> {
         let _busy = TurnGuard::new(&self.turns);
-        self.run_turn(channels, msg).await
+        let run_id = self.start_activity(msg.conversation.channel.as_str()).await;
+        let result = self.run_turn(channels, msg, run_id).await;
+        self.finish_activity(run_id, &result).await;
+        result
     }
 
     async fn run_turn(
         &self,
         channels: &[Arc<dyn ChannelHandle>],
         msg: IncomingMessage,
+        run_id: Option<i64>,
     ) -> Result<()> {
         let handle = channels
             .iter()
@@ -528,8 +577,7 @@ impl Brain {
                     content: vec![ContentPart::Text(content)],
                 }),
                 Ok(CommandOutput::Reply { text }) => {
-                    let summary = self
-                        .renderer
+                    self.renderer
                         .render(
                             handle,
                             msg.conversation.clone(),
@@ -538,9 +586,6 @@ impl Brain {
                             Some(sink.clone()),
                         )
                         .await?;
-                    if !summary.final_text.is_empty() {
-                        sink.record(&summary.final_text).await;
-                    }
                     return Ok(());
                 }
                 Ok(_) => return Ok(()),
@@ -561,26 +606,22 @@ impl Brain {
                 anchor: msg.id.clone(),
             });
 
-        let (summary, _conversation) = self
-            .complete_with_tools(
-                handle,
-                TurnRoute {
-                    conversation: msg.conversation.clone(),
-                    reply_to,
-                    surface: msg.surface,
-                    audience: turn_audience(msg.surface, &msg.conversation, Some(&msg.from)),
-                    thread_open,
-                },
-                &mut messages,
-                TurnMode::Normal,
-                summary,
-                Some(sink.clone()),
-            )
-            .await?;
-
-        if !summary.final_text.is_empty() {
-            sink.record(&summary.final_text).await;
-        }
+        self.complete_with_tools(
+            handle,
+            TurnRoute {
+                run_id,
+                conversation: msg.conversation.clone(),
+                reply_to,
+                surface: msg.surface,
+                audience: turn_audience(msg.surface, &msg.conversation, Some(&msg.from)),
+                thread_open,
+            },
+            &mut messages,
+            TurnMode::Normal,
+            summary,
+            Some(sink.clone()),
+        )
+        .await?;
 
         Ok(())
     }
@@ -801,7 +842,7 @@ impl Brain {
         messages: &mut Vec<LlmMessage>,
         mode: TurnMode,
         summary: Option<String>,
-        sink: Option<Arc<dyn OutgoingSink>>,
+        mut sink: Option<Arc<StoreSink>>,
     ) -> Result<(RenderSummary, ConversationId)> {
         const MAX_TOOL_ROUNDS: usize = 1000;
 
@@ -852,6 +893,7 @@ impl Brain {
             route.surface,
             route.thread_open.is_some(),
         );
+        let mut rendered = RenderSummary::default();
 
         for _round in 0..MAX_TOOL_ROUNDS {
             let mut round_specs = tool_specs.clone();
@@ -866,9 +908,23 @@ impl Brain {
                 None,
             );
 
-            let folded = self.stream_with_retry(&provider, req).await?;
+            let live = (!mode.is_autonomous()).then(|| LiveRender {
+                handle: handle.clone(),
+                route: &route,
+                sink: sink.clone(),
+                prefix: &rendered.final_text,
+            });
+            let (folded, round_summary) = self.stream_with_retry(&provider, req, live).await?;
+            if !mode.is_autonomous() {
+                rendered.messages_sent += round_summary.messages_sent;
+                rendered.edits += round_summary.edits;
+                rendered.final_text.push_str(&folded.text);
+            }
 
             if folded.tool_calls.is_empty() {
+                if !mode.is_autonomous() {
+                    return Ok((rendered, route.conversation));
+                }
                 let final_text = sanitize_final_text(folded.text);
                 if mode.is_autonomous() && final_text.trim().eq_ignore_ascii_case("skip") {
                     return Ok((
@@ -887,16 +943,23 @@ impl Brain {
                         route.conversation.clone(),
                         route.reply_to,
                         text_stream(self.default_model.clone(), final_text),
-                        sink.clone(),
+                        None,
                     )
                     .await?;
                 return Ok((summary, route.conversation));
             }
 
-            messages.push(assistant_tool_call_message(&folded.tool_calls));
+            messages.push(assistant_tool_call_message(folded.text, &folded.tool_calls));
 
             for call in folded.tool_calls {
                 if route.thread_open.is_some() && call.name.as_str() == OPEN_THREAD_TOOL {
+                    self.record_activity(
+                        route.run_id,
+                        ActivityKind::ToolStarted,
+                        Some(call.name.clone()),
+                        None,
+                    )
+                    .await;
                     match parse_open_thread_args(&call.arguments) {
                         None => {
                             route.thread_open = None;
@@ -921,6 +984,16 @@ impl Brain {
                                     route.conversation = new_thread;
                                     route.reply_to = None;
                                     route.thread_open = None;
+                                    if sink.is_some() {
+                                        sink = Some(Arc::new(StoreSink {
+                                            store: self.store.clone(),
+                                            agent: self.agent,
+                                            conversation: route.conversation.clone(),
+                                            id: uuid::Uuid::new_v4().to_string(),
+                                            reply_to: None,
+                                        }));
+                                    }
+                                    rendered.final_text.clear();
                                     messages.push(tool_result_message(
                                         call.id,
                                         "Opened a new thread; write your answer to the user now.",
@@ -941,6 +1014,7 @@ impl Brain {
 
                 let output = self
                     .execute_tool(
+                        route.run_id,
                         &route.conversation,
                         route.audience.clone(),
                         &call,
@@ -952,7 +1026,8 @@ impl Brain {
                     role: Role::Tool,
                     content: vec![ContentPart::ToolResult {
                         id: call.id,
-                        content: output.text_for_model(),
+                        content: output.content,
+                        is_error: output.is_error,
                     }],
                 });
             }
@@ -969,6 +1044,11 @@ impl Brain {
             ));
         }
         let text = "I stopped because tool execution exceeded the safety round limit.".to_string();
+        let round_sink = Arc::new(RoundSink {
+            sink,
+            prefix: rendered.final_text.clone(),
+            visible: AtomicBool::new(false),
+        });
         let summary = self
             .renderer
             .render(
@@ -976,10 +1056,58 @@ impl Brain {
                 route.conversation.clone(),
                 route.reply_to,
                 text_stream(self.default_model.clone(), text),
-                sink.clone(),
+                Some(round_sink),
             )
             .await?;
-        Ok((summary, route.conversation))
+        rendered.messages_sent += summary.messages_sent;
+        rendered.edits += summary.edits;
+        rendered.final_text.push_str(&summary.final_text);
+        Ok((rendered, route.conversation))
+    }
+
+    async fn start_activity(&self, trigger: &str) -> Option<i64> {
+        match self.store.start_activity(self.agent, trigger).await {
+            Ok(run_id) => Some(run_id),
+            Err(error) => {
+                warn!(agent = %self.agent, trigger, error = ?error, "starting activity");
+                None
+            }
+        }
+    }
+
+    async fn record_activity(
+        &self,
+        run_id: Option<i64>,
+        kind: ActivityKind,
+        detail: Option<String>,
+        ok: Option<bool>,
+    ) {
+        let Some(run_id) = run_id else {
+            return;
+        };
+        if let Err(error) = self
+            .store
+            .record_activity(NewActivity {
+                agent: self.agent,
+                kind,
+                run_id,
+                detail,
+                ok,
+            })
+            .await
+        {
+            warn!(agent = %self.agent, run_id, error = ?error, "recording activity");
+        }
+    }
+
+    async fn finish_activity(&self, run_id: Option<i64>, result: &Result<()>) {
+        self.record_activity(
+            run_id,
+            ActivityKind::TurnFinished,
+            result.as_ref().err().map(|error| format!("{error:#}")),
+            Some(result.is_ok()),
+        )
+        .await;
     }
 
     async fn finish_run_logged(
@@ -1003,75 +1131,67 @@ impl Brain {
     async fn handle_schedule(
         &self,
         channels: &[Arc<dyn ChannelHandle>],
-        run_id: i64,
+        task_run_id: i64,
         schedule_id: i64,
     ) -> Result<()> {
+        let _busy = TurnGuard::new(&self.turns);
+        let run_id = self.start_activity("schedule").await;
+        self.record_activity(
+            run_id,
+            ActivityKind::ScheduleFired,
+            Some(schedule_id.to_string()),
+            None,
+        )
+        .await;
+        let result = self.run_schedule(channels, run_id, schedule_id).await;
+        let (status, note) = match &result {
+            Ok((status, note)) => (*status, note.clone()),
+            Err(error) => (ScheduleRunStatus::Failed, Some(format!("{error:#}"))),
+        };
+        self.finish_run_logged(task_run_id, status, note.clone())
+            .await;
+        self.record_activity(
+            run_id,
+            ActivityKind::TurnFinished,
+            note,
+            Some(!matches!(status, ScheduleRunStatus::Failed)),
+        )
+        .await;
+        result.map(|_| ())
+    }
+
+    async fn run_schedule(
+        &self,
+        channels: &[Arc<dyn ChannelHandle>],
+        run_id: Option<i64>,
+        schedule_id: i64,
+    ) -> Result<(ScheduleRunStatus, Option<String>)> {
         let schedule = match self.store.get_schedule(schedule_id).await? {
-            Some(t) if matches!(t.status, ScheduleStatus::Active) => t,
+            Some(schedule) if matches!(schedule.status, ScheduleStatus::Active) => schedule,
             Some(_) => {
-                self.finish_run_logged(
-                    run_id,
+                return Ok((
                     ScheduleRunStatus::Skipped,
                     Some("task no longer active".into()),
-                )
-                .await;
-                return Ok(());
+                ));
             }
-            None => {
-                self.finish_run_logged(
-                    run_id,
-                    ScheduleRunStatus::Failed,
-                    Some("task row missing".into()),
-                )
-                .await;
-                return Ok(());
-            }
+            None => return Err(anyhow!("task row missing")),
         };
-
         let conv = schedule.origin_conv.clone();
-        let Some(handle) = channels
+        let handle = channels
             .iter()
-            .find(|h| h.id() == conv.channel && h.instance() == conv.instance)
+            .find(|handle| handle.id() == conv.channel && handle.instance() == conv.instance)
             .cloned()
-        else {
-            let available: Vec<String> = channels
-                .iter()
-                .map(|h| format!("{}:{}", h.id().as_str(), h.instance()))
-                .collect();
-            warn!(
-                run_id,
-                agent = %self.agent,
-                want = %format!("{}:{}", conv.channel.as_str(), conv.instance),
-                have = ?available,
-                "no channel handle for origin_conv; marking failed"
-            );
-            self.finish_run_logged(
-                run_id,
-                ScheduleRunStatus::Failed,
-                Some("no channel handle for origin_conv".into()),
-            )
-            .await;
-            return Ok(());
-        };
-
-        let mut messages = vec![LlmMessage {
-            role: Role::User,
-            content: vec![ContentPart::Text(schedule.instruction.clone())],
-        }];
-        let surface = match handle.surface(&conv).await {
-            Ok(surface) => surface,
-            Err(error) => {
-                let note = format!("could not classify origin surface: {error}");
-                self.finish_run_logged(run_id, ScheduleRunStatus::Failed, Some(note))
-                    .await;
-                return Err(error).context("classify schedule origin surface");
-            }
-        };
-
-        let (summary, conversation) = match self
+            .ok_or_else(|| anyhow!("no channel handle for origin_conv"))?;
+        let mut messages = vec![LlmMessage::user_text(schedule.instruction)];
+        let surface = handle
+            .surface(&conv)
+            .await
+            .context("classify schedule origin surface")?;
+        let (summary, conversation) = self
             .complete_with_tools(
                 handle,
                 TurnRoute {
+                    run_id,
                     conversation: conv.clone(),
                     reply_to: None,
                     surface,
@@ -1080,66 +1200,46 @@ impl Brain {
                 },
                 &mut messages,
                 TurnMode::Schedule {
-                    tools: schedule.tools.clone(),
+                    tools: schedule.tools,
                 },
                 None,
                 None,
             )
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                self.finish_run_logged(
-                    run_id,
-                    ScheduleRunStatus::Failed,
-                    Some(format!("schedule run errored: {e}")),
-                )
-                .await;
-                return Err(e);
-            }
-        };
-
+            .await?;
         let trimmed = summary.final_text.trim();
         if trimmed.eq_ignore_ascii_case("skip") {
-            self.finish_run_logged(
-                run_id,
-                ScheduleRunStatus::Skipped,
-                Some("model declined".into()),
-            )
-            .await;
-            return Ok(());
+            return Ok((ScheduleRunStatus::Skipped, Some("model declined".into())));
         }
         if trimmed.is_empty() {
-            warn!(
-                run_id,
-                schedule_id,
-                agent = %self.agent,
-                "schedule produced empty response; marking failed",
-            );
-            self.finish_run_logged(
-                run_id,
-                ScheduleRunStatus::Failed,
-                Some("empty response from model".into()),
-            )
-            .await;
-            return Ok(());
+            return Err(anyhow!("empty response from model"));
         }
-
         self.store
             .append_outgoing_text(self.agent, &conversation, &summary.final_text, None)
             .await
             .context("append outgoing text for schedule")?;
-
-        let truncated = truncate_for_summary(&summary.final_text);
-        self.finish_run_logged(run_id, ScheduleRunStatus::Done, Some(truncated))
-            .await;
-        Ok(())
+        Ok((
+            ScheduleRunStatus::Done,
+            Some(truncate_for_summary(&summary.final_text)),
+        ))
     }
 
     async fn handle_integration_update(
         &self,
         channels: &[Arc<dyn ChannelHandle>],
         update: IntegrationTurn,
+    ) -> Result<()> {
+        let _busy = TurnGuard::new(&self.turns);
+        let run_id = self.start_activity("integration").await;
+        let result = self.run_integration_update(channels, update, run_id).await;
+        self.finish_activity(run_id, &result).await;
+        result
+    }
+
+    async fn run_integration_update(
+        &self,
+        channels: &[Arc<dyn ChannelHandle>],
+        update: IntegrationTurn,
+        run_id: Option<i64>,
     ) -> Result<()> {
         let resolved = match self.store.latest_conversation(self.agent).await? {
             Some(conversation) => channels
@@ -1156,7 +1256,7 @@ impl Brain {
                 external_ref = %update.external_ref,
                 "no channel handle for integration update; dropping briefing",
             );
-            return Ok(());
+            return Err(anyhow!("no channel handle for integration update"));
         };
 
         let mut messages = vec![LlmMessage {
@@ -1179,6 +1279,7 @@ impl Brain {
             .complete_with_tools(
                 handle,
                 TurnRoute {
+                    run_id,
                     conversation: conversation.clone(),
                     reply_to: None,
                     surface,
@@ -1207,6 +1308,19 @@ impl Brain {
         channels: &[Arc<dyn ChannelHandle>],
         update: WorkflowTurn,
     ) -> Result<()> {
+        let _busy = TurnGuard::new(&self.turns);
+        let run_id = self.start_activity("workflow").await;
+        let result = self.run_workflow_update(channels, update, run_id).await;
+        self.finish_activity(run_id, &result).await;
+        result
+    }
+
+    async fn run_workflow_update(
+        &self,
+        channels: &[Arc<dyn ChannelHandle>],
+        update: WorkflowTurn,
+        run_id: Option<i64>,
+    ) -> Result<()> {
         let resolved = match self.store.latest_conversation(self.agent).await? {
             Some(conversation) => channels
                 .iter()
@@ -1221,7 +1335,7 @@ impl Brain {
                 workflow = %update.workflow,
                 "no channel handle for workflow update; dropping briefing",
             );
-            return Ok(());
+            return Err(anyhow!("no channel handle for workflow update"));
         };
 
         let prompt = workflow_prompt(&update, &self.integration_tools);
@@ -1245,6 +1359,7 @@ impl Brain {
             .complete_with_tools(
                 handle,
                 TurnRoute {
+                    run_id,
                     conversation: conversation.clone(),
                     reply_to: None,
                     surface,
@@ -1301,12 +1416,20 @@ impl Brain {
 
     async fn execute_tool(
         &self,
+        run_id: Option<i64>,
         conv: &ConversationId,
         audience: Option<ToolAudience>,
         call: &ModelToolCall,
         read_state: ToolReadState,
         allowed_tools: &HashSet<String>,
     ) -> ToolOutput {
+        self.record_activity(
+            run_id,
+            ActivityKind::ToolStarted,
+            Some(call.name.clone()),
+            None,
+        )
+        .await;
         let started_at = chrono::Utc::now();
         let name = match goat_agent_tool::ToolName::new(call.name.clone()) {
             Ok(name) => name,
@@ -1400,21 +1523,24 @@ struct FoldedTurn {
     tool_calls: Vec<ModelToolCall>,
 }
 
-fn assistant_tool_call_message(calls: &[ModelToolCall]) -> LlmMessage {
+fn assistant_tool_call_message(text: String, calls: &[ModelToolCall]) -> LlmMessage {
+    let mut content = Vec::with_capacity(calls.len() + usize::from(!text.is_empty()));
+    if !text.is_empty() {
+        content.push(ContentPart::Text(text));
+    }
+    content.extend(calls.iter().map(|call| ContentPart::ToolCall {
+        id: call.id.clone(),
+        name: call.name.clone(),
+        arguments: call.arguments.clone(),
+    }));
     LlmMessage {
         role: Role::Assistant,
-        content: calls
-            .iter()
-            .map(|call| ContentPart::ToolCall {
-                id: call.id.clone(),
-                name: call.name.clone(),
-                arguments: call.arguments.clone(),
-            })
-            .collect(),
+        content,
     }
 }
 
 struct TurnRoute {
+    run_id: Option<i64>,
     conversation: ConversationId,
     reply_to: Option<MessageId>,
     surface: Surface,
@@ -1594,7 +1720,10 @@ fn tool_result_message(id: String, content: impl Into<String>) -> LlmMessage {
         role: Role::Tool,
         content: vec![ContentPart::ToolResult {
             id,
-            content: content.into(),
+            content: vec![goat_agent_tool::ToolContent::Text {
+                text: content.into(),
+            }],
+            is_error: false,
         }],
     }
 }
@@ -1658,7 +1787,8 @@ impl Brain {
         &self,
         provider: &Arc<dyn Provider>,
         req: Request,
-    ) -> Result<FoldedTurn> {
+        live: Option<LiveRender<'_>>,
+    ) -> Result<(FoldedTurn, RenderSummary)> {
         let mut last_rate_limit_secs: Option<u64> = None;
 
         for attempt in 0usize..=self.llm_max_retries {
@@ -1678,7 +1808,56 @@ impl Brain {
 
             let outcome = match provider.stream(req.clone()).await {
                 Err(e) => Err(e),
-                Ok(stream) => fold_turn(stream, self.stream_idle_timeout).await,
+                Ok(stream) => {
+                    if let Some(live) = &live {
+                        let (tx, rx) = mpsc::channel(1);
+                        let sink = Arc::new(RoundSink {
+                            sink: live.sink.clone(),
+                            prefix: live.prefix.to_string(),
+                            visible: AtomicBool::new(false),
+                        });
+                        let folding = fold_turn_to(stream, self.stream_idle_timeout, Some(tx));
+                        let rendering = self.renderer.render(
+                            live.handle.clone(),
+                            live.route.conversation.clone(),
+                            live.route.reply_to.clone(),
+                            Box::pin(rx),
+                            Some(sink.clone()),
+                        );
+                        tokio::pin!(folding, rendering);
+                        let (folded, rendered) = tokio::select! {
+                            folded = &mut folding => (folded, rendering.await),
+                            rendered = &mut rendering => {
+                                if let Err(error) = &rendered
+                                    && !matches!(error, ChannelError::Provider(_))
+                                {
+                                    return Err(anyhow!("{error}"));
+                                }
+                                (folding.await, rendered)
+                            }
+                        };
+                        if let Err(error) = &rendered
+                            && !matches!(error, ChannelError::Provider(_))
+                        {
+                            return Err(anyhow!("{error}"));
+                        }
+                        match folded {
+                            Ok(mut folded) => {
+                                let mut summary = rendered?;
+                                folded.text = std::mem::take(&mut summary.final_text);
+                                Ok((folded, summary))
+                            }
+                            Err(error) if sink.visible.load(Ordering::Relaxed) => {
+                                return Err(error.into());
+                            }
+                            Err(error) => Err(error),
+                        }
+                    } else {
+                        fold_turn(stream, self.stream_idle_timeout)
+                            .await
+                            .map(|folded| (folded, RenderSummary::default()))
+                    }
+                }
             };
 
             match outcome {
@@ -1706,43 +1885,67 @@ impl Brain {
 }
 
 async fn fold_turn(
+    stream: ChunkStream,
+    idle_timeout: std::time::Duration,
+) -> Result<FoldedTurn, StreamError> {
+    fold_turn_to(stream, idle_timeout, None).await
+}
+
+async fn fold_turn_to(
     mut stream: ChunkStream,
     idle_timeout: std::time::Duration,
+    mut output: Option<mpsc::Sender<Result<StreamChunk, StreamError>>>,
 ) -> Result<FoldedTurn, StreamError> {
     let mut text = String::new();
     let mut calls: Vec<ModelToolCall> = Vec::new();
-
     loop {
-        match tokio::time::timeout(idle_timeout, stream.next()).await {
-            Err(_elapsed) => return Err(StreamError::transport("LLM stream stalled")),
+        let next = tokio::time::timeout(idle_timeout, stream.next())
+            .await
+            .map_err(|_| StreamError::transport("LLM stream stalled"))
+            .and_then(Option::transpose);
+        let chunk = match next {
+            Ok(Some(chunk)) => chunk,
             Ok(None) => break,
-            Ok(Some(Err(e))) => return Err(e),
-            Ok(Some(Ok(chunk))) => match chunk {
-                StreamChunk::TextDelta { text: delta } => text.push_str(&delta),
-                StreamChunk::ToolCall { id, name, input } => {
-                    let id = if id.is_empty() {
-                        format!("call_{}", calls.len())
-                    } else {
-                        id
-                    };
-                    let arguments = if input.trim().is_empty() {
-                        serde_json::Value::Object(serde_json::Map::new())
-                    } else {
-                        serde_json::from_str(&input).unwrap_or_else(|e| {
-                            serde_json::json!({"_invalid_json": input, "_error": e.to_string()})
-                        })
-                    };
-                    calls.push(ModelToolCall {
-                        id,
-                        name,
-                        arguments,
-                    });
+            Err(error) => {
+                if let Some(output) = &mut output {
+                    let _ = output.send(Err(error.clone())).await;
                 }
-                _ => {}
-            },
+                return Err(error);
+            }
+        };
+        match chunk {
+            StreamChunk::TextDelta { text: delta } => {
+                if let Some(output) = &mut output {
+                    output
+                        .send(Ok(StreamChunk::TextDelta { text: delta }))
+                        .await
+                        .map_err(|_| StreamError::other("response renderer closed"))?;
+                } else {
+                    text.push_str(&delta);
+                }
+            }
+            StreamChunk::ToolCall { id, name, input } => {
+                let id = if id.is_empty() {
+                    format!("call_{}", calls.len())
+                } else {
+                    id
+                };
+                let arguments = if input.trim().is_empty() {
+                    serde_json::Value::Object(serde_json::Map::new())
+                } else {
+                    serde_json::from_str(&input).unwrap_or_else(|error| {
+                        serde_json::json!({"_invalid_json": input, "_error": error.to_string()})
+                    })
+                };
+                calls.push(ModelToolCall {
+                    id,
+                    name,
+                    arguments,
+                });
+            }
+            _ => {}
         }
     }
-
     Ok(FoldedTurn {
         text,
         tool_calls: calls,
@@ -2075,6 +2278,778 @@ const META_LEAK_MARKERS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::sync::atomic::AtomicUsize;
+
+    use goat_channel::test_support::{MockChannelHandle, MockEvent};
+    use goat_channel::{ChannelCapabilities, ChannelIdentity, ChannelResult, SentRef, TypingGuard};
+    use goat_provider::{AuthMethod, Capabilities, ProviderId};
+    use goat_store::{ActivityRecord, NewSchedule, ScheduleKind, SqliteStore};
+    use goat_types::{ChannelId, InstanceId, OutgoingBody};
+    use tokio::sync::Notify;
+
+    struct ScriptedProvider {
+        streams: std::sync::Mutex<VecDeque<ChunkStream>>,
+        requests: tokio::sync::Mutex<Vec<Request>>,
+        requested: Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ScriptedProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::from("scripted")
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                tools: true,
+                auth: AuthMethod::None,
+                images: true,
+            }
+        }
+
+        async fn stream(&self, request: Request) -> Result<ChunkStream, StreamError> {
+            self.requests.lock().await.push(request);
+            self.requested.notify_one();
+            self.streams
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| StreamError::invalid_request("unexpected provider request"))
+        }
+
+        fn discover(
+            &self,
+            _out: tokio::sync::mpsc::Sender<goat_provider::Model>,
+        ) -> tokio::task::JoinHandle<()> {
+            tokio::spawn(async {})
+        }
+    }
+
+    impl ScriptedProvider {
+        async fn wait_for_requests(&self, count: usize) {
+            loop {
+                let notified = self.requested.notified();
+                if self.requests.lock().await.len() >= count {
+                    return;
+                }
+                notified.await;
+            }
+        }
+    }
+
+    struct ObservedChannel {
+        inner: Arc<MockChannelHandle>,
+        changed: Notify,
+        fail_edits: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl ChannelHandle for ObservedChannel {
+        fn instance(&self) -> InstanceId {
+            self.inner.instance()
+        }
+
+        fn agent(&self) -> AgentId {
+            self.inner.agent()
+        }
+
+        fn id(&self) -> ChannelId {
+            self.inner.id()
+        }
+
+        fn identity(&self) -> ChannelIdentity {
+            self.inner.identity()
+        }
+
+        fn capabilities(&self) -> ChannelCapabilities {
+            self.inner.capabilities()
+        }
+
+        async fn surface(&self, _conversation: &ConversationId) -> ChannelResult<Surface> {
+            Ok(Surface::Dm)
+        }
+
+        async fn send(
+            &self,
+            conv: &ConversationId,
+            body: OutgoingBody,
+            reply_to: Option<MessageId>,
+        ) -> ChannelResult<SentRef> {
+            let sent = self.inner.send(conv, body, reply_to).await?;
+            self.changed.notify_one();
+            Ok(sent)
+        }
+
+        async fn edit(&self, sent: &SentRef, body: OutgoingBody) -> ChannelResult<()> {
+            if self.fail_edits.load(Ordering::Relaxed) {
+                return Err(ChannelError::BadRequest("message was deleted".into()));
+            }
+            self.inner.edit(sent, body).await?;
+            self.changed.notify_one();
+            Ok(())
+        }
+
+        async fn typing(&self, conv: &ConversationId) -> ChannelResult<TypingGuard> {
+            self.inner.typing(conv).await
+        }
+
+        fn supports_threads(&self) -> bool {
+            true
+        }
+
+        async fn open_thread(
+            &self,
+            parent: &ConversationId,
+            anchor: Option<&MessageId>,
+            title: &str,
+        ) -> ChannelResult<ConversationId> {
+            self.inner.open_thread(parent, anchor, title).await
+        }
+    }
+
+    impl ObservedChannel {
+        async fn wait_for_text(&self, expected: &str) {
+            loop {
+                let notified = self.changed.notified();
+                if self
+                    .inner
+                    .events()
+                    .await
+                    .iter()
+                    .any(|event| event.as_text() == Some(expected))
+                {
+                    return;
+                }
+                notified.await;
+            }
+        }
+    }
+
+    struct WriteNote;
+
+    #[async_trait::async_trait]
+    impl goat_agent_tool::ToolHandler for WriteNote {
+        async fn call(&self, caller: ToolCaller, _call: ToolCall) -> ToolOutput {
+            match tokio::fs::write(caller.goat_root.join("tool-note.txt"), "tool ran").await {
+                Ok(()) => ToolOutput::text("note saved"),
+                Err(error) => ToolOutput::error(error.to_string()),
+            }
+        }
+    }
+
+    struct TurnFixture {
+        brain: Brain,
+        provider: Arc<ScriptedProvider>,
+        channel: Arc<ObservedChannel>,
+        store: Arc<SqliteStore>,
+        dir: tempfile::TempDir,
+    }
+
+    impl TurnFixture {
+        async fn new(streams: Vec<ChunkStream>) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("goat.db");
+            let agent = AgentId::from_slug("test");
+            let store = Arc::new(SqliteStore::open(&path).await.unwrap());
+            store.ensure_agent(agent, "test", "Test").await.unwrap();
+            let memory_engine = Arc::new(
+                goat_memory::MemoryEngine::open(&path, dir.path(), None, 180.0)
+                    .await
+                    .unwrap(),
+            );
+            let provider = Arc::new(ScriptedProvider {
+                streams: std::sync::Mutex::new(streams.into()),
+                requests: tokio::sync::Mutex::new(Vec::new()),
+                requested: Notify::new(),
+            });
+            let channel = Arc::new(ObservedChannel {
+                inner: MockChannelHandle::with_threads(
+                    ChannelId::new("test"),
+                    agent,
+                    InstanceId::from_slug("test/channel"),
+                    ChannelIdentity::new("goat", "Goat"),
+                    ChannelCapabilities::new(4096, Duration::from_millis(50), None),
+                ),
+                changed: Notify::new(),
+                fail_edits: AtomicBool::new(false),
+            });
+            let mut tools = ToolRegistry::default();
+            tools.insert_handler(
+                goat_agent_tool::ToolSpec::new(
+                    goat_agent_tool::ToolName::from_static("record"),
+                    "Write a local note",
+                    serde_json::json!({"type": "object", "properties": {}}),
+                ),
+                Arc::new(WriteNote),
+                true,
+            );
+            let brain = Brain::new(BrainDeps {
+                agent,
+                slug: "test".into(),
+                personality: Arc::new(AgentCard {
+                    system_prompt: "Answer the user.".into(),
+                    source_path: dir.path().join("agent.md"),
+                }),
+                default_model: Model::new(provider.id(), "scripted"),
+                timezone: None,
+                history_window: 20,
+                tool_selectors: vec!["*".into()],
+                providers: Arc::new(ProviderRegistry::from_providers(vec![provider.clone()])),
+                tools: Arc::new(tools),
+                commands: Arc::new(CommandRegistry::new()),
+                store: store.clone(),
+                memory_engine,
+                memory_enabled: false,
+                summarize_enabled: false,
+                renderer: Arc::new(goat_render::DefaultStreamRenderer),
+                goat_root: dir.path().to_owned(),
+                stream_idle_timeout: Duration::from_secs(30),
+                llm_max_retries: 1,
+                integration_tools: vec!["record".into()],
+                intake_debounce: Duration::ZERO,
+                intake_ceiling: Duration::ZERO,
+                turns: Arc::new(AtomicUsize::new(0)),
+            });
+            Self {
+                brain,
+                provider,
+                channel,
+                store,
+                dir,
+            }
+        }
+
+        fn conversation(&self) -> ConversationId {
+            ConversationId::new(self.channel.id(), self.channel.instance(), "main")
+        }
+
+        fn channels(&self) -> Vec<Arc<dyn ChannelHandle>> {
+            vec![self.channel.clone()]
+        }
+
+        async fn incoming(&self) -> IncomingMessage {
+            let mut message = intake_msg(self.conversation(), "owner", "Write a note and answer.");
+            message.id = MessageId(uuid::Uuid::new_v4().to_string());
+            self.store.append_incoming(&message).await.unwrap();
+            message
+        }
+
+        async fn activity(&self) -> Vec<ActivityRecord> {
+            self.store
+                .activity_since(&[self.brain.agent], 0, 100)
+                .await
+                .unwrap()
+        }
+
+        async fn outgoing(&self, conversation: &ConversationId) -> Vec<String> {
+            self.store
+                .recent(self.brain.agent, conversation, 100)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|row| row.direction == Direction::Out)
+                .map(|row| row.text)
+                .collect()
+        }
+
+        async fn schedule(&self) -> (i64, i64) {
+            let now = chrono::Utc::now();
+            let schedule_id = self
+                .store
+                .insert_schedule(NewSchedule {
+                    agent: self.brain.agent,
+                    instruction: "Write a local note, then decide whether to notify.".into(),
+                    tools: vec!["record".into()],
+                    origin_conv: self.conversation(),
+                    schedule: ScheduleKind::Once(now),
+                    timezone: None,
+                    created_by_msg_id: None,
+                })
+                .await
+                .unwrap();
+            let task_run_id = self
+                .store
+                .insert_schedule_run(
+                    schedule_id,
+                    now,
+                    "Write a local note, then decide whether to notify.".into(),
+                )
+                .await
+                .unwrap();
+            self.store.claim_due_run(now).await.unwrap().unwrap();
+            (task_run_id, schedule_id)
+        }
+    }
+
+    fn chunks(items: Vec<Result<StreamChunk, StreamError>>) -> ChunkStream {
+        Box::pin(stream::iter(items))
+    }
+
+    fn delta(text: &str) -> StreamChunk {
+        StreamChunk::TextDelta { text: text.into() }
+    }
+
+    fn record_call() -> ChunkStream {
+        chunks(vec![Ok(StreamChunk::ToolCall {
+            id: "write-note".into(),
+            name: "record".into(),
+            input: "{}".into(),
+        })])
+    }
+
+    fn controlled_stream() -> (
+        tokio::sync::mpsc::UnboundedSender<Result<StreamChunk, StreamError>>,
+        ChunkStream,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let stream = stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        });
+        (tx, Box::pin(stream))
+    }
+
+    fn assert_lifecycle(records: &[ActivityRecord], kinds: &[ActivityKind], ok: bool) {
+        assert_eq!(
+            records.iter().map(|row| &row.kind).collect::<Vec<_>>(),
+            kinds.iter().collect::<Vec<_>>()
+        );
+        let run_id = records[0].id;
+        assert!(records.iter().all(|row| row.run_id == run_id));
+        assert!(
+            records
+                .windows(2)
+                .all(|rows| rows[0].id < rows[1].id && rows[0].at <= rows[1].at)
+        );
+        assert_eq!(records.last().unwrap().ok, Some(ok));
+    }
+
+    #[tokio::test]
+    async fn normal_turn_creates_and_updates_before_provider_eof_and_records_tool_lifecycle() {
+        let (tx, stream) = controlled_stream();
+        let fixture = TurnFixture::new(vec![record_call(), stream]).await;
+        let message = fixture.incoming().await;
+        let channels = fixture.channels();
+        let first = "We need to respond";
+        let final_text = "We need to respond and let's craft a reply.";
+        let observe = async {
+            fixture.provider.wait_for_requests(2).await;
+            assert_eq!(
+                tokio::fs::read_to_string(fixture.dir.path().join("tool-note.txt"))
+                    .await
+                    .unwrap(),
+                "tool ran"
+            );
+            let active = fixture.activity().await;
+            assert_eq!(
+                active.iter().map(|row| &row.kind).collect::<Vec<_>>(),
+                vec![&ActivityKind::TurnStarted, &ActivityKind::ToolStarted]
+            );
+            assert_eq!(active[0].id, active[0].run_id);
+            assert_eq!(active[1].run_id, active[0].run_id);
+            assert_eq!(active[1].detail.as_deref(), Some("record"));
+            tx.send(Ok(StreamChunk::ThinkingDelta {
+                text: "private thoughts".into(),
+            }))
+            .unwrap();
+            tx.send(Ok(StreamChunk::ThinkingSignature {
+                signature: "private signature".into(),
+            }))
+            .unwrap();
+            tx.send(Ok(StreamChunk::RedactedThinking {
+                data: "private opaque data".into(),
+            }))
+            .unwrap();
+            tx.send(Ok(delta(first))).unwrap();
+            fixture.channel.wait_for_text(first).await;
+            tx.send(Ok(delta(" and let's craft a reply."))).unwrap();
+            fixture.channel.wait_for_text(final_text).await;
+            assert_eq!(fixture.activity().await.len(), 2);
+            assert!(!tx.is_closed());
+            drop(tx);
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(fixture.brain.handle_turn(&channels, message), observe)
+        })
+        .await
+        .unwrap();
+        result.unwrap();
+
+        let events = fixture.channel.inner.events().await;
+        let visible = events
+            .iter()
+            .filter_map(MockEvent::as_text)
+            .collect::<Vec<_>>();
+        assert_eq!(visible, [first, final_text]);
+        let sent = events
+            .iter()
+            .find_map(|event| match event {
+                MockEvent::Send { sent_id, .. } => Some(sent_id),
+                _ => None,
+            })
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(event, MockEvent::Edit { sent: reference, .. } if &reference.message_id == sent)));
+        assert_eq!(
+            fixture.outgoing(&fixture.conversation()).await,
+            [final_text]
+        );
+        assert_lifecycle(
+            &fixture.activity().await,
+            &[
+                ActivityKind::TurnStarted,
+                ActivityKind::ToolStarted,
+                ActivityKind::TurnFinished,
+            ],
+            true,
+        );
+        assert_eq!(fixture.brain.turns.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn provider_error_after_visible_text_never_replays_and_finishes_failed() {
+        let (tx, stream) = controlled_stream();
+        let fixture = TurnFixture::new(vec![stream, chunks(vec![Ok(delta("replayed"))])]).await;
+        let message = fixture.incoming().await;
+        let channels = fixture.channels();
+        let observe = async {
+            fixture.provider.wait_for_requests(1).await;
+            tx.send(Ok(delta("partial answer"))).unwrap();
+            fixture.channel.wait_for_text("partial answer").await;
+            tx.send(Err(StreamError::transport("connection ended")))
+                .unwrap();
+            tx.closed().await;
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(fixture.brain.handle_turn(&channels, message), observe)
+        })
+        .await
+        .unwrap();
+        assert!(result.is_err());
+        assert_eq!(fixture.provider.requests.lock().await.len(), 1);
+        assert_eq!(
+            fixture.outgoing(&fixture.conversation()).await,
+            ["partial answer"]
+        );
+        let events = fixture.channel.inner.events().await;
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(MockEvent::as_text)
+                .collect::<Vec<_>>(),
+            ["partial answer"]
+        );
+        assert_lifecycle(
+            &fixture.activity().await,
+            &[ActivityKind::TurnStarted, ActivityKind::TurnFinished],
+            false,
+        );
+        assert_eq!(fixture.brain.turns.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn transient_failure_before_visible_text_retries_without_a_second_turn() {
+        let fixture = TurnFixture::new(vec![
+            chunks(vec![
+                Ok(StreamChunk::ThinkingDelta {
+                    text: "hidden".into(),
+                }),
+                Err(StreamError::rate_limited("try again", Some(Duration::ZERO))),
+            ]),
+            chunks(vec![Ok(delta("recovered"))]),
+        ])
+        .await;
+        let message = fixture.incoming().await;
+        fixture
+            .brain
+            .handle_turn(&fixture.channels(), message)
+            .await
+            .unwrap();
+        assert_eq!(fixture.provider.requests.lock().await.len(), 2);
+        assert_eq!(
+            fixture.outgoing(&fixture.conversation()).await,
+            ["recovered"]
+        );
+        assert_lifecycle(
+            &fixture.activity().await,
+            &[ActivityKind::TurnStarted, ActivityKind::TurnFinished],
+            true,
+        );
+    }
+
+    #[tokio::test]
+    async fn channel_error_drops_the_open_provider_stream_and_keeps_persisted_text() {
+        let (tx, stream) = controlled_stream();
+        let fixture = TurnFixture::new(vec![stream]).await;
+        let message = fixture.incoming().await;
+        let channels = fixture.channels();
+        let observe = async {
+            fixture.provider.wait_for_requests(1).await;
+            tx.send(Ok(delta("visible"))).unwrap();
+            fixture.channel.wait_for_text("visible").await;
+            fixture.channel.fail_edits.store(true, Ordering::Relaxed);
+            tx.send(Ok(delta(" but not delivered"))).unwrap();
+            tx.closed().await;
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(fixture.brain.handle_turn(&channels, message), observe)
+        })
+        .await
+        .unwrap();
+        assert!(result.is_err());
+        assert_eq!(fixture.provider.requests.lock().await.len(), 1);
+        assert_eq!(fixture.outgoing(&fixture.conversation()).await, ["visible"]);
+        assert_lifecycle(
+            &fixture.activity().await,
+            &[ActivityKind::TurnStarted, ActivityKind::TurnFinished],
+            false,
+        );
+    }
+
+    #[tokio::test]
+    async fn autonomous_tool_turns_keep_skip_silent_and_finish_each_activity_run() {
+        let fixture = TurnFixture::new(vec![
+            record_call(),
+            chunks(vec![Ok(delta("sk")), Ok(delta("ip"))]),
+            record_call(),
+            chunks(vec![Ok(delta("skip"))]),
+            record_call(),
+            chunks(vec![Ok(delta("skip"))]),
+        ])
+        .await;
+        fixture.incoming().await;
+        let (task_run_id, schedule_id) = fixture.schedule().await;
+        fixture
+            .brain
+            .handle_schedule(&fixture.channels(), task_run_id, schedule_id)
+            .await
+            .unwrap();
+        fixture
+            .brain
+            .handle_integration_update(&fixture.channels(), integration_turn())
+            .await
+            .unwrap();
+        fixture
+            .brain
+            .handle_workflow_update(
+                &fixture.channels(),
+                WorkflowTurn {
+                    workflow: "triage".into(),
+                    items: vec![],
+                    overflow: 0,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(fixture.dir.path().join("tool-note.txt"))
+                .await
+                .unwrap(),
+            "tool ran"
+        );
+        assert!(
+            fixture
+                .channel
+                .inner
+                .events()
+                .await
+                .iter()
+                .all(|event| event.as_text().is_none())
+        );
+        assert!(fixture.outgoing(&fixture.conversation()).await.is_empty());
+        let activity = fixture.activity().await;
+        assert_eq!(activity.len(), 10);
+        assert_lifecycle(
+            &activity[..4],
+            &[
+                ActivityKind::TurnStarted,
+                ActivityKind::ScheduleFired,
+                ActivityKind::ToolStarted,
+                ActivityKind::TurnFinished,
+            ],
+            true,
+        );
+        assert_eq!(
+            activity[1].detail.as_deref(),
+            Some(schedule_id.to_string().as_str())
+        );
+        assert_lifecycle(
+            &activity[4..7],
+            &[
+                ActivityKind::TurnStarted,
+                ActivityKind::ToolStarted,
+                ActivityKind::TurnFinished,
+            ],
+            true,
+        );
+        assert_lifecycle(
+            &activity[7..],
+            &[
+                ActivityKind::TurnStarted,
+                ActivityKind::ToolStarted,
+                ActivityKind::TurnFinished,
+            ],
+            true,
+        );
+        assert_eq!(activity[4].detail.as_deref(), Some("integration"));
+        assert_eq!(activity[7].detail.as_deref(), Some("workflow"));
+        assert_ne!(activity[0].run_id, activity[4].run_id);
+        assert_ne!(activity[4].run_id, activity[7].run_id);
+    }
+
+    #[tokio::test]
+    async fn autonomous_routing_failures_finish_activity_as_failed() {
+        let fixture = TurnFixture::new(vec![]).await;
+        fixture.incoming().await;
+        let (task_run_id, schedule_id) = fixture.schedule().await;
+        assert!(
+            fixture
+                .brain
+                .handle_schedule(&[], task_run_id, schedule_id)
+                .await
+                .is_err()
+        );
+        assert!(
+            fixture
+                .brain
+                .handle_integration_update(&[], integration_turn())
+                .await
+                .is_err()
+        );
+        assert!(
+            fixture
+                .brain
+                .handle_workflow_update(
+                    &[],
+                    WorkflowTurn {
+                        workflow: "triage".into(),
+                        items: vec![],
+                        overflow: 0,
+                    }
+                )
+                .await
+                .is_err()
+        );
+        let activity = fixture.activity().await;
+        assert_eq!(activity.len(), 7);
+        assert_lifecycle(
+            &activity[..3],
+            &[
+                ActivityKind::TurnStarted,
+                ActivityKind::ScheduleFired,
+                ActivityKind::TurnFinished,
+            ],
+            false,
+        );
+        assert_lifecycle(
+            &activity[3..5],
+            &[ActivityKind::TurnStarted, ActivityKind::TurnFinished],
+            false,
+        );
+        assert_lifecycle(
+            &activity[5..],
+            &[ActivityKind::TurnStarted, ActivityKind::TurnFinished],
+            false,
+        );
+        assert!(fixture.provider.requests.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn opened_thread_receives_and_persists_the_live_answer_instead_of_the_parent() {
+        let fixture = TurnFixture::new(vec![
+            chunks(vec![
+                Ok(delta("Moving this task.\n")),
+                Ok(StreamChunk::ToolCall {
+                    id: "branch".into(),
+                    name: OPEN_THREAD_TOOL.into(),
+                    input: serde_json::json!({"title": "Task", "seed": "Do the task"}).to_string(),
+                }),
+            ]),
+            chunks(vec![Ok(delta("Thread answer"))]),
+        ])
+        .await;
+        let mut message = fixture.incoming().await;
+        message.surface = Surface::Channel;
+        fixture
+            .brain
+            .handle_turn(&fixture.channels(), message)
+            .await
+            .unwrap();
+        let events = fixture.channel.inner.events().await;
+        let destination = events
+            .iter()
+            .find_map(|event| match event {
+                MockEvent::Send {
+                    conv,
+                    body: OutgoingBody::Text(text),
+                    reply_to,
+                    ..
+                } if text == "Thread answer" => {
+                    assert!(reply_to.is_none());
+                    Some(conv.clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_ne!(destination, fixture.conversation());
+        assert_eq!(
+            fixture.outgoing(&fixture.conversation()).await,
+            ["Moving this task.\n"]
+        );
+        assert_eq!(fixture.outgoing(&destination).await, ["Thread answer"]);
+        assert_lifecycle(
+            &fixture.activity().await,
+            &[
+                ActivityKind::TurnStarted,
+                ActivityKind::ToolStarted,
+                ActivityKind::TurnFinished,
+            ],
+            true,
+        );
+        assert_eq!(
+            fixture.activity().await[1].detail.as_deref(),
+            Some(OPEN_THREAD_TOOL)
+        );
+    }
+
+    #[tokio::test]
+    async fn activity_write_failure_does_not_abort_the_turn_or_its_tool() {
+        let fixture = TurnFixture::new(vec![
+            record_call(),
+            chunks(vec![Ok(delta("still helpful"))]),
+        ])
+        .await;
+        let database = sqlx::SqlitePool::connect(&format!(
+            "sqlite://{}",
+            fixture.dir.path().join("goat.db").display(),
+        ))
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER reject_activity BEFORE INSERT ON agent_activity \
+             BEGIN SELECT RAISE(ABORT, 'activity unavailable'); END",
+        )
+        .execute(&database)
+        .await
+        .unwrap();
+        let message = fixture.incoming().await;
+        fixture
+            .brain
+            .handle_turn(&fixture.channels(), message)
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(fixture.dir.path().join("tool-note.txt"))
+                .await
+                .unwrap(),
+            "tool ran"
+        );
+        assert_eq!(
+            fixture.outgoing(&fixture.conversation()).await,
+            ["still helpful"]
+        );
+        assert!(fixture.activity().await.is_empty());
+        database.close().await;
+    }
 
     fn integration_turn() -> IntegrationTurn {
         IntegrationTurn {
@@ -2204,31 +3179,6 @@ mod tests {
         let args = serde_json::json!({"tools": ["shell", "read"]});
 
         validate_scheduled_tool_selectors(&args, &allowed_tools).unwrap();
-    }
-
-    #[test]
-    fn assistant_tool_call_message_contains_no_user_visible_text() {
-        let calls = vec![ModelToolCall {
-            id: "call_1".into(),
-            name: "shell".into(),
-            arguments: serde_json::json!({"command": "ls -la"}),
-        }];
-
-        let message = assistant_tool_call_message(&calls);
-
-        assert!(matches!(message.role, Role::Assistant));
-        assert_eq!(message.content.len(), 1);
-        assert!(matches!(
-            &message.content[0],
-            ContentPart::ToolCall { id, name, .. }
-                if id == "call_1" && name == "shell"
-        ));
-        assert!(
-            !message
-                .content
-                .iter()
-                .any(|part| matches!(part, ContentPart::Text(_)))
-        );
     }
 
     #[test]
