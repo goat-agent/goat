@@ -26,6 +26,12 @@ impl ApiSession {
     }
 }
 
+impl Drop for ApiSession {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 pub async fn open(link: &Link, agent: &str) -> Result<ApiSession, ClientError> {
     open_serving(
         link,
