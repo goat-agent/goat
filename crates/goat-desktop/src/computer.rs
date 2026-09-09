@@ -66,18 +66,17 @@ pub struct ComputerStatus {
     busy: bool,
 }
 
+#[cfg(target_os = "macos")]
 async fn permissions() -> (bool, bool) {
-    #[cfg(target_os = "macos")]
-    {
-        (
-            tauri_plugin_macos_permissions::check_accessibility_permission().await,
-            tauri_plugin_macos_permissions::check_screen_recording_permission().await,
-        )
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        (false, false)
-    }
+    (
+        tauri_plugin_macos_permissions::check_accessibility_permission().await,
+        tauri_plugin_macos_permissions::check_screen_recording_permission().await,
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn permissions() -> std::future::Ready<(bool, bool)> {
+    std::future::ready((false, false))
 }
 
 #[tauri::command]
