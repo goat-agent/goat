@@ -116,23 +116,34 @@ fn append_message_items(
                 content,
                 ..
             } => {
-                let image = content.iter().find_map(|b| match b {
-                    ContentBlock::Image { media_type, data } => Some((media_type, data)),
-                    _ => None,
-                });
-                let output = if let Some((media_type, data)) = image {
-                    json!([{
-                        "type": "input_image",
-                        "image_url": format!("data:{media_type};base64,{data}"),
-                    }])
+                let output = if content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Image { .. }))
+                {
+                    serde_json::Value::Array(
+                        content
+                            .iter()
+                            .filter_map(|block| match block {
+                                ContentBlock::Text { text } => {
+                                    Some(json!({ "type": "input_text", "text": text }))
+                                }
+                                ContentBlock::Image { media_type, data } => Some(json!({
+                                    "type": "input_image",
+                                    "image_url": format!("data:{media_type};base64,{data}"),
+                                })),
+                                _ => None,
+                            })
+                            .collect(),
+                    )
                 } else {
                     json!(ContentBlock::tool_result_text(content))
                 };
-                input.push(json!({
+                let mut item = json!({
                     "type": "function_call_output",
                     "call_id": tool_use_id,
-                    "output": output,
-                }));
+                });
+                item["output"] = output;
+                input.push(item);
             }
             ContentBlock::RedactedThinking { data } => {
                 if let Some(item) = reasoning_input_item(data) {
@@ -966,6 +977,122 @@ mod tests {
         assert_eq!(body["input"][1]["type"], "function_call_output");
         assert_eq!(body["input"][1]["call_id"], "call_1");
         assert_eq!(body["input"][1]["output"], "file body");
+    }
+
+    const PNG_RED: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+    const PNG_GREEN: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNg+M8AAAICAQB7CYF4AAAAAElFTkSuQmCC";
+
+    fn screenshot_result(id: &str, text: &str, is_error: bool) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_use_id: id.to_owned(),
+            content: vec![
+                ContentBlock::Text {
+                    text: text.to_owned(),
+                },
+                ContentBlock::Image {
+                    media_type: "image/png".to_owned(),
+                    data: PNG_RED.to_owned(),
+                },
+                ContentBlock::Text {
+                    text: "second view".to_owned(),
+                },
+                ContentBlock::Image {
+                    media_type: "image/png".to_owned(),
+                    data: PNG_GREEN.to_owned(),
+                },
+            ],
+            is_error,
+        }
+    }
+
+    #[test]
+    fn tool_result_output_preserves_text_and_every_image() {
+        for split_results in [false, true] {
+            let mut messages = vec![
+                Message {
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::Image {
+                        media_type: "image/png".to_owned(),
+                        data: PNG_GREEN.to_owned(),
+                    }],
+                },
+                Message {
+                    role: MessageRole::Assistant,
+                    content: [("call_computer", "computer"), ("call_browser", "browser")]
+                        .into_iter()
+                        .map(|(id, name)| ContentBlock::ToolUse {
+                            id: id.to_owned(),
+                            name: name.to_owned(),
+                            input: json!({}),
+                        })
+                        .collect(),
+                },
+            ];
+            let results = vec![
+                screenshot_result("call_computer", "screenshot 1x1", false),
+                screenshot_result("call_browser", "click failed", true),
+                ContentBlock::error_result("call_text", "permission denied"),
+            ];
+            messages[1].content.push(ContentBlock::ToolUse {
+                id: "call_text".to_owned(),
+                name: "computer".to_owned(),
+                input: json!({}),
+            });
+            if split_results {
+                messages.extend(results.into_iter().map(|result| Message {
+                    role: MessageRole::User,
+                    content: vec![result],
+                }));
+            } else {
+                messages.push(Message {
+                    role: MessageRole::User,
+                    content: results,
+                });
+            }
+            let body = build_body(
+                "gpt-5.5",
+                &messages,
+                &[],
+                None,
+                false,
+                None,
+                goat_provider::ToolChoice::Auto,
+                None,
+                None,
+                None,
+            );
+            assert_eq!(
+                body["input"],
+                json!([
+                    {
+                        "type": "message", "role": "user",
+                        "content": [{ "type": "input_image", "image_url": format!("data:image/png;base64,{PNG_GREEN}") }],
+                    },
+                    { "type": "function_call", "call_id": "call_computer", "name": "computer", "arguments": "{}" },
+                    { "type": "function_call", "call_id": "call_browser", "name": "browser", "arguments": "{}" },
+                    { "type": "function_call", "call_id": "call_text", "name": "computer", "arguments": "{}" },
+                    {
+                        "type": "function_call_output", "call_id": "call_computer",
+                        "output": [
+                            { "type": "input_text", "text": "screenshot 1x1" },
+                            { "type": "input_image", "image_url": format!("data:image/png;base64,{PNG_RED}") },
+                            { "type": "input_text", "text": "second view" },
+                            { "type": "input_image", "image_url": format!("data:image/png;base64,{PNG_GREEN}") },
+                        ],
+                    },
+                    {
+                        "type": "function_call_output", "call_id": "call_browser",
+                        "output": [
+                            { "type": "input_text", "text": "click failed" },
+                            { "type": "input_image", "image_url": format!("data:image/png;base64,{PNG_RED}") },
+                            { "type": "input_text", "text": "second view" },
+                            { "type": "input_image", "image_url": format!("data:image/png;base64,{PNG_GREEN}") },
+                        ],
+                    },
+                    { "type": "function_call_output", "call_id": "call_text", "output": "permission denied" },
+                ])
+            );
+        }
     }
 
     #[test]
