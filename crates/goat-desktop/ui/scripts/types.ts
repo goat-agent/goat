@@ -2,7 +2,7 @@ import { compile, type JSONSchema } from 'json-schema-to-typescript';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 
 const source = new URL('../../../goat-api/src/methods_schema.json', import.meta.url);
-const target = new URL('../src/lib/api.d.ts', import.meta.url);
+const target = new URL('../src/shared/api.d.ts', import.meta.url);
 type Schema = boolean | { [key: string]: unknown };
 type Registry = { methods: { name: string; params: Schema; output: Schema; item: Schema }[] };
 const registry: Registry = JSON.parse(await readFile(source, 'utf8'));
