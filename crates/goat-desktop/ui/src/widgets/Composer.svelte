@@ -1,9 +1,9 @@
 <script lang="ts">
   import { tick, untrack } from 'svelte';
-  import type { InputAttachment, Op } from '../lib/api';
-  import type { CommandSpec } from '../lib/ipc';
-  import { imageSource } from '../lib/markdown';
-  import Icon from './Icon.svelte';
+  import type { InputAttachment, Op } from '../shared/api';
+  import type { CommandSpec } from '../shared/ipc';
+  import { imageSource } from '../shared/markdown';
+  import Icon from '../shared/Icon.svelte';
   let {
     value = $bindable(''), attachments = $bindable<InputAttachment[]>([]), mode, busy = false,
     disabled = false, plan = false, specs = [], files = [], focusToken = 0, paletteToken = 0,

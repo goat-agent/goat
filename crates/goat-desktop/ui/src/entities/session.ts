@@ -2,7 +2,7 @@ import type {
   AccountEntry, ConversationSummary, Event, InputAttachment, LoginProvider, Mode,
   ModelEntry, ModelTarget, ProcessInfo, ProcessState, RateLimitEntry, RewindPoint,
   SkillInfo, SubagentGroupMember, TaskId, ToolCall, ToolOutcome, TranscriptEntry, UsageEntry,
-} from './api';
+} from '../shared/api';
 
 export interface TextRow { kind: 'user' | 'system' | 'text' | 'thinking'; key: number; text: string; task?: TaskId; streaming?: boolean; attachments?: InputAttachment[] }
 export interface ToolRow { kind: 'tool'; key: number; call: ToolCall; outcome?: ToolOutcome }

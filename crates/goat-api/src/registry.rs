@@ -163,6 +163,7 @@ pub fn registry() -> Vec<MethodSchema> {
         describe::<m::AgentList>(),
         describe::<m::AgentSend>(),
         describe::<m::AgentChat>(),
+        describe::<m::AgentConversations>(),
         describe::<m::AgentSchedules>(),
         describe::<m::AdminAgentReload>(),
         describe::<m::AdminConfigEdit>(),

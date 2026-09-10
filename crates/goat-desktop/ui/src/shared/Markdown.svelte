@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { markdown, openMarkdownLink } from '../lib/markdown';
-  import { errorText } from '../lib/ipc';
+  import { markdown, openMarkdownLink } from './markdown';
+  import { errorText } from './ipc';
   let { text, onerror }: { text: string; onerror: (message: string) => void } = $props();
   const html = $derived(markdown(text));
   function links(node: HTMLElement) {

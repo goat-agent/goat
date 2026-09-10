@@ -1,7 +1,7 @@
 <script lang="ts">
-  import type { AgentActivity, AgentEntry, ScheduleEntry } from '../lib/api';
-  import Icon from './Icon.svelte';
-  import Markdown from './Markdown.svelte';
+  import type { AgentActivity, AgentEntry, ScheduleEntry } from '../shared/api';
+  import Icon from '../shared/Icon.svelte';
+  import Markdown from '../shared/Markdown.svelte';
   let { agent, schedules, activity, onrefresh, onerror }: {
     agent: AgentEntry; schedules: ScheduleEntry[]; activity: AgentActivity[];
     onrefresh: () => Promise<void>; onerror: (message: string) => void;

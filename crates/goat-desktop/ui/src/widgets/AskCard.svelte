@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { Event, Op } from '../lib/api';
-  import Icon from './Icon.svelte';
+  import type { Event, Op } from '../shared/api';
+  import Icon from '../shared/Icon.svelte';
   let { ask, onop }: { ask: Extract<Event, { type: 'AskStarted' }>; onop: (op: Op) => Promise<void> } = $props();
   let choices = $state<Record<number, string[]>>({});
   let free = $state<Record<number, string>>({});

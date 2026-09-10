@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   AdminConfigEditParams, AdminCredentialRemoveParams, AdminCredentialSetParams,
-  AgentListOutput, AgentSchedulesOutput, AgentSendOutput, ConversationInfo,
+  AgentConversationsOutput, AgentListOutput, AgentSchedulesOutput, AgentSendOutput, ConversationInfo,
   DaemonStatus2, InputAttachment, Op, ResumeMode,
 } from './api';
 
@@ -36,8 +36,9 @@ export const ipc = {
   specs: (id: number) => invoke<CommandSpec[]>('command_specs', { id }),
   admin: (id: number, request: AdminRequest) => invoke<void>('session_admin', { id, request }),
   agents: () => invoke<AgentListOutput>('agents'),
-  sendAgent: (slug: string, text: string) => invoke<AgentSendOutput>('agent_send', { slug, text }),
-  openAgent: (slug: string) => invoke<void>('agent_chat_open', { slug }),
+  sendAgent: (slug: string, conversation: string | null, text: string) => invoke<AgentSendOutput>('agent_send', { slug, conversation, text }),
+  agentConversations: (slug: string) => invoke<AgentConversationsOutput>('agent_conversations', { slug }),
+  openAgent: (slug: string, conversation: string | null) => invoke<void>('agent_chat_open', { slug, conversation }),
   closeAgent: (slug: string) => invoke<void>('agent_chat_close', { slug }),
   openActivity: (slug: string) => invoke<void>('agent_activity_open', { slug }),
   closeActivity: (slug: string) => invoke<void>('agent_activity_close', { slug }),

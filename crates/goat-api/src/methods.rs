@@ -834,6 +834,7 @@ pub struct AgentListOutput {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentSendParams {
     pub agent: String,
+    pub conversation: Option<String>,
     pub text: String,
 }
 
@@ -845,7 +846,25 @@ pub struct AgentSendOutput {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentChatParams {
     pub agent: String,
+    pub conversation: Option<String>,
     pub from: WatchFrom,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentConversationsParams {
+    pub agent: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentConversationEntry {
+    pub conversation: String,
+    pub title: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentConversationsOutput {
+    pub conversations: Vec<AgentConversationEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -941,6 +960,17 @@ method!(
     AgentChatParams,
     Empty,
     AgentChatItem
+);
+method!(
+    AgentConversations,
+    "agent.conversations",
+    1,
+    Shape::Unary,
+    Grant::Any,
+    Direction::ToDaemon,
+    AgentConversationsParams,
+    AgentConversationsOutput,
+    ()
 );
 method!(
     AgentSchedules,

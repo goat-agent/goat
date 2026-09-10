@@ -1,7 +1,7 @@
 <script lang="ts">
-  import type { Event, Op } from '../lib/api';
-  import Markdown from './Markdown.svelte';
-  import Icon from './Icon.svelte';
+  import type { Event, Op } from '../shared/api';
+  import Markdown from '../shared/Markdown.svelte';
+  import Icon from '../shared/Icon.svelte';
   let { plan, onop, onerror }: { plan: Extract<Event, { type: 'PlanProposed' }>; onop: (op: Op) => Promise<void>; onerror: (message: string) => void } = $props();
   let feedback = $state('');
   let sending = $state(false);

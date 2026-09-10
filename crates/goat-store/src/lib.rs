@@ -295,11 +295,24 @@ pub struct GoalRecord {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelConversation {
+    pub external: String,
+    pub title: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[async_trait]
 pub trait Store: Send + Sync + 'static {
     async fn ensure_agent(&self, id: AgentId, slug: &str, display: &str) -> StoreResult<()>;
 
     async fn ensure_conversation(&self, conv: &ConversationId, agent: AgentId) -> StoreResult<()>;
+
+    async fn list_channel_conversations(
+        &self,
+        agent: AgentId,
+        channel: ChannelId,
+    ) -> StoreResult<Vec<ChannelConversation>>;
 
     async fn append_incoming(&self, msg: &IncomingMessage) -> StoreResult<()>;
 
@@ -681,6 +694,41 @@ impl Store for SqliteStore {
         .execute(&*self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn list_channel_conversations(
+        &self,
+        agent: AgentId,
+        channel: ChannelId,
+    ) -> StoreResult<Vec<ChannelConversation>> {
+        let rows: Vec<(String, Option<String>, Option<String>, String)> = sqlx::query_as(
+            r"SELECT c.external,
+                     (SELECT m.text FROM messages m
+                       WHERE m.conversation_id = c.id AND m.text IS NOT NULL
+                       ORDER BY m.ts ASC, m.id ASC LIMIT 1),
+                     (SELECT MAX(m.ts) FROM messages m WHERE m.conversation_id = c.id),
+                     c.created_at
+               FROM conversations c
+              WHERE c.agent_id = ? AND c.channel = ?",
+        )
+        .bind(agent.to_string())
+        .bind(channel.as_str())
+        .fetch_all(&*self.pool)
+        .await?;
+        let mut listed: Vec<_> = rows
+            .into_iter()
+            .map(|(external, title, last, created)| ChannelConversation {
+                external,
+                title: title.map(|text| text.trim().chars().take(60).collect()),
+                updated_at: last
+                    .as_deref()
+                    .or(Some(created.as_str()))
+                    .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+                    .map_or_else(Utc::now, |at| at.with_timezone(&Utc)),
+            })
+            .collect();
+        listed.sort_by_key(|entry| std::cmp::Reverse(entry.updated_at));
+        Ok(listed)
     }
 
     async fn latest_conversation(&self, agent: AgentId) -> StoreResult<Option<ConversationId>> {

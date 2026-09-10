@@ -1,9 +1,9 @@
 <script lang="ts">
-  import type { DaemonStatus2, Op, RewindScope } from '../lib/api';
-  import type { AdminRequest, CommandSpec, DesktopSessionInfo, Workspace } from '../lib/ipc';
-  import type { SessionView } from '../lib/session';
-  import Icon from './Icon.svelte';
-  import Markdown from './Markdown.svelte';
+  import type { DaemonStatus2, Op, RewindScope } from '../shared/api';
+  import type { AdminRequest, CommandSpec, DesktopSessionInfo, Workspace } from '../shared/ipc';
+  import type { SessionView } from '../entities/session';
+  import Icon from '../shared/Icon.svelte';
+  import Markdown from '../shared/Markdown.svelte';
   let { screen, state: view, session, workspace, daemon, presence, specs, onop, onadmin, onpanel, onclose, onerror }: {
     screen: string; state: SessionView; session: DesktopSessionInfo; workspace: Workspace | null;
     daemon: DaemonStatus2 | null; presence: number; specs: CommandSpec[];

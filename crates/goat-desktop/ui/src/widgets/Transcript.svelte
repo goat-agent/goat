@@ -1,9 +1,9 @@
 <script lang="ts">
-  import type { Op } from '../lib/api';
-  import type { Row, SessionView } from '../lib/session';
-  import { imageSource } from '../lib/markdown';
-  import Icon from './Icon.svelte';
-  import Markdown from './Markdown.svelte';
+  import type { Op } from '../shared/api';
+  import type { Row, SessionView } from '../entities/session';
+  import { imageSource } from '../shared/markdown';
+  import Icon from '../shared/Icon.svelte';
+  import Markdown from '../shared/Markdown.svelte';
   import AskCard from './AskCard.svelte';
   import PlanCard from './PlanCard.svelte';
   let { state, onop, onerror }: { state: SessionView; onop: (op: Op) => Promise<void>; onerror: (message: string) => void } = $props();

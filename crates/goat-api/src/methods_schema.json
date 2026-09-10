@@ -918,6 +918,12 @@
           "agent": {
             "type": "string"
           },
+          "conversation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "from": {
             "$ref": "#/$defs/WatchFrom"
           }
@@ -930,6 +936,70 @@
         "type": "object"
       },
       "shape": "stream:reliable",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "any",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "agent.conversations",
+      "output": {
+        "$defs": {
+          "AgentConversationEntry": {
+            "properties": {
+              "conversation": {
+                "type": "string"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "conversation",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "conversations": {
+            "items": {
+              "$ref": "#/$defs/AgentConversationEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "conversations"
+        ],
+        "title": "AgentConversationsOutput",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "agent": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent"
+        ],
+        "title": "AgentConversationsParams",
+        "type": "object"
+      },
+      "shape": "unary",
       "version": 1
     },
     {
@@ -1096,6 +1166,12 @@
         "properties": {
           "agent": {
             "type": "string"
+          },
+          "conversation": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "text": {
             "type": "string"

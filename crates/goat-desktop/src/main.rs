@@ -61,6 +61,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             backend::workspace,
             backend::agents,
             backend::agent_send,
+            backend::agent_conversations,
             backend::agent_chat_open,
             backend::agent_chat_close,
             backend::agent_activity_open,
