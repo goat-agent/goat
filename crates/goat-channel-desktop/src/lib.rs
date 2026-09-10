@@ -22,11 +22,34 @@ use uuid::Uuid;
 
 pub const ID: ChannelId = ChannelId::from_static("desktop");
 
+pub const DEFAULT_CONVERSATION: &str = "main";
+
 #[derive(Clone, Debug)]
 pub enum Outbound {
-    Created { message: AgentMessage },
-    Updated { id: String, text: String },
-    Typing { active: bool },
+    Created {
+        conversation: String,
+        message: AgentMessage,
+    },
+    Updated {
+        conversation: String,
+        id: String,
+        text: String,
+    },
+    Typing {
+        conversation: String,
+        active: bool,
+    },
+}
+
+impl Outbound {
+    #[must_use]
+    pub fn conversation(&self) -> &str {
+        match self {
+            Self::Created { conversation, .. }
+            | Self::Updated { conversation, .. }
+            | Self::Typing { conversation, .. } => conversation,
+        }
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -43,20 +66,24 @@ struct Registered {
     instance: InstanceId,
     tx: mpsc::Sender<IncomingMessage>,
     outbound: broadcast::Sender<Outbound>,
-    messages: VecDeque<AgentMessage>,
+    conversations: HashMap<String, VecDeque<AgentMessage>>,
 }
 
 impl Registered {
     fn publish(&mut self, event: Outbound) {
+        let cached = self
+            .conversations
+            .entry(event.conversation().to_owned())
+            .or_default();
         match &event {
-            Outbound::Created { message } => {
-                if self.messages.len() == 200 {
-                    self.messages.pop_front();
+            Outbound::Created { message, .. } => {
+                if cached.len() == 200 {
+                    cached.pop_front();
                 }
-                self.messages.push_back(message.clone());
+                cached.push_back(message.clone());
             }
-            Outbound::Updated { id, text } => {
-                if let Some(message) = self.messages.iter_mut().find(|message| message.id == *id) {
+            Outbound::Updated { id, text, .. } => {
+                if let Some(message) = cached.iter_mut().find(|message| message.id == *id) {
                     message.text.clone_from(text);
                 }
             }
@@ -78,7 +105,12 @@ pub fn hub() -> &'static Hub {
 }
 
 impl Hub {
-    pub fn send(&self, agent: AgentId, text: String) -> Result<MessageId, HubError> {
+    pub fn send(
+        &self,
+        agent: AgentId,
+        conversation: &str,
+        text: String,
+    ) -> Result<MessageId, HubError> {
         let mut agents = self.agents.lock();
         let registered = agents.get_mut(&agent).ok_or(HubError::UnknownAgent)?;
         let id = MessageId(Uuid::new_v4().to_string());
@@ -88,7 +120,7 @@ impl Hub {
             .try_send(IncomingMessage {
                 id: id.clone(),
                 agent,
-                conversation: ConversationId::new(ID, registered.instance, "main"),
+                conversation: ConversationId::new(ID, registered.instance, conversation),
                 from: UserHandle {
                     external: "desktop".into(),
                     display: Some("You".into()),
@@ -107,6 +139,7 @@ impl Hub {
                 mpsc::error::TrySendError::Closed(_) => HubError::Closed,
             })?;
         registered.publish(Outbound::Created {
+            conversation: conversation.to_owned(),
             message: AgentMessage {
                 id: id.0.clone(),
                 outgoing: false,
@@ -127,19 +160,30 @@ impl Hub {
     }
 
     #[must_use]
-    pub fn conversation(&self, agent: AgentId) -> Option<ConversationId> {
+    pub fn conversation(&self, agent: AgentId, external: &str) -> Option<ConversationId> {
         self.agents
             .lock()
             .get(&agent)
-            .map(|registered| ConversationId::new(ID, registered.instance, "main"))
+            .map(|registered| ConversationId::new(ID, registered.instance, external))
     }
 
     #[must_use]
-    pub fn messages(&self, agent: AgentId) -> Option<Vec<AgentMessage>> {
+    pub fn messages(&self, agent: AgentId, external: &str) -> Option<Vec<AgentMessage>> {
+        self.agents.lock().get(&agent).map(|registered| {
+            registered
+                .conversations
+                .get(external)
+                .map(|cached| cached.iter().cloned().collect())
+                .unwrap_or_default()
+        })
+    }
+
+    #[must_use]
+    pub fn conversations(&self, agent: AgentId) -> Option<Vec<String>> {
         self.agents
             .lock()
             .get(&agent)
-            .map(|registered| registered.messages.iter().cloned().collect())
+            .map(|registered| registered.conversations.keys().cloned().collect())
     }
 }
 
@@ -190,7 +234,7 @@ impl Channel for DesktopChannel {
                 instance: binding.instance,
                 tx,
                 outbound,
-                messages: VecDeque::new(),
+                conversations: HashMap::new(),
             },
         );
         Ok((handle, rx))
@@ -236,11 +280,14 @@ impl Drop for DesktopHandle {
     }
 }
 
-struct StopTyping(broadcast::Sender<Outbound>);
+struct StopTyping(broadcast::Sender<Outbound>, String);
 
 impl Drop for StopTyping {
     fn drop(&mut self) {
-        let _ = self.0.send(Outbound::Typing { active: false });
+        let _ = self.0.send(Outbound::Typing {
+            conversation: std::mem::take(&mut self.1),
+            active: false,
+        });
     }
 }
 
@@ -272,7 +319,7 @@ impl ChannelHandle for DesktopHandle {
 
     async fn send(
         &self,
-        _conv: &ConversationId,
+        conv: &ConversationId,
         body: OutgoingBody,
         reply_to: Option<MessageId>,
     ) -> ChannelResult<SentRef> {
@@ -281,6 +328,7 @@ impl ChannelHandle for DesktopHandle {
         };
         let message_id = MessageId(Uuid::new_v4().to_string());
         self.publish(Outbound::Created {
+            conversation: conv.external.clone(),
             message: AgentMessage {
                 id: message_id.0.clone(),
                 outgoing: true,
@@ -292,7 +340,7 @@ impl ChannelHandle for DesktopHandle {
         Ok(SentRef {
             channel: ID,
             message_id,
-            raw: json!({}),
+            raw: json!({ "conversation": conv.external }),
         })
     }
 
@@ -300,18 +348,26 @@ impl ChannelHandle for DesktopHandle {
         let OutgoingBody::Text(text) = body else {
             return Err(ChannelError::Unsupported("desktop carries text only"));
         };
+        let conversation = sent.raw["conversation"]
+            .as_str()
+            .unwrap_or(DEFAULT_CONVERSATION)
+            .to_owned();
         self.publish(Outbound::Updated {
+            conversation,
             id: sent.message_id.0.clone(),
             text,
         })
     }
 
-    async fn typing(&self, _conv: &ConversationId) -> ChannelResult<TypingGuard> {
+    async fn typing(&self, conv: &ConversationId) -> ChannelResult<TypingGuard> {
         let runtime = tokio::runtime::Handle::try_current()
             .map_err(|error| ChannelError::Provider(error.to_string()))?;
         let (stop_tx, stop_rx) = oneshot::channel();
-        self.publish(Outbound::Typing { active: true })?;
-        let stop = StopTyping(self.outbound.clone());
+        self.publish(Outbound::Typing {
+            conversation: conv.external.clone(),
+            active: true,
+        })?;
+        let stop = StopTyping(self.outbound.clone(), conv.external.clone());
         runtime.spawn(async move {
             let _ = stop_rx.await;
             drop(stop);
@@ -344,12 +400,12 @@ mod tests {
     fn unknown_agent_cannot_send_or_subscribe() {
         let agent = AgentId::new();
         assert_eq!(
-            hub().send(agent, "hello".into()),
+            hub().send(agent, DEFAULT_CONVERSATION, "hello".into()),
             Err(HubError::UnknownAgent)
         );
         assert!(hub().subscribe(agent).is_none());
-        assert!(hub().conversation(agent).is_none());
-        assert!(hub().messages(agent).is_none());
+        assert!(hub().conversation(agent, DEFAULT_CONVERSATION).is_none());
+        assert!(hub().messages(agent, DEFAULT_CONVERSATION).is_none());
     }
 
     #[tokio::test]
@@ -358,31 +414,102 @@ mod tests {
         let (handle, mut incoming) = bind(agent).await;
         let mut first = hub().subscribe(agent).unwrap();
         let mut second = hub().subscribe(agent).unwrap();
-        let id = hub().send(agent, "hello".into()).unwrap();
+        let id = hub()
+            .send(agent, DEFAULT_CONVERSATION, "hello".into())
+            .unwrap();
         let delivered = incoming.recv().await.unwrap();
         assert_eq!(delivered.id, id);
         assert_eq!(delivered.agent, agent);
-        assert_eq!(delivered.conversation, hub().conversation(agent).unwrap());
+        assert_eq!(
+            delivered.conversation,
+            hub().conversation(agent, DEFAULT_CONVERSATION).unwrap()
+        );
         assert_eq!(delivered.text, "hello");
         assert_eq!(delivered.surface, Surface::Dm);
         assert!(delivered.addressed);
         for client in [&mut first, &mut second] {
-            let Outbound::Created { message } = client.recv().await.unwrap() else {
+            let Outbound::Created { message, .. } = client.recv().await.unwrap() else {
                 panic!("expected inbound creation");
             };
             assert_eq!(message.id, id.0);
             assert_eq!(message.text, delivered.text);
             assert!(!message.outgoing);
         }
-        let messages = hub().messages(agent).unwrap();
+        let messages = hub().messages(agent, DEFAULT_CONVERSATION).unwrap();
         assert_eq!(messages[0].id, id.0);
         assert_eq!(messages[0].text, "hello");
         assert!(!messages[0].outgoing);
         drop(handle);
         assert_eq!(
-            hub().send(agent, "after drop".into()),
+            hub().send(agent, DEFAULT_CONVERSATION, "after drop".into()),
             Err(HubError::UnknownAgent)
         );
+    }
+
+    #[tokio::test]
+    async fn conversations_keep_separate_histories_on_one_binding() {
+        let agent = AgentId::new();
+        let (handle, mut incoming) = bind(agent).await;
+        hub().send(agent, "left", "first".into()).unwrap();
+        hub().send(agent, "right", "second".into()).unwrap();
+        let left = incoming.recv().await.unwrap();
+        let right = incoming.recv().await.unwrap();
+        assert_eq!(left.conversation.external, "left");
+        assert_eq!(right.conversation.external, "right");
+        assert_ne!(left.conversation, right.conversation);
+
+        handle
+            .send(
+                &hub().conversation(agent, "left").unwrap(),
+                OutgoingBody::Text("reply".into()),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let texts = |external: &str| {
+            hub()
+                .messages(agent, external)
+                .unwrap()
+                .into_iter()
+                .map(|message| message.text)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(texts("left"), ["first", "reply"]);
+        assert_eq!(texts("right"), ["second"]);
+        assert!(texts("never-used").is_empty());
+
+        let mut listed = hub().conversations(agent).unwrap();
+        listed.sort();
+        assert_eq!(listed, ["left", "right"]);
+    }
+
+    #[tokio::test]
+    async fn editing_updates_only_its_own_conversation() {
+        let agent = AgentId::new();
+        let (handle, _incoming) = bind(agent).await;
+        let sent = handle
+            .send(
+                &hub().conversation(agent, "left").unwrap(),
+                OutgoingBody::Text("draft".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        handle
+            .send(
+                &hub().conversation(agent, "right").unwrap(),
+                OutgoingBody::Text("other".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        handle
+            .edit(&sent, OutgoingBody::Text("finished".into()))
+            .await
+            .unwrap();
+        assert_eq!(hub().messages(agent, "left").unwrap()[0].text, "finished");
+        assert_eq!(hub().messages(agent, "right").unwrap()[0].text, "other");
     }
 
     #[tokio::test]
@@ -392,23 +519,34 @@ mod tests {
         let mut events = hub().subscribe(agent).unwrap();
         let mut accepted = Vec::new();
         for _ in 0..64 {
-            accepted.push(hub().send(agent, "queued".into()).unwrap().0);
+            accepted.push(
+                hub()
+                    .send(agent, DEFAULT_CONVERSATION, "queued".into())
+                    .unwrap()
+                    .0,
+            );
             assert!(matches!(events.try_recv(), Ok(Outbound::Created { .. })));
         }
-        assert_eq!(hub().send(agent, "overflow".into()), Err(HubError::Full));
+        assert_eq!(
+            hub().send(agent, DEFAULT_CONVERSATION, "overflow".into()),
+            Err(HubError::Full)
+        );
         assert!(matches!(
             events.try_recv(),
             Err(broadcast::error::TryRecvError::Empty)
         ));
         drop(incoming);
-        assert_eq!(hub().send(agent, "closed".into()), Err(HubError::Closed));
+        assert_eq!(
+            hub().send(agent, DEFAULT_CONVERSATION, "closed".into()),
+            Err(HubError::Closed)
+        );
         assert!(matches!(
             events.try_recv(),
             Err(broadcast::error::TryRecvError::Empty)
         ));
         assert_eq!(
             hub()
-                .messages(agent)
+                .messages(agent, DEFAULT_CONVERSATION)
                 .unwrap()
                 .into_iter()
                 .map(|message| message.id)
@@ -421,7 +559,7 @@ mod tests {
     async fn outgoing_send_and_edit_share_message_id() {
         let agent = AgentId::new();
         let (handle, _incoming) = bind(agent).await;
-        let conversation = hub().conversation(agent).unwrap();
+        let conversation = hub().conversation(agent, DEFAULT_CONVERSATION).unwrap();
         let mut events = hub().subscribe(agent).unwrap();
         let sent = handle
             .send(
@@ -435,19 +573,19 @@ mod tests {
             .edit(&sent, OutgoingBody::Text("finished".into()))
             .await
             .unwrap();
-        let Outbound::Created { message } = events.recv().await.unwrap() else {
+        let Outbound::Created { message, .. } = events.recv().await.unwrap() else {
             panic!("expected outgoing creation");
         };
         assert_eq!(message.id, sent.message_id.0);
         assert_eq!(message.text, "draft");
         assert!(message.outgoing);
         assert_eq!(message.reply_to.as_deref(), Some("parent"));
-        let Outbound::Updated { id, text } = events.recv().await.unwrap() else {
+        let Outbound::Updated { id, text, .. } = events.recv().await.unwrap() else {
             panic!("expected outgoing edit");
         };
         assert_eq!(id, message.id);
         assert_eq!(text, "finished");
-        let messages = hub().messages(agent).unwrap();
+        let messages = hub().messages(agent, DEFAULT_CONVERSATION).unwrap();
         assert_eq!(messages[0].id, id);
         assert_eq!(messages[0].text, "finished");
         assert!(messages[0].outgoing);
@@ -473,7 +611,7 @@ mod tests {
     async fn reconnect_history_retains_latest_two_hundred_messages() {
         let agent = AgentId::new();
         let (handle, _incoming) = bind(agent).await;
-        let conversation = hub().conversation(agent).unwrap();
+        let conversation = hub().conversation(agent, DEFAULT_CONVERSATION).unwrap();
         let mut expected = Vec::new();
         for index in 0..201 {
             let sent = handle
@@ -486,7 +624,7 @@ mod tests {
         }
         assert_eq!(
             hub()
-                .messages(agent)
+                .messages(agent, DEFAULT_CONVERSATION)
                 .unwrap()
                 .into_iter()
                 .map(|message| message.id)
@@ -507,7 +645,7 @@ mod tests {
             .bind(agent, binding(instance))
             .await
             .unwrap();
-        let conversation = hub().conversation(agent).unwrap();
+        let conversation = hub().conversation(agent, DEFAULT_CONVERSATION).unwrap();
         assert!(matches!(
             old.send(&conversation, OutgoingBody::Text("stale".into()), None)
                 .await,
@@ -515,10 +653,12 @@ mod tests {
         ));
         drop(old);
         assert!(old_incoming.recv().await.is_none());
-        let id = hub().send(agent, "replacement".into()).unwrap();
+        let id = hub()
+            .send(agent, DEFAULT_CONVERSATION, "replacement".into())
+            .unwrap();
         assert_eq!(incoming.recv().await.unwrap().id, id);
         drop(current);
-        assert!(hub().conversation(agent).is_none());
+        assert!(hub().conversation(agent, DEFAULT_CONVERSATION).is_none());
     }
 
     #[test]
@@ -528,17 +668,17 @@ mod tests {
             .unwrap();
         let agent = AgentId::new();
         let (handle, _incoming) = runtime.block_on(bind(agent));
-        let conversation = hub().conversation(agent).unwrap();
+        let conversation = hub().conversation(agent, DEFAULT_CONVERSATION).unwrap();
         let mut events = hub().subscribe(agent).unwrap();
         let guard = runtime.block_on(handle.typing(&conversation)).unwrap();
         assert!(matches!(
             events.try_recv(),
-            Ok(Outbound::Typing { active: true })
+            Ok(Outbound::Typing { active: true, .. })
         ));
         drop(guard);
         assert!(matches!(
             runtime.block_on(events.recv()),
-            Ok(Outbound::Typing { active: false })
+            Ok(Outbound::Typing { active: false, .. })
         ));
     }
 
@@ -549,17 +689,17 @@ mod tests {
             .unwrap();
         let agent = AgentId::new();
         let (handle, _incoming) = runtime.block_on(bind(agent));
-        let conversation = hub().conversation(agent).unwrap();
+        let conversation = hub().conversation(agent, DEFAULT_CONVERSATION).unwrap();
         let mut events = hub().subscribe(agent).unwrap();
         let guard = runtime.block_on(handle.typing(&conversation)).unwrap();
         assert!(matches!(
             events.try_recv(),
-            Ok(Outbound::Typing { active: true })
+            Ok(Outbound::Typing { active: true, .. })
         ));
         drop(runtime);
         assert!(matches!(
             events.try_recv(),
-            Ok(Outbound::Typing { active: false })
+            Ok(Outbound::Typing { active: false, .. })
         ));
         drop(guard);
     }

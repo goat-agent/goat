@@ -6,10 +6,11 @@ admin.daemon_stop@1 unary admin to_daemon 481f399d850707af
 admin.device_list@1 unary admin to_daemon 808a5aa9ead18a03
 admin.device_pair@1 unary admin to_daemon a269b916790d85ca
 admin.device_revoke@1 unary admin to_daemon 863c6f11ba2a2d7f
-agent.chat@1 stream:reliable any to_daemon 6c94bb3813d59fa4
+agent.chat@1 stream:reliable any to_daemon 422e3d414717cc9e
+agent.conversations@1 unary any to_daemon 8fa8aea8d92b7f9d
 agent.list@1 unary any to_daemon a9c1e1db36ce5462
 agent.schedules@1 unary any to_daemon c47820f385cac12f
-agent.send@1 unary any to_daemon c23a9d0cae129aeb
+agent.send@1 unary any to_daemon 77f64aa5d8c240a6
 agent.watch@1 stream:reliable any to_daemon 9aec81778f254ad8
 ask.answer@1 unary any to_daemon 9bfe53a9718c5063
 browser.event@1 unary any to_daemon 6db09693b3d1fe6f

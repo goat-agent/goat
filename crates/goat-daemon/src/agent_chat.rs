@@ -2,7 +2,8 @@ use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
 use goat_api::{
-    AgentChat, AgentChatItem, AgentChatParams, AgentEntry, AgentList, AgentListOutput,
+    AgentChat, AgentChatItem, AgentChatParams, AgentConversationEntry, AgentConversations,
+    AgentConversationsOutput, AgentConversationsParams, AgentEntry, AgentList, AgentListOutput,
     AgentMessage, AgentSchedules, AgentSchedulesOutput, AgentSchedulesParams, AgentSend,
     AgentSendOutput, AgentSendParams, Empty, Router, ScheduleEntry, WatchFrom, cursor_for,
 };
@@ -83,7 +84,7 @@ async fn history(
         })
         .collect();
     let live = hub()
-        .messages(agent)
+        .messages(agent, &conversation.external)
         .ok_or_else(|| send_error(&HubError::UnknownAgent))?;
     for cached in live.iter().rev() {
         let matched = messages.iter().rposition(|stored| {
@@ -113,6 +114,7 @@ fn encode(item: &AgentChatItem) -> Result<serde_json::Value, CallError> {
 pub(crate) fn routes(router: Router, root: PathBuf, db_path: PathBuf, epoch: String) -> Router {
     let schedules_root = root.clone();
     let schedules_db = db_path.clone();
+    let conversations_db = db_path.clone();
     router
         .unary::<AgentList, _, _>(move |_params, _ctx| {
             let root = root.clone();
@@ -151,21 +153,63 @@ pub(crate) fn routes(router: Router, root: PathBuf, db_path: PathBuf, epoch: Str
         })
         .unary::<AgentSend, _, _>(move |params: AgentSendParams, _ctx| async move {
             let agent = agent_id(&params.agent)?;
+            let conversation = params
+                .conversation
+                .as_deref()
+                .unwrap_or(goat_channel_desktop::DEFAULT_CONVERSATION)
+                .to_owned();
             let message = hub()
-                .send(agent, params.text)
+                .send(agent, &conversation, params.text)
                 .map_err(|error| send_error(&error))?;
             Ok(AgentSendOutput { message: message.0 })
+        })
+        .unary::<AgentConversations, _, _>(move |params: AgentConversationsParams, _ctx| {
+            let db_path = conversations_db.clone();
+            async move {
+                let agent = agent_id(&params.agent)?;
+                let store = SqliteStore::open(&db_path).await.map_err(internal)?;
+                let stored = store
+                    .list_channel_conversations(agent, goat_channel_desktop::ID)
+                    .await
+                    .map_err(internal)?;
+                let mut conversations: Vec<_> = stored
+                    .into_iter()
+                    .map(|row| AgentConversationEntry {
+                        conversation: row.external,
+                        title: row.title,
+                        updated_at: row.updated_at.to_rfc3339(),
+                    })
+                    .collect();
+                let known: HashSet<_> = conversations
+                    .iter()
+                    .map(|entry| entry.conversation.clone())
+                    .collect();
+                for live in hub().conversations(agent).unwrap_or_default() {
+                    if !known.contains(&live) {
+                        conversations.push(AgentConversationEntry {
+                            conversation: live,
+                            title: None,
+                            updated_at: chrono::Utc::now().to_rfc3339(),
+                        });
+                    }
+                }
+                Ok(AgentConversationsOutput { conversations })
+            }
         })
         .stream::<AgentChat, _, _>(move |params: AgentChatParams, ctx, sink| {
             let db_path = db_path.clone();
             let epoch = epoch.clone();
             async move {
                 let agent = agent_id(&params.agent)?;
+                let external = params
+                    .conversation
+                    .clone()
+                    .unwrap_or_else(|| goat_channel_desktop::DEFAULT_CONVERSATION.to_owned());
                 let mut outbound = hub()
                     .subscribe(agent)
                     .ok_or_else(|| unknown_agent(&params.agent))?;
                 let conversation = hub()
-                    .conversation(agent)
+                    .conversation(agent, &external)
                     .ok_or_else(|| unknown_agent(&params.agent))?;
                 let store = SqliteStore::open(&db_path).await.map_err(internal)?;
                 let mut seq = match &params.from {
@@ -188,19 +232,24 @@ pub(crate) fn routes(router: Router, root: PathBuf, db_path: PathBuf, epoch: Str
                         () = ctx.cancel.cancelled() => return Ok(Empty {}),
                         received = outbound.recv() => received,
                     };
+                    if matches!(&received, Ok(event) if event.conversation() != external) {
+                        continue;
+                    }
                     seq = seq.saturating_add(1);
                     let cursor = cursor_for(&epoch, seq);
                     let item = match received {
-                        Ok(Outbound::Created { message }) => {
+                        Ok(Outbound::Created { message, .. }) => {
                             if snapshot_ids.remove(&message.id) {
                                 continue;
                             }
                             AgentChatItem::Message { cursor, message }
                         }
-                        Ok(Outbound::Updated { id, text }) => {
+                        Ok(Outbound::Updated { id, text, .. }) => {
                             AgentChatItem::Update { cursor, id, text }
                         }
-                        Ok(Outbound::Typing { active }) => AgentChatItem::Typing { cursor, active },
+                        Ok(Outbound::Typing { active, .. }) => {
+                            AgentChatItem::Typing { cursor, active }
+                        }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
                             outbound = outbound.resubscribe();
                             let messages = history(&store, agent, &conversation).await?;
@@ -331,6 +380,18 @@ mod tests {
                 "agent.chat",
                 1,
                 json!({"agent": slug, "from": {"type": "Snapshot"}}),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn chat_in(client: &Peer, slug: &str, conversation: &str) -> StreamHandle {
+        client
+            .handle
+            .open_stream(
+                "agent.chat",
+                1,
+                json!({"agent": slug, "conversation": conversation, "from": {"type": "Snapshot"}}),
             )
             .await
             .unwrap()
@@ -606,7 +667,9 @@ mod tests {
         let slug = slug(root.path());
         let (_handle, _incoming) = bind(&slug).await;
         let agent = AgentId::from_slug(&slug);
-        let conversation = hub().conversation(agent).unwrap();
+        let conversation = hub()
+            .conversation(agent, goat_channel_desktop::DEFAULT_CONVERSATION)
+            .unwrap();
         let store = SqliteStore::open(&root.path().join("goat.db"))
             .await
             .unwrap();
@@ -655,12 +718,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_chat_stream_only_sees_its_own_conversation() {
+        let root = tempfile::tempdir().unwrap();
+        let slug = slug(root.path());
+        let (_handle, mut incoming) = bind(&slug).await;
+        let agent = AgentId::from_slug(&slug);
+        let (client, _daemon) = connect(root.path());
+
+        let mut left = chat_in(&client, &slug, "left").await;
+        let AgentChatItem::Snapshot { messages, .. } = next(&mut left).await else {
+            panic!("expected an empty snapshot");
+        };
+        assert!(messages.is_empty());
+
+        hub()
+            .send(agent, "right", "for the other one".to_owned())
+            .unwrap();
+        hub()
+            .send(agent, "left", "for this one".to_owned())
+            .unwrap();
+        assert_eq!(
+            incoming.recv().await.unwrap().conversation.external,
+            "right"
+        );
+        assert_eq!(incoming.recv().await.unwrap().conversation.external, "left");
+
+        let AgentChatItem::Message { message, .. } = next(&mut left).await else {
+            panic!("expected the left message");
+        };
+        assert_eq!(message.text, "for this one");
+    }
+
+    #[tokio::test]
+    async fn conversations_lists_stored_and_live_desktop_threads() {
+        let root = tempfile::tempdir().unwrap();
+        let slug = slug(root.path());
+        let (_handle, _incoming) = bind(&slug).await;
+        let agent = AgentId::from_slug(&slug);
+        let store = SqliteStore::open(&root.path().join("goat.db"))
+            .await
+            .unwrap();
+        store.ensure_agent(agent, &slug, &slug).await.unwrap();
+        let stored = hub().conversation(agent, "stored").unwrap();
+        store
+            .append_incoming_text(agent, &stored, "Remember the milk")
+            .await
+            .unwrap();
+        hub()
+            .send(agent, "live", "not persisted yet".to_owned())
+            .unwrap();
+
+        let (client, _daemon) = connect(root.path());
+        let listed: AgentConversationsOutput = serde_json::from_value(
+            client
+                .handle
+                .call("agent.conversations", 1, json!({"agent": slug}))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let mut names: Vec<_> = listed
+            .conversations
+            .iter()
+            .map(|entry| entry.conversation.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["live", "stored"]);
+        let titled = listed
+            .conversations
+            .iter()
+            .find(|entry| entry.conversation == "stored")
+            .unwrap();
+        assert_eq!(titled.title.as_deref(), Some("Remember the milk"));
+    }
+
+    #[tokio::test]
     async fn reopening_an_active_reply_restores_its_live_id_without_duplicate_history() {
         let root = tempfile::tempdir().unwrap();
         let slug = slug(root.path());
         let (handle, mut incoming) = bind(&slug).await;
         let agent = AgentId::from_slug(&slug);
-        let conversation = hub().conversation(agent).unwrap();
+        let conversation = hub()
+            .conversation(agent, goat_channel_desktop::DEFAULT_CONVERSATION)
+            .unwrap();
         let store = SqliteStore::open(&root.path().join("goat.db"))
             .await
             .unwrap();
@@ -669,7 +809,13 @@ mod tests {
             .append_outgoing_text(agent, &conversation, "An older scheduled message", None)
             .await
             .unwrap();
-        hub().send(agent, "A question".to_owned()).unwrap();
+        hub()
+            .send(
+                agent,
+                goat_channel_desktop::DEFAULT_CONVERSATION,
+                "A question".to_owned(),
+            )
+            .unwrap();
         let received = incoming.recv().await.unwrap();
         store.append_incoming(&received).await.unwrap();
         let reply = handle
@@ -720,7 +866,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let slug = slug(root.path());
         let (handle, _incoming) = bind(&slug).await;
-        let conversation = hub().conversation(AgentId::from_slug(&slug)).unwrap();
+        let conversation = hub()
+            .conversation(
+                AgentId::from_slug(&slug),
+                goat_channel_desktop::DEFAULT_CONVERSATION,
+            )
+            .unwrap();
         let reply = handle
             .send(
                 &conversation,

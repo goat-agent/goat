@@ -54,10 +54,13 @@ change. Use the authoritative `session.submit` receipt for task IDs: the daemon 
 regardless of the ID submitted by a client. Closing a desktop attachment never kills its daemon
 session. `ApiSession` drop cancels the underlying peer.
 
-Agent mode uses the daemon's one `desktop/main` conversation per agent. New message resets only the
-draft, never persisted history. Chat listeners are registered before opening the stream. Unmounting
-or switching agents closes both chat and activity streams. Agent images are refused; code images
-use `InputAttachment`.
+Agent mode keeps one conversation per `(agent, external)` on the `desktop` channel, listed by
+`agent.conversations` and selected with the `conversation` field on `agent.chat` and `agent.send`.
+Omitting it targets `main`, which is what every pre-existing thread is. A new agent chat has no id
+until its first message: the webview mints a UUID at send time and rewrites the route in place, the
+same shape the code side uses for `ConversationBound`. Chat listeners are registered before opening
+the stream. Unmounting or switching agents closes both chat and activity streams. Agent images are
+refused; code images use `InputAttachment`.
 
 Markdown escapes source HTML before rendering and sanitizes the result. Links open only through
 HTTP(S)/mailto. Keep native IPC a fixed command surface, not a general method proxy. Native drag/drop

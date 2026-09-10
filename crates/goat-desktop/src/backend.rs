@@ -1,7 +1,8 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use goat_api::{
-    AgentChat, AgentChatParams, AgentList, AgentListOutput, AgentSchedules, AgentSchedulesOutput,
+    AgentChat, AgentChatParams, AgentConversations, AgentConversationsOutput,
+    AgentConversationsParams, AgentList, AgentListOutput, AgentSchedules, AgentSchedulesOutput,
     AgentSchedulesParams, AgentSend, AgentSendOutput, AgentSendParams, AgentWatch,
     AgentWatchParams, ConversationInfo, ConversationList, ConversationListParams, DaemonStatus,
     DaemonStatus2, Empty, StreamEvent, WatchFrom,
@@ -268,13 +269,32 @@ pub async fn agents(backend: State<'_, Backend>) -> Result<AgentListOutput, Stri
 pub async fn agent_send(
     backend: State<'_, Backend>,
     slug: String,
+    conversation: Option<String>,
     text: String,
 ) -> Result<AgentSendOutput, String> {
     backend
         .connection()
         .await?
         .api
-        .call::<AgentSend>(AgentSendParams { agent: slug, text })
+        .call::<AgentSend>(AgentSendParams {
+            agent: slug,
+            conversation,
+            text,
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn agent_conversations(
+    backend: State<'_, Backend>,
+    slug: String,
+) -> Result<AgentConversationsOutput, String> {
+    backend
+        .connection()
+        .await?
+        .api
+        .call::<AgentConversations>(AgentConversationsParams { agent: slug })
         .await
         .map_err(|error| error.to_string())
 }
@@ -298,12 +318,14 @@ pub async fn agent_chat_open(
     backend: State<'_, Backend>,
     app: AppHandle,
     slug: String,
+    conversation: Option<String>,
 ) -> Result<(), String> {
     let connection = backend.connection().await?;
     let stream = connection
         .api
         .open::<AgentChat>(AgentChatParams {
             agent: slug.clone(),
+            conversation,
             from: WatchFrom::Snapshot {},
         })
         .await
