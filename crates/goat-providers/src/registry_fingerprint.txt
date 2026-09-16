@@ -215,3 +215,9 @@ provider llama-cpp
   auth none tools true images true web_search false verifies true source discover
   env None validation "local" endpoint Some("http://localhost:8080/v1") oauth None
   login_endpoint none
+provider devin
+  auth api_key_or_oauth tools true images true web_search false verifies true source discover
+  env Some("DEVIN_API_KEY") validation "network" endpoint Some("https://server.codeium.com") oauth Some("browser (Devin account)")
+  login_endpoint none
+  setup run `goat provider login devin` for browser sign-in
+  setup or set DEVIN_API_KEY to a session token or cog_ API key

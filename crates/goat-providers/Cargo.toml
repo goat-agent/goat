@@ -19,6 +19,7 @@ goat-provider-openai-codex = { workspace = true }
 goat-provider-anthropic = { workspace = true }
 goat-provider-gemini = { workspace = true }
 goat-provider-kimi-code = { workspace = true }
+goat-provider-devin = { workspace = true }
 goat-provider-xai = { workspace = true }
 
 [lints]

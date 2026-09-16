@@ -47,6 +47,7 @@ impl Registry {
             builtin::build(&rows::OLLAMA, store, account),
             builtin::build(&rows::LMSTUDIO, store, account),
             builtin::build(&rows::LLAMA_CPP, store, account),
+            Arc::new(goat_provider_devin::build(store, account)),
         ];
         for (id, config) in user.load() {
             if providers.iter().any(|provider| provider.id().0 == id) {
@@ -232,7 +233,7 @@ mod tests {
         let store = goat_auth::CredentialStore::new(store_path);
         let user = goat_config::UserProviders::at(config_path);
         let registry = Registry::new(&store, &user);
-        assert_eq!(registry.all().len(), 20);
+        assert_eq!(registry.all().len(), 21);
         let custom = registry
             .get(&ProviderId::from("my-proxy"))
             .expect("custom provider");
@@ -255,7 +256,7 @@ mod tests {
             std::env::temp_dir().join("goat-providers-registry-test.json"),
         );
         let registry = Registry::new(&store, &no_user("goat-providers-registry-nouser.json"));
-        assert_eq!(registry.all().len(), 19);
+        assert_eq!(registry.all().len(), 20);
         assert!(registry.get(&ProviderId::from("anthropic")).is_some());
         assert!(registry.get(&ProviderId::from("openrouter")).is_some());
         assert!(registry.get(&ProviderId::from("groq")).is_some());
@@ -273,6 +274,14 @@ mod tests {
         assert!(registry.get(&ProviderId::from("zai-coding")).is_some());
         assert!(registry.get(&ProviderId::from("kimi")).is_some());
         assert!(registry.get(&ProviderId::from("kimi-code")).is_some());
+        assert_eq!(
+            registry
+                .get(&ProviderId::from("devin"))
+                .expect("devin provider")
+                .capabilities()
+                .auth,
+            AuthMethod::ApiKeyOrOAuth
+        );
         assert!(registry.get(&ProviderId::from("qwen")).is_some());
         assert!(registry.get(&ProviderId::from("minimax")).is_some());
         assert!(registry.get(&ProviderId::from("vercel")).is_some());

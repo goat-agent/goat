@@ -3951,6 +3951,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-provider-devin"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "flate2",
+ "futures",
+ "goat-auth",
+ "goat-provider",
+ "open",
+ "rand 0.10.2",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "goat-provider-gemini"
 version = "0.1.0"
 dependencies = [
@@ -4041,6 +4061,7 @@ dependencies = [
  "goat-provider",
  "goat-provider-anthropic",
  "goat-provider-builtin",
+ "goat-provider-devin",
  "goat-provider-gemini",
  "goat-provider-kimi-code",
  "goat-provider-openai-codex",
