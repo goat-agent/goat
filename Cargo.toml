@@ -23,6 +23,7 @@ goat-provider-builtin = { path = "crates/goat-provider-builtin" }
 goat-provider-kimi-code = { path = "crates/goat-provider-kimi-code" }
 goat-provider-xai = { path = "crates/goat-provider-xai" }
 goat-provider-openai-codex = { path = "crates/goat-provider-openai-codex" }
+goat-provider-devin = { path = "crates/goat-provider-devin" }
 goat-provider-anthropic = { path = "crates/goat-provider-anthropic" }
 goat-provider-gemini = { path = "crates/goat-provider-gemini" }
 goat-providers = { path = "crates/goat-providers" }
