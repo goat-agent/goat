@@ -134,6 +134,7 @@ fn tool_to_sdk(tool: &ToolSpec) -> ToolDefinition {
         name: tool.name.clone(),
         description: tool.description.clone(),
         input_schema: tool.input_schema.clone(),
+        defer_loading: false,
     }
 }
 

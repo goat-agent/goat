@@ -491,6 +491,51 @@ fn rebuild_entries(
                         }
                     }
                 }
+                ContentBlock::ServerToolUse { id, name, input } => {
+                    tool_seq += 1;
+                    let call_id = ToolCallId(tool_seq);
+                    tool_uses.insert(
+                        id.clone(),
+                        RestoredToolUse {
+                            call: ToolCall {
+                                id: call_id,
+                                name: name.clone(),
+                                display: call_display(tools, name, &input.to_string()),
+                            },
+                            group: None,
+                        },
+                    );
+                }
+                ContentBlock::ToolSearchToolResult {
+                    tool_use_id,
+                    content,
+                } => {
+                    if let Some(restored) = tool_uses.remove(tool_use_id) {
+                        let names: Vec<&str> = content
+                            .get("tool_references")
+                            .and_then(serde_json::Value::as_array)
+                            .map(|refs| {
+                                refs.iter()
+                                    .filter_map(|r| {
+                                        r.get("tool_name").and_then(serde_json::Value::as_str)
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let summary = (!names.is_empty())
+                            .then(|| format!("discovered: {}", names.join(", ")));
+                        entries.push(TranscriptEntry::Tool {
+                            call: restored.call,
+                            outcome: ToolOutcome {
+                                ok: true,
+                                summary,
+                                body: None,
+                                image: None,
+                                git: None,
+                            },
+                        });
+                    }
+                }
                 ContentBlock::Thinking { text, .. } => {
                     if matches!(role, MessageRole::Assistant) {
                         entries.push(TranscriptEntry::Thinking { text: text.clone() });
@@ -613,6 +658,7 @@ pub(crate) async fn handle_resume(
                 instructions,
                 date,
                 None,
+                &ctx.deferred_catalog,
             ),
         ),
         None,

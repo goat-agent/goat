@@ -107,11 +107,9 @@ async fn run_regular_tool(
         tool_ctx,
         token,
     } = request;
-    let Some(tool) = ctx
-        .tools
-        .get(name)
-        .filter(|tool| tool.enabled(definition_context))
-    else {
+    let Some(tool) = ctx.tools.get(name).filter(|tool| {
+        tool.enabled(definition_context) || ctx.deferred_catalog.iter().any(|def| def.name == name)
+    }) else {
         return Some(Err(format!("unknown tool: {name}")));
     };
     let invocation = ToolInvocation {
@@ -355,11 +353,13 @@ pub(crate) fn build_tool_defs(
     provider: &dyn Provider,
     selection: Option<&ToolSelection>,
     availability: ToolAvailability,
+    model: &str,
 ) -> Vec<ToolDefinition> {
     if !provider.capabilities().tools {
         return Vec::new();
     }
-    let defs: Vec<ToolDefinition> = ctx
+    let native = provider.supports_tool_search(model);
+    let mut defs: Vec<ToolDefinition> = ctx
         .tools
         .specs_for(ToolDefinitionContext {
             interactive: availability.asking,
@@ -368,20 +368,152 @@ pub(crate) fn build_tool_defs(
         })
         .into_iter()
         .filter(|spec| selection.is_none_or(|sel| sel.allows(spec.name)))
+        .filter(|spec| !native || spec.name != goat_tool_discovery::NAME)
         .map(|spec| ToolDefinition {
             name: spec.name.to_owned(),
             description: spec.description.clone(),
             input_schema: spec.parameters,
+            defer_loading: false,
         })
         .collect();
+    if native {
+        defs.extend(catalog_defs(
+            &ctx.deferred_catalog,
+            &std::collections::HashSet::new(),
+            true,
+            selection,
+        ));
+    } else {
+        let discovered = ctx
+            .discovered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        defs.extend(catalog_defs(
+            &ctx.deferred_catalog,
+            &discovered,
+            false,
+            selection,
+        ));
+    }
     defs
+}
+
+fn catalog_defs(
+    catalog: &[ToolDefinition],
+    discovered: &std::collections::HashSet<String>,
+    native: bool,
+    selection: Option<&ToolSelection>,
+) -> Vec<ToolDefinition> {
+    catalog
+        .iter()
+        .filter(|def| {
+            selection.is_none_or(|sel| sel.allows(def.name.as_str()))
+                && (native || discovered.contains(&def.name))
+        })
+        .map(|def| ToolDefinition {
+            defer_loading: native,
+            ..def.clone()
+        })
+        .collect()
+}
+
+fn discovered_overlay(
+    base: &[ToolDefinition],
+    catalog: &[ToolDefinition],
+    discovered: &std::collections::HashSet<String>,
+) -> Vec<ToolDefinition> {
+    let mut defs = base.to_vec();
+    let mut have: std::collections::HashSet<String> =
+        defs.iter().map(|def| def.name.clone()).collect();
+    let extra: Vec<ToolDefinition> = catalog
+        .iter()
+        .filter(|def| discovered.contains(&def.name) && have.insert(def.name.clone()))
+        .cloned()
+        .collect();
+    defs.extend(extra);
+    defs
+}
+
+pub(crate) fn current_tool_defs(ctx: &SessionContext, env: &LoopEnv) -> Vec<ToolDefinition> {
+    if env.provider.supports_tool_search(&env.target.model) {
+        return env.tool_defs.clone();
+    }
+    let discovered = ctx
+        .discovered
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if discovered.is_empty() {
+        return env.tool_defs.clone();
+    }
+    discovered_overlay(&env.tool_defs, &ctx.deferred_catalog, &discovered)
 }
 
 #[cfg(test)]
 mod tests {
+    use goat_provider::ToolDefinition;
     use goat_tool::{ToolImage, ToolOutput};
 
-    use super::tool_outcome;
+    use super::{catalog_defs, discovered_overlay, tool_outcome};
+    use crate::subagent::ToolSelection;
+
+    fn def(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_owned(),
+            description: format!("{name} description"),
+            input_schema: serde_json::json!({ "type": "object" }),
+            defer_loading: false,
+        }
+    }
+
+    #[test]
+    fn native_catalog_defers_everything_allowed() {
+        let catalog = vec![def("posthog_query"), def("langfuse_trace")];
+        let out = catalog_defs(&catalog, &std::collections::HashSet::new(), true, None);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|def| def.defer_loading));
+    }
+
+    #[test]
+    fn fallback_catalog_loads_only_discovered() {
+        let catalog = vec![def("posthog_query"), def("langfuse_trace")];
+        let discovered: std::collections::HashSet<String> =
+            ["posthog_query".to_owned()].into_iter().collect();
+        let out = catalog_defs(&catalog, &discovered, false, None);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "posthog_query");
+        assert!(!out[0].defer_loading);
+    }
+
+    #[test]
+    fn selection_still_gates_the_catalog() {
+        let catalog = vec![def("posthog_query"), def("langfuse_trace")];
+        let selection = ToolSelection::Only(vec!["posthog_query".to_owned()]);
+        let out = catalog_defs(
+            &catalog,
+            &std::collections::HashSet::new(),
+            true,
+            Some(&selection),
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "posthog_query");
+    }
+
+    #[test]
+    fn overlay_adds_only_new_discoveries() {
+        let base = vec![def("Read"), def("posthog_query")];
+        let catalog = vec![def("posthog_query"), def("langfuse_trace")];
+        let discovered: std::collections::HashSet<String> =
+            ["posthog_query".to_owned(), "langfuse_trace".to_owned()]
+                .into_iter()
+                .collect();
+        let out = discovered_overlay(&base, &catalog, &discovered);
+        assert_eq!(out.len(), 3);
+        assert_eq!(
+            out.iter().filter(|def| def.name == "posthog_query").count(),
+            1,
+            "an already-listed tool must not be duplicated"
+        );
+    }
 
     #[test]
     fn image_output_populates_outcome_image() {

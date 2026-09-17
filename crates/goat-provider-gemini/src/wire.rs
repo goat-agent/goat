@@ -124,22 +124,26 @@ fn content_block_to_part(
     block: &ContentBlock,
     id_to_name: &HashMap<String, String>,
     synthetic_counter: &mut u32,
-) -> (Option<String>, Value) {
+) -> (Option<String>, Option<Value>) {
     match block {
-        ContentBlock::Text { text } => (None, json!({ "text": text })),
+        ContentBlock::ServerToolUse { .. } | ContentBlock::ToolSearchToolResult { .. } => {
+            (None, None)
+        }
+        ContentBlock::Text { text } => (None, Some(json!({ "text": text }))),
         ContentBlock::Thinking { text, signature } => {
             if signature.is_empty() {
-                (None, json!({ "text": text, "thought": true }))
+                (None, Some(json!({ "text": text, "thought": true })))
             } else {
                 (
                     None,
-                    json!({ "text": text, "thought": true, "thoughtSignature": signature }),
+                    Some(json!({ "text": text, "thought": true, "thoughtSignature": signature })),
                 )
             }
         }
-        ContentBlock::RedactedThinking { data } => {
-            (None, json!({ "thought": true, "thoughtSignature": data }))
-        }
+        ContentBlock::RedactedThinking { data } => (
+            None,
+            Some(json!({ "thought": true, "thoughtSignature": data })),
+        ),
         ContentBlock::ToolUse { id, name, input } => {
             let args = if input.is_object() {
                 input.clone()
@@ -152,7 +156,7 @@ fn content_block_to_part(
             } else {
                 json!({ "functionCall": { "name": name, "args": args, "id": id } })
             };
-            (None, fc)
+            (None, Some(fc))
         }
         ContentBlock::ToolResult {
             tool_use_id,
@@ -180,11 +184,11 @@ fn content_block_to_part(
                     }
                 })
             };
-            (Some("user".to_owned()), fr)
+            (Some("user".to_owned()), Some(fr))
         }
         ContentBlock::Image { media_type, data } => (
             None,
-            json!({ "inlineData": { "mimeType": media_type, "data": data } }),
+            Some(json!({ "inlineData": { "mimeType": media_type, "data": data } })),
         ),
     }
 }
@@ -230,8 +234,11 @@ pub fn build_request(req: &Request) -> InnerRequest {
                 let mut pending_fr: Vec<Value> = Vec::new();
                 let mut result_images: Vec<Value> = Vec::new();
                 for block in &msg.content {
-                    let (override_role, part) =
-                        content_block_to_part(block, &id_to_name, &mut synthetic_counter);
+                    let (override_role, Some(part)) =
+                        content_block_to_part(block, &id_to_name, &mut synthetic_counter)
+                    else {
+                        continue;
+                    };
                     if override_role.is_some() {
                         pending_fr.push(part);
                         if let ContentBlock::ToolResult {
@@ -249,14 +256,13 @@ pub fn build_request(req: &Request) -> InnerRequest {
                                         }));
                                         labeled = true;
                                     }
-                                    result_images.push(
-                                        content_block_to_part(
-                                            image,
-                                            &id_to_name,
-                                            &mut synthetic_counter,
-                                        )
-                                        .1,
-                                    );
+                                    if let (_, Some(part)) = content_block_to_part(
+                                        image,
+                                        &id_to_name,
+                                        &mut synthetic_counter,
+                                    ) {
+                                        result_images.push(part);
+                                    }
                                 }
                             }
                         }
@@ -278,7 +284,7 @@ pub fn build_request(req: &Request) -> InnerRequest {
                 let parts: Vec<Value> = msg
                     .content
                     .iter()
-                    .map(|b| content_block_to_part(b, &id_to_name, &mut synthetic_counter).1)
+                    .filter_map(|b| content_block_to_part(b, &id_to_name, &mut synthetic_counter).1)
                     .collect();
                 if !parts.is_empty() {
                     contents.push(json!({ "role": "model", "parts": parts }));
@@ -889,6 +895,7 @@ mod tests {
                 name: "fn1".to_owned(),
                 description: "does fn1".to_owned(),
                 input_schema: json!({ "type": "object", "$schema": "ignored" }),
+                defer_loading: false,
             }],
             effort: None,
             temperature: None,

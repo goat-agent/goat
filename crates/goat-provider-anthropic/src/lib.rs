@@ -397,6 +397,52 @@ fn gregorian_to_unix(year: i64, month: i64, day: i64, h: i64, m: i64, s: i64) ->
     days * 86_400 + h * 3_600 + m * 60 + s
 }
 
+const TOOL_SEARCH_TOOL_TYPE: &str = "tool_search_tool_bm25_20251119";
+const TOOL_SEARCH_TOOL_NAME: &str = "tool_search_tool_bm25";
+
+fn anthropic_supports_tool_search(model: &str) -> bool {
+    let id = model.to_ascii_lowercase();
+    [
+        "fable",
+        "mythos",
+        "opus-5",
+        "opus-4-8",
+        "opus-4-7",
+        "opus-4-6",
+        "opus-4-5",
+        "sonnet-5",
+        "sonnet-4-6",
+        "sonnet-4-5",
+        "haiku-4-5",
+    ]
+    .iter()
+    .any(|needle| id.contains(needle))
+}
+
+fn prepare_tools(mut tools: Vec<serde_json::Value>, model: &str) -> Vec<serde_json::Value> {
+    let deferred = tools.iter().any(|tool| {
+        tool.get("defer_loading")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    });
+    if !deferred {
+        return tools;
+    }
+    if anthropic_supports_tool_search(model) {
+        tools.push(json!({
+            "type": TOOL_SEARCH_TOOL_TYPE,
+            "name": TOOL_SEARCH_TOOL_NAME,
+        }));
+    } else {
+        for tool in &mut tools {
+            if let Some(object) = tool.as_object_mut() {
+                object.remove("defer_loading");
+            }
+        }
+    }
+    tools
+}
+
 fn anthropic_efforts(model: &str) -> Vec<Effort> {
     let id = model.to_ascii_lowercase();
     if id.contains("fable")
@@ -465,6 +511,20 @@ fn content_block_json(block: &ContentBlock) -> serde_json::Value {
                 "data": data,
             },
         }),
+        ContentBlock::ServerToolUse { id, name, input } => json!({
+            "type": "server_tool_use",
+            "id": id,
+            "name": name,
+            "input": if input.is_object() { input.clone() } else { json!({}) },
+        }),
+        ContentBlock::ToolSearchToolResult {
+            tool_use_id,
+            content,
+        } => json!({
+            "type": "tool_search_tool_result",
+            "tool_use_id": tool_use_id,
+            "content": content,
+        }),
     }
 }
 
@@ -532,6 +592,8 @@ struct ContentBlockInfo {
     id: Option<String>,
     name: Option<String>,
     data: Option<String>,
+    tool_use_id: Option<String>,
+    content: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -603,11 +665,15 @@ fn split_request(req: &Request) -> (String, Vec<serde_json::Value>, Vec<serde_js
         .tools
         .iter()
         .map(|tool| {
-            json!({
+            let mut value = json!({
                 "name": tool.name,
                 "description": tool.description,
                 "input_schema": tool.input_schema,
-            })
+            });
+            if tool.defer_loading {
+                value["defer_loading"] = json!(true);
+            }
+            value
         })
         .collect();
     (system, messages, tools)
@@ -623,7 +689,7 @@ fn stream_messages(
             yield StreamChunk::RateLimits { snapshot };
         }
         let mut stream = response.bytes_stream().eventsource();
-        let mut tool_calls: HashMap<u32, (String, String, String)> = HashMap::new();
+        let mut tool_calls: HashMap<u32, (String, String, String, bool)> = HashMap::new();
         let mut usage = Usage::default();
         let mut stopped = false;
         while let Some(event) = stream.next().await {
@@ -653,7 +719,27 @@ fn stream_messages(
                                     if let (Some(id), Some(name)) =
                                         (start.content_block.id, start.content_block.name)
                                     {
-                                        tool_calls.insert(start.index, (id, name, String::new()));
+                                        tool_calls
+                                            .insert(start.index, (id, name, String::new(), false));
+                                    }
+                                }
+                                "server_tool_use" => {
+                                    if let (Some(id), Some(name)) =
+                                        (start.content_block.id, start.content_block.name)
+                                    {
+                                        tool_calls
+                                            .insert(start.index, (id, name, String::new(), true));
+                                    }
+                                }
+                                "tool_search_tool_result" => {
+                                    if let (Some(tool_use_id), Some(content)) = (
+                                        start.content_block.tool_use_id,
+                                        start.content_block.content,
+                                    ) {
+                                        yield StreamChunk::ServerToolResult {
+                                            tool_use_id,
+                                            content,
+                                        };
                                     }
                                 }
                                 "redacted_thinking" => {
@@ -681,9 +767,14 @@ fn stream_messages(
                     }
                     "content_block_stop" => {
                         if let Ok(stop) = serde_json::from_str::<ContentBlockStop>(&event.data)
-                            && let Some((id, name, input)) = tool_calls.remove(&stop.index)
+                            && let Some((id, name, input, server)) =
+                                tool_calls.remove(&stop.index)
                         {
-                            yield StreamChunk::ToolCall { id, name, input };
+                            if server {
+                                yield StreamChunk::ServerToolUse { id, name, input };
+                            } else {
+                                yield StreamChunk::ToolCall { id, name, input };
+                            }
                         }
                     }
                     "message_stop" => {
@@ -779,6 +870,10 @@ impl Provider for AnthropicProvider {
         anthropic_supports_images(model)
     }
 
+    fn supports_tool_search(&self, model: &str) -> bool {
+        anthropic_supports_tool_search(model)
+    }
+
     fn supports_web_search(&self) -> bool {
         true
     }
@@ -838,7 +933,8 @@ impl Provider for AnthropicProvider {
                 "not logged in to anthropic",
             ));
         };
-        let (mut system, mut messages, mut tools) = split_request(&req);
+        let (mut system, mut messages, tools) = split_request(&req);
+        let mut tools = prepare_tools(tools, &req.model);
         if let Some(req_system) = req.system.as_deref()
             && !req_system.is_empty()
         {
@@ -1306,5 +1402,132 @@ mod tests {
         let none = super::thinking_config("claude-opus-4-8", None);
         assert!(none.thinking.is_none());
         assert!(none.output_config.is_none());
+    }
+
+    #[test]
+    fn split_request_marks_deferred_tools() {
+        use goat_provider::{Message, MessageRole, Request, ToolDefinition};
+        let req = Request {
+            model: "claude-opus-4-6".to_owned(),
+            messages: vec![Message::text(MessageRole::User, "hi")],
+            tools: vec![
+                ToolDefinition {
+                    name: "Read".to_owned(),
+                    description: "read".to_owned(),
+                    input_schema: serde_json::json!({}),
+                    defer_loading: false,
+                },
+                ToolDefinition {
+                    name: "posthog_query".to_owned(),
+                    description: "query".to_owned(),
+                    input_schema: serde_json::json!({}),
+                    defer_loading: true,
+                },
+            ],
+            effort: None,
+            tool_choice: goat_provider::ToolChoice::Auto,
+            temperature: None,
+            max_tokens: None,
+            system: None,
+        };
+        let (_, _, tools) = super::split_request(&req);
+        assert!(tools[0].get("defer_loading").is_none());
+        assert_eq!(tools[1]["defer_loading"], true);
+    }
+
+    #[test]
+    fn prepare_tools_appends_the_search_tool_on_supported_models() {
+        let tools = vec![
+            serde_json::json!({ "name": "Read" }),
+            serde_json::json!({ "name": "posthog_query", "defer_loading": true }),
+        ];
+        let out = super::prepare_tools(tools, "claude-opus-4-6");
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[2]["type"], "tool_search_tool_bm25_20251119");
+        assert_eq!(out[2]["name"], "tool_search_tool_bm25");
+        assert_eq!(out[1]["defer_loading"], true);
+    }
+
+    #[test]
+    fn prepare_tools_strips_defer_loading_on_unsupported_models() {
+        let tools = vec![
+            serde_json::json!({ "name": "Read" }),
+            serde_json::json!({ "name": "posthog_query", "defer_loading": true }),
+        ];
+        let out = super::prepare_tools(tools, "claude-opus-4-1");
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|tool| tool.get("defer_loading").is_none()));
+    }
+
+    #[test]
+    fn prepare_tools_leaves_plain_requests_alone() {
+        let tools = vec![serde_json::json!({ "name": "Read" })];
+        let out = super::prepare_tools(tools, "claude-opus-4-6");
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn tool_search_model_gate() {
+        assert!(super::anthropic_supports_tool_search(
+            "claude-opus-4-5-20251101"
+        ));
+        assert!(super::anthropic_supports_tool_search("claude-sonnet-4-6"));
+        assert!(super::anthropic_supports_tool_search("claude-haiku-4-5"));
+        assert!(super::anthropic_supports_tool_search("claude-fable-5"));
+        assert!(!super::anthropic_supports_tool_search("claude-opus-4-1"));
+        assert!(!super::anthropic_supports_tool_search("claude-sonnet-4-0"));
+    }
+
+    #[test]
+    fn serializes_server_tool_blocks() {
+        use goat_provider::ContentBlock;
+        let server = super::content_block_json(&ContentBlock::ServerToolUse {
+            id: "srvtoolu_1".to_owned(),
+            name: "tool_search_tool_bm25".to_owned(),
+            input: serde_json::json!({ "query": "posthog" }),
+        });
+        assert_eq!(server["type"], "server_tool_use");
+        assert_eq!(server["id"], "srvtoolu_1");
+        assert_eq!(server["input"]["query"], "posthog");
+        let result = super::content_block_json(&ContentBlock::ToolSearchToolResult {
+            tool_use_id: "srvtoolu_1".to_owned(),
+            content: serde_json::json!({
+                "type": "tool_search_tool_search_result",
+                "tool_references": [{ "type": "tool_reference", "tool_name": "posthog_query" }]
+            }),
+        });
+        assert_eq!(result["type"], "tool_search_tool_result");
+        assert_eq!(result["tool_use_id"], "srvtoolu_1");
+        assert_eq!(
+            result["content"]["tool_references"][0]["tool_name"],
+            "posthog_query"
+        );
+    }
+
+    #[test]
+    fn parses_server_tool_use_start() {
+        let data = r#"{"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_9","name":"tool_search_tool_bm25"}}"#;
+        let start: super::ContentBlockStart = serde_json::from_str(data).unwrap();
+        assert_eq!(start.content_block.kind, "server_tool_use");
+        assert_eq!(start.content_block.id.as_deref(), Some("srvtoolu_9"));
+        assert_eq!(
+            start.content_block.name.as_deref(),
+            Some("tool_search_tool_bm25")
+        );
+    }
+
+    #[test]
+    fn parses_tool_search_result_start() {
+        let data = r#"{"type":"content_block_start","index":2,"content_block":{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_9","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"posthog_query"}]}}}"#;
+        let start: super::ContentBlockStart = serde_json::from_str(data).unwrap();
+        assert_eq!(start.content_block.kind, "tool_search_tool_result");
+        assert_eq!(
+            start.content_block.tool_use_id.as_deref(),
+            Some("srvtoolu_9")
+        );
+        assert_eq!(
+            start.content_block.content.unwrap()["tool_references"][0]["tool_name"],
+            "posthog_query"
+        );
     }
 }

@@ -60,6 +60,7 @@ const WAKE_ID_BASE: u64 = 1 << 48;
 pub struct CodingEngine {
     registry: Registry,
     tools: Vec<Box<dyn Tool>>,
+    deferred_catalog: Vec<ToolDefinition>,
     store: Store,
     credentials: CredentialStore,
     user_providers: goat_config::UserProviders,
@@ -114,6 +115,17 @@ impl CodingEngine {
             tracing::warn!(failure, "integration tool discovery failed");
         }
         resolved.extend(integration_tools);
+        let mut seen = std::collections::HashSet::new();
+        let deferred_catalog: Vec<ToolDefinition> = resolved
+            .iter()
+            .filter(|tool| !tool.enabled && seen.insert(tool.exposed_name.clone()))
+            .map(|tool| ToolDefinition {
+                name: tool.exposed_name.clone(),
+                description: tool.description.clone(),
+                input_schema: tool.input_schema.clone(),
+                defer_loading: false,
+            })
+            .collect();
         let mut tools = goat_mcp_tools::adapt(resolved);
         let tool_count = tools.len();
         if tool_count > 0 {
@@ -128,6 +140,7 @@ impl CodingEngine {
         Self {
             registry,
             tools,
+            deferred_catalog,
             store,
             credentials,
             user_providers,
@@ -151,6 +164,8 @@ pub(crate) struct SessionServices {
     pub(crate) credentials: CredentialStore,
     pub(crate) user: goat_config::UserProviders,
     pub(crate) tools: ToolRegistry,
+    pub(crate) deferred_catalog: Vec<ToolDefinition>,
+    pub(crate) discovered: goat_tool_discovery::Discovered,
     pub(crate) subagents: SubagentRegistry,
     pub(crate) store: Store,
     pub(crate) events: mpsc::Sender<Event>,
@@ -332,6 +347,7 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
     let CodingEngine {
         registry,
         tools,
+        deferred_catalog,
         store,
         credentials,
         user_providers,
@@ -393,7 +409,8 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
             description: spec.description.clone(),
         })
         .collect();
-    let tools = goat_tools::builtin_with(goat_tools::BuiltinCapabilities {
+    let discovered = goat_tool_discovery::discovered_set();
+    let mut tools = goat_tools::builtin_with(goat_tools::BuiltinCapabilities {
         questions: question_broker,
         processes: process_service,
         agents: agent_specs,
@@ -402,6 +419,12 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
         plans: Arc::new(plan::EnginePlanService::new(events.clone())),
     })
     .with_many(tools);
+    if !deferred_catalog.is_empty() {
+        tools = tools.with(Box::new(goat_tool_discovery::ToolSearchTool::new(
+            deferred_catalog.clone(),
+            discovered.clone(),
+        )));
+    }
     let checkpoints = checkpoint::CheckpointTracker::new(store.clone());
     let _ = events
         .send(Event::SkillsChanged {
@@ -437,6 +460,8 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
         credentials,
         user: user_providers,
         tools,
+        deferred_catalog,
+        discovered,
         subagents,
         store,
         events,
@@ -2138,5 +2163,164 @@ mod tests {
         drain_until_task_done(&mut events).await;
 
         assert!(store.get_conversation(1).await.unwrap().is_some());
+    }
+
+    struct ServerBlocksProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        captured: Arc<std::sync::Mutex<Vec<Request>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ServerBlocksProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::from("mock")
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                tools: true,
+                auth: AuthMethod::None,
+                images: true,
+            }
+        }
+
+        async fn stream(&self, req: Request) -> Result<ChunkStream, StreamError> {
+            self.captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(req);
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Box::pin(async_stream::try_stream! {
+                if n == 0 {
+                    yield StreamChunk::ServerToolUse {
+                        id: "srvtoolu_1".to_owned(),
+                        name: "tool_search_tool_bm25".to_owned(),
+                        input: "{\"query\":\"posthog\"}".to_owned(),
+                    };
+                    yield StreamChunk::ServerToolResult {
+                        tool_use_id: "srvtoolu_1".to_owned(),
+                        content: serde_json::json!({
+                            "type": "tool_search_tool_search_result",
+                            "tool_references": [
+                                { "type": "tool_reference", "tool_name": "posthog_query" }
+                            ]
+                        }),
+                    };
+                    yield StreamChunk::ToolCall {
+                        id: "toolu_1".to_owned(),
+                        name: "Read".to_owned(),
+                        input: "{\"path\":\"/nope.txt\"}".to_owned(),
+                    };
+                } else {
+                    yield StreamChunk::TextDelta {
+                        text: "done".to_owned(),
+                    };
+                }
+            }))
+        }
+
+        fn discover(&self, out: mpsc::Sender<Model>) -> JoinHandle<()> {
+            tokio::spawn(async move {
+                drop(out);
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn server_tool_blocks_render_and_round_trip() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let captured = Arc::new(std::sync::Mutex::new(Vec::<Request>::new()));
+        let provider = ServerBlocksProvider {
+            calls: calls.clone(),
+            captured: captured.clone(),
+        };
+        let registry = Registry::from_providers(vec![Arc::new(provider)]);
+        let store = Store::open_in_memory().await.unwrap();
+        let credentials =
+            CredentialStore::new(std::env::temp_dir().join("goat-agent-servertools.json"));
+        let agent =
+            CodingEngine::new(test_deps(registry, store.clone(), credentials, "mock")).await;
+        let session = Session::spawn(agent);
+        let (ops, mut events, _handle) = session.into_parts();
+        ops.send(Op::SubmitMessage {
+            id: TaskId(1),
+            text: "find the tool".to_owned(),
+            display: None,
+            attachments: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+        let mut search_started = false;
+        let mut search_done = None;
+        while let Some(event) = events.recv().await {
+            match event {
+                Event::ToolStarted { call, .. } if call.name == "tool_search_tool_bm25" => {
+                    search_started = true;
+                }
+                Event::ToolDone { outcome, .. }
+                    if outcome
+                        .summary
+                        .as_deref()
+                        .is_some_and(|s| s.contains("posthog_query")) =>
+                {
+                    search_done = Some(outcome);
+                }
+                Event::TaskDone { .. } => break,
+                _ => {}
+            }
+        }
+        assert!(
+            search_started,
+            "the server search must render as a tool call"
+        );
+        let outcome = search_done.expect("the search result must complete the call");
+        assert!(outcome.ok);
+        assert_eq!(
+            outcome.summary.as_deref(),
+            Some("discovered: posthog_query")
+        );
+
+        let requests = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert!(requests.len() >= 2);
+        let assistant = requests[1]
+            .messages
+            .iter()
+            .find(|message| message.role == goat_provider::MessageRole::Assistant)
+            .expect("the second request carries the assistant turn");
+        let kinds: Vec<&str> = assistant
+            .content
+            .iter()
+            .map(|block| match block {
+                goat_provider::ContentBlock::ServerToolUse { .. } => "server_tool_use",
+                goat_provider::ContentBlock::ToolSearchToolResult { .. } => {
+                    "tool_search_tool_result"
+                }
+                goat_provider::ContentBlock::ToolUse { .. } => "tool_use",
+                goat_provider::ContentBlock::Text { .. } => "text",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["server_tool_use", "tool_search_tool_result", "tool_use"],
+            "server blocks must round-trip in stream order"
+        );
+        let has_result_for_srvtoolu = requests[1].messages.iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(
+                    block,
+                    goat_provider::ContentBlock::ToolResult { tool_use_id, .. }
+                        if tool_use_id.starts_with("srvtoolu_")
+                )
+            })
+        });
+        assert!(
+            !has_result_for_srvtoolu,
+            "srvtoolu_ ids must never receive a tool_result"
+        );
     }
 }
