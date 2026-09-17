@@ -25,6 +25,7 @@ goat-integration-mcp = { workspace = true }
 goat-tool = { workspace = true }
 goat-tool-ask = { workspace = true }
 goat-tool-delegate = { workspace = true }
+goat-tool-discovery = { workspace = true }
 goat-tool-plan = { workspace = true }
 goat-tool-search = { workspace = true }
 goat-tool-shell = { workspace = true }

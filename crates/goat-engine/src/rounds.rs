@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use goat_protocol::Event;
+use goat_protocol::{Event, ToolCallId};
 use goat_provider::{
     ContentBlock, Message, MessageRole, Provider, Request, StreamChunk, StreamError,
 };
@@ -26,8 +26,7 @@ pub(crate) enum RoundEnd {
 pub(crate) struct RoundResult {
     pub(crate) end: RoundEnd,
     pub(crate) raw: String,
-    pub(crate) thinking: Option<(String, String)>,
-    pub(crate) redacted: Vec<String>,
+    pub(crate) content: Vec<ContentBlock>,
     pub(crate) pending_calls: Vec<(String, String, String)>,
     pub(crate) usage: Option<goat_provider::Usage>,
     pub(crate) rate_limits: Option<goat_provider::RateLimitSnapshot>,
@@ -38,8 +37,7 @@ impl RoundResult {
         Self {
             end,
             raw: String::new(),
-            thinking: None,
-            redacted: Vec::new(),
+            content: Vec::new(),
             pending_calls: Vec::new(),
             usage: None,
             rate_limits: None,
@@ -181,6 +179,40 @@ fn tool_input_value(input: &str) -> serde_json::Value {
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()))
 }
 
+fn tool_search_outcome(content: &serde_json::Value) -> goat_protocol::ToolOutcome {
+    let names: Vec<&str> = content
+        .get("tool_references")
+        .and_then(serde_json::Value::as_array)
+        .map(|refs| {
+            refs.iter()
+                .filter_map(|r| r.get("tool_name").and_then(serde_json::Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    let (ok, summary) = if !names.is_empty() {
+        (true, format!("discovered: {}", names.join(", ")))
+    } else if let Some(code) = content
+        .get("error_code")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            content
+                .get("error_message")
+                .and_then(serde_json::Value::as_str)
+        })
+    {
+        (false, format!("tool search failed: {code}"))
+    } else {
+        (true, "no matching tools".to_owned())
+    };
+    goat_protocol::ToolOutcome {
+        ok,
+        summary: Some(summary),
+        body: None,
+        image: None,
+        git: None,
+    }
+}
+
 pub(crate) async fn run_round(
     ctx: &SessionContext,
     run: &Run<'_>,
@@ -199,7 +231,7 @@ pub(crate) async fn run_round(
     let mut raw = String::new();
     let mut thinking = String::new();
     let mut signature = String::new();
-    let mut redacted: Vec<String> = Vec::new();
+    let mut content: Vec<ContentBlock> = Vec::new();
     let mut pending_calls: Vec<(String, String, String)> = Vec::new();
     let mut usage: Option<goat_provider::Usage> = None;
     let mut rate_limits: Option<goat_provider::RateLimitSnapshot> = None;
@@ -212,6 +244,10 @@ pub(crate) async fn run_round(
             maybe_chunk = stream.next() => match maybe_chunk {
                 Some(Ok(StreamChunk::TextDelta { text })) => {
                     raw.push_str(&text);
+                    match content.last_mut() {
+                        Some(ContentBlock::Text { text: last }) => last.push_str(&text),
+                        _ => content.push(ContentBlock::Text { text: text.clone() }),
+                    }
                     let _ = ctx
                         .events
                         .send(Event::TextDelta { id: run.id, chunk: text })
@@ -226,12 +262,34 @@ pub(crate) async fn run_round(
                 }
                 Some(Ok(StreamChunk::ThinkingSignature { signature: sig })) => {
                     signature.push_str(&sig);
+                    content.push(ContentBlock::Thinking {
+                        text: std::mem::take(&mut thinking),
+                        signature: std::mem::take(&mut signature),
+                    });
                 }
                 Some(Ok(StreamChunk::RedactedThinking { data })) => {
-                    redacted.push(data);
+                    content.push(ContentBlock::RedactedThinking { data });
                 }
                 Some(Ok(StreamChunk::ToolCall { id: vendor_id, name, input })) => {
+                    content.push(ContentBlock::ToolUse {
+                        id: vendor_id.clone(),
+                        name: name.clone(),
+                        input: tool_input_value(&input),
+                    });
                     pending_calls.push((vendor_id, name, input));
+                }
+                Some(Ok(StreamChunk::ServerToolUse { id, name, input })) => {
+                    content.push(ContentBlock::ServerToolUse {
+                        id,
+                        name,
+                        input: tool_input_value(&input),
+                    });
+                }
+                Some(Ok(StreamChunk::ServerToolResult { tool_use_id, content: result })) => {
+                    content.push(ContentBlock::ToolSearchToolResult {
+                        tool_use_id,
+                        content: result,
+                    });
                 }
                 Some(Ok(StreamChunk::Usage { usage: u })) => {
                     usage = Some(u);
@@ -244,12 +302,16 @@ pub(crate) async fn run_round(
             }
         }
     };
-    let thinking = (!thinking.is_empty() || !signature.is_empty()).then_some((thinking, signature));
+    if !thinking.is_empty() || !signature.is_empty() {
+        content.push(ContentBlock::Thinking {
+            text: thinking,
+            signature,
+        });
+    }
     RoundResult {
         end,
         raw,
-        thinking,
-        redacted,
+        content,
         pending_calls,
         usage,
         rate_limits,
@@ -315,12 +377,12 @@ pub(crate) async fn process_round_output(
             })
             .await;
     }
+    let current_defs = crate::tools_exec::current_tool_defs(ctx, env);
     let mut pending_calls: Vec<(String, String, String)> = round
         .pending_calls
         .into_iter()
         .map(|(vendor_id, name, input)| {
-            let schema = env
-                .tool_defs
+            let schema = current_defs
                 .iter()
                 .find(|def| def.name == name)
                 .map(|def| &def.input_schema);
@@ -328,10 +390,9 @@ pub(crate) async fn process_round_output(
         })
         .collect();
     let (raw, recovered) =
-        crate::tool_recovery::recover(&env.target.provider, &round.raw, &env.tool_defs);
+        crate::tool_recovery::recover(&env.target.provider, &round.raw, &current_defs);
     for (idx, (name, raw_input)) in recovered.into_iter().enumerate() {
-        let schema = env
-            .tool_defs
+        let schema = current_defs
             .iter()
             .find(|def| def.name == name)
             .map(|def| &def.input_schema);
@@ -351,30 +412,75 @@ pub(crate) async fn process_round_output(
         pending_calls.push((vendor_id, name, input));
     }
     let shown_text = (!raw.trim().is_empty()).then(|| raw.clone());
-    if !raw.trim().is_empty()
-        || !pending_calls.is_empty()
-        || round.thinking.is_some()
-        || !round.redacted.is_empty()
-    {
-        let mut content = Vec::new();
-        if let Some((text, signature)) = &round.thinking {
-            content.push(ContentBlock::Thinking {
-                text: text.clone(),
-                signature: signature.clone(),
-            });
+    if !round.content.is_empty() {
+        let normalized: std::collections::HashMap<&str, &str> = pending_calls
+            .iter()
+            .map(|(vendor_id, _, input)| (vendor_id.as_str(), input.as_str()))
+            .collect();
+        let mut content = round.content;
+        for block in &mut content {
+            if let ContentBlock::ToolUse { id, input, .. } = block
+                && let Some(raw) = normalized.get(id.as_str())
+            {
+                *input = tool_input_value(raw);
+            }
         }
-        for data in &round.redacted {
-            content.push(ContentBlock::RedactedThinking { data: data.clone() });
-        }
-        if !raw.trim().is_empty() {
-            content.push(ContentBlock::Text { text: raw.clone() });
-        }
+        let have: std::collections::HashSet<String> = content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
         for (vendor_id, name, input_json) in &pending_calls {
-            content.push(ContentBlock::ToolUse {
-                id: vendor_id.clone(),
-                name: name.clone(),
-                input: tool_input_value(input_json),
-            });
+            if !have.contains(vendor_id) {
+                content.push(ContentBlock::ToolUse {
+                    id: vendor_id.clone(),
+                    name: name.clone(),
+                    input: tool_input_value(input_json),
+                });
+            }
+        }
+        let mut server_pending: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        for block in &content {
+            match block {
+                ContentBlock::ServerToolUse { id, name, input } => {
+                    *call_seq += 1;
+                    server_pending.insert(id.clone(), *call_seq);
+                    let _ = ctx
+                        .events
+                        .send(Event::ToolStarted {
+                            id: run.id,
+                            call: goat_protocol::ToolCall {
+                                id: ToolCallId(*call_seq),
+                                name: name.clone(),
+                                display: crate::tools_exec::call_display(
+                                    &ctx.tools,
+                                    name,
+                                    &input.to_string(),
+                                ),
+                            },
+                        })
+                        .await;
+                }
+                ContentBlock::ToolSearchToolResult {
+                    tool_use_id,
+                    content: result,
+                } => {
+                    if let Some(seq) = server_pending.remove(tool_use_id) {
+                        let _ = ctx
+                            .events
+                            .send(Event::ToolDone {
+                                id: run.id,
+                                call: ToolCallId(seq),
+                                outcome: tool_search_outcome(result),
+                            })
+                            .await;
+                    }
+                }
+                _ => {}
+            }
         }
         let message = Message {
             role: MessageRole::Assistant,
@@ -541,7 +647,46 @@ pub(crate) async fn core_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_tool_input, tool_input_value};
+    use super::{normalize_tool_input, tool_input_value, tool_search_outcome};
+
+    #[test]
+    fn tool_search_outcome_lists_discovered_names() {
+        let outcome = tool_search_outcome(&serde_json::json!({
+            "type": "tool_search_tool_search_result",
+            "tool_references": [
+                { "type": "tool_reference", "tool_name": "posthog_query" },
+                { "type": "tool_reference", "tool_name": "posthog_dashboard" }
+            ]
+        }));
+        assert!(outcome.ok);
+        assert_eq!(
+            outcome.summary.as_deref(),
+            Some("discovered: posthog_query, posthog_dashboard")
+        );
+    }
+
+    #[test]
+    fn tool_search_outcome_marks_errors() {
+        let outcome = tool_search_outcome(&serde_json::json!({
+            "type": "tool_search_tool_error",
+            "error_code": "unavailable"
+        }));
+        assert!(!outcome.ok);
+        assert_eq!(
+            outcome.summary.as_deref(),
+            Some("tool search failed: unavailable")
+        );
+    }
+
+    #[test]
+    fn tool_search_outcome_handles_an_empty_result() {
+        let outcome = tool_search_outcome(&serde_json::json!({
+            "type": "tool_search_tool_search_result",
+            "tool_references": []
+        }));
+        assert!(outcome.ok);
+        assert_eq!(outcome.summary.as_deref(), Some("no matching tools"));
+    }
 
     fn norm(input: &str) -> String {
         normalize_tool_input(input.to_owned(), None)

@@ -68,7 +68,8 @@ fn estimate_block(block: &ContentBlock) -> u32 {
             chars_to_tokens(text.chars().count())
         }
         ContentBlock::RedactedThinking { data } => chars_to_tokens(data.len()),
-        ContentBlock::ToolUse { name, input, .. } => {
+        ContentBlock::ToolUse { name, input, .. }
+        | ContentBlock::ServerToolUse { name, input, .. } => {
             chars_to_tokens(name.len() + input.to_string().chars().count())
         }
         ContentBlock::ToolResult { content, .. } => content
@@ -76,6 +77,9 @@ fn estimate_block(block: &ContentBlock) -> u32 {
             .map(estimate_block)
             .fold(0u32, u32::saturating_add),
         ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
+        ContentBlock::ToolSearchToolResult { content, .. } => {
+            chars_to_tokens(content.to_string().chars().count())
+        }
     }
 }
 
@@ -555,6 +559,7 @@ mod tests {
             name: "Read".to_owned(),
             description: "read a file".to_owned(),
             input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"}}}),
+            defer_loading: false,
         }];
         let messages = vec![Message::text(MessageRole::User, "hi")];
         let first = tracker.estimate(&messages, &tool_defs);

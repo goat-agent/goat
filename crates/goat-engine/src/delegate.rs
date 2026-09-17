@@ -248,6 +248,7 @@ async fn run_child_inner(
             asking: false,
             planning: false,
         },
+        &child_target.model,
     );
     let mut conversation = Conversation::new();
     conversation.push(

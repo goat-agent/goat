@@ -168,7 +168,9 @@ fn append_message_items(
                     }],
                 }));
             }
-            ContentBlock::Thinking { .. } => {}
+            ContentBlock::Thinking { .. }
+            | ContentBlock::ServerToolUse { .. }
+            | ContentBlock::ToolSearchToolResult { .. } => {}
         }
     }
     if !text.is_empty() {
@@ -925,6 +927,7 @@ mod tests {
             name: "read_file".to_owned(),
             description: "reads a file".to_owned(),
             input_schema: json!({ "type": "object" }),
+            defer_loading: false,
         }];
         let messages = vec![Message::text(MessageRole::User, "hi")];
         let body = build_body(
