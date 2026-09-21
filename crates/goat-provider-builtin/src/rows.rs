@@ -1,4 +1,4 @@
-use goat_provider::{Effort, LoginEndpointMetadata, ProviderMetadata};
+use goat_provider::{Effort, EndpointOverride, ProviderMetadata};
 use goat_provider_openai_compat::{
     known_openai_compatible_vision_model, known_openai_vision_model, no_efforts, no_vision,
 };
@@ -185,7 +185,7 @@ pub const ZAI: Row = Row {
         validation: "catalog-only",
         endpoint: None,
         oauth: Some("not supported by Z.AI API docs"),
-        login_endpoint: None,
+        endpoint_override: None,
         setup: &[],
     },
     ..Row::hosted(
@@ -213,7 +213,7 @@ pub const ZAI_CODING: Row = Row {
         validation: "catalog-only",
         endpoint: Some("https://api.z.ai/api/coding/paas/v4"),
         oauth: Some("not OAuth; uses Z.AI Coding Plan API key"),
-        login_endpoint: None,
+        endpoint_override: None,
         setup: &[
             "Z.AI Coding Plan API-key provider.",
             "Use `ZAI_CODING_API_KEY` or `goat provider login zai-coding --key sk-...`.",
@@ -262,7 +262,7 @@ pub const KIMI: Row = Row {
         validation: "catalog-only",
         endpoint: None,
         oauth: Some("Kimi Code OAuth is provider id kimi-code"),
-        login_endpoint: None,
+        endpoint_override: None,
         setup: &[
             "Kimi Platform API key provider.",
             "For Kimi Code OAuth, use `goat provider login kimi-code`.",
@@ -300,7 +300,7 @@ pub const QWEN: Row = Row {
         validation: "network",
         endpoint: Some("required for non-US DashScope workspaces"),
         oauth: Some("Qwen OAuth enrollment discontinued"),
-        login_endpoint: Some(LoginEndpointMetadata {
+        endpoint_override: Some(EndpointOverride {
             env_var: Some("QWEN_BASE_URL"),
             default: Some(QWEN_DEFAULT_ENDPOINT),
             validate: Some(validate_qwen_endpoint),
@@ -342,7 +342,7 @@ pub const MINIMAX: Row = Row {
         validation: "catalog-only",
         endpoint: Some("https://api.minimax.io/v1"),
         oauth: Some("not supported"),
-        login_endpoint: None,
+        endpoint_override: None,
         setup: &[
             "MiniMax open platform API-key provider.",
             "Use `MINIMAX_API_KEY` or `goat provider login minimax --key ...`.",
@@ -385,7 +385,7 @@ pub const VERCEL: Row = Row {
         validation: "network",
         endpoint: Some("https://ai-gateway.vercel.sh/v1"),
         oauth: Some("not supported"),
-        login_endpoint: None,
+        endpoint_override: None,
         setup: &[
             "Vercel AI Gateway: one key fronting every upstream provider.",
             "Use `AI_GATEWAY_API_KEY` or `goat provider login vercel --key vck_...`.",
@@ -590,7 +590,14 @@ mod tests {
     use goat_auth::{Credential, CredentialKey, CredentialStore, SecretString};
 
     use super::*;
-    use crate::build;
+    use crate::{build_openai_spec, spec_for};
+    use goat_provider::Provider;
+    use std::sync::Arc;
+
+    fn build(row: &'static Row, store: &CredentialStore, account: &str) -> Arc<dyn Provider> {
+        let spec = spec_for(row, None, store, account).expect("spec");
+        build_openai_spec(Some(row), &spec, store, account)
+    }
 
     fn store(name: &str) -> CredentialStore {
         let _ = std::fs::remove_file(std::env::temp_dir().join(name));

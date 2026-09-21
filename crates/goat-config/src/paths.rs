@@ -6,7 +6,7 @@ use anyhow::{Result, anyhow};
 pub struct GoatPaths {
     pub root: PathBuf,
     pub credentials_json: PathBuf,
-    pub config_json: PathBuf,
+    pub config_toml: PathBuf,
     pub client_json: PathBuf,
     pub desktop_json: PathBuf,
     pub mcp_json: PathBuf,
@@ -33,7 +33,7 @@ impl GoatPaths {
     pub fn from_root(root: PathBuf) -> Self {
         Self {
             credentials_json: root.join("credentials.json"),
-            config_json: root.join("config.json"),
+            config_toml: root.join("config.toml"),
             client_json: root.join("client.json"),
             desktop_json: root.join("desktop.json"),
             mcp_json: root.join("mcp.json"),
@@ -67,7 +67,7 @@ pub(crate) fn resolved() -> Option<GoatPaths> {
 }
 
 pub fn config_path() -> Option<PathBuf> {
-    resolved().map(|p| p.config_json)
+    resolved().map(|p| p.config_toml)
 }
 
 pub fn client_path() -> Option<PathBuf> {

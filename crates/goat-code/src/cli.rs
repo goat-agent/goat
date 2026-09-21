@@ -340,14 +340,30 @@ pub enum ProviderCommand {
   goat provider add"
     )]
     Add {
-        #[arg(help = "Provider name")]
+        #[arg(help = "Provider name; a built-in id writes an override patch")]
         name: Option<String>,
-        #[arg(long, value_name = "URL", help = "OpenAI-compatible base URL")]
+        #[arg(long, value_name = "URL", help = "Base URL for the provider")]
         endpoint: Option<String>,
         #[arg(long, help = "API key; omit for keyless endpoints")]
         key: Option<String>,
         #[arg(long, short, help = "Account name to store, default: default")]
         account: Option<String>,
+        #[arg(long, help = "Wire dialect: chat, responses, anthropic, or gemini")]
+        wire: Option<String>,
+        #[arg(long, help = "Env var read as an additional API-key source")]
+        env_key: Option<String>,
+        #[arg(
+            long = "header",
+            value_name = "NAME=VALUE",
+            help = "Extra request header; repeatable"
+        )]
+        header: Vec<String>,
+        #[arg(
+            long = "model",
+            value_name = "MODEL",
+            help = "Catalog model id; repeatable"
+        )]
+        model: Vec<String>,
     },
     #[command(about = "Remove a custom provider and its credentials")]
     Remove {

@@ -112,17 +112,15 @@
                     "const": "provider_set",
                     "type": "string"
                   },
-                  "endpoint": {
-                    "type": "string"
-                  },
                   "name": {
                     "type": "string"
-                  }
+                  },
+                  "spec": true
                 },
                 "required": [
                   "edit",
                   "name",
-                  "endpoint"
+                  "spec"
                 ],
                 "type": "object"
               },
@@ -243,7 +241,7 @@
         "type": "object"
       },
       "shape": "unary",
-      "version": 1
+      "version": 2
     },
     {
       "direction": "to_daemon",
@@ -4531,6 +4529,10 @@
                   "$ref": "#/$defs/AccountInfo"
                 },
                 "type": "array"
+              },
+              "custom": {
+                "default": false,
+                "type": "boolean"
               },
               "display_name": {
                 "type": "string"

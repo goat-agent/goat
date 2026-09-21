@@ -4,9 +4,9 @@ use async_trait::async_trait;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use goat_provider::{
-    AuthMethod, Capabilities, ChunkStream, ContentBlock, Effort, Message, MessageRole, Model,
-    ModelListSource, Provider, ProviderId, ProviderMetadata, Request, StreamChunk, StreamError,
-    Usage, ValidateError, Validated,
+    AuthMethod, AuthScheme, Capabilities, ChunkStream, ConnectionInfo, ContentBlock, Effort,
+    Message, MessageRole, Model, ModelListSource, Provider, ProviderId, ProviderMetadata, Request,
+    StreamChunk, StreamError, Usage, ValidateError, Validated,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -26,6 +26,8 @@ pub enum ChatDiscovery {
     CatalogOnly,
 }
 
+type EffortOptions = std::sync::Arc<dyn Fn(&str) -> Vec<Effort> + Send + Sync>;
+
 #[derive(Clone)]
 struct ChatOptions {
     tools: bool,
@@ -34,7 +36,7 @@ struct ChatOptions {
     reasoning_effort: bool,
     model_filter: Option<fn(&str) -> bool>,
     vision_filter: fn(&str) -> bool,
-    effort_options: fn(&str) -> Vec<Effort>,
+    effort_options: EffortOptions,
     effort_wire: fn(Effort) -> Option<&'static str>,
     catalog: Vec<String>,
     context_windows: Vec<(String, u32)>,
@@ -43,6 +45,8 @@ struct ChatOptions {
     model_list_source: Option<ModelListSource>,
     metadata: ProviderMetadata,
     extra_headers: Vec<(String, String)>,
+    auth_scheme: Option<AuthScheme>,
+    query_params: Vec<(String, String)>,
 }
 
 impl Default for ChatOptions {
@@ -54,7 +58,7 @@ impl Default for ChatOptions {
             reasoning_effort: true,
             model_filter: None,
             vision_filter: crate::vision::known_openai_compatible_vision_model,
-            effort_options: default_efforts,
+            effort_options: std::sync::Arc::new(default_efforts),
             effort_wire: chat_effort_wire,
             catalog: Vec::new(),
             context_windows: Vec::new(),
@@ -63,6 +67,8 @@ impl Default for ChatOptions {
             model_list_source: None,
             metadata: ProviderMetadata::default(),
             extra_headers: Vec::new(),
+            auth_scheme: None,
+            query_params: Vec::new(),
         }
     }
 }
@@ -74,6 +80,7 @@ pub struct OpenAiCompatProvider {
     auth: AuthMethod,
     client: reqwest::Client,
     options: ChatOptions,
+    connection: Option<ConnectionInfo>,
 }
 
 impl OpenAiCompatProvider {
@@ -90,6 +97,7 @@ impl OpenAiCompatProvider {
             auth,
             client: common::http_client(),
             options: ChatOptions::default(),
+            connection: None,
         }
     }
 
@@ -105,7 +113,7 @@ impl OpenAiCompatProvider {
             validation: "local",
             endpoint: Some(base_url),
             oauth: None,
-            login_endpoint: None,
+            endpoint_override: None,
             setup: &[],
         })
     }
@@ -158,7 +166,13 @@ impl OpenAiCompatProvider {
 
     #[must_use]
     pub fn with_efforts(mut self, efforts: fn(&str) -> Vec<Effort>) -> Self {
-        self.options.effort_options = efforts;
+        self.options.effort_options = std::sync::Arc::new(efforts);
+        self
+    }
+
+    #[must_use]
+    pub fn with_effort_list(mut self, efforts: Vec<Effort>) -> Self {
+        self.options.effort_options = std::sync::Arc::new(move |_model| efforts.clone());
         self
     }
 
@@ -218,6 +232,39 @@ impl OpenAiCompatProvider {
             .map(|(name, value)| (name.into(), value.into()))
             .collect();
         self
+    }
+
+    #[must_use]
+    pub fn with_auth_scheme(mut self, scheme: Option<AuthScheme>) -> Self {
+        self.options.auth_scheme = scheme;
+        self
+    }
+
+    #[must_use]
+    pub fn with_query_params<K, V>(mut self, params: impl IntoIterator<Item = (K, V)>) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.options.query_params = params
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect();
+        self
+    }
+
+    #[must_use]
+    pub fn with_connection(mut self, connection: ConnectionInfo) -> Self {
+        self.connection = Some(connection);
+        self
+    }
+
+    fn request_auth(&self) -> common::RequestAuth {
+        common::RequestAuth {
+            secret: self.bearer.clone(),
+            scheme: self.options.auth_scheme.clone(),
+            query_params: self.options.query_params.clone(),
+        }
     }
 }
 
@@ -629,7 +676,7 @@ impl Provider for OpenAiCompatProvider {
                 self.client.clone(),
                 format!("{}/models", self.base_url),
                 self.auth,
-                self.bearer.clone(),
+                self.request_auth(),
             ),
             ChatValidation::CatalogOnly => tokio::spawn(async move { Ok(Validated::Assumed) }),
         }
@@ -683,13 +730,10 @@ impl Provider for OpenAiCompatProvider {
     async fn stream(&self, req: Request) -> Result<ChunkStream, StreamError> {
         let client = self.client.clone();
         let url = format!("{}/chat/completions", self.base_url);
-        let bearer = self.bearer.clone();
+        let request_auth = self.request_auth();
         let options = self.options.clone();
         let body = build_chat_body(&req, &options)?;
-        let mut builder = client.post(&url).json(&body);
-        if let Some(token) = &bearer {
-            builder = builder.bearer_auth(token);
-        }
+        let mut builder = request_auth.apply(client.post(&url).json(&body));
         for (name, value) in &options.extra_headers {
             builder = builder.header(name, value);
         }
@@ -711,9 +755,10 @@ impl Provider for OpenAiCompatProvider {
             ChatDiscovery::ModelsEndpoint => common::discover_models(
                 self.client.clone(),
                 format!("{}/models", self.base_url),
-                self.bearer.clone(),
+                self.request_auth(),
                 self.options.model_filter,
                 self.options.vision_filter,
+                self.options.catalog.clone(),
                 out,
             ),
             ChatDiscovery::CatalogOnly => {

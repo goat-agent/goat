@@ -4,7 +4,7 @@ use color_eyre::eyre::Result;
 use goat_auth::{
     Credential, CredentialKey, CredentialKind, CredentialService, CredentialStore, SecretString,
 };
-use goat_provider::{AuthMethod, LoginEndpointMetadata, ProviderId, ProviderMetadata};
+use goat_provider::{AuthMethod, EndpointOverride, ProviderMetadata, ProviderSpecConfig};
 use goat_providers::Registry;
 use tokio::sync::mpsc;
 
@@ -24,7 +24,7 @@ pub async fn run_setup() -> color_eyre::Result<()> {
         std::fs::create_dir_all(dir).map_err(|e| ui::report(e.to_string()))?;
     }
     let store = CredentialStore::new(paths.credentials_json.clone());
-    let user = goat_config::UserProviders::at(paths.config_json.clone());
+    let user = goat_config::ProviderSpecs::at(paths.config_toml.clone());
 
     ui::section("Providers");
     ui::note("Connect the model providers goat should use.");
@@ -51,7 +51,7 @@ pub async fn run_setup() -> color_eyre::Result<()> {
 
 async fn connect_providers(
     store: &CredentialStore,
-    user: &goat_config::UserProviders,
+    user: &goat_config::ProviderSpecs,
 ) -> color_eyre::Result<()> {
     loop {
         let (ids, rows) = provider_rows(store, user, true);
@@ -134,7 +134,7 @@ fn has_model_credentials(store: &CredentialStore) -> bool {
 pub async fn run_provider(command: ProviderCommand) -> color_eyre::Result<()> {
     let path = goat_config::auth_path().ok_or_else(|| ui::report(goat_config::HOME_NOT_FOUND))?;
     let store = CredentialStore::new(path);
-    let user = goat_config::UserProviders::detect();
+    let user = goat_config::ProviderSpecs::detect();
     match command {
         ProviderCommand::Login {
             provider,
@@ -181,7 +181,41 @@ pub async fn run_provider(command: ProviderCommand) -> color_eyre::Result<()> {
             endpoint,
             key,
             account,
-        } => add_custom(&store, &user, name, endpoint, key, account).await,
+            wire,
+            env_key,
+            header,
+            model,
+        } => {
+            let wire = match wire {
+                Some(wire) => Some(
+                    serde_json::from_value::<goat_provider::Dialect>(serde_json::Value::String(
+                        wire.clone(),
+                    ))
+                    .map_err(|_| {
+                        ui::report(format!(
+                            "unknown wire {wire}; expected chat, responses, anthropic, or gemini"
+                        ))
+                    })?,
+                ),
+                None => None,
+            };
+            let mut headers = std::collections::BTreeMap::new();
+            for pair in header {
+                let Some((name, value)) = pair.split_once('=') else {
+                    return Err(ui::report(format!("header must be NAME=VALUE, got {pair}")));
+                };
+                headers.insert(name.trim().to_owned(), value.trim().to_owned());
+            }
+            let spec = ProviderSpecConfig {
+                wire,
+                endpoint,
+                env_key,
+                headers,
+                catalog: if model.is_empty() { None } else { Some(model) },
+                ..ProviderSpecConfig::default()
+            };
+            add_custom(&user, name, key, account, spec).await
+        }
         ProviderCommand::Remove { name } => remove_custom(&store, &user, &name).await,
         ProviderCommand::List => {
             list_providers(&store, &user);
@@ -195,12 +229,11 @@ pub async fn run_provider(command: ProviderCommand) -> color_eyre::Result<()> {
 }
 
 async fn add_custom(
-    store: &CredentialStore,
-    user: &goat_config::UserProviders,
+    user: &goat_config::ProviderSpecs,
     name: Option<String>,
-    endpoint: Option<String>,
     key: Option<String>,
     account: Option<String>,
+    mut spec: ProviderSpecConfig,
 ) -> color_eyre::Result<()> {
     let name = if let Some(name) = name {
         name
@@ -211,39 +244,32 @@ async fn add_custom(
         };
         name
     };
-    goat_providers::builtin::validate_id(&name).map_err(ui::report)?;
-    let existing = user.load().get(&name).map(|config| config.endpoint.clone());
-    if existing.is_none()
-        && Registry::new(store, user)
-            .get(&ProviderId::from(name.as_str()))
-            .is_some()
-    {
-        return ui::fail_hint(
-            format!("{name} is a built-in provider"),
-            format!("use `goat provider login {name}`"),
-        );
+    let builtin = goat_providers::is_builtin_id(&name);
+    if !builtin {
+        goat_providers::builtin::validate_id(&name).map_err(ui::report)?;
     }
-    let endpoint = if let Some(endpoint) = endpoint {
-        endpoint
-    } else {
-        let Some(endpoint) = ui::prompt_endpoint(existing.as_deref())? else {
+    let existing = user.load().get(&name).cloned();
+    if spec.endpoint.is_none() {
+        spec.endpoint = existing.as_ref().and_then(|c| c.endpoint.clone());
+    }
+    if spec.endpoint.is_none() && !builtin {
+        let Some(endpoint) = ui::prompt_endpoint(None)? else {
             ui::note("cancelled");
             return Ok(());
         };
-        endpoint
-    };
-    let endpoint =
-        goat_providers::builtin::validate_user_endpoint(&endpoint).map_err(ui::report)?;
+        spec.endpoint = Some(endpoint);
+    }
+    goat_providers::validate_spec_entry(&name, &spec).map_err(ui::report)?;
     let key = match key {
         Some(key) => Some(key),
-        None if existing.is_none() && std::io::stdin().is_terminal() => {
+        None if existing.is_none() && !builtin && std::io::stdin().is_terminal() => {
             ui::prompt_optional_api_key(&name)?
         }
         None => None,
     };
     write_config(vec![goat_api::ConfigEdit::ProviderSet {
         name: name.clone(),
-        endpoint,
+        spec: serde_json::to_value(&spec)?,
     }])
     .await?;
     let account = account.unwrap_or_else(|| goat_providers::DEFAULT_ACCOUNT.to_owned());
@@ -256,6 +282,8 @@ async fn add_custom(
     }
     let verb = if existing.is_some() {
         "updated"
+    } else if builtin {
+        "patched"
     } else {
         "added"
     };
@@ -294,19 +322,22 @@ async fn apply_to_daemon() {
 
 async fn remove_custom(
     store: &CredentialStore,
-    user: &goat_config::UserProviders,
+    user: &goat_config::ProviderSpecs,
     name: &str,
 ) -> color_eyre::Result<()> {
     if !user.load().contains_key(name) {
         return ui::fail_hint(
-            format!("{name} is not a custom provider"),
+            format!("{name} has no provider spec entry"),
             "run `goat provider list` to see providers",
         );
     }
-    if !ui::confirm(
-        &format!("Remove provider {name} and all of its credentials?"),
-        false,
-    )? {
+    let builtin = goat_providers::is_builtin_id(name);
+    let prompt = if builtin {
+        format!("Remove the spec override on built-in provider {name}?")
+    } else {
+        format!("Remove provider {name} and all of its credentials?")
+    };
+    if !ui::confirm(&prompt, false)? {
         ui::note("cancelled");
         return Ok(());
     }
@@ -314,9 +345,11 @@ async fn remove_custom(
         name: name.to_owned(),
     }])
     .await?;
-    for (key, _) in store.entries() {
-        if key.service == CredentialService::Model && key.provider == name {
-            drop_credential(&key).await?;
+    if !builtin {
+        for (key, _) in store.entries() {
+            if key.service == CredentialService::Model && key.provider == name {
+                drop_credential(&key).await?;
+            }
         }
     }
     ui::success(&format!("removed provider {name}"));
@@ -326,7 +359,7 @@ async fn remove_custom(
 
 fn pick_login_provider(
     store: &CredentialStore,
-    user: &goat_config::UserProviders,
+    user: &goat_config::ProviderSpecs,
 ) -> Result<String> {
     let (ids, rows) = provider_rows(store, user, true);
     if ids.is_empty() {
@@ -344,7 +377,7 @@ fn pick_login_provider(
 
 async fn login(
     store: &CredentialStore,
-    user: &goat_config::UserProviders,
+    user: &goat_config::ProviderSpecs,
     provider: &str,
     account: &str,
     key: Option<String>,
@@ -361,14 +394,9 @@ async fn login(
     let method = provider_handle.capabilities().auth;
     let metadata = provider_handle.metadata();
 
-    if goat_providers::builtin::is_custom(provider_handle.as_ref()) {
-        if endpoint.is_some() {
-            return ui::fail_hint(
-                format!("--endpoint is not supported by `login` for custom provider {provider}"),
-                format!("change the endpoint with `goat provider add {provider} --endpoint <url>`"),
-            )
-            .map(|()| false);
-        }
+    if goat_providers::builtin::is_custom(provider_handle.as_ref())
+        && !matches!(method, AuthMethod::ApiKeyOrOAuth)
+    {
         let secret = if let Some(key) = key {
             key
         } else {
@@ -377,17 +405,14 @@ async fn login(
             };
             secret
         };
+        let credential = api_key_credential(secret, endpoint, metadata)?;
         let verb = if replacing { "updated" } else { "stored" };
-        save_credential(
-            &CredentialKey::model(provider, account),
-            Credential::ApiKey(SecretString::from(secret)),
-        )
-        .await?;
+        save_credential(&CredentialKey::model(provider, account), credential).await?;
         ui::success(&format!("{verb} credential for {provider} ({account})"));
         return Ok(true);
     }
 
-    if endpoint.is_some() && metadata.login_endpoint.is_none() {
+    if endpoint.is_some() && metadata.endpoint_override.is_none() {
         return ui::fail_hint(
             format!("--endpoint is not supported for provider {provider}"),
             "omit --endpoint for this provider",
@@ -412,6 +437,13 @@ async fn login(
     let credential_key = CredentialKey::model(provider, account);
 
     if matches!(method, AuthMethod::None) {
+        if endpoint.is_some() {
+            return ui::fail_hint(
+                format!("--endpoint has no effect for auth-less provider {provider}"),
+                format!("set `providers.{provider}.endpoint` in ~/.goat/config.toml instead"),
+            )
+            .map(|()| false);
+        }
         return Ok(true);
     }
 
@@ -445,7 +477,8 @@ async fn login(
                 };
                 secret
             };
-            let Some(endpoint) = resolve_login_endpoint(endpoint, metadata.login_endpoint)? else {
+            let Some(endpoint) = resolve_login_endpoint(endpoint, metadata.endpoint_override)?
+            else {
                 return Ok(false);
             };
             let credential = api_key_credential(secret, Some(endpoint), metadata)?;
@@ -460,9 +493,9 @@ async fn login(
 
 fn resolve_login_endpoint(
     endpoint: Option<String>,
-    login_endpoint: Option<LoginEndpointMetadata>,
+    endpoint_override: Option<EndpointOverride>,
 ) -> color_eyre::Result<Option<String>> {
-    let Some(endpoint_metadata) = login_endpoint else {
+    let Some(endpoint_metadata) = endpoint_override else {
         return Ok(Some(String::new()));
     };
     let endpoint = endpoint
@@ -475,28 +508,17 @@ fn resolve_login_endpoint(
         .filter(|value| !value.is_empty());
     let endpoint = match endpoint {
         Some(endpoint) => endpoint,
-        None if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() => {
-            match ui::prompt_endpoint(endpoint_metadata.default)? {
-                Some(endpoint) => endpoint,
-                None => return Ok(None),
+        None => match endpoint_metadata.default {
+            Some(default) if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() => {
+                match ui::prompt_endpoint(Some(default))? {
+                    Some(endpoint) => endpoint,
+                    None => return Ok(None),
+                }
             }
-        }
-        None => endpoint_metadata
-            .default
-            .map(str::to_owned)
-            .ok_or_else(|| {
-                ui::report_hint(
-                    "endpoint is required for this provider",
-                    "pass --endpoint or set the provider env var",
-                )
-            })?,
+            Some(default) => default.to_owned(),
+            None => return Ok(Some(String::new())),
+        },
     };
-    if endpoint.is_empty() {
-        return Err(ui::report_hint(
-            "endpoint is required for this provider",
-            "pass --endpoint or set the provider env var",
-        ));
-    }
     if let Some(validate) = endpoint_metadata.validate {
         Ok(Some(validate(&endpoint).map_err(ui::report)?))
     } else {
@@ -509,19 +531,12 @@ fn api_key_credential(
     endpoint: Option<String>,
     metadata: ProviderMetadata,
 ) -> color_eyre::Result<Credential> {
-    let Some(endpoint_metadata) = metadata.login_endpoint else {
+    let Some(endpoint) = endpoint.filter(|value| !value.is_empty()) else {
         return Ok(Credential::ApiKey(SecretString::from(secret)));
     };
-    let endpoint = endpoint.filter(|value| !value.is_empty()).ok_or_else(|| {
-        ui::report_hint(
-            "endpoint is required for this provider",
-            "pass --endpoint or set the provider env var",
-        )
-    })?;
-    let endpoint = if let Some(validate) = endpoint_metadata.validate {
-        validate(&endpoint).map_err(ui::report)?
-    } else {
-        endpoint
+    let endpoint = match metadata.endpoint_override.and_then(|over| over.validate) {
+        Some(validate) => validate(&endpoint).map_err(ui::report)?,
+        None => endpoint,
     };
     Ok(Credential::ApiKeyWithEndpoint {
         secret: SecretString::from(secret),
@@ -559,7 +574,7 @@ const ACCOUNT_WIDTH: usize = 22;
 
 fn provider_rows(
     store: &CredentialStore,
-    user: &goat_config::UserProviders,
+    user: &goat_config::ProviderSpecs,
     login_only: bool,
 ) -> (Vec<String>, Vec<Vec<ui::Cell>>) {
     let registry = Registry::new(store, user);
@@ -585,19 +600,56 @@ fn provider_rows(
     (ids, rows)
 }
 
-fn list_providers(store: &CredentialStore, user: &goat_config::UserProviders) {
-    let (_, rows) = provider_rows(store, user, false);
-    let mut table = ui::Table::new(["", "provider", "status", "account"]);
-    for row in rows {
-        table.styled_row(row);
+fn list_providers(store: &CredentialStore, user: &goat_config::ProviderSpecs) {
+    let registry = Registry::new(store, user);
+    let specs = user.load();
+    let stored = store.entries();
+    let mut table = ui::Table::new(["", "provider", "status", "account", "note"]);
+    for provider in registry.all() {
+        let caps = provider.capabilities();
+        let id = provider.id().to_string();
+        let accounts = provider_accounts(&stored, &id);
+        let status = connection_status(caps.auth, provider.metadata().env_var, &accounts);
+        let note = if goat_providers::builtin::is_custom(provider.as_ref()) {
+            "custom"
+        } else if specs.contains_key(&id) {
+            "patched"
+        } else {
+            ""
+        };
+        table.styled_row(vec![
+            (status.icon().to_owned(), status.palette()),
+            (id, ui::Palette::Provider),
+            (status.compact_label().to_owned(), status.palette()),
+            (account_preview(&accounts), ui::Palette::Muted),
+            (note.to_owned(), ui::Palette::Muted),
+        ]);
+    }
+    for (id, spec) in &specs {
+        if spec.disabled {
+            table.styled_row(vec![
+                (String::new(), ui::Palette::Muted),
+                (id.clone(), ui::Palette::Muted),
+                ("disabled".to_owned(), ui::Palette::Muted),
+                (String::new(), ui::Palette::Muted),
+                ("spec".to_owned(), ui::Palette::Muted),
+            ]);
+        }
     }
     println!();
     table.render();
+    for invalid in registry.invalid() {
+        ui::warning(&format!(
+            "invalid provider spec {id}: {}",
+            invalid.reason,
+            id = invalid.id
+        ));
+    }
 }
 
 fn provider_info(
     store: &CredentialStore,
-    user: &goat_config::UserProviders,
+    user: &goat_config::ProviderSpecs,
     provider: &str,
 ) -> color_eyre::Result<()> {
     let registry = Registry::new(store, user);
@@ -618,14 +670,31 @@ fn provider_info(
     pair("auth", auth_label(caps.auth));
     pair("accounts", &provider_account_details(&accounts));
     pair("env", metadata.env_var.unwrap_or("-"));
-    let custom_endpoint = user.load().get(&id).map(|config| config.endpoint.clone());
-    pair(
-        "endpoint",
-        custom_endpoint
-            .as_deref()
-            .or(metadata.endpoint)
-            .unwrap_or("fixed"),
-    );
+    let spec_endpoint = user
+        .load()
+        .get(&id)
+        .and_then(|config| config.endpoint.clone());
+    if let Some(connection) = target.connection() {
+        pair(
+            "endpoint",
+            &format!("{} ({})", connection.endpoint, connection.source.as_str()),
+        );
+        pair("wire", &connection.dialect.to_string());
+        if let Some(scheme) = connection.auth_scheme {
+            pair("auth_scheme", &scheme.as_str());
+        }
+        if let Some(env_key) = connection.env_key {
+            pair("env_key", &env_key);
+        }
+    } else {
+        pair(
+            "endpoint",
+            spec_endpoint
+                .as_deref()
+                .or(metadata.endpoint)
+                .unwrap_or("fixed"),
+        );
+    }
     pair("validation", metadata.validation);
     let oauth = metadata.oauth.unwrap_or(match caps.auth {
         AuthMethod::OAuth | AuthMethod::ApiKeyOrOAuth => "device code",
@@ -893,7 +962,7 @@ mod tests {
         let store = goat_auth::CredentialStore::new(
             std::env::temp_dir().join("goat-code-provider-list-test.json"),
         );
-        let no_user = goat_config::UserProviders::at(
+        let no_user = goat_config::ProviderSpecs::at(
             std::env::temp_dir().join("goat-code-provider-no-user.json"),
         );
         let (ids, rows) = super::provider_rows(&store, &no_user, false);
@@ -923,7 +992,7 @@ mod tests {
         let store = goat_auth::CredentialStore::new(
             std::env::temp_dir().join("goat-code-provider-info-test.json"),
         );
-        let no_user = goat_config::UserProviders::at(
+        let no_user = goat_config::ProviderSpecs::at(
             std::env::temp_dir().join("goat-code-provider-no-user.json"),
         );
         let error = super::provider_info(&store, &no_user, "kim-code")
@@ -937,7 +1006,7 @@ mod tests {
         let store = goat_auth::CredentialStore::new(
             std::env::temp_dir().join("goat-code-provider-unknown-test.json"),
         );
-        let no_user = goat_config::UserProviders::at(
+        let no_user = goat_config::ProviderSpecs::at(
             std::env::temp_dir().join("goat-code-provider-no-user.json"),
         );
         let registry = goat_providers::Registry::new(&store, &no_user);

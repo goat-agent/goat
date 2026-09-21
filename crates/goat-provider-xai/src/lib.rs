@@ -192,7 +192,7 @@ impl Provider for XaiProvider {
             validation: "network",
             endpoint: None,
             oauth: Some("browser or device code (SuperGrok / X Premium+)"),
-            login_endpoint: None,
+            endpoint_override: None,
             setup: SETUP,
         }
     }

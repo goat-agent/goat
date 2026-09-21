@@ -24,7 +24,7 @@ pub struct CodeSessionHub {
 
 struct ManagerInner {
     auth_path: PathBuf,
-    user_providers: goat_config::UserProviders,
+    provider_specs: goat_config::ProviderSpecs,
     db_path: PathBuf,
     broker: Arc<goat_capability::Broker>,
     browser_events: Arc<crate::browser::BrowserEvents>,
@@ -57,13 +57,13 @@ struct RemoteControls {
 impl CodeSessionHub {
     pub fn new(
         auth_path: PathBuf,
-        user_providers: goat_config::UserProviders,
+        provider_specs: goat_config::ProviderSpecs,
         db_path: PathBuf,
     ) -> Self {
         Self {
             inner: Arc::new(ManagerInner {
                 auth_path,
-                user_providers,
+                provider_specs,
                 db_path,
                 broker: Arc::new(goat_capability::Broker::new()),
                 browser_events: Arc::new(crate::browser::BrowserEvents::new()),
@@ -248,20 +248,20 @@ impl CodeSessionHub {
     pub(crate) fn edit_config(&self, edits: Vec<goat_api::ConfigEdit>) -> Result<bool, String> {
         let path = self
             .inner
-            .user_providers
+            .provider_specs
             .path()
             .ok_or("this daemon has no config file")?
             .to_path_buf();
+        let mut doc = goat_config::ConfigDocument::load_at(&path);
         let mut config = goat_config::Config::load_at(&path);
-        let before = config.clone();
+        let before = doc.render();
         for edit in edits {
-            apply_edit(&mut config, edit);
+            apply_edit(&mut doc, &mut config, edit)?;
         }
-        if config == before {
+        if doc.render() == before {
             return Ok(false);
         }
-        config
-            .save_at(&path)
+        doc.save(&path)
             .map_err(|err| format!("could not write the config: {err}"))?;
         Ok(true)
     }
@@ -288,7 +288,7 @@ impl CodeSessionHub {
             return goat_api::AdminCredentialSetOutput::NotVerifiable;
         }
         let registry =
-            goat_providers::Registry::load(credentials, &self.inner.user_providers, &key.account);
+            goat_providers::Registry::load(credentials, &self.inner.provider_specs, &key.account);
         let Some(provider) = registry.get(&goat_provider::ProviderId::from(key.provider.as_str()))
         else {
             return goat_api::AdminCredentialSetOutput::VerificationFailed {
@@ -443,7 +443,7 @@ impl CodeSessionHub {
         let store_for_pump = store.clone();
         let registry = goat_providers::Registry::load_metered(
             &credentials,
-            &self.inner.user_providers,
+            &self.inner.provider_specs,
             goat_providers::DEFAULT_ACCOUNT,
             self.inner.meter.get().cloned(),
         );
@@ -461,7 +461,7 @@ impl CodeSessionHub {
             registry,
             store,
             credentials,
-            user_providers: self.inner.user_providers.clone(),
+            provider_specs: self.inner.provider_specs.clone(),
             target: None,
             cwd: cwd.clone(),
             meter: self.inner.meter.get().cloned(),
@@ -1198,21 +1198,27 @@ fn conversation_unregister_owner(conversations: &mut HashMap<i64, SessionId>, se
     conversations.retain(|_, owner| *owner != session);
 }
 
-fn apply_edit(config: &mut goat_config::Config, edit: goat_api::ConfigEdit) {
+fn apply_edit(
+    doc: &mut goat_config::ConfigDocument,
+    config: &mut goat_config::Config,
+    edit: goat_api::ConfigEdit,
+) -> Result<(), String> {
     use goat_api::ConfigEdit;
     match edit {
-        ConfigEdit::ProviderSet { name, endpoint } => {
-            config
-                .providers
-                .insert(name, goat_config::UserProviderConfig { endpoint });
+        ConfigEdit::ProviderSet { name, spec } => {
+            let spec: goat_config::ProviderSpecConfig = serde_json::from_value(spec)
+                .map_err(|err| format!("invalid provider spec for {name}: {err}"))?;
+            goat_providers::validate_spec_entry(&name, &spec)?;
+            doc.set_provider(&name, &spec)
+                .map_err(|err| format!("could not write provider {name}: {err}"))?;
         }
         ConfigEdit::ProviderRemove { name } => {
-            config.providers.remove(&name);
+            doc.remove_provider(&name);
         }
         ConfigEdit::SearchAccountSet { account } => {
             let Ok(account) = serde_json::from_value::<goat_config::SearchAccountConfig>(account)
             else {
-                return;
+                return Ok(());
             };
             let target = account.target();
             config
@@ -1220,6 +1226,8 @@ fn apply_edit(config: &mut goat_config::Config, edit: goat_api::ConfigEdit) {
                 .accounts
                 .retain(|entry| entry.target() != target);
             config.search.accounts.push(account);
+            doc.set_search(&config.search)
+                .map_err(|err| err.to_string())?;
         }
         ConfigEdit::SearchAccountRemove { target } => {
             config
@@ -1229,20 +1237,26 @@ fn apply_edit(config: &mut goat_config::Config, edit: goat_api::ConfigEdit) {
             if config.search.default_target.as_deref() == Some(target.as_str()) {
                 config.search.default_target = None;
             }
+            doc.set_search(&config.search)
+                .map_err(|err| err.to_string())?;
         }
         ConfigEdit::SearchDefaultSet { target } => {
             config.search.default_target = target;
+            doc.set_search(&config.search)
+                .map_err(|err| err.to_string())?;
         }
         ConfigEdit::IntegrationSet {
             kind,
             config: entry,
         } => {
-            config.integrations.insert(kind, entry);
+            doc.set_integration(&kind, &entry)
+                .map_err(|err| err.to_string())?;
         }
         ConfigEdit::IntegrationRemove { kind } => {
-            config.integrations.remove(&kind);
+            doc.remove_integration(&kind);
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1370,7 +1384,7 @@ mod tests {
         let _ = std::fs::remove_file(&auth);
         let hub = CodeSessionHub::new(
             auth.clone(),
-            goat_config::UserProviders::at(dir.join("config.json")),
+            goat_config::ProviderSpecs::at(dir.join("config.toml")),
             dir.join("goat.db"),
         );
 
@@ -1400,7 +1414,7 @@ mod tests {
         let _ = std::fs::remove_file(&auth);
         let hub = CodeSessionHub::new(
             auth.clone(),
-            goat_config::UserProviders::at(dir.join("config.json")),
+            goat_config::ProviderSpecs::at(dir.join("config.toml")),
             dir.join("goat.db"),
         );
 

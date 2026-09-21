@@ -1,4 +1,4 @@
-use goat_provider::{AuthMethod, Model, StreamError, ValidateError, Validated};
+use goat_provider::{AuthMethod, AuthScheme, Model, StreamError, ValidateError, Validated};
 use serde::Deserialize;
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -208,22 +208,59 @@ pub fn authenticated(auth: AuthMethod, bearer: &Option<String>) -> bool {
     }
 }
 
+#[derive(Clone, Default)]
+pub struct RequestAuth {
+    pub secret: Option<String>,
+    pub scheme: Option<AuthScheme>,
+    pub query_params: Vec<(String, String)>,
+}
+
+impl RequestAuth {
+    pub fn apply(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let mut pairs = self.query_params.clone();
+        if let (Some(AuthScheme::Query(name)), Some(secret)) = (&self.scheme, &self.secret) {
+            pairs.push((name.clone(), secret.clone()));
+        }
+        let builder = if pairs.is_empty() {
+            builder
+        } else {
+            builder.query(&pairs)
+        };
+        match &self.secret {
+            Some(secret) => apply_auth(builder, self.scheme.as_ref(), secret),
+            None => builder,
+        }
+    }
+}
+
+pub fn apply_auth(
+    builder: reqwest::RequestBuilder,
+    scheme: Option<&AuthScheme>,
+    secret: &str,
+) -> reqwest::RequestBuilder {
+    match scheme.unwrap_or(&AuthScheme::Bearer) {
+        AuthScheme::Bearer => builder.bearer_auth(secret),
+        AuthScheme::XApiKey => builder.header("x-api-key", secret),
+        AuthScheme::Header(name) => builder.header(name.as_str(), secret),
+        AuthScheme::Query(_) | AuthScheme::None => builder,
+    }
+}
+
 pub fn validate_bearer(
     client: reqwest::Client,
     url: String,
     auth: AuthMethod,
-    bearer: Option<String>,
+    request: RequestAuth,
 ) -> JoinHandle<Result<Validated, ValidateError>> {
     tokio::spawn(async move {
         if matches!(auth, AuthMethod::None) {
             return Ok(Validated::Assumed);
         }
-        let Some(token) = bearer else {
+        if request.secret.is_none() {
             return Err(ValidateError::NoCredentials);
-        };
-        let resp = client
-            .get(&url)
-            .bearer_auth(token)
+        }
+        let resp = request
+            .apply(client.get(&url))
             .send()
             .await
             .map_err(|_| ValidateError::unreachable("could not reach provider"))?;
@@ -245,20 +282,32 @@ pub fn validate_bearer(
 pub fn discover_models(
     client: reqwest::Client,
     url: String,
-    bearer: Option<String>,
+    request: RequestAuth,
     filter: Option<fn(&str) -> bool>,
     vision_filter: fn(&str) -> bool,
+    fallback: Vec<String>,
     tx: mpsc::Sender<Model>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut builder = client.get(&url);
-        if let Some(token) = &bearer {
-            builder = builder.bearer_auth(token);
+        let discovered = async {
+            let resp = request.apply(client.get(&url)).send().await.ok()?;
+            resp.json::<ModelsResponse>().await.ok()
         }
-        let Ok(resp) = builder.send().await else {
-            return;
-        };
-        let Ok(models) = resp.json::<ModelsResponse>().await else {
+        .await;
+        let Some(models) = discovered.filter(|models| !models.data.is_empty()) else {
+            for id in fallback {
+                let supports_images = vision_filter(&id);
+                if tx
+                    .send(Model {
+                        id,
+                        supports_images,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
             return;
         };
         for model in models.data {

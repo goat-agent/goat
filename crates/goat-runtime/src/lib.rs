@@ -88,7 +88,7 @@ impl AgentRuntime {
         let store: Arc<dyn Store> = Arc::new(sqlite_store);
 
         let credentials = goat_auth::CredentialStore::new(cfg.paths.credentials_json.clone());
-        let user_providers = goat_config::UserProviders::at(cfg.paths.config_json.clone());
+        let provider_specs = goat_config::ProviderSpecs::at(cfg.paths.config_toml.clone());
         let global_embedding =
             select_global_embedding(&cfg.agents).context("selecting global memory embedder")?;
         let memory_embedder = build_global_embedder(global_embedding.as_ref(), &credentials).await;
@@ -125,7 +125,7 @@ impl AgentRuntime {
             paths: cfg.paths.clone(),
             store: store.clone(),
             credentials,
-            user_providers,
+            provider_specs,
             meter,
             memory_engine: memory_engine.clone(),
             pty_manager: pty_manager.clone(),
@@ -143,7 +143,7 @@ impl AgentRuntime {
             base,
             shared,
             agents: HashMap::new(),
-            shared_key: shared_fingerprint(&cfg.paths.config_json, &cfg.agents),
+            shared_key: shared_fingerprint(&cfg.paths.config_toml, &cfg.agents),
             global_embedding,
             cancel: cancel.clone(),
             models: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -316,7 +316,7 @@ async fn shutdown_signal() -> &'static str {
 
 fn build_provider_registry(
     store: &goat_auth::CredentialStore,
-    user: &goat_config::UserProviders,
+    user: &goat_config::ProviderSpecs,
     meter: Option<&goat_proxy::Meter>,
 ) -> Arc<ProviderRegistry> {
     use goat_auth::CredentialService;
@@ -438,9 +438,9 @@ fn build_channel_registry() -> HashMap<String, Arc<dyn Channel>> {
 }
 
 fn load_integration_connections(
-    config_json: &std::path::Path,
+    config_toml: &std::path::Path,
 ) -> std::collections::BTreeMap<String, serde_json::Value> {
-    std::fs::read_to_string(config_json)
+    std::fs::read_to_string(config_toml)
         .ok()
         .and_then(|raw| serde_json::from_str::<goat_config::Config>(&raw).ok())
         .map(|config| config.integrations)
@@ -638,7 +638,7 @@ fn resolve_watch_sources(
 
 pub fn validate_agents(cfg: &LoadedConfig) -> Vec<(String, Vec<WatchIssue>)> {
     let integrations = goat_integration::registry_from_inventory();
-    let connections = load_integration_connections(&cfg.paths.config_json);
+    let connections = load_integration_connections(&cfg.paths.config_toml);
     let bindings = build_integration_bindings(&cfg.agents, &integrations, &connections);
     cfg.agents
         .iter()
@@ -741,7 +741,7 @@ struct RuntimeBase {
     paths: GoatPaths,
     store: Arc<dyn Store>,
     credentials: goat_auth::CredentialStore,
-    user_providers: goat_config::UserProviders,
+    provider_specs: goat_config::ProviderSpecs,
     meter: Option<goat_proxy::Meter>,
     memory_engine: Arc<goat_memory::MemoryEngine>,
     pty_manager: Arc<goat_agent_tool_pty::PtyManager>,
@@ -754,7 +754,7 @@ struct RuntimeBase {
 
 async fn build_shared(base: &RuntimeBase, agents: &[AgentConfig]) -> RuntimeShared {
     let providers =
-        build_provider_registry(&base.credentials, &base.user_providers, base.meter.as_ref());
+        build_provider_registry(&base.credentials, &base.provider_specs, base.meter.as_ref());
     let channels = build_channel_registry();
 
     let mut tools_reg = ToolRegistry::from_inventory();
@@ -774,7 +774,7 @@ async fn build_shared(base: &RuntimeBase, agents: &[AgentConfig]) -> RuntimeShar
     }
 
     let integrations = goat_integration::registry_from_inventory();
-    let connections = load_integration_connections(&base.paths.config_json);
+    let connections = load_integration_connections(&base.paths.config_toml);
     let integration_bindings = build_integration_bindings(agents, &integrations, &connections);
     let integration_runtime = IntegrationRuntime::new(
         base.credentials.clone(),
@@ -831,8 +831,8 @@ async fn build_shared(base: &RuntimeBase, agents: &[AgentConfig]) -> RuntimeShar
     }
 }
 
-fn shared_fingerprint(config_json: &Path, agents: &[AgentConfig]) -> String {
-    let raw = std::fs::read_to_string(config_json).unwrap_or_default();
+fn shared_fingerprint(config_toml: &Path, agents: &[AgentConfig]) -> String {
+    let raw = std::fs::read_to_string(config_toml).unwrap_or_default();
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
     let pick = |key: &str| parsed.get(key).cloned().unwrap_or(serde_json::Value::Null);
     let mut bound: Vec<&str> = agents
@@ -850,7 +850,7 @@ fn shared_fingerprint(config_json: &Path, agents: &[AgentConfig]) -> String {
 }
 
 fn agent_fingerprint(agents_dir: &Path, slug: &str) -> String {
-    std::fs::read_to_string(agents_dir.join(slug).join("config.json")).unwrap_or_default()
+    std::fs::read_to_string(agents_dir.join(slug).join("config.toml")).unwrap_or_default()
 }
 
 fn declared_agents(agents_dir: &Path) -> std::collections::HashSet<String> {
@@ -1023,13 +1023,13 @@ impl Supervisor {
             };
         }
 
-        let shared_key = shared_fingerprint(&self.base.paths.config_json, &cfg.agents);
+        let shared_key = shared_fingerprint(&self.base.paths.config_toml, &cfg.agents);
         let mut only = only;
         if shared_key == self.shared_key {
             let bindings = build_integration_bindings(
                 &cfg.agents,
                 &self.shared.integrations,
-                &load_integration_connections(&self.base.paths.config_json),
+                &load_integration_connections(&self.base.paths.config_toml),
             );
             self.shared.integration_bindings = Arc::new(bindings);
         } else {
@@ -1433,7 +1433,7 @@ mod tests {
         let agents_dir = dir.path().join("agents");
         std::fs::create_dir_all(agents_dir.join("alice")).unwrap();
         std::fs::write(agents_dir.join("alice").join("agent.md"), "You are alice.").unwrap();
-        std::fs::write(agents_dir.join("alice").join("config.json"), "{ oops").unwrap();
+        std::fs::write(agents_dir.join("alice").join("config.toml"), "{ oops").unwrap();
         std::fs::create_dir_all(agents_dir.join("gone")).unwrap();
 
         let on_disk = declared_agents(&agents_dir);

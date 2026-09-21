@@ -16,6 +16,8 @@ goat-config = { workspace = true }
 goat-auth = { workspace = true }
 goat-search-providers = { workspace = true }
 goat-protocol = { workspace = true }
+goat-model = { workspace = true }
+goat-providers = { workspace = true }
 goat-client = { workspace = true }
 goat-github = { workspace = true }
 goat-worktree = { workspace = true }

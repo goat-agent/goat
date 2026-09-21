@@ -9,11 +9,11 @@ use tokio::task::JoinHandle;
 
 pub struct RegistryAccountOps {
     creds: CredentialStore,
-    user: goat_config::UserProviders,
+    user: goat_config::ProviderSpecs,
 }
 
 impl RegistryAccountOps {
-    pub fn new(creds: CredentialStore, user: goat_config::UserProviders) -> Arc<Self> {
+    pub fn new(creds: CredentialStore, user: goat_config::ProviderSpecs) -> Arc<Self> {
         Arc::new(Self { creds, user })
     }
 }
@@ -32,7 +32,7 @@ fn api_key_credential(
     endpoint: Option<&str>,
     metadata: ProviderMetadata,
 ) -> Result<Credential, String> {
-    let Some(endpoint_metadata) = metadata.login_endpoint else {
+    let Some(endpoint_metadata) = metadata.endpoint_override else {
         if endpoint.is_some_and(|value| !value.trim().is_empty()) {
             return Err("endpoint is not supported for this provider".to_owned());
         }
@@ -75,11 +75,11 @@ impl AccountOps for RegistryAccountOps {
                     setup: metadata.setup.iter().map(|s| (*s).to_owned()).collect(),
                     env_var: metadata.env_var.map(str::to_owned),
                     endpoint_default: metadata
-                        .login_endpoint
+                        .endpoint_override
                         .and_then(|endpoint| endpoint.default)
                         .map(str::to_owned),
                     endpoint_env_var: metadata
-                        .login_endpoint
+                        .endpoint_override
                         .and_then(|endpoint| endpoint.env_var)
                         .map(str::to_owned),
                 }

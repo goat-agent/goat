@@ -227,7 +227,7 @@ impl Provider for DevinProvider {
             validation: "network",
             endpoint: Some(client::DEFAULT_BASE_URL),
             oauth: Some("browser (Devin account)"),
-            login_endpoint: None,
+            endpoint_override: None,
             setup: &[
                 "run `goat provider login devin` for browser sign-in",
                 "or set DEVIN_API_KEY to a session token or cog_ API key",
