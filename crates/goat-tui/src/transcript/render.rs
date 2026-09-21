@@ -1070,9 +1070,8 @@ fn error_rows(text: &str, hint: Option<&str>, theme: Theme, width: u16) -> Vec<L
 }
 
 pub(super) fn thinking_rows(text: &str, theme: Theme, width: u16) -> Vec<Line<'static>> {
-    let header = Line::from(vec![Span::styled("Thought", theme.muted())]);
     let inner = width.saturating_sub(2);
-    let mut out = vec![header];
+    let mut out = Vec::new();
     let body = text.trim_end();
     for line in body.split('\n') {
         let content = Line::from(Span::styled(line.to_owned(), theme.muted()));
@@ -1298,13 +1297,12 @@ mod tests {
     }
 
     #[test]
-    fn thinking_rows_shows_header_and_body_with_gutter() {
+    fn thinking_rows_shows_body_with_gutter() {
         use super::{symbols, thinking_rows};
         let rows = thinking_rows("line a\nline b", Theme::dark(), 60);
-        assert!(rows[0].spans.iter().any(|s| s.content.contains("Thought")));
-        assert!(rows.len() >= 3);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].spans[0].content.as_ref(), symbols::ui::QUOTE_GUTTER);
         assert_eq!(rows[1].spans[0].content.as_ref(), symbols::ui::QUOTE_GUTTER);
-        assert_eq!(rows[2].spans[0].content.as_ref(), symbols::ui::QUOTE_GUTTER);
     }
 
     #[test]
