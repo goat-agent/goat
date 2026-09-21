@@ -44,6 +44,7 @@ pub(crate) struct SessionInner {
     pub(crate) log: VecDeque<(u64, Event)>,
     pub(crate) next_seq: u64,
     pub(crate) next_task: u64,
+    pub(crate) used_tasks: std::collections::HashSet<TaskId>,
     pub(crate) subscribers: Vec<Subscriber>,
     pub(crate) state: SessionLiveState,
     pub(crate) transcript: LiveTranscript,
@@ -279,9 +280,20 @@ impl LiveTranscript {
 
 impl SessionInner {
     pub(crate) fn allocate_task(&mut self) -> goat_protocol::TaskId {
-        let id = self.next_task;
+        while self.used_tasks.contains(&TaskId(self.next_task)) {
+            self.next_task += 1;
+        }
+        let id = TaskId(self.next_task);
         self.next_task += 1;
-        goat_protocol::TaskId(id)
+        self.used_tasks.insert(id);
+        id
+    }
+
+    pub(crate) fn claim_task(&mut self, proposed: goat_protocol::TaskId) -> goat_protocol::TaskId {
+        if proposed != TaskId(0) && self.used_tasks.insert(proposed) {
+            return proposed;
+        }
+        self.allocate_task()
     }
 
     fn cache_state_event(&mut self, event: &Event) {
@@ -717,6 +729,30 @@ mod tests {
     }
 
     #[test]
+    fn claim_task_honors_a_free_client_id() {
+        let mut inner = blank_inner();
+        assert_eq!(inner.claim_task(TaskId(7)), TaskId(7));
+        assert_eq!(inner.claim_task(TaskId(8)), TaskId(8));
+    }
+
+    #[test]
+    fn claim_task_rewrites_a_taken_or_zero_id() {
+        let mut inner = blank_inner();
+        assert_eq!(inner.claim_task(TaskId(1)), TaskId(1));
+        assert_ne!(inner.claim_task(TaskId(1)), TaskId(1));
+        assert_ne!(inner.claim_task(TaskId(0)), TaskId(0));
+    }
+
+    #[test]
+    fn allocate_task_skips_client_claimed_ids() {
+        let mut inner = blank_inner();
+        assert_eq!(inner.claim_task(TaskId(1)), TaskId(1));
+        let allocated = inner.allocate_task();
+        assert_ne!(allocated, TaskId(1));
+        assert_eq!(allocated, TaskId(2));
+    }
+
+    #[test]
     fn answering_with_a_stale_revision_reports_the_current_one() {
         let mut inner = blank_inner();
         let call = goat_protocol::ToolCallId(7);
@@ -843,6 +879,7 @@ mod tests {
             log: std::collections::VecDeque::new(),
             next_seq: 0,
             next_task: 1,
+            used_tasks: std::collections::HashSet::new(),
             subscribers: Vec::new(),
             state: SessionLiveState::Idle {},
             transcript: super::LiveTranscript::default(),

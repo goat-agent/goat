@@ -742,7 +742,7 @@ impl App {
         self.next_task += 1;
         self.turn.active = Some(id);
         self.turn.active_shell = true;
-        self.viewport.transcript.push_shell(id, command.clone());
+        self.viewport.transcript.push_shell(command.clone());
         self.viewport.follow = true;
         vec![Op::SubmitShell { id, command }]
     }
@@ -2388,6 +2388,42 @@ mod tests {
         app.on_engine(EngineEvent::TaskStarted { id: TaskId(100) });
         let _ = app.submit_text_with_attachments("next up".to_owned(), Vec::new());
         assert_eq!(app.queued_labels(), vec!["next up".to_owned()]);
+    }
+
+    #[test]
+    fn user_message_echo_matches_queued_by_content_not_id() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        app.on_engine(EngineEvent::TaskStarted { id: TaskId(100) });
+        let _ = app.submit_text_with_attachments("next up".to_owned(), Vec::new());
+        assert_eq!(app.queued_labels(), vec!["next up".to_owned()]);
+        app.on_engine(EngineEvent::UserMessage {
+            id: TaskId(55),
+            text: "next up".to_owned(),
+            display: None,
+            system: false,
+            attachments: Vec::new(),
+        });
+        assert!(
+            app.queued.is_empty(),
+            "echo with a rewritten id still consumes the queued entry"
+        );
+    }
+
+    #[test]
+    fn first_message_echo_with_rewritten_id_leaves_no_queued_row() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        let ops = app.submit_text_with_attachments("hello".to_owned(), Vec::new());
+        let _ = submit_id(&ops);
+        app.on_engine(EngineEvent::UserMessage {
+            id: TaskId(9),
+            text: "hello".to_owned(),
+            display: None,
+            system: false,
+            attachments: Vec::new(),
+        });
+        assert!(app.queued.is_empty());
+        app.on_engine(EngineEvent::TaskStarted { id: TaskId(9) });
+        assert!(app.queued_labels().is_empty());
     }
 
     #[test]

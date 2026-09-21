@@ -300,10 +300,9 @@ pub(super) fn item_signature(item: &Item) -> u64 {
             1u8.hash(&mut hasher);
             text.hash(&mut hasher);
         }
-        Item::Thinking { text, collapsed } => {
+        Item::Thinking { text } => {
             8u8.hash(&mut hasher);
             text.hash(&mut hasher);
-            collapsed.hash(&mut hasher);
         }
         Item::Shell {
             command, status, ..
@@ -445,7 +444,7 @@ pub(super) fn item_rows(
                 width,
             )
         }
-        Item::Thinking { text, collapsed } => thinking_rows(text, *collapsed, theme, width),
+        Item::Thinking { text } => thinking_rows(text, theme, width),
         Item::Shell {
             command, status, ..
         } => shell_rows(command, status, theme, width),
@@ -1070,24 +1069,8 @@ fn error_rows(text: &str, hint: Option<&str>, theme: Theme, width: u16) -> Vec<L
     out
 }
 
-pub(super) fn thinking_rows(
-    text: &str,
-    collapsed: bool,
-    theme: Theme,
-    width: u16,
-) -> Vec<Line<'static>> {
-    let marker = if collapsed {
-        symbols::ui::CHEVRON_RIGHT
-    } else {
-        symbols::ui::CHEVRON_DOWN
-    };
-    let header = Line::from(vec![
-        Span::styled(format!("{marker} "), theme.muted()),
-        Span::styled("Thought", theme.muted()),
-    ]);
-    if collapsed {
-        return vec![header];
-    }
+pub(super) fn thinking_rows(text: &str, theme: Theme, width: u16) -> Vec<Line<'static>> {
+    let header = Line::from(vec![Span::styled("Thought", theme.muted())]);
     let inner = width.saturating_sub(2);
     let mut out = vec![header];
     let body = text.trim_end();
@@ -1315,25 +1298,13 @@ mod tests {
     }
 
     #[test]
-    fn thinking_rows_collapsed_is_single_line() {
+    fn thinking_rows_shows_header_and_body_with_gutter() {
         use super::{symbols, thinking_rows};
-        let rows = thinking_rows("some reasoning\nmore", true, Theme::dark(), 60);
-        assert_eq!(rows.len(), 1);
-        assert!(
-            rows[0].spans[0]
-                .content
-                .contains(symbols::ui::CHEVRON_RIGHT)
-        );
+        let rows = thinking_rows("line a\nline b", Theme::dark(), 60);
         assert!(rows[0].spans.iter().any(|s| s.content.contains("Thought")));
-    }
-
-    #[test]
-    fn thinking_rows_expanded_shows_body_with_gutter() {
-        use super::{symbols, thinking_rows};
-        let rows = thinking_rows("line a\nline b", false, Theme::dark(), 60);
-        assert!(rows[0].spans[0].content.contains(symbols::ui::CHEVRON_DOWN));
         assert!(rows.len() >= 3);
         assert_eq!(rows[1].spans[0].content.as_ref(), symbols::ui::QUOTE_GUTTER);
+        assert_eq!(rows[2].spans[0].content.as_ref(), symbols::ui::QUOTE_GUTTER);
     }
 
     #[test]
