@@ -483,6 +483,7 @@ impl CodeSessionHub {
             log: std::collections::VecDeque::new(),
             next_seq: 0,
             next_task: 1,
+            used_tasks: std::collections::HashSet::new(),
             subscribers: Vec::new(),
             state: crate::wire::SessionLiveState::Idle {},
             transcript: crate::session::LiveTranscript::default(),
@@ -744,7 +745,12 @@ impl CodeSessionHub {
         let live = live.ok_or("unknown session")?;
         let (ops, task) = {
             let mut inner = live.inner.lock().await;
-            let task = inner.allocate_task();
+            let task = match op {
+                Op::SubmitMessage { id, .. }
+                | Op::SubmitShell { id, .. }
+                | Op::Compact { id, .. } => inner.claim_task(*id),
+                _ => goat_protocol::TaskId(0),
+            };
             inner.record_op(task, op);
             (inner.ops.clone(), task)
         };

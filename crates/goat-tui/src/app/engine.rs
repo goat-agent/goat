@@ -118,9 +118,8 @@ impl App {
                         }
                         TranscriptEntry::Shell { command, output }
                         | TranscriptEntry::Process { command, output } => {
-                            let id = TaskId(0);
-                            self.viewport.transcript.push_shell(id, command);
-                            self.viewport.transcript.finish_shell(id, output);
+                            self.viewport.transcript.push_shell(command);
+                            self.viewport.transcript.finish_shell(output);
                         }
                     }
                 }
@@ -239,7 +238,7 @@ impl App {
                 self.dirty = true;
             }
             EngineEvent::UserMessage {
-                id,
+                id: _,
                 text,
                 display,
                 system,
@@ -248,7 +247,9 @@ impl App {
                 let sent_by_us = self
                     .queued
                     .iter()
-                    .position(|(queued_id, _, _, _)| *queued_id == id)
+                    .position(|(_, queued_text, queued_display, _)| {
+                        *queued_text == text && *queued_display == display
+                    })
                     .map(|pos| self.queued.remove(pos))
                     .is_some();
                 if !sent_by_us && self.turn.active.is_none() {
@@ -268,16 +269,18 @@ impl App {
                 self.dirty = true;
             }
             EngineEvent::MessageDequeued {
-                id,
+                id: _,
                 text,
-                display: _,
+                display,
                 system: _,
                 attachments,
             } => {
-                if let Some(pos) = self
-                    .queued
-                    .iter()
-                    .position(|(queued_id, _, _, _)| *queued_id == id)
+                if let Some(pos) =
+                    self.queued
+                        .iter()
+                        .position(|(_, queued_text, queued_display, _)| {
+                            *queued_text == text && *queued_display == display
+                        })
                 {
                     self.queued.remove(pos);
                 }
@@ -383,8 +386,8 @@ impl App {
                     }
                 }
             }
-            EngineEvent::ShellDone { id, output } => {
-                self.viewport.transcript.finish_shell(id, output);
+            EngineEvent::ShellDone { id: _, output } => {
+                self.viewport.transcript.finish_shell(output);
             }
             EngineEvent::SubagentStarted {
                 id,

@@ -33,9 +33,6 @@ impl App {
                     self.update_command_menu();
                     self.dirty = true;
                 }
-                't' => {
-                    self.dirty |= self.viewport.transcript.toggle_thinking();
-                }
                 _ => {}
             }
             return Vec::new();
@@ -88,9 +85,9 @@ impl App {
                 if self.composer.is_empty() && self.composer.shell() {
                     self.composer.exit_shell();
                 } else if self.composer.is_empty()
-                    && let Some((id, _, _, _)) = self.queued.last()
+                    && let Some((id, _, _, _)) = self.queued.pop()
                 {
-                    return vec![Op::DequeueMessage { id: *id }];
+                    return vec![Op::DequeueMessage { id }];
                 } else {
                     self.composer.backspace();
                     self.update_command_menu();

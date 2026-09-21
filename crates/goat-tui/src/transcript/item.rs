@@ -67,7 +67,6 @@ pub(crate) enum Item {
     Agent(String),
     Thinking {
         text: String,
-        collapsed: bool,
     },
     Tool {
         id: ToolCallId,
@@ -79,7 +78,6 @@ pub(crate) enum Item {
     },
     SubagentGroup(SubagentGroupView),
     Shell {
-        id: TaskId,
         command: String,
         status: ShellStatus,
     },

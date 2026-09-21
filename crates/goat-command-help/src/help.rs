@@ -13,14 +13,13 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-const BINDINGS: [(&str, &str); 15] = [
+const BINDINGS: [(&str, &str); 14] = [
     ("⇧↵ ⌥↵", "newline"),
     ("↑↓", "history · move cursor"),
     ("pgup pgdn", "scroll transcript by page"),
     ("home end", "transcript top · bottom"),
     ("⌃a ⌃e", "line start · end"),
     ("⌃w", "delete word"),
-    ("⌃t", "expand · collapse thinking"),
     ("⌥← ⌥→", "word left · right"),
     ("⇥", "complete command"),
     ("esc", "interrupt · clear input ×2"),

@@ -171,10 +171,7 @@ impl Transcript {
             return;
         }
         self.bump_version();
-        self.items.push(Item::Thinking {
-            text: buffer,
-            collapsed: true,
-        });
+        self.items.push(Item::Thinking { text: buffer });
     }
 
     pub fn push_thinking(&mut self, text: String) {
@@ -182,10 +179,7 @@ impl Transcript {
             return;
         }
         self.bump_version();
-        self.items.push(Item::Thinking {
-            text,
-            collapsed: true,
-        });
+        self.items.push(Item::Thinking { text });
     }
 
     pub fn version(&self) -> u64 {
@@ -246,30 +240,6 @@ impl Transcript {
             } => Some(img.source()),
             _ => None,
         }
-    }
-
-    pub fn toggle_thinking(&mut self) -> bool {
-        let mut any = false;
-        let mut expand = false;
-        for item in &self.items {
-            if let Item::Thinking { collapsed, .. } = item {
-                any = true;
-                if *collapsed {
-                    expand = true;
-                    break;
-                }
-            }
-        }
-        if !any {
-            return false;
-        }
-        for item in &mut self.items {
-            if let Item::Thinking { collapsed, .. } = item {
-                *collapsed = !expand;
-            }
-        }
-        self.bump_version();
-        true
     }
 
     pub fn push_delta(&mut self, chunk: &str) {
@@ -535,20 +505,18 @@ impl Transcript {
         }
     }
 
-    pub fn push_shell(&mut self, id: TaskId, command: String) {
+    pub fn push_shell(&mut self, command: String) {
         self.bump_version();
         self.items.push(Item::Shell {
-            id,
             command,
             status: ShellStatus::Running,
         });
     }
 
-    pub fn finish_shell(&mut self, task_id: TaskId, output: String) {
+    pub fn finish_shell(&mut self, output: String) {
         self.bump_version();
         for item in self.items.iter_mut().rev() {
-            if let Item::Shell { id, status, .. } = item
-                && *id == task_id
+            if let Item::Shell { status, .. } = item
                 && matches!(status, ShellStatus::Running)
             {
                 *status = ShellStatus::Done(output);
@@ -764,7 +732,11 @@ impl Transcript {
             if base_nonempty || !tail.is_empty() {
                 tail.push(Line::default());
             }
-            tail.extend(render::thinking_rows(buffer, false, theme, width));
+            tail.extend(render::thinking_rows(buffer, theme, width));
+            if let Some(last) = tail.last_mut() {
+                last.spans
+                    .push(Span::styled(symbols::ui::STREAM_CURSOR, theme.accent()));
+            }
         }
         let streamed = self.streaming_rows(theme, width, hl);
         if !streamed.is_empty() {
@@ -1208,31 +1180,9 @@ mod tests {
         assert!(t.items.is_empty(), "thinking stays buffered until flushed");
         t.push_delta("answer");
         assert!(
-            matches!(
-                t.items.first(),
-                Some(Item::Thinking {
-                    collapsed: true,
-                    ..
-                })
-            ),
-            "first content delta flushes thinking as a collapsed item"
+            matches!(t.items.first(), Some(Item::Thinking { .. })),
+            "first content delta flushes thinking as an item"
         );
-        assert!(t.toggle_thinking(), "toggle reports thinking present");
-        assert!(matches!(
-            t.items.first(),
-            Some(Item::Thinking {
-                collapsed: false,
-                ..
-            })
-        ));
-        assert!(t.toggle_thinking());
-        assert!(matches!(
-            t.items.first(),
-            Some(Item::Thinking {
-                collapsed: true,
-                ..
-            })
-        ));
     }
 
     #[test]
@@ -1249,25 +1199,19 @@ mod tests {
     }
 
     #[test]
-    fn streaming_thinking_collapses_when_text_starts() {
+    fn streaming_thinking_stays_expanded_when_text_starts() {
         let mut t = Transcript::default();
         t.push_thinking_delta("weighing options\nand then some\nmore reasoning\nfinal note");
         let during = height(&t, 60);
         t.push_delta("answer");
         let after = height(&t, 60);
         assert!(
-            matches!(
-                t.items.first(),
-                Some(Item::Thinking {
-                    collapsed: true,
-                    ..
-                })
-            ),
-            "first text delta flushes thinking as a collapsed item"
+            matches!(t.items.first(), Some(Item::Thinking { .. })),
+            "first text delta flushes thinking as an item"
         );
         assert!(
-            after < during,
-            "collapsed Thought header plus short text must be shorter than the expanded stream ({during} -> {after})"
+            after > during,
+            "expanded thinking plus text must not shrink ({during} -> {after})"
         );
     }
 
@@ -1277,7 +1221,6 @@ mod tests {
         t.push_thinking_delta("   ");
         t.flush_thinking();
         assert!(t.items.is_empty());
-        assert!(!t.toggle_thinking(), "no thinking means toggle is a no-op");
     }
 
     #[test]
@@ -1531,7 +1474,7 @@ mod tests {
     #[test]
     fn shell_lifecycle() {
         let mut t = Transcript::default();
-        t.push_shell(TaskId(1), "echo hi".to_owned());
+        t.push_shell("echo hi".to_owned());
         assert!(matches!(
             &t.items[0],
             Item::Shell {
@@ -1539,7 +1482,7 @@ mod tests {
                 ..
             }
         ));
-        t.finish_shell(TaskId(1), "hi".to_owned());
+        t.finish_shell("hi".to_owned());
         assert!(matches!(
             &t.items[0],
             Item::Shell {
@@ -1552,7 +1495,7 @@ mod tests {
     #[test]
     fn complete_interrupted_finishes_running_shell() {
         let mut t = Transcript::default();
-        t.push_shell(TaskId(2), "sleep 99".to_owned());
+        t.push_shell("sleep 99".to_owned());
         t.complete(true);
         assert!(matches!(
             &t.items[0],
