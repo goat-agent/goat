@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 goat-provider = { workspace = true }
+goat-model = { workspace = true }
 goat-auth = { workspace = true }
 goat-config = { workspace = true }
 goat-proxy = { workspace = true }

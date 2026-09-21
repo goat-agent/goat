@@ -18,7 +18,7 @@ async fn computer_capability_roundtrip_and_withdrawal() {
     let dir = tempfile::tempdir().unwrap();
     let manager = goat_daemon::CodeSessionHub::new(
         dir.path().join("auth.json"),
-        goat_config::UserProviders::at(dir.path().join("config.json")),
+        goat_config::ProviderSpecs::at(dir.path().join("config.toml")),
         dir.path().join("store.sqlite"),
     );
     manager.mark_ready();

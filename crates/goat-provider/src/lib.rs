@@ -5,6 +5,13 @@ use tokio::{sync::mpsc, task::JoinHandle};
 pub use goat_auth::{TokenSet, now_secs};
 pub use goat_protocol::{AuthMethod, Effort, RateLimitSnapshot, RateWindow, Usage};
 
+mod spec;
+pub use spec::{
+    AuthScheme, ConnectionInfo, Dialect, EndpointOverride, EndpointSource, EndpointValidator,
+    FeatureOverrides, ProviderSpec, ProviderSpecConfig, validate_override_endpoint,
+    validate_user_endpoint,
+};
+
 use std::fmt;
 use std::fmt::Write as _;
 
@@ -390,22 +397,13 @@ pub enum Validated {
     Assumed,
 }
 
-pub type EndpointValidator = fn(&str) -> Result<String, String>;
-
-#[derive(Debug, Clone, Copy)]
-pub struct LoginEndpointMetadata {
-    pub env_var: Option<&'static str>,
-    pub default: Option<&'static str>,
-    pub validate: Option<EndpointValidator>,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct ProviderMetadata {
     pub env_var: Option<&'static str>,
     pub validation: &'static str,
     pub endpoint: Option<&'static str>,
     pub oauth: Option<&'static str>,
-    pub login_endpoint: Option<LoginEndpointMetadata>,
+    pub endpoint_override: Option<EndpointOverride>,
     pub setup: &'static [&'static str],
 }
 
@@ -416,7 +414,7 @@ impl ProviderMetadata {
             validation: "network",
             endpoint: None,
             oauth: None,
-            login_endpoint: None,
+            endpoint_override: None,
             setup: &[],
         }
     }
@@ -478,6 +476,10 @@ pub trait Provider: Send + Sync + 'static {
 
     fn supports_web_search(&self) -> bool {
         false
+    }
+
+    fn connection(&self) -> Option<ConnectionInfo> {
+        None
     }
 
     fn web_search(&self, query: String) -> JoinHandle<Result<WebSearchOutput, StreamError>> {

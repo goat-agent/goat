@@ -4,9 +4,10 @@ use async_trait::async_trait;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use goat_provider::{
-    AuthMethod, Capabilities, ChunkStream, ContentBlock, Effort, Message, MessageRole, Model,
-    Provider, ProviderId, ProviderMetadata, RateLimitSnapshot, Request, SearchResult, StreamChunk,
-    StreamError, ToolChoice, ToolDefinition, Usage, ValidateError, Validated, WebSearchOutput,
+    AuthMethod, AuthScheme, Capabilities, ChunkStream, ConnectionInfo, ContentBlock, Effort,
+    Message, MessageRole, Model, ModelListSource, Provider, ProviderId, ProviderMetadata,
+    RateLimitSnapshot, Request, SearchResult, StreamChunk, StreamError, ToolChoice, ToolDefinition,
+    Usage, ValidateError, Validated, WebSearchOutput,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -261,19 +262,18 @@ pub fn build_body(
 pub async fn run_request(
     client: &reqwest::Client,
     url: &str,
-    bearer: Option<&str>,
+    auth: &common::RequestAuth,
     account_id: Option<&str>,
     body: &serde_json::Value,
     parse_rate_limits: Option<fn(&reqwest::header::HeaderMap) -> Option<RateLimitSnapshot>>,
     extra_headers: &[(&str, &str)],
 ) -> Result<ChunkStream, StreamError> {
-    let mut builder = client
-        .post(url)
-        .header("Accept", "text/event-stream")
-        .json(body);
-    if let Some(token) = bearer {
-        builder = builder.bearer_auth(token);
-    }
+    let mut builder = auth.apply(
+        client
+            .post(url)
+            .header("Accept", "text/event-stream")
+            .json(body),
+    );
     if let Some(account) = account_id {
         builder = builder.header("chatgpt-account-id", account);
     }
@@ -501,9 +501,15 @@ pub struct ResponsesProvider {
     catalog: Vec<String>,
     rate_limits_parser: Option<fn(&reqwest::header::HeaderMap) -> Option<RateLimitSnapshot>>,
     context_windows: Vec<(String, u32)>,
-    search_model: Option<&'static str>,
+    search_model: Option<String>,
     metadata: ProviderMetadata,
     extra_headers: Vec<(String, String)>,
+    auth_scheme: Option<AuthScheme>,
+    query_params: Vec<(String, String)>,
+    model_list_source: Option<ModelListSource>,
+    connection: Option<ConnectionInfo>,
+    web_search_allowed: bool,
+    efforts_override: Option<Vec<Effort>>,
 }
 
 impl ResponsesProvider {
@@ -527,6 +533,12 @@ impl ResponsesProvider {
             search_model: None,
             metadata: ProviderMetadata::default(),
             extra_headers: Vec::new(),
+            auth_scheme: None,
+            query_params: Vec::new(),
+            model_list_source: None,
+            connection: None,
+            web_search_allowed: true,
+            efforts_override: None,
         }
     }
 
@@ -544,8 +556,8 @@ impl ResponsesProvider {
     }
 
     #[must_use]
-    pub fn with_search_model(mut self, model: &'static str) -> Self {
-        self.search_model = Some(model);
+    pub fn with_search_model(mut self, model: &str) -> Self {
+        self.search_model = Some(model.to_owned());
         self
     }
 
@@ -595,6 +607,57 @@ impl ResponsesProvider {
         self.metadata = metadata;
         self
     }
+
+    #[must_use]
+    pub fn with_auth_scheme(mut self, scheme: Option<AuthScheme>) -> Self {
+        self.auth_scheme = scheme;
+        self
+    }
+
+    #[must_use]
+    pub fn with_query_params<K, V>(mut self, params: impl IntoIterator<Item = (K, V)>) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.query_params = params
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect();
+        self
+    }
+
+    #[must_use]
+    pub fn with_model_list_source(mut self, source: ModelListSource) -> Self {
+        self.model_list_source = Some(source);
+        self
+    }
+
+    #[must_use]
+    pub fn with_connection(mut self, connection: ConnectionInfo) -> Self {
+        self.connection = Some(connection);
+        self
+    }
+
+    #[must_use]
+    pub fn with_web_search_allowed(mut self, allowed: bool) -> Self {
+        self.web_search_allowed = allowed;
+        self
+    }
+
+    #[must_use]
+    pub fn with_effort_list(mut self, efforts: Vec<Effort>) -> Self {
+        self.efforts_override = Some(efforts);
+        self
+    }
+
+    fn request_auth(&self) -> common::RequestAuth {
+        common::RequestAuth {
+            secret: self.bearer.clone(),
+            scheme: self.auth_scheme.clone(),
+            query_params: self.query_params.clone(),
+        }
+    }
 }
 
 fn build_web_search_body(
@@ -617,17 +680,14 @@ fn build_web_search_body(
 pub async fn run_web_search(
     client: &reqwest::Client,
     url: &str,
-    bearer: Option<&str>,
+    auth: &common::RequestAuth,
     account_id: Option<&str>,
     model: &str,
     instructions: Option<&str>,
     query: &str,
 ) -> Result<WebSearchOutput, StreamError> {
     let body = build_web_search_body(model, instructions, query);
-    let mut builder = client.post(url).json(&body);
-    if let Some(token) = bearer {
-        builder = builder.bearer_auth(token);
-    }
+    let mut builder = auth.apply(client.post(url).json(&body));
     if let Some(account) = account_id {
         builder = builder.header("chatgpt-account-id", account);
     }
@@ -708,7 +768,7 @@ impl Provider for ResponsesProvider {
             self.client.clone(),
             format!("{}/models", self.base_url),
             self.auth,
-            self.bearer.clone(),
+            self.request_auth(),
         )
     }
 
@@ -729,19 +789,19 @@ impl Provider for ResponsesProvider {
     }
 
     fn supports_web_search(&self) -> bool {
-        self.search_model.is_some()
+        self.web_search_allowed && self.search_model.is_some()
     }
 
     fn web_search(&self, query: String) -> JoinHandle<Result<WebSearchOutput, StreamError>> {
         let client = self.client.clone();
         let url = format!("{}/responses", self.base_url);
-        let bearer = self.bearer.clone();
-        let model = self.search_model;
+        let auth = self.request_auth();
+        let model = self.search_model.clone();
         tokio::spawn(async move {
             let Some(model) = model else {
                 return Err(StreamError::other("web search is not supported"));
             };
-            run_web_search(&client, &url, bearer.as_deref(), None, model, None, &query).await
+            run_web_search(&client, &url, &auth, None, &model, None, &query).await
         })
     }
 
@@ -750,7 +810,9 @@ impl Provider for ResponsesProvider {
     }
 
     fn efforts(&self, model: &str) -> Vec<Effort> {
-        responses_efforts(model)
+        self.efforts_override
+            .clone()
+            .unwrap_or_else(|| responses_efforts(model))
     }
 
     fn context_window(&self, model: &str) -> Option<u32> {
@@ -763,7 +825,7 @@ impl Provider for ResponsesProvider {
     async fn stream(&self, req: Request) -> Result<ChunkStream, StreamError> {
         let client = self.client.clone();
         let url = format!("{}/responses", self.base_url);
-        let bearer = self.bearer.clone();
+        let auth = self.request_auth();
         let rate_limits_parser = self.rate_limits_parser;
         let body = build_body(
             &req.model,
@@ -785,7 +847,7 @@ impl Provider for ResponsesProvider {
         run_request(
             &client,
             &url,
-            bearer.as_deref(),
+            &auth,
             None,
             &body,
             rate_limits_parser,
@@ -794,13 +856,28 @@ impl Provider for ResponsesProvider {
         .await
     }
 
+    fn connection(&self) -> Option<ConnectionInfo> {
+        self.connection.clone()
+    }
+
+    fn model_list_source(&self) -> ModelListSource {
+        self.model_list_source.unwrap_or({
+            if self.catalog.is_empty() {
+                ModelListSource::Discover
+            } else {
+                ModelListSource::Catalog
+            }
+        })
+    }
+
     fn discover(&self, out: mpsc::Sender<Model>) -> JoinHandle<()> {
         common::discover_models(
             self.client.clone(),
             format!("{}/models", self.base_url),
-            self.bearer.clone(),
+            self.request_auth(),
             self.model_filter,
             self.vision_filter,
+            self.catalog.clone(),
             out,
         )
     }

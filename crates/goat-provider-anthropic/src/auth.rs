@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::{ENV_VAR, OAUTH_AUTHORIZE, OAUTH_CLIENT_ID, OAUTH_SCOPE, OAUTH_TOKEN, OAUTH_TOKEN_UA};
+use crate::{OAUTH_AUTHORIZE, OAUTH_CLIENT_ID, OAUTH_SCOPE, OAUTH_TOKEN, OAUTH_TOKEN_UA};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AnthropicAuthError {
@@ -145,8 +145,16 @@ async fn parse_token_response(
     response.json().await.map_err(AnthropicAuthError::Http)
 }
 
-pub(crate) async fn current_auth(store: &CredentialStore, key: &CredentialKey) -> Option<Auth> {
-    match store.resolve(key, Some(ENV_VAR))? {
+pub(crate) async fn current_auth(
+    store: &CredentialStore,
+    key: &CredentialKey,
+    env_var: Option<&str>,
+    credentials_usable: bool,
+) -> Option<Auth> {
+    if !credentials_usable {
+        return None;
+    }
+    match store.resolve(key, env_var)? {
         Credential::ApiKey(secret) | Credential::ApiKeyWithEndpoint { secret, .. } => {
             Some(Auth::ApiKey(secret.expose().to_owned()))
         }

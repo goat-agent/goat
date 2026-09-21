@@ -339,7 +339,7 @@ pub struct SessionKillParams {
 pub enum ConfigEdit {
     ProviderSet {
         name: String,
-        endpoint: String,
+        spec: serde_json::Value,
     },
     ProviderRemove {
         name: String,
@@ -1218,7 +1218,7 @@ method!(
 method!(
     AdminConfigEdit,
     "admin.config_edit",
-    1,
+    2,
     Shape::Unary,
     Grant::Admin,
     Direction::ToDaemon,

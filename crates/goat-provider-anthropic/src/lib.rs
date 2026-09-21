@@ -7,9 +7,11 @@ mod error;
 use futures::StreamExt;
 use goat_auth::{CredentialKey, CredentialStore, TokenSet};
 use goat_provider::{
-    AuthMethod, Capabilities, ChunkStream, ContentBlock, Effort, Message, MessageRole, Model,
-    Provider, ProviderId, ProviderMetadata, RateLimitSnapshot, RateWindow, Request, SearchResult,
-    StreamChunk, StreamError, Usage, ValidateError, Validated, WebSearchOutput,
+    AuthMethod, AuthScheme, Capabilities, ChunkStream, ConnectionInfo, ContentBlock, Dialect,
+    Effort, EndpointOverride, EndpointSource, FeatureOverrides, Message, MessageRole, Model,
+    ModelListSource, Provider, ProviderId, ProviderMetadata, ProviderSpec, RateLimitSnapshot,
+    RateWindow, Request, SearchResult, StreamChunk, StreamError, Usage, ValidateError, Validated,
+    WebSearchOutput, validate_override_endpoint, validate_user_endpoint,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -73,7 +75,7 @@ const CATALOG: &[&str] = &[
 ];
 
 pub struct AnthropicProvider {
-    base_url: String,
+    spec: ProviderSpec,
     store: CredentialStore,
     key: CredentialKey,
     client: reqwest::Client,
@@ -81,26 +83,75 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    pub fn new(store: CredentialStore, key: CredentialKey) -> Self {
-        Self::with_identity(store, key, true)
+    fn connected(&self, builder: reqwest::RequestBuilder, auth: &Auth) -> reqwest::RequestBuilder {
+        connected_request(&self.spec, builder, auth)
     }
+}
 
-    pub fn with_identity(
-        store: CredentialStore,
-        key: CredentialKey,
-        inject_identity: bool,
-    ) -> Self {
-        Self {
-            base_url: BASE_URL.to_owned(),
-            store,
-            key,
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_mins(5))
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .build()
-                .expect("reqwest client"),
-            inject_identity,
+fn connected_request(
+    spec: &ProviderSpec,
+    builder: reqwest::RequestBuilder,
+    auth: &Auth,
+) -> reqwest::RequestBuilder {
+    let mut pairs = spec.query_params.clone();
+    let builder = match auth {
+        Auth::ApiKey(secret) => {
+            if let Some(AuthScheme::Query(name)) = &spec.auth_scheme {
+                pairs.push((name.clone(), secret.clone()));
+            }
+            apply_key_auth(builder, spec.auth_scheme.as_ref(), secret)
         }
+        Auth::OAuth(access) => builder
+            .bearer_auth(access)
+            .header("anthropic-beta", OAUTH_BETA)
+            .header("user-agent", OAUTH_USER_AGENT)
+            .header("x-app", "cli"),
+    };
+    let builder = if pairs.is_empty() {
+        builder
+    } else {
+        builder.query(&pairs)
+    };
+    let mut builder = builder;
+    for (name, value) in spec.resolved_headers() {
+        builder = builder.header(name, value);
+    }
+    builder
+}
+
+fn apply_key_auth(
+    builder: reqwest::RequestBuilder,
+    scheme: Option<&AuthScheme>,
+    secret: &str,
+) -> reqwest::RequestBuilder {
+    match scheme.unwrap_or(&AuthScheme::XApiKey) {
+        AuthScheme::XApiKey => builder.header("x-api-key", secret),
+        AuthScheme::Bearer => builder.bearer_auth(secret),
+        AuthScheme::Header(name) => builder.header(name.as_str(), secret),
+        AuthScheme::Query(_) | AuthScheme::None => builder,
+    }
+}
+
+pub fn default_spec() -> ProviderSpec {
+    ProviderSpec {
+        id: PROVIDER_ID.to_owned(),
+        dialect: Dialect::Anthropic,
+        endpoint: BASE_URL.to_owned(),
+        endpoint_source: EndpointSource::Default,
+        auth_scheme: None,
+        env_key: Some(ENV_VAR.to_owned()),
+        headers: Vec::new(),
+        env_headers: Vec::new(),
+        query_params: Vec::new(),
+        catalog: Some(CATALOG.iter().map(|id| (*id).to_owned()).collect()),
+        context_windows: Vec::new(),
+        images: None,
+        efforts: None,
+        features: FeatureOverrides::default(),
+        name: None,
+        search_model: None,
+        custom: false,
+        credentials_usable: true,
     }
 }
 
@@ -113,8 +164,27 @@ pub fn build_with_identity(
     account: &str,
     inject_identity: bool,
 ) -> AnthropicProvider {
-    let key = CredentialKey::model(PROVIDER_ID, account);
-    AnthropicProvider::with_identity(store.clone(), key, inject_identity)
+    build_connected(&default_spec(), store, account, inject_identity)
+}
+
+pub fn build_connected(
+    spec: &ProviderSpec,
+    store: &CredentialStore,
+    account: &str,
+    inject_identity: bool,
+) -> AnthropicProvider {
+    let key = CredentialKey::model(spec.id.as_str(), account);
+    AnthropicProvider {
+        spec: spec.clone(),
+        store: store.clone(),
+        key,
+        client: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_mins(5))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("reqwest client"),
+        inject_identity,
+    }
 }
 
 fn build_system(system: &str, oauth: bool) -> Option<serde_json::Value> {
@@ -844,7 +914,7 @@ fn parse_web_search_results(value: &serde_json::Value) -> Vec<SearchResult> {
 #[async_trait]
 impl Provider for AnthropicProvider {
     fn id(&self) -> ProviderId {
-        ProviderId::from(PROVIDER_ID)
+        ProviderId::from(self.spec.id.as_str())
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -856,35 +926,71 @@ impl Provider for AnthropicProvider {
     }
 
     fn metadata(&self) -> ProviderMetadata {
+        if self.spec.custom {
+            return ProviderMetadata {
+                env_var: None,
+                validation: "custom",
+                endpoint: None,
+                oauth: Some("browser"),
+                endpoint_override: Some(EndpointOverride {
+                    env_var: None,
+                    default: None,
+                    validate: Some(validate_user_endpoint),
+                }),
+                setup: &[],
+            };
+        }
         ProviderMetadata {
             env_var: Some(ENV_VAR),
             validation: "network",
             endpoint: None,
             oauth: Some("browser"),
-            login_endpoint: None,
+            endpoint_override: Some(EndpointOverride {
+                env_var: None,
+                default: None,
+                validate: Some(validate_override_endpoint),
+            }),
             setup: &[],
         }
     }
 
     fn supports_images(&self, model: &str) -> bool {
-        anthropic_supports_images(model)
+        self.spec
+            .images
+            .unwrap_or_else(|| anthropic_supports_images(model))
     }
 
     fn supports_tool_search(&self, model: &str) -> bool {
-        anthropic_supports_tool_search(model)
+        self.spec.tool_search_allowed() && anthropic_supports_tool_search(model)
     }
 
     fn supports_web_search(&self) -> bool {
-        true
+        self.spec.web_search_allowed()
+    }
+
+    fn connection(&self) -> Option<ConnectionInfo> {
+        Some(self.spec.connection_info())
+    }
+
+    fn model_list_source(&self) -> ModelListSource {
+        if self.spec.foreign() {
+            ModelListSource::Discover
+        } else {
+            ModelListSource::Catalog
+        }
     }
 
     fn web_search(&self, query: String) -> JoinHandle<Result<WebSearchOutput, StreamError>> {
         let client = self.client.clone();
-        let url = format!("{}/messages", self.base_url);
+        let url = format!("{}/messages", self.spec.endpoint);
         let store = self.store.clone();
         let key = self.key.clone();
+        let env_key = self.spec.env_key.clone();
+        let spec = self.spec.clone();
         tokio::spawn(async move {
-            let Some(auth) = current_auth(&store, &key).await else {
+            let Some(auth) =
+                current_auth(&store, &key, env_key.as_deref(), spec.credentials_usable).await
+            else {
                 return Err(StreamError::auth("not logged in to anthropic"));
             };
             let body = json!({
@@ -897,14 +1003,7 @@ impl Provider for AnthropicProvider {
                 .post(&url)
                 .header("anthropic-version", VERSION)
                 .json(&body);
-            let builder = match &auth {
-                Auth::ApiKey(api_key) => builder.header("x-api-key", api_key),
-                Auth::OAuth(access) => builder
-                    .bearer_auth(access)
-                    .header("anthropic-beta", OAUTH_BETA)
-                    .header("user-agent", OAUTH_USER_AGENT)
-                    .header("x-app", "cli"),
-            };
+            let builder = connected_request(&spec, builder, &auth);
             let resp = builder.send().await.map_err(|err| error::transport(&err))?;
             if !resp.status().is_success() {
                 let status = resp.status();
@@ -924,11 +1023,19 @@ impl Provider for AnthropicProvider {
 
     async fn stream(&self, req: Request) -> Result<ChunkStream, StreamError> {
         let client = self.client.clone();
-        let url = format!("{}/messages", self.base_url);
+        let url = format!("{}/messages", self.spec.endpoint);
         let store = self.store.clone();
         let key = self.key.clone();
         let inject_identity = self.inject_identity;
-        let Some(auth) = current_auth(&store, &key).await else {
+        let env_key = self.spec.env_key.clone();
+        let Some(auth) = current_auth(
+            &store,
+            &key,
+            env_key.as_deref(),
+            self.spec.credentials_usable,
+        )
+        .await
+        else {
             return Err(goat_provider::StreamError::auth(
                 "not logged in to anthropic",
             ));
@@ -965,14 +1072,7 @@ impl Provider for AnthropicProvider {
             .post(&url)
             .header("anthropic-version", VERSION)
             .json(&body);
-        let builder = match &auth {
-            Auth::ApiKey(api_key) => builder.header("x-api-key", api_key),
-            Auth::OAuth(access) => builder
-                .bearer_auth(access)
-                .header("anthropic-beta", OAUTH_BETA)
-                .header("user-agent", OAUTH_USER_AGENT)
-                .header("x-app", "cli"),
-        };
+        let builder = self.connected(builder, &auth);
         let resp = builder.send().await.map_err(|err| error::transport(&err))?;
         if !resp.status().is_success() {
             let status = resp.status();
@@ -987,29 +1087,36 @@ impl Provider for AnthropicProvider {
     }
 
     fn authenticated(&self) -> bool {
-        self.store.resolve(&self.key, Some(ENV_VAR)).is_some()
+        self.spec.credentials_usable
+            && self
+                .store
+                .resolve(&self.key, self.spec.env_key.as_deref())
+                .is_some()
     }
 
     fn validate(&self) -> JoinHandle<Result<Validated, ValidateError>> {
         let client = self.client.clone();
-        let url = format!("{}/models", self.base_url);
+        let url = format!("{}/models", self.spec.endpoint);
         let store = self.store.clone();
         let key = self.key.clone();
+        let env_key = self.spec.env_key.clone();
+        let spec = self.spec.clone();
         tokio::spawn(async move {
-            let auth = current_auth(&store, &key)
+            let auth = current_auth(&store, &key, env_key.as_deref(), spec.credentials_usable)
                 .await
                 .ok_or(ValidateError::NoCredentials)?;
             let api_key = match auth {
                 Auth::OAuth(_) => return Ok(Validated::Assumed),
                 Auth::ApiKey(api_key) => api_key,
             };
-            let resp = client
-                .get(&url)
-                .header("anthropic-version", VERSION)
-                .header("x-api-key", api_key)
-                .send()
-                .await
-                .map_err(|_| ValidateError::unreachable("could not reach provider"))?;
+            let resp = connected_request(
+                &spec,
+                client.get(&url).header("anthropic-version", VERSION),
+                &Auth::ApiKey(api_key),
+            )
+            .send()
+            .await
+            .map_err(|_| ValidateError::unreachable("could not reach provider"))?;
             let status = resp.status();
             if status.is_success() {
                 Ok(Validated::Live)
@@ -1026,56 +1133,84 @@ impl Provider for AnthropicProvider {
     }
 
     fn context_window(&self, model: &str) -> Option<u32> {
-        Some(anthropic_context_window(model))
+        self.spec
+            .context_window(model)
+            .or_else(|| Some(anthropic_context_window(model)))
     }
 
     fn list_models(&self) -> Vec<String> {
-        CATALOG.iter().map(|id| (*id).to_owned()).collect()
+        self.spec
+            .catalog
+            .clone()
+            .unwrap_or_else(|| CATALOG.iter().map(|id| (*id).to_owned()).collect())
     }
 
     fn efforts(&self, model: &str) -> Vec<Effort> {
-        anthropic_efforts(model)
+        self.spec
+            .efforts
+            .clone()
+            .unwrap_or_else(|| anthropic_efforts(model))
     }
 
     fn discover(&self, out: mpsc::Sender<Model>) -> JoinHandle<()> {
         let client = self.client.clone();
-        let url = format!("{}/models", self.base_url);
+        let url = format!("{}/models", self.spec.endpoint);
         let store = self.store.clone();
         let key = self.key.clone();
+        let env_key = self.spec.env_key.clone();
+        let spec = self.spec.clone();
         tokio::spawn(async move {
-            let Some(auth) = current_auth(&store, &key).await else {
+            let catalog = spec
+                .catalog
+                .clone()
+                .unwrap_or_else(|| CATALOG.iter().map(|id| (*id).to_owned()).collect());
+            let emit_catalog = |out: mpsc::Sender<Model>| async move {
+                for id in catalog {
+                    let supports_images = anthropic_supports_images(&id);
+                    if out
+                        .send(Model {
+                            id,
+                            supports_images,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            };
+            let Some(auth) =
+                current_auth(&store, &key, env_key.as_deref(), spec.credentials_usable).await
+            else {
+                emit_catalog(out).await;
                 return;
             };
             let api_key = match auth {
                 Auth::OAuth(_) => {
-                    for &id in CATALOG {
-                        if out
-                            .send(Model {
-                                id: id.to_owned(),
-                                supports_images: anthropic_supports_images(id),
-                            })
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
+                    emit_catalog(out).await;
                     return;
                 }
                 Auth::ApiKey(api_key) => api_key,
             };
-            let Ok(resp) = client
-                .get(&url)
-                .header("anthropic-version", VERSION)
-                .header("x-api-key", api_key)
-                .send()
-                .await
-            else {
+            let resp = connected_request(
+                &spec,
+                client.get(&url).header("anthropic-version", VERSION),
+                &Auth::ApiKey(api_key),
+            )
+            .send()
+            .await;
+            let Ok(resp) = resp else {
+                emit_catalog(out).await;
                 return;
             };
             let Ok(models) = resp.json::<ModelsResponse>().await else {
+                emit_catalog(out).await;
                 return;
             };
+            if models.data.is_empty() {
+                emit_catalog(out).await;
+                return;
+            }
             for model in models.data {
                 let supports_images = anthropic_supports_images(&model.id);
                 if out

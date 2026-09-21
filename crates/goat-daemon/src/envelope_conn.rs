@@ -161,7 +161,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         crate::manager::CodeSessionHub::new(
             dir.join("credentials.json"),
-            goat_config::UserProviders::at(dir.join("config.json")),
+            goat_config::ProviderSpecs::at(dir.join("config.toml")),
             dir.join("goat.db"),
         )
     }

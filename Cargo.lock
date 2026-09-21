@@ -3280,7 +3280,9 @@ dependencies = [
  "goat-command",
  "goat-config",
  "goat-github",
+ "goat-model",
  "goat-protocol",
+ "goat-providers",
  "goat-search-providers",
  "goat-worktree",
  "ratatui",
@@ -3340,12 +3342,15 @@ dependencies = [
  "chrono-tz",
  "goat-agent-config",
  "goat-model",
+ "goat-provider",
  "goat-search-provider",
  "goat-types",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
+ "toml 0.9.12+spec-1.1.0",
+ "toml_edit 0.23.10+spec-1.0.0",
  "tracing",
 ]
 
@@ -3920,6 +3925,8 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -4059,6 +4066,7 @@ version = "0.1.0"
 dependencies = [
  "goat-auth",
  "goat-config",
+ "goat-model",
  "goat-provider",
  "goat-provider-anthropic",
  "goat-provider-builtin",
@@ -9605,6 +9613,19 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
+version = "0.23.10+spec-1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84c8b9f757e028cee9fa244aea147aab2a9ec09d5325a9b01e0a49730c2b5269"
+dependencies = [
+ "indexmap 2.14.0",
+ "toml_datetime 0.7.5+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow 0.7.15",
+]
+
+[[package]]
+name = "toml_edit"
 version = "0.25.13+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6975367e4d2ef766d86af01ffad14b622fecc8d4357a998fbc4deb6e9bacaf9b"
@@ -11174,6 +11195,9 @@ name = "winnow"
 version = "0.7.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "winnow"

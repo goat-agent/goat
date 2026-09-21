@@ -10,8 +10,10 @@ use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use goat_auth::{CredentialKey, CredentialStore, TokenSet};
 use goat_provider::{
-    AuthMethod, Capabilities, ChunkStream, Effort, Model, Provider, ProviderId, ProviderMetadata,
-    Request, SearchResult, StreamChunk, StreamError, ValidateError, Validated, WebSearchOutput,
+    AuthMethod, AuthScheme, Capabilities, ChunkStream, ConnectionInfo, Dialect, Effort,
+    EndpointOverride, EndpointSource, FeatureOverrides, Model, ModelListSource, Provider,
+    ProviderId, ProviderMetadata, ProviderSpec, Request, SearchResult, StreamChunk, StreamError,
+    ValidateError, Validated, WebSearchOutput, validate_override_endpoint, validate_user_endpoint,
 };
 use serde_json::json;
 use tokio::{sync::Mutex, sync::mpsc, task::JoinHandle};
@@ -46,6 +48,7 @@ fn gemini_context_window(model: &str) -> Option<u32> {
 }
 
 pub struct GeminiProvider {
+    spec: ProviderSpec,
     store: CredentialStore,
     key: CredentialKey,
     client: reqwest::Client,
@@ -53,23 +56,95 @@ pub struct GeminiProvider {
 }
 
 impl GeminiProvider {
-    fn new(store: CredentialStore, key: CredentialKey) -> Self {
-        Self {
-            store,
-            key,
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_mins(5))
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .build()
-                .expect("reqwest client"),
-            project: Arc::new(Mutex::new(None)),
-        }
+    fn connected(
+        &self,
+        builder: reqwest::RequestBuilder,
+        api_key: &str,
+    ) -> reqwest::RequestBuilder {
+        connected_request(&self.spec, builder, api_key)
+    }
+}
+
+fn apply_key_auth(
+    builder: reqwest::RequestBuilder,
+    scheme: Option<&AuthScheme>,
+    secret: &str,
+) -> reqwest::RequestBuilder {
+    const GOOGLE_KEY_HEADER: &str = "x-goog-api-key";
+    match scheme.unwrap_or(&AuthScheme::Header(GOOGLE_KEY_HEADER.to_owned())) {
+        AuthScheme::XApiKey => builder.header("x-api-key", secret),
+        AuthScheme::Bearer => builder.bearer_auth(secret),
+        AuthScheme::Header(name) => builder.header(name.as_str(), secret),
+        AuthScheme::Query(_) | AuthScheme::None => builder,
+    }
+}
+
+fn connected_request(
+    spec: &ProviderSpec,
+    builder: reqwest::RequestBuilder,
+    api_key: &str,
+) -> reqwest::RequestBuilder {
+    let mut pairs = spec.query_params.clone();
+    if let Some(AuthScheme::Query(name)) = &spec.auth_scheme {
+        pairs.push((name.clone(), api_key.to_owned()));
+    }
+    let builder = apply_key_auth(builder, spec.auth_scheme.as_ref(), api_key);
+    let builder = if pairs.is_empty() {
+        builder
+    } else {
+        builder.query(&pairs)
+    };
+    let mut builder = builder;
+    for (name, value) in spec.resolved_headers() {
+        builder = builder.header(name, value);
+    }
+    builder
+}
+
+pub fn default_spec() -> ProviderSpec {
+    ProviderSpec {
+        id: PROVIDER_ID.to_owned(),
+        dialect: Dialect::Gemini,
+        endpoint: GL_BASE.to_owned(),
+        endpoint_source: EndpointSource::Default,
+        auth_scheme: None,
+        env_key: Some(ENV_VAR.to_owned()),
+        headers: Vec::new(),
+        env_headers: Vec::new(),
+        query_params: Vec::new(),
+        catalog: Some(CATALOG.iter().map(|id| (*id).to_owned()).collect()),
+        context_windows: Vec::new(),
+        images: None,
+        efforts: None,
+        features: FeatureOverrides::default(),
+        name: None,
+        search_model: None,
+        custom: false,
+        credentials_usable: true,
     }
 }
 
 pub fn build(store: &CredentialStore, account: &str) -> GeminiProvider {
-    let key = CredentialKey::model(PROVIDER_ID, account);
-    GeminiProvider::new(store.clone(), key)
+    build_connected(&default_spec(), store, account)
+}
+
+pub fn build_connected(
+    spec: &ProviderSpec,
+    store: &CredentialStore,
+    account: &str,
+) -> GeminiProvider {
+    let key = CredentialKey::model(spec.id.as_str(), account);
+    GeminiProvider {
+        spec: spec.clone(),
+        store: store.clone(),
+        key,
+        client: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_mins(5))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("reqwest client"),
+        project: Arc::new(Mutex::new(None)),
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -85,11 +160,13 @@ struct GlModel {
     supported_generation_methods: Vec<String>,
 }
 
-async fn fetch_gl_models(client: &reqwest::Client, api_key: &str) -> Vec<Model> {
-    let url = format!("{GL_BASE}/models");
-    let Ok(resp) = client
-        .get(&url)
-        .header("x-goog-api-key", api_key)
+async fn fetch_gl_models(
+    client: &reqwest::Client,
+    spec: &ProviderSpec,
+    api_key: &str,
+) -> Vec<Model> {
+    let url = format!("{}/models", spec.endpoint);
+    let Ok(resp) = connected_request(spec, client.get(&url), api_key)
         .send()
         .await
     else {
@@ -208,64 +285,122 @@ fn parse_grounding_results(value: &serde_json::Value) -> Vec<SearchResult> {
 #[async_trait]
 impl Provider for GeminiProvider {
     fn id(&self) -> ProviderId {
-        ProviderId::from(PROVIDER_ID)
+        ProviderId::from(self.spec.id.as_str())
     }
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             tools: true,
-            auth: AuthMethod::ApiKeyOrOAuth,
+            auth: if self.spec.custom {
+                AuthMethod::ApiKey
+            } else {
+                AuthMethod::ApiKeyOrOAuth
+            },
             images: true,
         }
     }
 
     fn metadata(&self) -> ProviderMetadata {
+        if self.spec.custom {
+            return ProviderMetadata {
+                env_var: None,
+                validation: "custom",
+                endpoint: None,
+                oauth: Some("not supported"),
+                endpoint_override: Some(EndpointOverride {
+                    env_var: None,
+                    default: None,
+                    validate: Some(validate_user_endpoint),
+                }),
+                setup: &[],
+            };
+        }
         ProviderMetadata {
             env_var: Some(ENV_VAR),
             validation: "network",
             endpoint: None,
             oauth: Some("browser"),
-            login_endpoint: None,
+            endpoint_override: Some(EndpointOverride {
+                env_var: None,
+                default: None,
+                validate: Some(validate_override_endpoint),
+            }),
             setup: &[],
         }
     }
 
     fn supports_images(&self, model: &str) -> bool {
-        gemini_supports_images(model)
+        self.spec
+            .images
+            .unwrap_or_else(|| gemini_supports_images(model))
     }
 
     fn context_window(&self, model: &str) -> Option<u32> {
-        gemini_context_window(model)
+        self.spec
+            .context_window(model)
+            .or_else(|| gemini_context_window(model))
     }
 
     fn authenticated(&self) -> bool {
-        self.store.resolve(&self.key, Some(ENV_VAR)).is_some()
+        if !self.spec.credentials_usable {
+            return false;
+        }
+        match self.store.resolve(&self.key, self.spec.env_key.as_deref()) {
+            Some(goat_auth::Credential::OAuth(_)) => !self.spec.custom,
+            Some(_) => true,
+            None => false,
+        }
     }
 
     fn list_models(&self) -> Vec<String> {
-        CATALOG.iter().map(|id| (*id).to_owned()).collect()
+        self.spec
+            .catalog
+            .clone()
+            .unwrap_or_else(|| CATALOG.iter().map(|id| (*id).to_owned()).collect())
     }
 
     fn efforts(&self, model: &str) -> Vec<Effort> {
-        wire::gemini_efforts(model)
+        self.spec
+            .efforts
+            .clone()
+            .unwrap_or_else(|| wire::gemini_efforts(model))
+    }
+
+    fn connection(&self) -> Option<ConnectionInfo> {
+        Some(self.spec.connection_info())
+    }
+
+    fn model_list_source(&self) -> ModelListSource {
+        if self.spec.foreign() {
+            ModelListSource::Discover
+        } else {
+            ModelListSource::Catalog
+        }
     }
 
     fn validate(&self) -> JoinHandle<Result<Validated, ValidateError>> {
         let store = self.store.clone();
         let key = self.key.clone();
         let client = self.client.clone();
+        let env_key = self.spec.env_key.clone();
+        let allow_oauth = !self.spec.custom;
+        let spec = self.spec.clone();
         tokio::spawn(async move {
-            let auth = oauth::current_auth(&store, &key)
-                .await
-                .ok_or(ValidateError::NoCredentials)?;
+            let auth = oauth::current_auth(
+                &store,
+                &key,
+                env_key.as_deref(),
+                allow_oauth,
+                spec.credentials_usable,
+            )
+            .await
+            .ok_or(ValidateError::NoCredentials)?;
             let api_key = match auth {
                 oauth::Auth::OAuth(_) => return Ok(Validated::Assumed),
                 oauth::Auth::ApiKey(k) => k,
             };
-            let url = format!("{GL_BASE}/models");
-            let resp = client
-                .get(&url)
-                .header("x-goog-api-key", &api_key)
+            let url = format!("{}/models", spec.endpoint);
+            let resp = connected_request(&spec, client.get(&url), &api_key)
                 .send()
                 .await
                 .map_err(|_| ValidateError::unreachable("could not reach Gemini API"))?;
@@ -288,27 +423,50 @@ impl Provider for GeminiProvider {
         let client = self.client.clone();
         let store = self.store.clone();
         let key = self.key.clone();
+        let env_key = self.spec.env_key.clone();
+        let allow_oauth = !self.spec.custom;
+        let spec = self.spec.clone();
         tokio::spawn(async move {
-            let Some(auth) = oauth::current_auth(&store, &key).await else {
+            let catalog = spec
+                .catalog
+                .clone()
+                .unwrap_or_else(|| CATALOG.iter().map(|id| (*id).to_owned()).collect());
+            let emit_catalog = |out: mpsc::Sender<Model>| async move {
+                for id in catalog {
+                    let supports_images = gemini_supports_images(&id);
+                    if out
+                        .send(Model {
+                            id,
+                            supports_images,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            };
+            let Some(auth) = oauth::current_auth(
+                &store,
+                &key,
+                env_key.as_deref(),
+                allow_oauth,
+                spec.credentials_usable,
+            )
+            .await
+            else {
+                emit_catalog(out).await;
                 return;
             };
             match auth {
-                oauth::Auth::OAuth(_) => {
-                    for &id in CATALOG {
-                        if out
-                            .send(Model {
-                                id: id.to_owned(),
-                                supports_images: gemini_supports_images(id),
-                            })
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
-                }
+                oauth::Auth::OAuth(_) => emit_catalog(out).await,
                 oauth::Auth::ApiKey(api_key) => {
-                    for model in fetch_gl_models(&client, &api_key).await {
+                    let models = fetch_gl_models(&client, &spec, &api_key).await;
+                    if models.is_empty() {
+                        emit_catalog(out).await;
+                        return;
+                    }
+                    for model in models {
                         if out.send(model).await.is_err() {
                             return;
                         }
@@ -319,7 +477,7 @@ impl Provider for GeminiProvider {
     }
 
     fn supports_web_search(&self) -> bool {
-        true
+        self.spec.web_search_allowed()
     }
 
     fn web_search(&self, query: String) -> JoinHandle<Result<WebSearchOutput, StreamError>> {
@@ -327,8 +485,19 @@ impl Provider for GeminiProvider {
         let store = self.store.clone();
         let key = self.key.clone();
         let project_cache = Arc::clone(&self.project);
+        let env_key = self.spec.env_key.clone();
+        let allow_oauth = !self.spec.custom;
+        let spec = self.spec.clone();
         tokio::spawn(async move {
-            let Some(auth) = oauth::current_auth(&store, &key).await else {
+            let Some(auth) = oauth::current_auth(
+                &store,
+                &key,
+                env_key.as_deref(),
+                allow_oauth,
+                spec.credentials_usable,
+            )
+            .await
+            else {
                 return Err(StreamError::auth("not logged in to gemini"));
             };
             let inner = json!({
@@ -337,11 +506,8 @@ impl Provider for GeminiProvider {
             });
             let builder = match &auth {
                 oauth::Auth::ApiKey(api_key) => {
-                    let url = format!("{GL_BASE}/models/{SEARCH_MODEL}:generateContent");
-                    client
-                        .post(&url)
-                        .header("x-goog-api-key", api_key)
-                        .json(&inner)
+                    let url = format!("{}/models/{SEARCH_MODEL}:generateContent", spec.endpoint);
+                    connected_request(&spec, client.post(&url).json(&inner), api_key)
                 }
                 oauth::Auth::OAuth(access) => {
                     let project =
@@ -375,7 +541,15 @@ impl Provider for GeminiProvider {
         let store = self.store.clone();
         let key = self.key.clone();
         let project_cache = Arc::clone(&self.project);
-        let Some(auth) = oauth::current_auth(&store, &key).await else {
+        let Some(auth) = oauth::current_auth(
+            &store,
+            &key,
+            self.spec.env_key.as_deref(),
+            !self.spec.custom,
+            self.spec.credentials_usable,
+        )
+        .await
+        else {
             return Err(goat_provider::StreamError::auth("not logged in to gemini"));
         };
 
@@ -387,14 +561,11 @@ impl Provider for GeminiProvider {
         let (builder, oauth) = match &auth {
             oauth::Auth::ApiKey(api_key) => {
                 let url = format!(
-                    "{GL_BASE}/models/{}:streamGenerateContent?alt=sse",
-                    req.model
+                    "{}/models/{}:streamGenerateContent?alt=sse",
+                    self.spec.endpoint, req.model
                 );
                 tracing::debug!(%url, "gemini api-key stream");
-                let b = client
-                    .post(&url)
-                    .header("x-goog-api-key", api_key)
-                    .json(&inner_value);
+                let b = self.connected(client.post(&url).json(&inner_value), api_key);
                 (b, false)
             }
             oauth::Auth::OAuth(access) => {

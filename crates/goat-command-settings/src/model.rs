@@ -61,6 +61,65 @@ impl Command for Model {
                 }
             }
         }
+        if let Ok(parsed) = goat_model::Model::parse(query.trim()) {
+            let provider = parsed.provider.to_string();
+            let known = session
+                .models()
+                .iter()
+                .any(|entry| entry.provider == provider)
+                || session
+                    .accounts()
+                    .iter()
+                    .any(|entry| entry.provider == provider);
+            if known {
+                let model = parsed.id;
+                if let Some(account) = parsed.account {
+                    return CommandEffect::Dispatch(vec![Op::SelectModel {
+                        target: goat_protocol::ModelTarget {
+                            provider,
+                            model,
+                            account,
+                            effort: None,
+                        },
+                    }]);
+                }
+                let choices: Vec<goat_protocol::AccountChoice> = session
+                    .accounts()
+                    .iter()
+                    .find(|entry| entry.provider == provider)
+                    .map(|entry| {
+                        entry
+                            .accounts
+                            .iter()
+                            .map(|account| goat_protocol::AccountChoice {
+                                id: account.name.clone(),
+                                display: account.name.clone(),
+                                target: goat_protocol::ModelTarget {
+                                    provider: provider.clone(),
+                                    model: model.clone(),
+                                    account: account.name.clone(),
+                                    effort: None,
+                                },
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                return match choices.as_slice() {
+                    [choice] => CommandEffect::Dispatch(vec![Op::SelectModel {
+                        target: choice.target.clone(),
+                    }]),
+                    [] => CommandEffect::Dispatch(vec![Op::SelectModel {
+                        target: goat_protocol::ModelTarget {
+                            provider,
+                            model,
+                            account: goat_providers::DEFAULT_ACCOUNT.to_owned(),
+                            effort: None,
+                        },
+                    }]),
+                    _ => CommandEffect::Show(Box::new(AccountScreen::new(choices))),
+                };
+            }
+        }
         let mut screen = ModelScreen::new(
             session.models().to_vec(),
             session.current_model().cloned(),

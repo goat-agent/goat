@@ -1,7 +1,11 @@
 use std::sync::Arc;
 
 use goat_auth::{CredentialKey, CredentialStore};
-use goat_provider::{AuthMethod, Effort, ModelListSource, Provider, ProviderId, ProviderMetadata};
+use goat_provider::{
+    AuthMethod, Dialect, Effort, EndpointOverride, EndpointSource, ModelListSource, Provider,
+    ProviderId, ProviderMetadata, ProviderSpec, ProviderSpecConfig, validate_override_endpoint,
+    validate_user_endpoint,
+};
 use goat_provider_openai_compat::{
     ChatDiscovery, ChatValidation, OpenAiCompatProvider, ResponsesProvider, enforce_https_host,
 };
@@ -37,6 +41,18 @@ pub struct Row {
     pub metadata: ProviderMetadata,
 }
 
+const HOSTED_ENDPOINT_OVERRIDE: EndpointOverride = EndpointOverride {
+    env_var: None,
+    default: None,
+    validate: Some(validate_override_endpoint),
+};
+
+const LOCAL_ENDPOINT_OVERRIDE: EndpointOverride = EndpointOverride {
+    env_var: None,
+    default: None,
+    validate: Some(validate_user_endpoint),
+};
+
 impl Row {
     pub const fn hosted(
         id: &'static str,
@@ -69,7 +85,7 @@ impl Row {
                 validation: "network",
                 endpoint: None,
                 oauth: Some("not supported"),
-                login_endpoint: None,
+                endpoint_override: Some(HOSTED_ENDPOINT_OVERRIDE),
                 setup: &[],
             },
         }
@@ -101,93 +117,120 @@ impl Row {
                 validation: "local",
                 endpoint: Some(base_url),
                 oauth: None,
-                login_endpoint: None,
+                endpoint_override: Some(LOCAL_ENDPOINT_OVERRIDE),
                 setup: &[],
             },
         }
     }
 }
 
-pub fn build(row: &'static Row, store: &CredentialStore, account: &str) -> Arc<dyn Provider> {
+impl From<Wire> for Dialect {
+    fn from(wire: Wire) -> Self {
+        match wire {
+            Wire::Chat => Dialect::Chat,
+            Wire::Responses => Dialect::Responses,
+        }
+    }
+}
+
+pub fn base_spec(row: &Row) -> ProviderSpec {
+    ProviderSpec {
+        id: row.id.to_owned(),
+        dialect: row.wire.into(),
+        endpoint: row.base_url.to_owned(),
+        endpoint_source: EndpointSource::Default,
+        auth_scheme: None,
+        env_key: row.env_var.map(str::to_owned),
+        headers: row
+            .extra_headers
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect(),
+        env_headers: Vec::new(),
+        query_params: Vec::new(),
+        catalog: Some(row.catalog.iter().map(|id| (*id).to_owned()).collect()),
+        context_windows: row
+            .context_windows
+            .iter()
+            .map(|(prefix, window)| ((*prefix).to_owned(), *window))
+            .collect(),
+        images: None,
+        efforts: None,
+        features: goat_provider::FeatureOverrides::default(),
+        name: None,
+        search_model: row.search_model.map(str::to_owned),
+        custom: false,
+        credentials_usable: true,
+    }
+}
+
+fn patch_endpoint_validator(row: &Row) -> goat_provider::EndpointValidator {
+    if matches!(row.auth, AuthMethod::None) {
+        validate_user_endpoint
+    } else {
+        validate_override_endpoint
+    }
+}
+
+pub fn spec_for(
+    row: &'static Row,
+    patch: Option<&ProviderSpecConfig>,
+    store: &CredentialStore,
+    account: &str,
+) -> Result<ProviderSpec, String> {
     if let Some(host) = row.host {
         enforce_https_host(row.base_url, host).expect("builtin provider base URL");
     }
+    let mut spec = base_spec(row);
+    if let Some(patch) = patch {
+        if let Some(endpoint) = &patch.endpoint {
+            patch_endpoint_validator(row)(endpoint)
+                .map_err(|err| format!("invalid endpoint for {}: {err}", row.id))?;
+        }
+        spec.apply_patch(patch);
+    }
     let key = CredentialKey::model(row.id, account);
-    let (endpoint, credentials_usable) = resolve_endpoint(row, store, &key);
-    let bearer = match row.env_var {
-        Some(env_var) if credentials_usable => store
-            .resolve(&key, Some(env_var))
-            .map(|cred| cred.bearer().to_owned()),
-        _ => None,
-    };
-    match row.wire {
-        Wire::Chat => Arc::new(build_chat(row, endpoint, bearer)),
-        Wire::Responses => Arc::new(build_responses(row, endpoint, bearer)),
-    }
+    let credential_validator = row
+        .metadata
+        .endpoint_override
+        .and_then(|over| over.validate)
+        .unwrap_or(patch_endpoint_validator(row));
+    spec.credentials_usable = spec.resolve_endpoint(store, &key, credential_validator);
+    Ok(spec)
 }
 
-fn resolve_endpoint(row: &Row, store: &CredentialStore, key: &CredentialKey) -> (String, bool) {
-    let Some(login_endpoint) = row.metadata.login_endpoint else {
-        return (row.base_url.to_owned(), true);
-    };
-    let stored = store
-        .get(key)
-        .and_then(|cred| cred.endpoint().map(str::to_owned));
-    match stored {
-        Some(raw) => match login_endpoint.validate {
-            Some(validate) => match validate(&raw) {
-                Ok(endpoint) => (endpoint, true),
-                Err(_) => (row.base_url.to_owned(), false),
-            },
-            None => (raw, true),
-        },
-        None => (row.base_url.to_owned(), true),
+pub fn resolve_secret(
+    spec: &ProviderSpec,
+    store: &CredentialStore,
+    account: &str,
+) -> Option<String> {
+    if !spec.credentials_usable {
+        return None;
     }
-}
-
-fn build_chat(row: &Row, endpoint: String, bearer: Option<String>) -> OpenAiCompatProvider {
-    let mut provider =
-        OpenAiCompatProvider::new(ProviderId::from(row.id), endpoint, bearer, row.auth)
-            .with_catalog(row.catalog)
-            .with_context_windows(row.context_windows)
-            .with_images(row.images)
-            .with_stream_options(row.stream_options)
-            .with_reasoning_effort(row.reasoning_effort)
-            .with_extra_headers(row.extra_headers.iter().copied())
-            .with_metadata(row.metadata);
-    if let Some(filter) = row.model_filter {
-        provider = provider.with_model_filter(filter);
-    }
-    if let Some(filter) = row.vision_filter {
-        provider = provider.with_vision_filter(filter);
-    }
-    if let Some(efforts) = row.efforts {
-        provider = provider.with_efforts(efforts);
-    }
-    if let Some(effort_wire) = row.effort_wire {
-        provider = provider.with_effort_wire(effort_wire);
-    }
-    if row.catalog_only {
-        provider = provider
-            .with_validation(ChatValidation::CatalogOnly)
-            .with_discovery(ChatDiscovery::CatalogOnly);
-    }
-    if row.live_model_list {
-        provider = provider.with_model_list_source(ModelListSource::Discover);
-    }
-    provider
+    let key = CredentialKey::model(&spec.id, account);
+    store
+        .resolve(&key, spec.env_key.as_deref())
+        .map(|cred| cred.bearer().to_owned())
 }
 
 pub const CUSTOM_VALIDATION: &str = "custom";
 
-const CUSTOM_METADATA: ProviderMetadata = ProviderMetadata {
+const CUSTOM_ENDPOINT_OVERRIDE: EndpointOverride = EndpointOverride {
     env_var: None,
-    validation: CUSTOM_VALIDATION,
-    endpoint: None,
-    oauth: Some("not supported"),
-    login_endpoint: None,
-    setup: &[],
+    default: None,
+    validate: Some(validate_user_endpoint),
 };
+
+pub fn custom_metadata(oauth: Option<&'static str>) -> ProviderMetadata {
+    ProviderMetadata {
+        env_var: None,
+        validation: CUSTOM_VALIDATION,
+        endpoint: None,
+        oauth,
+        endpoint_override: Some(CUSTOM_ENDPOINT_OVERRIDE),
+        setup: &[],
+    }
+}
 
 pub fn is_custom(provider: &dyn Provider) -> bool {
     provider.metadata().validation == CUSTOM_VALIDATION
@@ -216,58 +259,151 @@ pub fn validate_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn validate_user_endpoint(raw: &str) -> Result<String, String> {
-    let trimmed = raw.trim().trim_end_matches('/');
-    let url = reqwest::Url::parse(trimmed).map_err(|err| err.to_string())?;
-    if url.scheme() != "http" && url.scheme() != "https" {
-        return Err("endpoint must use http or https".to_owned());
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err("endpoint must not include userinfo".to_owned());
-    }
-    if url.host_str().is_none() {
-        return Err("endpoint must include a host".to_owned());
-    }
-    Ok(trimmed.to_owned())
-}
-
-pub fn user(
-    id: &str,
-    endpoint: &str,
+pub fn build_openai_spec(
+    row: Option<&'static Row>,
+    spec: &ProviderSpec,
     store: &CredentialStore,
     account: &str,
-) -> Option<Arc<dyn Provider>> {
-    validate_id(id).ok()?;
-    let endpoint = validate_user_endpoint(endpoint).ok()?;
-    let key = CredentialKey::model(id, account);
-    let bearer = store
-        .resolve(&key, None)
-        .map(|cred| cred.bearer().to_owned());
-    let auth = if bearer.is_some() {
-        AuthMethod::ApiKey
-    } else {
-        AuthMethod::None
+) -> Arc<dyn Provider> {
+    let secret = resolve_secret(spec, store, account);
+    let auth = match row {
+        Some(row) => row.auth,
+        None => {
+            if secret.is_some() {
+                AuthMethod::ApiKey
+            } else {
+                AuthMethod::None
+            }
+        }
     };
-    Some(Arc::new(
-        OpenAiCompatProvider::new(ProviderId::from(id), endpoint, bearer, auth)
-            .with_metadata(CUSTOM_METADATA),
-    ))
+    let headers = spec.resolved_headers();
+    let catalog: Vec<&str> = spec
+        .catalog
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let windows: Vec<(&str, u32)> = spec
+        .context_windows
+        .iter()
+        .map(|(prefix, window)| (prefix.as_str(), *window))
+        .collect();
+    let metadata = match row {
+        Some(row) => row.metadata,
+        None => custom_metadata(Some("not supported")),
+    };
+    match spec.dialect {
+        Dialect::Chat => {
+            let mut provider = OpenAiCompatProvider::new(
+                ProviderId::from(spec.id.as_str()),
+                spec.endpoint.clone(),
+                secret,
+                auth,
+            )
+            .with_catalog(&catalog)
+            .with_context_windows(&windows)
+            .with_extra_headers(headers.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .with_auth_scheme(spec.auth_scheme.clone())
+            .with_query_params(
+                spec.query_params
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str())),
+            )
+            .with_metadata(metadata)
+            .with_connection(spec.connection_info());
+            if let Some(row) = row {
+                provider = provider
+                    .with_images(row.images)
+                    .with_stream_options(row.stream_options)
+                    .with_reasoning_effort(row.reasoning_effort);
+                if let Some(filter) = row.model_filter {
+                    provider = provider.with_model_filter(filter);
+                }
+                if let Some(filter) = row.vision_filter {
+                    provider = provider.with_vision_filter(filter);
+                }
+                if let Some(efforts) = row.efforts {
+                    provider = provider.with_efforts(efforts);
+                }
+                if let Some(effort_wire) = row.effort_wire {
+                    provider = provider.with_effort_wire(effort_wire);
+                }
+                if row.catalog_only {
+                    provider = provider
+                        .with_validation(ChatValidation::CatalogOnly)
+                        .with_discovery(ChatDiscovery::CatalogOnly);
+                }
+                if row.live_model_list {
+                    provider = provider.with_model_list_source(ModelListSource::Discover);
+                }
+            }
+            if let Some(images) = spec.images {
+                provider = provider.with_images(images);
+                if images {
+                    provider = provider.with_vision_filter(always_true);
+                }
+            }
+            if let Some(efforts) = &spec.efforts {
+                provider = provider.with_effort_list(efforts.clone());
+            }
+            if spec.foreign() {
+                provider = provider.with_model_list_source(ModelListSource::Discover);
+            }
+            Arc::new(provider)
+        }
+        Dialect::Responses => {
+            let mut provider = ResponsesProvider::new(
+                ProviderId::from(spec.id.as_str()),
+                spec.endpoint.clone(),
+                secret,
+                auth,
+            )
+            .with_catalog(&catalog)
+            .with_context_windows(&windows)
+            .with_extra_headers(headers.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .with_auth_scheme(spec.auth_scheme.clone())
+            .with_query_params(
+                spec.query_params
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str())),
+            )
+            .with_metadata(metadata)
+            .with_connection(spec.connection_info());
+            if let Some(row) = row {
+                if let Some(filter) = row.model_filter {
+                    provider = provider.with_model_filter(filter);
+                }
+                if let Some(filter) = row.vision_filter {
+                    provider = provider.with_vision_filter(filter);
+                }
+            }
+            if let Some(search_model) = spec.search_model.as_deref() {
+                provider = provider.with_search_model(search_model);
+            }
+            provider = provider.with_web_search_allowed(spec.web_search_allowed());
+            if let Some(images) = spec.images {
+                provider =
+                    provider.with_vision_filter(if images { always_true } else { always_false });
+            }
+            if let Some(efforts) = &spec.efforts {
+                provider = provider.with_effort_list(efforts.clone());
+            }
+            if spec.foreign() {
+                provider = provider.with_model_list_source(ModelListSource::Discover);
+            }
+            Arc::new(provider)
+        }
+        Dialect::Anthropic | Dialect::Gemini => {
+            unreachable!("openai-compat build called for non-openai dialect")
+        }
+    }
 }
 
-fn build_responses(row: &Row, endpoint: String, bearer: Option<String>) -> ResponsesProvider {
-    let mut provider = ResponsesProvider::new(ProviderId::from(row.id), endpoint, bearer, row.auth)
-        .with_catalog(row.catalog)
-        .with_context_windows(row.context_windows)
-        .with_extra_headers(row.extra_headers.iter().copied())
-        .with_metadata(row.metadata);
-    if let Some(filter) = row.model_filter {
-        provider = provider.with_model_filter(filter);
-    }
-    if let Some(filter) = row.vision_filter {
-        provider = provider.with_vision_filter(filter);
-    }
-    if let Some(search_model) = row.search_model {
-        provider = provider.with_search_model(search_model);
-    }
-    provider
+fn always_true(_model: &str) -> bool {
+    true
+}
+
+fn always_false(_model: &str) -> bool {
+    false
 }

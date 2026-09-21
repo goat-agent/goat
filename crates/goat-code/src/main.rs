@@ -432,14 +432,14 @@ async fn run_unified_daemon(
     let db_path = paths.state_db.clone();
     let manager = goat_daemon::CodeSessionHub::new(
         paths.credentials_json.clone(),
-        goat_config::UserProviders::at(paths.config_json.clone()),
+        goat_config::ProviderSpecs::at(paths.config_toml.clone()),
         db_path.clone(),
     );
     let config = goat_daemon::DaemonConfig {
         socket_path,
         lock_path: paths.daemon_lock.clone(),
         auth_path: paths.credentials_json.clone(),
-        config_json: paths.config_json.clone(),
+        config_toml: paths.config_toml.clone(),
         db_path: db_path.clone(),
         remote: remote_settings()?,
     };
@@ -475,7 +475,7 @@ async fn run_unified_daemon(
                 let creds = goat_auth::CredentialStore::new(paths.credentials_json.clone());
                 let ops = proxy_ops::RegistryAccountOps::new(
                     creds.clone(),
-                    goat_config::UserProviders::at(paths.config_json.clone()),
+                    goat_config::ProviderSpecs::at(paths.config_toml.clone()),
                 );
                 proxy_http = Some((proxy_store, proxy_config.bind, creds, ops));
             }

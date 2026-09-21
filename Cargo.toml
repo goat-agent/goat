@@ -106,6 +106,8 @@ dialoguer = "0.12"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.9"
+toml_edit = "0.23"
 serde_yaml = "0.9"
 schemars = "1"
 ignore = "0.4"

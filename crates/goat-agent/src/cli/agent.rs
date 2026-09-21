@@ -74,22 +74,22 @@ fn write_agent(paths: &GoatPaths, slug: &str) -> Result<String> {
     std::fs::create_dir_all(&dir)?;
     let agent_md = dir.join("agent.md");
     std::fs::write(&agent_md, format!("You are {slug}.\n"))?;
-    let config_json = dir.join("config.json");
+    let config_toml = dir.join("config.toml");
     let body = serde_json::to_string_pretty(&json!({
         "display": slug,
         "model": model.to_string(),
         "tools": ["*"],
         "channels": {}
     }))?;
-    write_atomic(&config_json, format!("{body}\n").as_bytes())?;
+    write_atomic(&config_toml, format!("{body}\n").as_bytes())?;
     ui::pair("file", &agent_md.display().to_string());
-    ui::pair("config", &config_json.display().to_string());
+    ui::pair("config", &config_toml.display().to_string());
     Ok(slug)
 }
 
 fn pick_model(paths: &GoatPaths) -> Result<Model> {
     let store = CredentialStore::new(paths.credentials_json.clone());
-    let user = goat_config::UserProviders::at(paths.config_json.clone());
+    let user = goat_config::ProviderSpecs::at(paths.config_toml.clone());
     let registry = Registry::new(&store, &user);
     let mut entries: Vec<(Option<(String, String)>, String)> = registry
         .all()
@@ -168,7 +168,7 @@ fn list(paths: &GoatPaths) -> Result<()> {
                 .ok_or_else(|| {
                     anyhow!(
                         "missing or invalid model in {}",
-                        dir.join("config.json").display()
+                        dir.join("config.toml").display()
                     )
                 })?;
             let bindings = bindings_for(&dir)?;
@@ -225,14 +225,14 @@ fn show(paths: &GoatPaths, slug: &str) -> Result<()> {
         for raw_line in std::fs::read_to_string(&agent_md)?.lines() {
             ui::line(raw_line);
         }
-        let config_json = dir.join("config.json");
-        if !config_json.exists() {
-            return Err(anyhow!("missing {}", config_json.display()));
+        let config_toml = dir.join("config.toml");
+        if !config_toml.exists() {
+            return Err(anyhow!("missing {}", config_toml.display()));
         }
         ui::blank();
-        ui::line(&ui::dim(&config_json.display().to_string()));
+        ui::line(&ui::dim(&config_toml.display().to_string()));
         ui::blank();
-        for raw_line in std::fs::read_to_string(&config_json)?.lines() {
+        for raw_line in std::fs::read_to_string(&config_toml)?.lines() {
             ui::line(raw_line);
         }
         Ok(Footer::None)
@@ -330,7 +330,7 @@ pub(crate) fn resolve_agent(paths: &GoatPaths, explicit: Option<&str>) -> Result
 }
 
 pub(crate) fn read_agent_config(dir: &std::path::Path) -> Result<Value> {
-    let path = dir.join("config.json");
+    let path = dir.join("config.toml");
     if !path.exists() {
         return Err(anyhow!("missing {}", path.display()));
     }
@@ -343,7 +343,7 @@ pub(crate) fn read_agent_config(dir: &std::path::Path) -> Result<Value> {
 
 fn write_agent_config(dir: &std::path::Path, value: &Value) -> Result<()> {
     let body = serde_json::to_string_pretty(value)?;
-    write_atomic(&dir.join("config.json"), format!("{body}\n").as_bytes())?;
+    write_atomic(&dir.join("config.toml"), format!("{body}\n").as_bytes())?;
     Ok(())
 }
 
@@ -458,7 +458,7 @@ mod tests {
     fn channel_upsert_preserves_existing_channel_fields() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
-            dir.path().join("config.json"),
+            dir.path().join("config.toml"),
             r#"{
               "channels": {
                 "discord": {
@@ -482,7 +482,7 @@ mod tests {
     fn channel_remove_deletes_only_config_channel() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
-            dir.path().join("config.json"),
+            dir.path().join("config.toml"),
             r#"{
               "channels": {
                 "discord": {
@@ -511,7 +511,7 @@ mod tests {
     fn channel_helpers_error_when_channels_is_not_object() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
-            dir.path().join("config.json"),
+            dir.path().join("config.toml"),
             r#"{
               "model": "openai/gpt-4o-mini",
               "channels": []
@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn agent_config_root_must_be_object() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.json"), "[]").unwrap();
+        std::fs::write(dir.path().join("config.toml"), "[]").unwrap();
 
         assert!(read_agent_config(dir.path()).is_err());
     }

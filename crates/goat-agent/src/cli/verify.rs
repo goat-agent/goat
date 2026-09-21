@@ -19,7 +19,7 @@ pub enum VerifyOutcome {
 
 pub async fn verify_credential(
     store: &CredentialStore,
-    user: &goat_config::UserProviders,
+    user: &goat_config::ProviderSpecs,
     provider: &str,
     account: &str,
 ) -> VerifyOutcome {
@@ -90,7 +90,7 @@ pub fn report_outcome(outcome: &VerifyOutcome) {
     }
 }
 
-pub async fn render_all(store: &CredentialStore, user: &goat_config::UserProviders) {
+pub async fn render_all(store: &CredentialStore, user: &goat_config::ProviderSpecs) {
     let registry = Registry::new(store, user);
     let mut pairs = Vec::new();
     for provider in registry.all() {
@@ -104,7 +104,7 @@ pub async fn render_all(store: &CredentialStore, user: &goat_config::UserProvide
 
 pub async fn render_accounts(
     store: &CredentialStore,
-    user: &goat_config::UserProviders,
+    user: &goat_config::ProviderSpecs,
     provider: &str,
     accounts: &[String],
 ) {
@@ -117,7 +117,7 @@ pub async fn render_accounts(
 
 async fn render_table(
     store: &CredentialStore,
-    user: &goat_config::UserProviders,
+    user: &goat_config::ProviderSpecs,
     pairs: &[(String, String)],
     empty: &str,
 ) {
@@ -163,8 +163,8 @@ mod tests {
         CredentialStore::new(std::env::temp_dir().join(name))
     }
 
-    fn no_user() -> goat_config::UserProviders {
-        goat_config::UserProviders::at(std::env::temp_dir().join("goat-agent-verify-no-user.json"))
+    fn no_user() -> goat_config::ProviderSpecs {
+        goat_config::ProviderSpecs::at(std::env::temp_dir().join("goat-agent-verify-no-user.json"))
     }
 
     #[test]

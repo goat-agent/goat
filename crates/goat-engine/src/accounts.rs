@@ -6,7 +6,7 @@ use std::{
 
 use goat_auth::{CredentialKind, CredentialService, CredentialStore};
 use goat_code_store::{CodeStore as Store, Conversation};
-use goat_config::UserProviders;
+use goat_config::ProviderSpecs;
 use goat_protocol::{
     AccountChoice, AccountEntry, AccountInfo, AuthMethod, Effort, Event, LoginProvider, ModelEntry,
     ModelTarget,
@@ -22,7 +22,7 @@ const DISCOVER_TIMEOUT_SECS: u64 = 15;
 pub(crate) async fn restore_target(
     store: &Store,
     credentials: &CredentialStore,
-    user: &UserProviders,
+    user: &ProviderSpecs,
     cwd: &std::path::Path,
 ) -> Option<ModelTarget> {
     let conversation = latest_conversation_or_seed(store, cwd).await?;
@@ -113,6 +113,7 @@ pub(crate) fn build_account_entries(
                 accounts,
                 local: is_local,
                 login: auth_method,
+                custom: goat_providers::builtin::is_custom(p.as_ref()),
             }
         })
         .collect()
@@ -122,7 +123,7 @@ pub(crate) async fn announce_startup(
     events: &mpsc::Sender<Event>,
     registry: &Registry,
     credentials: &CredentialStore,
-    user: &UserProviders,
+    user: &ProviderSpecs,
     target: Option<&ModelTarget>,
 ) {
     let _ = events
@@ -232,7 +233,7 @@ fn model_entry(
 fn catalog_only(
     registry: &Registry,
     credentials: &CredentialStore,
-    user: &UserProviders,
+    user: &ProviderSpecs,
 ) -> Vec<ModelEntry> {
     let mut entries = Vec::new();
     for provider in registry.all() {
@@ -254,7 +255,7 @@ fn catalog_only(
 
 fn models_for_provider(
     credentials: &CredentialStore,
-    user: &UserProviders,
+    user: &ProviderSpecs,
     provider_id: &goat_provider::ProviderId,
     accounts: &[String],
 ) -> Vec<String> {
@@ -276,7 +277,7 @@ fn models_for_provider(
 
 fn catalog_entries(
     credentials: &CredentialStore,
-    user: &UserProviders,
+    user: &ProviderSpecs,
     provider_id: &goat_provider::ProviderId,
     accounts: &[String],
 ) -> Vec<ModelEntry> {
@@ -356,7 +357,7 @@ async fn model_list_for_provider(
     provider: Arc<dyn Provider>,
     accounts: Vec<String>,
     credentials: &CredentialStore,
-    user: &UserProviders,
+    user: &ProviderSpecs,
 ) -> Vec<ModelEntry> {
     match provider.model_list_source() {
         ModelListSource::Catalog => catalog_entries(credentials, user, &provider.id(), &accounts),
@@ -367,7 +368,7 @@ async fn model_list_for_provider(
 async fn model_list_entries(
     providers: &[(Arc<dyn Provider>, Vec<String>)],
     credentials: &CredentialStore,
-    user: &UserProviders,
+    user: &ProviderSpecs,
 ) -> Vec<ModelEntry> {
     futures::future::join_all(providers.iter().map(|(provider, accounts)| {
         model_list_for_provider(Arc::clone(provider), accounts.clone(), credentials, user)
@@ -381,7 +382,7 @@ async fn model_list_entries(
 pub(crate) async fn discover_ready(
     registry: &Registry,
     credentials: &CredentialStore,
-    user: &UserProviders,
+    user: &ProviderSpecs,
 ) -> Vec<ModelEntry> {
     let providers = provider_accounts(registry, credentials);
     model_list_entries(&providers, credentials, user).await
@@ -431,7 +432,7 @@ mod tests {
 
     use super::{catalog_only, latest_conversation_or_seed, models_for_provider};
     use goat_code_store::{CodeStore as Store, NewConversation};
-    use goat_config::UserProviders;
+    use goat_config::ProviderSpecs;
     use goat_providers::Registry;
 
     fn store(name: &str) -> CredentialStore {
@@ -440,8 +441,8 @@ mod tests {
         CredentialStore::new(path)
     }
 
-    fn no_user() -> UserProviders {
-        UserProviders::at(std::env::temp_dir().join("goat-agent-accounts-no-user.json"))
+    fn no_user() -> ProviderSpecs {
+        ProviderSpecs::at(std::env::temp_dir().join("goat-agent-accounts-no-user.json"))
     }
 
     fn model_list_source_check(provider: &dyn Provider) -> ModelListSource {

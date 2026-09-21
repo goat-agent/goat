@@ -19,7 +19,7 @@ pub async fn run(args: Args) -> Result<()> {
     let paths = GoatPaths::default_layout()?;
     let cfg = goat_config::load_from(paths.clone()).context("loading config")?;
     let store = CredentialStore::new(paths.credentials_json.clone());
-    let user = goat_config::UserProviders::at(paths.config_json.clone());
+    let user = goat_config::ProviderSpecs::at(paths.config_toml.clone());
 
     let probes = if args.check {
         Some(probe_all(&store, &user).await)
@@ -128,7 +128,7 @@ fn credential_kind_label(kind: CredentialKind) -> &'static str {
 
 fn render_providers(
     store: &CredentialStore,
-    user: &goat_config::UserProviders,
+    user: &goat_config::ProviderSpecs,
     warnings: &mut usize,
     hint: &mut Option<(&'static str, String)>,
 ) {
@@ -168,7 +168,7 @@ fn render_providers(
 
 fn known_models(
     store: &CredentialStore,
-    user: &goat_config::UserProviders,
+    user: &goat_config::ProviderSpecs,
 ) -> HashSet<(String, String)> {
     Registry::new(store, user)
         .all()
@@ -187,7 +187,7 @@ fn render_agents(
     paths: &GoatPaths,
     cfg: &LoadedConfig,
     store: &CredentialStore,
-    user: &goat_config::UserProviders,
+    user: &goat_config::ProviderSpecs,
     warnings: &mut usize,
     hint: &mut Option<(&'static str, String)>,
 ) -> Result<()> {
@@ -330,7 +330,7 @@ struct ProbeRow {
     outcome: VerifyOutcome,
 }
 
-async fn probe_all(store: &CredentialStore, user: &goat_config::UserProviders) -> Vec<ProbeRow> {
+async fn probe_all(store: &CredentialStore, user: &goat_config::ProviderSpecs) -> Vec<ProbeRow> {
     let registry = Registry::new(store, user);
     let mut out = Vec::new();
     for provider in registry.all() {

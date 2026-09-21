@@ -11,6 +11,7 @@ mod settings;
 pub use atomic::write_atomic;
 
 pub use agent::AGENT_DEFINITION_FILE;
+pub use goat_provider::ProviderSpecConfig;
 pub use paths::{
     GoatPaths, HOME_NOT_FOUND, INSTRUCTIONS_MAX_BYTES, PROJECT_INSTRUCTIONS_FILE,
     PROJECT_INSTRUCTIONS_OVERRIDE_FILE, PROJECT_SUBAGENTS_SUBDIR, agents_dir, auth_path, bin_dir,
@@ -18,8 +19,8 @@ pub use paths::{
     rate_limits_path, remote_dir, root, socket_path, subagents_dir, update_dir,
 };
 pub use settings::{
-    ClientConfig, Config, DeviceConfig, LOCAL_REMOTE, RemoteEntry, SearchAccountConfig,
-    SearchConfig, SettingsError, ThemeChoice, UserProviderConfig, UserProviders, WebFetchConfig,
+    ClientConfig, Config, ConfigDocument, DeviceConfig, LOCAL_REMOTE, ProviderSpecs, RemoteEntry,
+    SearchAccountConfig, SearchConfig, SettingsError, ThemeChoice, WebFetchConfig,
 };
 
 use goat_agent_config::AgentConfig;

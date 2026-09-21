@@ -15,7 +15,7 @@ fn config(dir: &Path) -> goat_daemon::DaemonConfig {
         socket_path: dir.join("d.sock"),
         lock_path: dir.join("daemon.lock"),
         auth_path: dir.join("auth.json"),
-        config_json: dir.join("config.json"),
+        config_toml: dir.join("config.toml"),
         db_path: dir.join("store.sqlite"),
         remote: None,
     }

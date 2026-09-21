@@ -3,6 +3,29 @@
 The `Provider` trait and the vocabulary every provider crate speaks. `goat-providers` assembles them;
 read that crate's `AGENTS.md` first, since most providers need no crate at all.
 
+## The spec vocabulary (`spec.rs`)
+
+A provider is **dialect + spec + connection**:
+
+- `Dialect` (`chat`, `responses`, `anthropic`, `gemini`) — the wire protocol. Specials
+  (codex/kimi-code/xai/devin) are private dialects, not selectable here.
+- `ProviderSpecConfig` — the `[providers.<id>]` file shape in `config.toml`; every field optional.
+- `ProviderSpec` — the resolved runtime spec a dialect constructor consumes: effective endpoint,
+  `auth_scheme`, headers/`env_headers`, `query_params`, catalog, `context_windows`, `images`,
+  `efforts`, `features`, `endpoint_source`, `credentials_usable`.
+- `AuthScheme` — how a secret is sent: `bearer` (openai default), `x-api-key` (anthropic default),
+  `header:<name>` (gemini's `x-goog-api-key` is one), `query:<name>`, `none`.
+- `EndpointOverride` on `ProviderMetadata` — whether `login --endpoint` may store an
+  `ApiKeyWithEndpoint`, plus its validator (`validate_override_endpoint` = https-or-loopback for
+  credential-bearing providers, `validate_user_endpoint` = http-tolerant for auth-less/customs).
+- `Provider::connection()` — the effective `ConnectionInfo` for `provider info`; `None` on
+  non-spec-built providers.
+
+`ProviderSpec::apply_patch` is the one merge implementation: scalars replace, map fields merge
+per-key, `catalog` replaces. `resolve_endpoint` applies a stored credential endpoint and returns
+`credentials_usable = false` when it fails validation, so a bad stored endpoint detaches the
+credential rather than sending it somewhere wrong.
+
 ## The trait
 
 Required: `id`, `capabilities`, `stream(Request) -> ChunkStream`, `discover(mpsc::Sender<Model>)`.

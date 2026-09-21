@@ -553,6 +553,12 @@ impl ConfigScreen {
                             theme.muted(),
                         ));
                     }
+                    if entry.custom {
+                        spans.push(Span::styled(
+                            format!("{}custom", symbols::ui::SEPARATOR),
+                            theme.muted(),
+                        ));
+                    }
                     if entry.local {
                         spans.push(Span::styled(
                             format!("{}local", symbols::ui::SEPARATOR),
@@ -813,6 +819,7 @@ mod tests {
                 }],
                 local: false,
                 login: AuthMethod::ApiKey,
+                custom: false,
             },
             AccountEntry {
                 provider: "ollama".to_owned(),
@@ -820,6 +827,7 @@ mod tests {
                 accounts: Vec::new(),
                 local: true,
                 login: AuthMethod::None,
+                custom: false,
             },
         ]
     }
@@ -831,6 +839,7 @@ mod tests {
             accounts: Vec::new(),
             local: false,
             login: AuthMethod::ApiKeyOrOAuth,
+            custom: false,
         }]
     }
 
