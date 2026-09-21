@@ -1,60 +1,216 @@
 use std::sync::Arc;
 
-use goat_auth::{CredentialStore, TokenSet};
-use goat_config::UserProviders;
-use goat_provider::{Provider, ProviderId};
+use goat_auth::{CredentialKey, CredentialStore, TokenSet};
+use goat_config::ProviderSpecs;
+use goat_provider::{
+    AuthMethod, Dialect, EndpointValidator, Provider, ProviderId, ProviderSpec, ProviderSpecConfig,
+    validate_override_endpoint, validate_user_endpoint,
+};
 pub use goat_provider_builtin as builtin;
 use goat_provider_builtin::rows;
 
 pub const DEFAULT_ACCOUNT: &str = "default";
 
+#[derive(Clone, Copy)]
+enum Special {
+    Codex,
+    KimiCode,
+    Xai,
+    Devin,
+}
+
+impl Special {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Codex => "openai-codex",
+            Self::KimiCode => "kimi-code",
+            Self::Xai => "xai",
+            Self::Devin => "devin",
+        }
+    }
+
+    fn build(self, store: &CredentialStore, account: &str) -> Arc<dyn Provider> {
+        match self {
+            Self::Codex => Arc::new(goat_provider_openai_codex::build(store, account)),
+            Self::KimiCode => Arc::new(goat_provider_kimi_code::build(store, account)),
+            Self::Xai => Arc::new(goat_provider_xai::build(store, account)),
+            Self::Devin => Arc::new(goat_provider_devin::build(store, account)),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Builtin {
+    Row(&'static builtin::Row),
+    Anthropic,
+    Gemini,
+    Special(Special),
+}
+
+impl Builtin {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Row(row) => row.id,
+            Self::Anthropic => goat_provider_anthropic::PROVIDER_ID,
+            Self::Gemini => goat_provider_gemini::PROVIDER_ID,
+            Self::Special(special) => special.id(),
+        }
+    }
+}
+
+const BUILTINS: &[Builtin] = &[
+    Builtin::Row(&rows::OPENAI),
+    Builtin::Special(Special::Codex),
+    Builtin::Anthropic,
+    Builtin::Gemini,
+    Builtin::Row(&rows::OPENROUTER),
+    Builtin::Row(&rows::GROQ),
+    Builtin::Row(&rows::DEEPSEEK),
+    Builtin::Special(Special::Xai),
+    Builtin::Row(&rows::MISTRAL),
+    Builtin::Row(&rows::ZAI),
+    Builtin::Row(&rows::ZAI_CODING),
+    Builtin::Row(&rows::KIMI),
+    Builtin::Special(Special::KimiCode),
+    Builtin::Row(&rows::QWEN),
+    Builtin::Row(&rows::MINIMAX),
+    Builtin::Row(&rows::VERCEL),
+    Builtin::Row(&rows::OLLAMA),
+    Builtin::Row(&rows::LMSTUDIO),
+    Builtin::Row(&rows::LLAMA_CPP),
+    Builtin::Special(Special::Devin),
+];
+
+pub struct InvalidSpec {
+    pub id: String,
+    pub reason: String,
+}
+
 pub struct Registry {
     providers: Vec<Arc<dyn Provider>>,
+    invalid: Vec<InvalidSpec>,
 }
 
 impl Registry {
-    pub fn new(store: &CredentialStore, user: &UserProviders) -> Self {
-        Self::load(store, user, DEFAULT_ACCOUNT)
+    pub fn new(store: &CredentialStore, specs: &ProviderSpecs) -> Self {
+        Self::load(store, specs, DEFAULT_ACCOUNT)
     }
 
-    pub fn load(store: &CredentialStore, user: &UserProviders, account: &str) -> Self {
-        Self::load_metered(store, user, account, None)
+    pub fn load(store: &CredentialStore, specs: &ProviderSpecs, account: &str) -> Self {
+        Self::load_metered(store, specs, account, None)
     }
 
     pub fn load_metered(
         store: &CredentialStore,
-        user: &UserProviders,
+        specs: &ProviderSpecs,
         account: &str,
         meter: Option<goat_proxy::Meter>,
     ) -> Self {
-        let mut providers: Vec<Arc<dyn Provider>> = vec![
-            builtin::build(&rows::OPENAI, store, account),
-            Arc::new(goat_provider_openai_codex::build(store, account)),
-            Arc::new(goat_provider_anthropic::build(store, account)),
-            Arc::new(goat_provider_gemini::build(store, account)),
-            builtin::build(&rows::OPENROUTER, store, account),
-            builtin::build(&rows::GROQ, store, account),
-            builtin::build(&rows::DEEPSEEK, store, account),
-            Arc::new(goat_provider_xai::build(store, account)),
-            builtin::build(&rows::MISTRAL, store, account),
-            builtin::build(&rows::ZAI, store, account),
-            builtin::build(&rows::ZAI_CODING, store, account),
-            builtin::build(&rows::KIMI, store, account),
-            Arc::new(goat_provider_kimi_code::build(store, account)),
-            builtin::build(&rows::QWEN, store, account),
-            builtin::build(&rows::MINIMAX, store, account),
-            builtin::build(&rows::VERCEL, store, account),
-            builtin::build(&rows::OLLAMA, store, account),
-            builtin::build(&rows::LMSTUDIO, store, account),
-            builtin::build(&rows::LLAMA_CPP, store, account),
-            Arc::new(goat_provider_devin::build(store, account)),
-        ];
-        for (id, config) in user.load() {
-            if providers.iter().any(|provider| provider.id().0 == id) {
+        let entries = specs.load();
+        let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
+        let mut invalid = Vec::new();
+        for entry in BUILTINS {
+            let id = entry.id();
+            let patch = entries
+                .iter()
+                .find(|(key, _)| goat_model::canonicalize_provider_id(key) == id)
+                .map(|(_, config)| config);
+            if patch.is_some_and(|patch| patch.disabled) {
                 continue;
             }
-            if let Some(provider) = builtin::user(&id, &config.endpoint, store, account) {
-                providers.push(provider);
+            match entry {
+                Builtin::Special(special) => {
+                    if patch.is_some_and(ProviderSpecConfig::has_connection_fields) {
+                        invalid.push(InvalidSpec {
+                            id: id.to_owned(),
+                            reason: "only `disabled` and `name` overrides are supported for this provider".to_owned(),
+                        });
+                    }
+                    providers.push(special.build(store, account));
+                }
+                Builtin::Row(row) => match builtin::spec_for(row, patch, store, account) {
+                    Ok(spec) => providers.push(build_spec(&spec, Some(row), store, account)),
+                    Err(reason) => {
+                        invalid.push(InvalidSpec {
+                            id: id.to_owned(),
+                            reason,
+                        });
+                        providers.push(build_spec(
+                            &builtin::base_spec(row),
+                            Some(row),
+                            store,
+                            account,
+                        ));
+                    }
+                },
+                Builtin::Anthropic => {
+                    let mut spec = goat_provider_anthropic::default_spec();
+                    match patch_builtin(&mut spec, patch, validate_override_endpoint) {
+                        Ok(()) => {
+                            spec.credentials_usable = spec.resolve_endpoint(
+                                store,
+                                &CredentialKey::model(id, account),
+                                validate_override_endpoint,
+                            );
+                            providers.push(build_spec(&spec, None, store, account));
+                        }
+                        Err(reason) => {
+                            invalid.push(InvalidSpec {
+                                id: id.to_owned(),
+                                reason,
+                            });
+                            providers.push(build_spec(
+                                &goat_provider_anthropic::default_spec(),
+                                None,
+                                store,
+                                account,
+                            ));
+                        }
+                    }
+                }
+                Builtin::Gemini => {
+                    let mut spec = goat_provider_gemini::default_spec();
+                    match patch_builtin(&mut spec, patch, validate_override_endpoint) {
+                        Ok(()) => {
+                            spec.credentials_usable = spec.resolve_endpoint(
+                                store,
+                                &CredentialKey::model(id, account),
+                                validate_override_endpoint,
+                            );
+                            providers.push(build_spec(&spec, None, store, account));
+                        }
+                        Err(reason) => {
+                            invalid.push(InvalidSpec {
+                                id: id.to_owned(),
+                                reason,
+                            });
+                            providers.push(build_spec(
+                                &goat_provider_gemini::default_spec(),
+                                None,
+                                store,
+                                account,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        for (id, config) in &entries {
+            if BUILTINS
+                .iter()
+                .any(|entry| entry.id() == goat_model::canonicalize_provider_id(id))
+            {
+                continue;
+            }
+            if config.disabled {
+                continue;
+            }
+            match build_custom(id, config, store, account) {
+                Ok(provider) => providers.push(provider),
+                Err(reason) => invalid.push(InvalidSpec {
+                    id: id.clone(),
+                    reason,
+                }),
             }
         }
         let providers = match meter {
@@ -64,11 +220,14 @@ impl Registry {
                 .collect(),
             None => providers,
         };
-        Self { providers }
+        Self { providers, invalid }
     }
 
     pub fn from_providers(providers: Vec<Arc<dyn Provider>>) -> Self {
-        Self { providers }
+        Self {
+            providers,
+            invalid: Vec::new(),
+        }
     }
 
     pub fn get(&self, id: &ProviderId) -> Option<Arc<dyn Provider>> {
@@ -77,6 +236,10 @@ impl Registry {
 
     pub fn all(&self) -> &[Arc<dyn Provider>] {
         &self.providers
+    }
+
+    pub fn invalid(&self) -> &[InvalidSpec] {
+        &self.invalid
     }
 
     pub async fn login(
@@ -90,6 +253,99 @@ impl Registry {
         p.login(status)
             .await
             .unwrap_or_else(|err| Err(err.to_string()))
+    }
+}
+
+fn patch_builtin(
+    spec: &mut ProviderSpec,
+    patch: Option<&ProviderSpecConfig>,
+    validate: EndpointValidator,
+) -> Result<(), String> {
+    let Some(patch) = patch else {
+        return Ok(());
+    };
+    if let Some(endpoint) = &patch.endpoint {
+        validate(endpoint).map_err(|err| format!("invalid endpoint: {err}"))?;
+    }
+    spec.apply_patch(patch);
+    Ok(())
+}
+
+fn build_spec(
+    spec: &ProviderSpec,
+    row: Option<&'static builtin::Row>,
+    store: &CredentialStore,
+    account: &str,
+) -> Arc<dyn Provider> {
+    match spec.dialect {
+        Dialect::Chat | Dialect::Responses => builtin::build_openai_spec(row, spec, store, account),
+        Dialect::Anthropic => Arc::new(goat_provider_anthropic::build_connected(
+            spec, store, account, true,
+        )),
+        Dialect::Gemini => Arc::new(goat_provider_gemini::build_connected(spec, store, account)),
+    }
+}
+
+fn build_custom(
+    id: &str,
+    config: &ProviderSpecConfig,
+    store: &CredentialStore,
+    account: &str,
+) -> Result<Arc<dyn Provider>, String> {
+    builtin::validate_id(id)?;
+    let mut spec = ProviderSpec::custom(id, config)?;
+    spec.credentials_usable = spec.resolve_endpoint(
+        store,
+        &CredentialKey::model(id, account),
+        validate_user_endpoint,
+    );
+    Ok(build_spec(&spec, None, store, account))
+}
+
+pub fn is_builtin_id(id: &str) -> bool {
+    BUILTINS
+        .iter()
+        .any(|entry| entry.id() == goat_model::canonicalize_provider_id(id))
+}
+
+pub fn validate_spec_entry(id: &str, config: &ProviderSpecConfig) -> Result<(), String> {
+    let canonical = goat_model::canonicalize_provider_id(id);
+    match BUILTINS.iter().find(|entry| entry.id() == canonical) {
+        Some(Builtin::Special(_)) => {
+            if config.has_connection_fields() {
+                Err(format!("{id} only accepts `disabled` and `name` overrides"))
+            } else {
+                Ok(())
+            }
+        }
+        Some(Builtin::Row(row)) => {
+            if let Some(endpoint) = &config.endpoint {
+                let validate = if matches!(row.auth, AuthMethod::None) {
+                    validate_user_endpoint
+                } else {
+                    validate_override_endpoint
+                };
+                validate(endpoint).map_err(|err| format!("invalid endpoint: {err}"))?;
+            }
+            Ok(())
+        }
+        Some(_) => {
+            if let Some(endpoint) = &config.endpoint {
+                validate_override_endpoint(endpoint)
+                    .map_err(|err| format!("invalid endpoint: {err}"))?;
+            }
+            Ok(())
+        }
+        None => {
+            builtin::validate_id(id)?;
+            match &config.endpoint {
+                Some(endpoint) => {
+                    validate_user_endpoint(endpoint)?;
+                    Ok(())
+                }
+                None => Err("custom providers need an endpoint".to_owned()),
+            }
+        }
     }
 }
 
@@ -142,16 +398,29 @@ mod fingerprint {
                 metadata.env_var, metadata.validation, metadata.endpoint, metadata.oauth
             )
             .unwrap();
-            match metadata.login_endpoint {
-                Some(login) => writeln!(
+            match metadata.endpoint_override {
+                Some(over) => writeln!(
                     out,
-                    "  login_endpoint env {:?} default {:?} validate {}",
-                    login.env_var,
-                    login.default,
-                    login.validate.is_some()
+                    "  endpoint_override env {:?} default {:?} validate {}",
+                    over.env_var,
+                    over.default,
+                    over.validate.is_some()
                 )
                 .unwrap(),
-                None => writeln!(out, "  login_endpoint none").unwrap(),
+                None => writeln!(out, "  endpoint_override none").unwrap(),
+            }
+            if let Some(connection) = provider.connection() {
+                writeln!(
+                    out,
+                    "  connection {} {} {} {:?} {:?} {:?}",
+                    connection.dialect,
+                    connection.endpoint,
+                    connection.source.as_str(),
+                    connection.auth_scheme.map(|s| s.as_str()),
+                    connection.env_key,
+                    connection.name,
+                )
+                .unwrap();
             }
             for line in metadata.setup {
                 writeln!(out, "  setup {line}").unwrap();
@@ -183,8 +452,8 @@ mod fingerprint {
     fn registry(name: &str) -> Registry {
         let path = std::env::temp_dir().join(name);
         let _ = std::fs::remove_file(&path);
-        let user = goat_config::UserProviders::at(path.with_extension("config.json"));
-        Registry::new(&goat_auth::CredentialStore::new(path), &user)
+        let specs = goat_config::ProviderSpecs::at(path.with_extension("toml"));
+        Registry::new(&goat_auth::CredentialStore::new(path), &specs)
     }
 
     #[test]
@@ -210,29 +479,27 @@ mod tests {
 
     use super::Registry;
 
-    fn no_user(name: &str) -> goat_config::UserProviders {
+    fn no_specs(name: &str) -> goat_config::ProviderSpecs {
         let path = std::env::temp_dir().join(name);
         let _ = std::fs::remove_file(&path);
-        goat_config::UserProviders::at(path)
+        goat_config::ProviderSpecs::at(path)
     }
 
     #[test]
     fn user_providers_join_the_registry() {
         let store_path = std::env::temp_dir().join("goat-providers-user-store.json");
-        let config_path = std::env::temp_dir().join("goat-providers-user-config.json");
+        let config_path = std::env::temp_dir().join("goat-providers-user-config.toml");
         let _ = std::fs::remove_file(&store_path);
         std::fs::write(
             &config_path,
-            r#"{ "providers": {
-                "my-proxy": { "endpoint": "http://localhost:9/v1" },
-                "openai": { "endpoint": "http://localhost:9/v1" },
-                "Bad Name": { "endpoint": "http://localhost:9/v1" }
-            } }"#,
+            "[providers.my-proxy]\nendpoint = \"http://localhost:9/v1\"\n\n\
+             [providers.openai]\nendpoint = \"https://localhost:9/v1\"\n\n\
+             [providers.\"Bad Name\"]\nendpoint = \"http://localhost:9/v1\"\n",
         )
         .unwrap();
         let store = goat_auth::CredentialStore::new(store_path);
-        let user = goat_config::UserProviders::at(config_path);
-        let registry = Registry::new(&store, &user);
+        let specs = goat_config::ProviderSpecs::at(config_path);
+        let registry = Registry::new(&store, &specs);
         assert_eq!(registry.all().len(), 21);
         let custom = registry
             .get(&ProviderId::from("my-proxy"))
@@ -240,14 +507,17 @@ mod tests {
         assert_eq!(custom.capabilities().auth, AuthMethod::None);
         assert!(custom.authenticated());
         assert_eq!(custom.metadata().validation, "custom");
+        let openai = registry
+            .get(&ProviderId::from("openai"))
+            .expect("openai stays builtin");
+        assert_eq!(openai.metadata().validation, "network");
         assert_eq!(
-            registry
-                .get(&ProviderId::from("openai"))
-                .expect("openai stays builtin")
-                .metadata()
-                .validation,
-            "network"
+            openai.connection().expect("connection").endpoint,
+            "https://localhost:9/v1",
+            "the builtin-id entry patches the builtin endpoint"
         );
+        assert_eq!(registry.invalid().len(), 1);
+        assert_eq!(registry.invalid()[0].id, "Bad Name");
     }
 
     #[test]
@@ -255,7 +525,7 @@ mod tests {
         let store = goat_auth::CredentialStore::new(
             std::env::temp_dir().join("goat-providers-registry-test.json"),
         );
-        let registry = Registry::new(&store, &no_user("goat-providers-registry-nouser.json"));
+        let registry = Registry::new(&store, &no_specs("goat-providers-registry-nouser.toml"));
         assert_eq!(registry.all().len(), 20);
         assert!(registry.get(&ProviderId::from("anthropic")).is_some());
         assert!(registry.get(&ProviderId::from("openrouter")).is_some());

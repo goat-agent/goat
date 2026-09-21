@@ -73,12 +73,12 @@ pub(crate) async fn dispatch(
     }
 }
 
-fn local_world() -> Result<(CredentialStore, goat_config::UserProviders), String> {
+fn local_world() -> Result<(CredentialStore, goat_config::ProviderSpecs), String> {
     let auth = goat_config::auth_path().ok_or(goat_config::HOME_NOT_FOUND)?;
     let config = goat_config::config_path().ok_or(goat_config::HOME_NOT_FOUND)?;
     Ok((
         CredentialStore::new(auth),
-        goat_config::UserProviders::at(config),
+        goat_config::ProviderSpecs::at(config),
     ))
 }
 

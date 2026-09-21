@@ -28,14 +28,14 @@ async fn start_daemon(home: &Path) -> CodeSessionHub {
         socket_path: root.join("daemon.sock"),
         lock_path: root.join("daemon.lock"),
         auth_path: root.join("credentials.json"),
-        config_json: root.join("config.json"),
+        config_toml: root.join("config.toml"),
         db_path: root.join("goat.db"),
         remote: None,
     };
     let socket = config.socket_path.clone();
     let hub = CodeSessionHub::new(
         config.auth_path.clone(),
-        goat_config::UserProviders::at(config.config_json.clone()),
+        goat_config::ProviderSpecs::at(config.config_toml.clone()),
         config.db_path.clone(),
     );
     hub.mark_ready();

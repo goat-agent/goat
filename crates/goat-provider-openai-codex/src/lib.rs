@@ -483,7 +483,7 @@ impl Provider for CodexProvider {
             validation: "oauth",
             endpoint: None,
             oauth: Some("browser or device"),
-            login_endpoint: None,
+            endpoint_override: None,
             setup: &[],
         }
     }
@@ -544,7 +544,10 @@ impl Provider for CodexProvider {
         goat_provider_openai_compat::run_request(
             &client,
             &url,
-            Some(&access),
+            &goat_provider_openai_compat::RequestAuth {
+                secret: Some(access.clone()),
+                ..Default::default()
+            },
             account.as_deref(),
             &body,
             Some(goat_provider_openai_compat::parse_codex_ratelimits),

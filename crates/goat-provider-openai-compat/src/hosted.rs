@@ -40,7 +40,7 @@ pub fn api_key(
         validation: "network",
         endpoint: None,
         oauth: Some("not supported"),
-        login_endpoint: None,
+        endpoint_override: None,
         setup: &[],
     })
 }

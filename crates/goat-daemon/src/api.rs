@@ -240,11 +240,7 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
                     .await
                     .map_err(refused)?;
                 manager
-                    .hold_for_attach(
-                        session,
-                        crate::wire::ClientId(ctx.client),
-                        ctx.cancel.clone(),
-                    )
+                    .hold_for_attach(session, crate::wire::ClientId(ctx.client))
                     .await;
                 Ok(SessionOpenOutput {
                     session: SessionId(session.0),
@@ -685,7 +681,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         crate::manager::CodeSessionHub::new(
             dir.join("credentials.json"),
-            goat_config::UserProviders::at(dir.join("config.json")),
+            goat_config::ProviderSpecs::at(dir.join("config.toml")),
             dir.join("goat.db"),
         )
     }
@@ -799,16 +795,19 @@ mod tests {
         assert!(local.grants().contains(&Grant::Admin));
         assert!(!remote.grants().contains(&Grant::Admin));
 
-        let admin: Vec<String> = goat_api::registry()
+        let admin: Vec<(String, u16)> = goat_api::registry()
             .into_iter()
             .filter(|schema| schema.grant == Grant::Admin)
-            .map(|schema| schema.name.to_owned())
+            .map(|schema| (schema.name.to_owned(), schema.version))
             .collect();
         assert!(!admin.is_empty(), "the registry declares admin methods");
-        for method in &admin {
-            assert!(local.serves(method, 1), "local should serve {method}");
+        for (method, version) in &admin {
             assert!(
-                !remote.serves(method, 1),
+                local.serves(method, *version),
+                "local should serve {method}"
+            );
+            assert!(
+                !remote.serves(method, *version),
                 "remote must not even contain {method}"
             );
         }

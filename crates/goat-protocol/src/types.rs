@@ -473,6 +473,8 @@ pub struct AccountEntry {
     pub accounts: Vec<AccountInfo>,
     pub local: bool,
     pub login: AuthMethod,
+    #[serde(default)]
+    pub custom: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

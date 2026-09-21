@@ -21,7 +21,7 @@ async fn start_daemon(dir: &std::path::Path) -> PathBuf {
         socket_path: socket.clone(),
         lock_path: dir.join("daemon.lock"),
         auth_path: dir.join("auth.json"),
-        config_json: dir.join("config.json"),
+        config_toml: dir.join("config.toml"),
         db_path: dir.join("store.sqlite"),
         remote: None,
     };
@@ -117,7 +117,7 @@ async fn the_broker_reaches_a_real_provider_over_a_real_connection() {
     let dir = tempfile::tempdir().unwrap();
     let manager = goat_daemon::CodeSessionHub::new(
         dir.path().join("auth.json"),
-        goat_config::UserProviders::at(dir.path().join("config.json")),
+        goat_config::ProviderSpecs::at(dir.path().join("config.toml")),
         dir.path().join("store.sqlite"),
     );
     manager.mark_ready();

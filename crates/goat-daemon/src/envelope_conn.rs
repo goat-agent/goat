@@ -83,7 +83,7 @@ pub async fn serve_envelope<Si, St>(
     let device = device_for(&origin);
     let router = api::build(
         api::DaemonApi {
-            manager,
+            manager: manager.clone(),
             broker,
             browser_events,
             device,
@@ -141,6 +141,7 @@ pub async fn serve_envelope<Si, St>(
         }
     }
     disconnect.cancel();
+    manager.drop_client(client_id).await;
 }
 
 #[cfg(test)]
@@ -161,7 +162,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         crate::manager::CodeSessionHub::new(
             dir.join("credentials.json"),
-            goat_config::UserProviders::at(dir.join("config.json")),
+            goat_config::ProviderSpecs::at(dir.join("config.toml")),
             dir.join("goat.db"),
         )
     }

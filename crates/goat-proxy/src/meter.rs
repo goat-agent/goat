@@ -201,6 +201,10 @@ impl Provider for MeteredProvider {
         self.inner.supports_web_search()
     }
 
+    fn connection(&self) -> Option<goat_provider::ConnectionInfo> {
+        self.inner.connection()
+    }
+
     fn web_search(&self, query: String) -> JoinHandle<Result<WebSearchOutput, StreamError>> {
         self.inner.web_search(query)
     }

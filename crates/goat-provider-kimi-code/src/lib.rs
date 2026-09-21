@@ -92,7 +92,7 @@ impl Provider for KimiCodeProvider {
             validation: "network",
             endpoint: Some(BASE_URL),
             oauth: Some("device code"),
-            login_endpoint: None,
+            endpoint_override: None,
             setup: SETUP,
         }
     }

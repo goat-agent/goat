@@ -47,7 +47,7 @@ pub use subagent::{SubagentRegistry, SubagentSpec, ToolSelection};
 
 pub async fn model_list_entries(
     credentials: &CredentialStore,
-    user: &goat_config::UserProviders,
+    user: &goat_config::ProviderSpecs,
 ) -> Vec<goat_protocol::ModelEntry> {
     let registry = Registry::new(credentials, user);
     accounts::discover_ready(&registry, credentials, user).await
@@ -63,7 +63,7 @@ pub struct CodingEngine {
     deferred_catalog: Vec<ToolDefinition>,
     store: Store,
     credentials: CredentialStore,
-    user_providers: goat_config::UserProviders,
+    provider_specs: goat_config::ProviderSpecs,
     target: Option<ModelTarget>,
     mcp: Arc<goat_mcp::McpManager>,
     cwd: PathBuf,
@@ -74,7 +74,7 @@ pub struct EngineDeps {
     pub registry: Registry,
     pub store: Store,
     pub credentials: CredentialStore,
-    pub user_providers: goat_config::UserProviders,
+    pub provider_specs: goat_config::ProviderSpecs,
     pub target: Option<ModelTarget>,
     pub cwd: PathBuf,
     pub meter: Option<goat_proxy::Meter>,
@@ -88,7 +88,7 @@ impl CodingEngine {
             registry,
             store,
             credentials,
-            user_providers,
+            provider_specs,
             target,
             cwd,
             meter,
@@ -143,7 +143,7 @@ impl CodingEngine {
             deferred_catalog,
             store,
             credentials,
-            user_providers,
+            provider_specs,
             target,
             mcp,
             cwd,
@@ -162,7 +162,7 @@ pub(crate) struct SessionServices {
     registry: std::sync::Mutex<Arc<Registry>>,
     pub(crate) account_registries: std::sync::Mutex<HashMap<String, Arc<Registry>>>,
     pub(crate) credentials: CredentialStore,
-    pub(crate) user: goat_config::UserProviders,
+    pub(crate) user: goat_config::ProviderSpecs,
     pub(crate) tools: ToolRegistry,
     pub(crate) deferred_catalog: Vec<ToolDefinition>,
     pub(crate) discovered: goat_tool_discovery::Discovered,
@@ -350,7 +350,7 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
         deferred_catalog,
         store,
         credentials,
-        user_providers,
+        provider_specs,
         target,
         mcp,
         cwd,
@@ -366,13 +366,13 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
     };
 
     if state.target.is_none() {
-        state.target = accounts::restore_target(&store, &credentials, &user_providers, &cwd).await;
+        state.target = accounts::restore_target(&store, &credentials, &provider_specs, &cwd).await;
     }
     accounts::announce_startup(
         &events,
         &registry,
         &credentials,
-        &user_providers,
+        &provider_specs,
         state.target.as_ref(),
     )
     .await;
@@ -470,7 +470,7 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
         registry: std::sync::Mutex::new(Arc::new(registry)),
         account_registries,
         credentials,
-        user: user_providers,
+        user: provider_specs,
         tools,
         deferred_catalog,
         discovered,
@@ -1607,8 +1607,8 @@ mod tests {
         );
     }
 
-    fn test_user_providers() -> goat_config::UserProviders {
-        goat_config::UserProviders::at(
+    fn test_provider_specs() -> goat_config::ProviderSpecs {
+        goat_config::ProviderSpecs::at(
             std::env::temp_dir().join("goat-engine-test-user-providers.json"),
         )
     }
@@ -1623,7 +1623,7 @@ mod tests {
             registry,
             store,
             credentials,
-            user_providers: test_user_providers(),
+            provider_specs: test_provider_specs(),
             target: Some(target(provider)),
             cwd: std::env::temp_dir(),
             meter: None,

@@ -150,12 +150,24 @@ pub async fn do_login(status: &mpsc::Sender<String>) -> Result<TokenSet, GeminiA
     exchange_code(&code, &pkce.verifier, &redirect).await
 }
 
-pub async fn current_auth(store: &CredentialStore, key: &CredentialKey) -> Option<Auth> {
-    match store.resolve(key, Some(super::ENV_VAR))? {
+pub async fn current_auth(
+    store: &CredentialStore,
+    key: &CredentialKey,
+    env_var: Option<&str>,
+    allow_oauth: bool,
+    credentials_usable: bool,
+) -> Option<Auth> {
+    if !credentials_usable {
+        return None;
+    }
+    match store.resolve(key, env_var)? {
         Credential::ApiKey(secret) | Credential::ApiKeyWithEndpoint { secret, .. } => {
             Some(Auth::ApiKey(secret.expose().to_owned()))
         }
         Credential::OAuth(tokens) => {
+            if !allow_oauth {
+                return None;
+            }
             let tokens = ensure_valid(tokens, store, key, do_refresh).await?;
             Some(Auth::OAuth(tokens.access_token().expose().to_owned()))
         }

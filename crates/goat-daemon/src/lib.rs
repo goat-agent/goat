@@ -40,7 +40,7 @@ pub struct DaemonConfig {
     pub socket_path: PathBuf,
     pub lock_path: PathBuf,
     pub auth_path: PathBuf,
-    pub config_json: PathBuf,
+    pub config_toml: PathBuf,
     pub db_path: PathBuf,
     pub remote: Option<RemoteSettings>,
 }
@@ -95,7 +95,7 @@ pub struct RemoteSettings {
 pub async fn serve(config: DaemonConfig) -> Result<(), DaemonError> {
     let manager = CodeSessionHub::new(
         config.auth_path.clone(),
-        goat_config::UserProviders::at(config.config_json.clone()),
+        goat_config::ProviderSpecs::at(config.config_toml.clone()),
         config.db_path.clone(),
     );
     let lock = acquire(&config.lock_path, std::time::Duration::ZERO).await?;
