@@ -224,6 +224,7 @@ mod tests {
                 name: (*name).to_owned(),
                 description: String::new(),
                 input_schema: serde_json::json!({}),
+                defer_loading: false,
             })
             .collect()
     }

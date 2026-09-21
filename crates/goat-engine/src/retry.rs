@@ -128,7 +128,7 @@ pub(crate) async fn run_round_with_retry(
         let request = Request {
             model: env.target.model.clone(),
             messages: messages.to_vec(),
-            tools: env.tool_defs.clone(),
+            tools: crate::tools_exec::current_tool_defs(ctx, env),
             effort: env.target.effort,
             tool_choice: goat_provider::ToolChoice::Auto,
             temperature: None,

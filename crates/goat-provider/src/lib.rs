@@ -54,6 +54,8 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
+    #[serde(default)]
+    pub defer_loading: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,6 +85,15 @@ pub enum ContentBlock {
     Image {
         media_type: String,
         data: String,
+    },
+    ServerToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolSearchToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
     },
 }
 
@@ -243,6 +254,15 @@ pub enum StreamChunk {
         id: String,
         name: String,
         input: String,
+    },
+    ServerToolUse {
+        id: String,
+        name: String,
+        input: String,
+    },
+    ServerToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
     },
     Usage {
         usage: Usage,
@@ -452,6 +472,10 @@ pub trait Provider: Send + Sync + 'static {
         self.capabilities().images
     }
 
+    fn supports_tool_search(&self, _model: &str) -> bool {
+        false
+    }
+
     fn supports_web_search(&self) -> bool {
         false
     }
@@ -580,9 +604,23 @@ mod tests {
                 media_type: "image/png".into(),
                 data: "base64data".into(),
             },
+            ContentBlock::ServerToolUse {
+                id: "srvtoolu_1".into(),
+                name: "tool_search_tool_bm25".into(),
+                input: serde_json::json!({ "query": "posthog" }),
+            },
+            ContentBlock::ToolSearchToolResult {
+                tool_use_id: "srvtoolu_1".into(),
+                content: serde_json::json!({
+                    "type": "tool_search_tool_search_result",
+                    "tool_references": [{ "type": "tool_reference", "tool_name": "posthog_query" }]
+                }),
+            },
         ];
         let json = serde_json::to_string(&blocks).unwrap();
         let restored: Vec<ContentBlock> = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, blocks);
+        assert!(json.contains("\"type\":\"server_tool_use\""));
+        assert!(json.contains("\"type\":\"tool_search_tool_result\""));
     }
 }

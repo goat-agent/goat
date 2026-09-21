@@ -55,8 +55,9 @@ fn top_regime(
     ctx: &SessionContext,
     provider: &dyn Provider,
     availability: ToolAvailability,
+    model: &str,
 ) -> Vec<ToolDefinition> {
-    build_tool_defs(ctx, provider, None, availability)
+    build_tool_defs(ctx, provider, None, availability, model)
 }
 
 const SHELL_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(10);
@@ -566,6 +567,7 @@ pub(crate) async fn handle_shell(
                     ctx.instructions.as_deref(),
                     &ctx.date,
                     state.plan_prompt_path(),
+                    &ctx.deferred_catalog,
                 ),
             ),
             None,
@@ -666,6 +668,7 @@ pub(crate) async fn handle_compact(
             asking: true,
             planning: false,
         },
+        &resolved.model,
     );
     let ids = crate::TurnIds {
         stored_conversation: state.conversation_id,
@@ -833,6 +836,7 @@ async fn run_one_turn(
         ctx.instructions.as_deref(),
         &ctx.date,
         state.plan_prompt_path(),
+        &ctx.deferred_catalog,
     );
     if state.conversation.is_empty() {
         state
@@ -871,6 +875,7 @@ async fn run_one_turn(
             asking: ask_availability.is_available(),
             planning: state.mode.is_plan(),
         },
+        &resolved.model,
     );
     let steering: crate::SteeringQueue = std::sync::Mutex::new(seed);
     let run = Run::top(id, &ids, &steering);

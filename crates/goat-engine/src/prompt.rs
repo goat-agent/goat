@@ -64,17 +64,40 @@ fn civil_date_from_unix_days(days: i64) -> (i64, u32, u32) {
     (year, month, day)
 }
 
+fn deferred_segment(catalog: &[goat_provider::ToolDefinition]) -> String {
+    let mut prefixes: Vec<&str> = catalog
+        .iter()
+        .map(|def| def.name.split('_').next().unwrap_or(def.name.as_str()))
+        .collect();
+    prefixes.sort_unstable();
+    prefixes.dedup();
+    let listed = prefixes
+        .iter()
+        .take(8)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "\n\n# Deferred tools\n\n{} tools are deferred and not listed above. Search for them by capability or service name ({listed}) with the tool search tool to load the ones you need.",
+        catalog.len(),
+    )
+}
+
 pub(crate) fn build_system_prompt(
     cwd: &std::path::Path,
     skills: &SkillSet,
     instructions: Option<&str>,
     date: &str,
     plan: Option<&std::path::Path>,
+    deferred: &[goat_provider::ToolDefinition],
 ) -> String {
     let mut prompt = String::from(PRINCIPLES);
     prompt.push_str(&env_segment(cwd, std::env::consts::OS, date));
     if let Some(catalog) = skills.catalog() {
         let _ = write!(prompt, "\n\n# Skills\n\n{catalog}");
+    }
+    if !deferred.is_empty() {
+        prompt.push_str(&deferred_segment(deferred));
     }
     if let Some(content) = instructions {
         let _ = write!(prompt, "\n\n{content}");
@@ -190,6 +213,7 @@ mod tests {
             None,
             "2025-01-15",
             None,
+            &[],
         );
         assert!(prompt.starts_with(super::PRINCIPLES));
         assert!(prompt.contains("# Environment"));
@@ -234,6 +258,7 @@ mod tests {
             None,
             "2025-01-15",
             None,
+            &[],
         );
         assert!(prompt.contains("authoritative over your trained memory"));
         assert!(prompt.contains("mirror what the project already does"));
@@ -248,6 +273,7 @@ mod tests {
             None,
             "2025-01-15",
             None,
+            &[],
         );
         assert!(prompt.contains("# Skills"));
         assert!(prompt.contains("<name>demo</name>"));
@@ -267,6 +293,7 @@ mod tests {
             None,
             "2025-01-15",
             None,
+            &[],
         );
         assert!(!prompt.contains("계획 모드"));
         assert!(!prompt.contains("ProposePlan"));
@@ -280,6 +307,7 @@ mod tests {
             Some("# Project instructions (repo/AGENTS.md)\n\nrule"),
             "2025-01-15",
             Some(Path::new("/plans/1-demo.md")),
+            &[],
         );
         assert!(prompt.contains("/plans/1-demo.md"));
         assert!(prompt.contains("ProposePlan"));
@@ -307,6 +335,7 @@ mod tests {
             Some("always use snake_case"),
             "2025-01-15",
             None,
+            &[],
         );
         assert!(prompt.contains("always use snake_case"));
     }
@@ -319,6 +348,7 @@ mod tests {
             None,
             "2025-01-15",
             None,
+            &[],
         );
         assert!(!prompt.contains("Project instructions"));
     }
@@ -333,6 +363,7 @@ mod tests {
             Some(&instructions),
             "2025-01-15",
             None,
+            &[],
         );
         assert_eq!(prompt.matches(heading).count(), 1);
         assert!(prompt.ends_with(&instructions));
@@ -368,6 +399,7 @@ mod tests {
             None,
             "2025-01-15",
             None,
+            &[],
         );
         assert!(prompt.contains("Build only what the request needs"));
         assert!(prompt.contains("reduced or staged version"));
@@ -384,6 +416,7 @@ mod tests {
             Some("# Project instructions (repo/AGENTS.md)\n\nrule"),
             "2025-01-15",
             None,
+            &[],
         );
         let base = prompt.find(super::PRINCIPLES).unwrap();
         let env = prompt.find("# Environment").unwrap();
@@ -402,10 +435,55 @@ mod tests {
             None,
             "2025-01-15",
             None,
+            &[],
         );
         assert!(prompt.contains("Reply to the user in their language"));
         assert!(prompt.contains("keep code, identifiers, paths, commands, tool arguments"));
         assert!(prompt.contains("project's prevailing language"));
+    }
+
+    #[test]
+    fn deferred_segment_lists_namespace_hints() {
+        let catalog = vec![
+            goat_provider::ToolDefinition {
+                name: "posthog_query".to_owned(),
+                description: "query".to_owned(),
+                input_schema: serde_json::json!({}),
+                defer_loading: true,
+            },
+            goat_provider::ToolDefinition {
+                name: "posthog_dashboard".to_owned(),
+                description: "dash".to_owned(),
+                input_schema: serde_json::json!({}),
+                defer_loading: true,
+            },
+            goat_provider::ToolDefinition {
+                name: "langfuse_trace".to_owned(),
+                description: "trace".to_owned(),
+                input_schema: serde_json::json!({}),
+                defer_loading: true,
+            },
+        ];
+        let prompt = super::build_system_prompt(
+            Path::new("/work"),
+            &SkillSet::default(),
+            None,
+            "2025-01-15",
+            None,
+            &catalog,
+        );
+        assert!(prompt.contains("# Deferred tools"));
+        assert!(prompt.contains("3 tools are deferred"));
+        assert!(prompt.contains("langfuse, posthog"));
+        let empty = super::build_system_prompt(
+            Path::new("/work"),
+            &SkillSet::default(),
+            None,
+            "2025-01-15",
+            None,
+            &[],
+        );
+        assert!(!empty.contains("# Deferred tools"));
     }
 
     #[test]

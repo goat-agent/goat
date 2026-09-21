@@ -792,6 +792,7 @@ mod tests {
                 name: "read_file".to_owned(),
                 description: "read".to_owned(),
                 input_schema: json!({ "type": "object" }),
+                defer_loading: false,
             }],
             effort: Some(Effort::High),
             tool_choice: ToolChoice::None,
