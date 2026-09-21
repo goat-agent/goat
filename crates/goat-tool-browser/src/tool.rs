@@ -1,7 +1,8 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolError, ToolFuture, ToolSandbox, display};
+use goat_tool::{Tool, ToolCall, ToolContext, ToolError, ToolFuture, ToolName, display};
 
 use crate::action::{self, Action, BrowserRef};
 use crate::browser::{self, Browser};
@@ -31,12 +32,12 @@ fn ref_label(reference: &BrowserRef) -> String {
 }
 
 impl Tool for BrowserTool {
-    fn name(&self) -> &'static str {
-        browser::NAME
+    fn name(&self) -> ToolName {
+        ToolName::from_static(browser::NAME)
     }
 
-    fn description(&self) -> &'static str {
-        browser::DESCRIPTION
+    fn description(&self) -> Cow<'static, str> {
+        Cow::Borrowed(browser::DESCRIPTION)
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -100,10 +101,11 @@ impl Tool for BrowserTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
+            let input = call.arguments.to_string();
             self.browser
-                .run(input, ctx.max_output_bytes)
+                .run(&input, ctx.max_output_bytes)
                 .await
                 .map_err(exec_err)
         })

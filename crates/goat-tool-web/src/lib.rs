@@ -11,6 +11,7 @@ mod render;
 mod ssrf;
 
 use error::WebFetchError;
+use std::borrow::Cow;
 
 const DEFAULT_QUERY_PASSAGES: usize = 8;
 
@@ -47,12 +48,14 @@ async fn obtain(url: &str, mode: RenderMode) -> Result<fetch::RawFetch, WebFetch
     }
 }
 
+use std::sync::Arc;
+
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolFuture, ToolSandbox, display};
+use goat_tool::{Tool, ToolCall, ToolContext, ToolFuture, ToolName, display};
 use serde::Deserialize;
 
-pub fn all() -> Vec<Box<dyn Tool>> {
-    vec![Box::new(WebFetchTool::new())]
+pub fn all() -> Vec<Arc<dyn Tool>> {
+    vec![Arc::new(WebFetchTool::new())]
 }
 
 pub struct WebFetchTool {
@@ -94,12 +97,12 @@ struct Input {
 }
 
 impl Tool for WebFetchTool {
-    fn name(&self) -> &'static str {
-        "WebFetch"
+    fn name(&self) -> ToolName {
+        ToolName::from_static("WebFetch")
     }
 
-    fn description(&self) -> &'static str {
-        "Fetch a URL over HTTPS and return its content as Markdown. Detects the page charset, pretty-prints JSON, refuses binary blobs with a typed notice, and prefixes page metadata (title, final URL, status, size). Large pages are paged with offset/max_length. Private and link-local addresses are refused."
+    fn description(&self) -> Cow<'static, str> {
+        "Fetch a URL over HTTPS and return its content as Markdown. Detects the page charset, pretty-prints JSON, refuses binary blobs with a typed notice, and prefixes page metadata (title, final URL, status, size). Large pages are paged with offset/max_length. Private and link-local addresses are refused.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -127,9 +130,9 @@ impl Tool for WebFetchTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, _ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let args: Input = serde_json::from_str(input)?;
+            let args: Input = serde_json::from_value(call.arguments.clone())?;
             let url = normalize::normalize_url(&args.url);
             normalize::reject_blocked_literal(&url)?;
             let mode = if self.render_enabled {

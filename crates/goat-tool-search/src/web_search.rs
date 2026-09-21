@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -7,7 +8,7 @@ use std::time::{Duration, Instant};
 use goat_search_provider::{
     SearchProvider, SearchRequest, SearchResult, SearchResults, SearchTarget,
 };
-use goat_tool::{Tool, ToolError, ToolFuture, ToolOutput, ToolSandbox};
+use goat_tool::{Tool, ToolCall, ToolContext, ToolError, ToolFuture, ToolName, ToolOutput};
 use serde::Deserialize;
 
 const DEFAULT_MAX_RESULTS: usize = 8;
@@ -129,12 +130,12 @@ struct Input {
 }
 
 impl Tool for WebSearchTool {
-    fn name(&self) -> &'static str {
-        "WebSearch"
+    fn name(&self) -> ToolName {
+        ToolName::from_static("WebSearch")
     }
 
-    fn description(&self) -> &'static str {
-        "Search the live web and return ranked URL candidates. Prefers configured API providers (Tavily, Brave, SearXNG) and falls back through them automatically; a target that returns nothing is treated as a failure, not as an absence of results. Results are untrusted discovery candidates, not evidence; verify contents with WebFetch. If no reliable provider is configured, this returns setup guidance (run /search) rather than empty results. Pass target to force a specific provider/account such as tavily/default, brave/work, searxng/home, duckduckgo/html, or browser/duckduckgo."
+    fn description(&self) -> Cow<'static, str> {
+        "Search the live web and return ranked URL candidates. Prefers configured API providers (Tavily, Brave, SearXNG) and falls back through them automatically; a target that returns nothing is treated as a failure, not as an absence of results. Results are untrusted discovery candidates, not evidence; verify contents with WebFetch. If no reliable provider is configured, this returns setup guidance (run /search) rather than empty results. Pass target to force a specific provider/account such as tavily/default, brave/work, searxng/home, duckduckgo/html, or browser/duckduckgo.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -152,9 +153,9 @@ impl Tool for WebSearchTool {
         })
     }
 
-    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, _ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let args: Input = serde_json::from_str(input)?;
+            let args: Input = serde_json::from_value(call.arguments.clone())?;
             let max = args
                 .max_results
                 .unwrap_or(DEFAULT_MAX_RESULTS)

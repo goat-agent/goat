@@ -1,7 +1,8 @@
+use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use goat_tool::{
-    Tool, ToolError, ToolFuture, ToolOutput, ToolSandbox,
+    Tool, ToolCall, ToolContext, ToolError, ToolFuture, ToolName, ToolOutput,
     path::{blocked_path, relative_display},
 };
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
@@ -18,12 +19,12 @@ struct Input {
 }
 
 impl Tool for GlobTool {
-    fn name(&self) -> &'static str {
-        "Glob"
+    fn name(&self) -> ToolName {
+        ToolName::from_static("Glob")
     }
 
-    fn description(&self) -> &'static str {
-        "List files in the session directory matching a glob pattern, honoring .gitignore. Results are relative paths, sorted."
+    fn description(&self) -> Cow<'static, str> {
+        "List files in the session directory matching a glob pattern, honoring .gitignore. Results are relative paths, sorted.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -49,9 +50,9 @@ impl Tool for GlobTool {
         goat_protocol::ToolDisplay::primary(sig)
     }
 
-    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let args: Input = serde_json::from_str(input)?;
+            let args: Input = serde_json::from_value(call.arguments.clone())?;
             let root = match &args.path {
                 Some(path) => ctx.resolve(path)?,
                 None => ctx.cwd.clone(),

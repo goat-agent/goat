@@ -13,7 +13,7 @@ default = []
 test-support = ["dep:tempfile"]
 
 [dependencies]
-goat-agent-tool = { workspace = true }
+goat-tool = { workspace = true }
 goat-auth   = { workspace = true }
 goat-bus    = { workspace = true }
 goat-store  = { workspace = true }

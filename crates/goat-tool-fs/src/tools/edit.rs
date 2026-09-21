@@ -1,6 +1,7 @@
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolFuture, ToolOutput, ToolSandbox, display};
+use goat_tool::{Tool, ToolCall, ToolContext, ToolFuture, ToolName, ToolOutput, display};
 use serde::Deserialize;
+use std::borrow::Cow;
 
 use crate::{error::FsError, tools::relative_display};
 
@@ -16,12 +17,12 @@ struct Input {
 }
 
 impl Tool for EditTool {
-    fn name(&self) -> &'static str {
-        "Edit"
+    fn name(&self) -> ToolName {
+        ToolName::from_static("Edit")
     }
 
-    fn description(&self) -> &'static str {
-        "Replace occurrences of old_string with new_string in a file. By default requires a single unique match; set replace_all to replace every occurrence."
+    fn description(&self) -> Cow<'static, str> {
+        "Replace occurrences of old_string with new_string in a file. By default requires a single unique match; set replace_all to replace every occurrence.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -53,9 +54,9 @@ impl Tool for EditTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let args: Input = serde_json::from_str(input)?;
+            let args: Input = serde_json::from_value(call.arguments.clone())?;
             let resolved = ctx.resolve(&args.path)?;
             ctx.ensure_writable(&resolved, &args.path)?;
             if !resolved.exists() {

@@ -9,10 +9,11 @@ use std::{
 
 use goat_protocol::{GitFacts, ToolDisplay, ToolOutcome};
 use goat_tool::{
-    SandboxPolicy, Tool, ToolError, ToolErrorClass, ToolFuture, ToolOutcomeExtension, ToolOutput,
-    ToolSandbox, display,
+    SandboxPolicy, Tool, ToolCall, ToolContext, ToolError, ToolErrorClass, ToolFuture, ToolName,
+    ToolOutcomeExtension, ToolOutput, display,
 };
 use serde::Deserialize;
+use std::borrow::Cow;
 use tokio::{io::AsyncReadExt, process::Command, time};
 
 const MIN_TIMEOUT_MS: u64 = 100;
@@ -86,12 +87,12 @@ impl ToolOutcomeExtension for GitOutcome {
 }
 
 impl Tool for BashTool {
-    fn name(&self) -> &'static str {
-        NAME
+    fn name(&self) -> ToolName {
+        ToolName::from_static(NAME)
     }
 
-    fn description(&self) -> &'static str {
-        "Run a shell command via `sh -c` in the session directory and return its combined output. A nonzero exit code is reported in the output, not as an error."
+    fn description(&self) -> Cow<'static, str> {
+        "Run a shell command via `sh -c` in the session directory and return its combined output. A nonzero exit code is reported in the output, not as an error.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -115,9 +116,9 @@ impl Tool for BashTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let args: Input = serde_json::from_str(input)?;
+            let args: Input = serde_json::from_value(call.arguments.clone())?;
             let timeout_dur = match args.timeout_ms {
                 Some(ms) => Duration::from_millis(ms.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)),
                 None => DEFAULT_TIMEOUT,

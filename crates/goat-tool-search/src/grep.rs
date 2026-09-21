@@ -1,8 +1,9 @@
+use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::io::BufRead as _;
 
 use goat_tool::{
-    Tool, ToolError, ToolFuture, ToolOutput, ToolSandbox,
+    Tool, ToolCall, ToolContext, ToolError, ToolFuture, ToolName, ToolOutput,
     path::{blocked_path, relative_display},
 };
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
@@ -25,12 +26,12 @@ struct Input {
 }
 
 impl Tool for GrepTool {
-    fn name(&self) -> &'static str {
-        "Grep"
+    fn name(&self) -> ToolName {
+        ToolName::from_static("Grep")
     }
 
-    fn description(&self) -> &'static str {
-        "Search file contents for a regular expression across the session directory, honoring .gitignore. Optionally restrict to a subpath or glob."
+    fn description(&self) -> Cow<'static, str> {
+        "Search file contents for a regular expression across the session directory, honoring .gitignore. Optionally restrict to a subpath or glob.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -59,9 +60,9 @@ impl Tool for GrepTool {
         goat_protocol::ToolDisplay::primary(goat_tool::display::call_sig("Grep", &refs))
     }
 
-    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let args: Input = serde_json::from_str(input)?;
+            let args: Input = serde_json::from_value(call.arguments.clone())?;
             let root = match &args.path {
                 Some(path) => ctx.resolve(path)?,
                 None => ctx.cwd.clone(),

@@ -59,7 +59,7 @@ const WAKE_ID_BASE: u64 = 1 << 48;
 
 pub struct CodingEngine {
     registry: Registry,
-    tools: Vec<Box<dyn Tool>>,
+    tools: Vec<Arc<dyn Tool>>,
     deferred_catalog: Vec<ToolDefinition>,
     store: Store,
     credentials: CredentialStore,
@@ -126,13 +126,13 @@ impl CodingEngine {
                 defer_loading: false,
             })
             .collect();
-        let mut tools = goat_mcp_tools::adapt(resolved);
+        let mut tools = goat_mcp_tools::tools(resolved);
         let tool_count = tools.len();
         if tool_count > 0 {
             tracing::info!(tool_count, "registered mcp tools");
         }
         if let Some(browser) = browser {
-            tools.push(Box::new(goat_tool_browser::browser_tool(browser)));
+            tools.push(Arc::new(goat_tool_browser::browser_tool(browser)));
         }
         if let Some(computer) = computer {
             tools.push(goat_tool_computer::computer_tool(computer));
@@ -420,7 +420,7 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
     })
     .with_many(tools);
     if !deferred_catalog.is_empty() {
-        tools = tools.with(Box::new(goat_tool_discovery::ToolSearchTool::new(
+        tools = tools.with(Arc::new(goat_tool_discovery::ToolSearchTool::new(
             deferred_catalog.clone(),
             discovered.clone(),
         )));

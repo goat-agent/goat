@@ -1,4 +1,4 @@
-use goat_tool::ToolInvocation;
+use goat_tool::ToolContext;
 use goat_tool_search::{NativeSearchFuture, NativeSearchRequest, NativeSearchService};
 
 use crate::LoopEnv;
@@ -9,10 +9,10 @@ impl NativeSearchService for EngineNativeSearchService {
     fn search<'a>(
         &'a self,
         request: NativeSearchRequest,
-        invocation: ToolInvocation<'a>,
+        ctx: ToolContext<'a>,
     ) -> NativeSearchFuture<'a> {
         Box::pin(async move {
-            let env = invocation
+            let env = ctx
                 .host
                 .and_then(|host| host.downcast_ref::<LoopEnv>())
                 .ok_or_else(|| "native search environment unavailable".to_owned())?;
@@ -23,7 +23,7 @@ impl NativeSearchService for EngineNativeSearchService {
             let abort = handle.abort_handle();
             let output = tokio::select! {
                 biased;
-                () = invocation.cancellation.cancelled() => {
+                () = ctx.cancellation.cancelled() => {
                     abort.abort();
                     return Err("interrupted".to_owned());
                 }

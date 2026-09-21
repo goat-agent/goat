@@ -1,4 +1,3 @@
-mod agent;
 mod code;
 mod manager;
 
@@ -10,8 +9,7 @@ use goat_mcp::{McpImage, McpToolResult};
 use goat_types::AgentId;
 use serde_json::Value;
 
-pub use agent::install;
-pub use code::adapt;
+pub use code::tools;
 pub use manager::{exposed_tool_name, from_manager};
 
 pub type McpCallFuture<'a> = Pin<Box<dyn Future<Output = Result<McpOutcome, String>> + Send + 'a>>;

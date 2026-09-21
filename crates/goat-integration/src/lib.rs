@@ -14,10 +14,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use goat_agent_tool::{ToolName, ToolRegistry};
 use goat_auth::CredentialStore;
 use goat_bus::EventBus;
 use goat_store::{NewObservation, Store, StoreError};
+use goat_tool::{ToolName, ToolRegistry};
 use goat_types::{AgentId, Event, IntegrationId};
 use thiserror::Error;
 use tracing::warn;

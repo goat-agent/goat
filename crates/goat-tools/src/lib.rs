@@ -85,7 +85,7 @@ impl NativeSearchService for UnavailableNativeSearch {
     fn search<'a>(
         &'a self,
         _request: NativeSearchRequest,
-        _invocation: goat_tool::ToolInvocation<'a>,
+        _ctx: goat_tool::ToolContext<'a>,
     ) -> NativeSearchFuture<'a> {
         Box::pin(async { Err("native search service unavailable".to_owned()) })
     }
@@ -133,8 +133,8 @@ pub fn builtin_with(capabilities: BuiltinCapabilities) -> ToolRegistry {
     ));
     tools.extend(goat_tool_skill::all());
     tools.extend(goat_tool_web::all());
-    tools.push(Box::new(AskTool::new(capabilities.questions)));
-    tools.push(Box::new(ProposePlanTool::new(capabilities.plans)));
+    tools.push(Arc::new(AskTool::new(capabilities.questions)));
+    tools.push(Arc::new(ProposePlanTool::new(capabilities.plans)));
     ToolRegistry::new(tools)
 }
 
@@ -162,7 +162,7 @@ mod tests {
     fn specs_are_sorted_by_name() {
         let registry = super::builtin();
         let specs = registry.specs();
-        let names: Vec<&str> = specs.iter().map(|spec| spec.name).collect();
+        let names: Vec<&str> = specs.iter().map(|spec| spec.name.as_str()).collect();
         let mut sorted = names.clone();
         sorted.sort_unstable();
         assert_eq!(names, sorted);

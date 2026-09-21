@@ -10,6 +10,8 @@ publish.workspace = true
 
 [dependencies]
 goat-protocol = { workspace = true }
+goat-types = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio-util = { workspace = true }

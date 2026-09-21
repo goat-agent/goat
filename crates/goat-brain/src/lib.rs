@@ -8,10 +8,6 @@ use anyhow::{Context, Result, anyhow};
 use futures::{SinkExt, StreamExt, channel::mpsc, stream};
 use goat_agent_command::{CommandOutput, CommandRegistry};
 use goat_agent_config::AgentCard;
-use goat_agent_tool::{
-    ToolAudience, ToolCall, ToolCaller, ToolOutput, ToolReadState, ToolRegistry, selector_allows,
-    validate_tool_selectors,
-};
 use goat_bus::{EventBus, EventFilter};
 use goat_channel::{ChannelError, ChannelHandle};
 use goat_model::{Model, canonicalize_provider_id};
@@ -24,6 +20,10 @@ use goat_skill::{Scopes, SkillSet};
 use goat_store::{
     ActivityKind, Direction, HistoryRow, MessageSender, NewActivity, ScheduleRunStatus,
     ScheduleStatus, Store, ToolInvocationRecord, ToolInvocationStatus,
+};
+use goat_tool::{
+    AgentContext, ToolAudience, ToolCall, ToolContext, ToolOutput, ToolReadState, ToolRegistry,
+    ToolSandbox, selector_allows, validate_tool_selectors,
 };
 use goat_types::{
     AgentId, ConversationId, Event, IncomingMessage, IntegrationId, IntegrationUpdateKind,
@@ -50,7 +50,7 @@ enum ContentPart {
     },
     ToolResult {
         id: String,
-        content: Vec<goat_agent_tool::ToolContent>,
+        content: Vec<goat_tool::ToolContent>,
         is_error: bool,
     },
 }
@@ -105,10 +105,10 @@ fn content_to_sdk(part: &ContentPart) -> ContentBlock {
             content: content
                 .iter()
                 .filter_map(|part| match part {
-                    goat_agent_tool::ToolContent::Text { text } => {
+                    goat_tool::ToolContent::Text { text } => {
                         Some(ContentBlock::Text { text: text.clone() })
                     }
-                    goat_agent_tool::ToolContent::Image { media_type, data } => {
+                    goat_tool::ToolContent::Image { media_type, data } => {
                         Some(ContentBlock::Image {
                             media_type: media_type.clone(),
                             data: data.clone(),
@@ -1432,7 +1432,7 @@ impl Brain {
         )
         .await;
         let started_at = chrono::Utc::now();
-        let name = match goat_agent_tool::ToolName::new(call.name.clone()) {
+        let name = match goat_tool::ToolName::new(call.name.clone()) {
             Ok(name) => name,
             Err(e) => {
                 let output = ToolOutput::error(format!("invalid tool requested by model: {e}"));
@@ -1455,14 +1455,24 @@ impl Brain {
                 .await;
             return output;
         }
-        let ctx = ToolCaller {
-            agent: self.agent,
-            agent_slug: self.agent_slug.clone(),
+        let sandbox = match ToolSandbox::rooted(&self.goat_root) {
+            Ok(sandbox) => sandbox,
+            Err(e) => {
+                let output = ToolOutput::error(format!("tool root unavailable: {e}"));
+                self.audit_tool_call(conv, call, name.to_string(), &output, started_at)
+                    .await;
+                return output;
+            }
+        };
+        let agent_ctx = AgentContext {
+            id: self.agent,
+            slug: self.agent_slug.clone(),
             conversation: conv.clone(),
             audience,
-            goat_root: self.goat_root.clone(),
             read_state,
         };
+        let cancel = CancellationToken::new();
+        let ctx = ToolContext::agent(&sandbox, &cancel, &agent_ctx);
         let mut arguments = call.arguments.clone();
         if is_schedule_create_tool(name.as_str()) {
             inject_schedule_timezone(&mut arguments, &self.schedule_timezone);
@@ -1473,7 +1483,7 @@ impl Brain {
             arguments,
         };
         let resolved_name = name.to_string();
-        let output = self.tools.call(ctx, tool_call).await;
+        let output = self.tools.call(ctx, &tool_call).await;
         self.audit_tool_call(conv, call, resolved_name, &output, started_at)
             .await;
         output
@@ -1721,7 +1731,7 @@ fn tool_result_message(id: String, content: impl Into<String>) -> LlmMessage {
         role: Role::Tool,
         content: vec![ContentPart::ToolResult {
             id,
-            content: vec![goat_agent_tool::ToolContent::Text {
+            content: vec![goat_tool::ToolContent::Text {
                 text: content.into(),
             }],
             is_error: false,
@@ -2429,13 +2439,30 @@ mod tests {
 
     struct WriteNote;
 
-    #[async_trait::async_trait]
-    impl goat_agent_tool::ToolHandler for WriteNote {
-        async fn call(&self, caller: ToolCaller, _call: ToolCall) -> ToolOutput {
-            match tokio::fs::write(caller.goat_root.join("tool-note.txt"), "tool ran").await {
-                Ok(()) => ToolOutput::text("note saved"),
-                Err(error) => ToolOutput::error(error.to_string()),
-            }
+    impl goat_tool::Tool for WriteNote {
+        fn name(&self) -> goat_tool::ToolName {
+            goat_tool::ToolName::from_static("record")
+        }
+
+        fn description(&self) -> std::borrow::Cow<'static, str> {
+            "Write a local note".into()
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        fn call<'a>(
+            &'a self,
+            _call: &'a ToolCall,
+            ctx: goat_tool::ToolContext<'a>,
+        ) -> goat_tool::ToolFuture<'a> {
+            Box::pin(async move {
+                match tokio::fs::write(ctx.sandbox.cwd.join("tool-note.txt"), "tool ran").await {
+                    Ok(()) => Ok(ToolOutput::text("note saved")),
+                    Err(error) => Ok(ToolOutput::error(error.to_string())),
+                }
+            })
         }
     }
 
@@ -2476,15 +2503,7 @@ mod tests {
                 fail_edits: AtomicBool::new(false),
             });
             let mut tools = ToolRegistry::default();
-            tools.insert_handler(
-                goat_agent_tool::ToolSpec::new(
-                    goat_agent_tool::ToolName::from_static("record"),
-                    "Write a local note",
-                    serde_json::json!({"type": "object", "properties": {}}),
-                ),
-                Arc::new(WriteNote),
-                true,
-            );
+            tools.insert(Arc::new(WriteNote));
             let brain = Brain::new(BrainDeps {
                 agent,
                 slug: "test".into(),

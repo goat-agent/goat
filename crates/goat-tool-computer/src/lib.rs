@@ -1,3 +1,5 @@
+pub mod agent;
+use std::borrow::Cow;
 mod action;
 mod computer;
 mod state;
@@ -5,7 +7,7 @@ pub mod transport;
 
 use std::sync::Arc;
 
-use goat_tool::{Tool, ToolFuture, ToolSandbox};
+use goat_tool::{Tool, ToolCall, ToolContext, ToolFuture, ToolName};
 use serde_json::{Value, json};
 
 pub use computer::Computer;
@@ -46,25 +48,28 @@ pub fn parameters() -> Value {
     })
 }
 
-pub fn computer_tool(transport: Arc<dyn Transport>) -> Box<dyn Tool> {
-    Box::new(Computer::new(transport))
+pub fn computer_tool(transport: Arc<dyn Transport>) -> Arc<dyn Tool> {
+    Arc::new(Computer::new(transport))
 }
 
 impl Tool for Computer {
-    fn name(&self) -> &'static str {
-        NAME
+    fn name(&self) -> ToolName {
+        ToolName::from_static(NAME)
     }
 
-    fn description(&self) -> &'static str {
-        DESCRIPTION
+    fn description(&self) -> Cow<'static, str> {
+        Cow::Borrowed(DESCRIPTION)
     }
 
     fn parameters(&self) -> Value {
         parameters()
     }
 
-    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
-        Box::pin(Computer::run(self, input))
+    fn call<'a>(&'a self, call: &'a ToolCall, _ctx: ToolContext<'a>) -> ToolFuture<'a> {
+        Box::pin(async move {
+            let input = call.arguments.to_string();
+            Computer::run(self, &input).await
+        })
     }
 }
 
@@ -140,7 +145,7 @@ mod tests {
         let image = computer.run(r#"{"action":"screenshot"}"#).await.unwrap();
         assert_eq!(image.summary.as_deref(), Some("screenshot 1280x800"));
         assert!(
-            matches!(image.content, ToolContent::Image(image) if image.media_type == "image/png")
+            matches!(image.content.as_slice(), [ToolContent::Image { media_type, .. }] if media_type == "image/png")
         );
         let output = computer
             .run(r#"{"action":"click","x":640,"y":400,"observe":false}"#)

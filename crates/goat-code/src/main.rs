@@ -23,9 +23,6 @@ use crate::cli::{
 };
 
 use goat_agent_command_skill as _;
-use goat_agent_tool_fs as _;
-use goat_agent_tool_shell as _;
-use goat_agent_tool_skill as _;
 use goat_channel_discord as _;
 use goat_channel_slack as _;
 use goat_integration_asana as _;

@@ -22,6 +22,7 @@ chrono = { workspace = true }
 pty-process = { workspace = true }
 goat-capability = { workspace = true }
 goat-tool-browser = { workspace = true }
+goat-tool-code = { workspace = true }
 goat-tool-computer = { workspace = true }
 goat-remote = { workspace = true }
 goat-engine = { workspace = true }

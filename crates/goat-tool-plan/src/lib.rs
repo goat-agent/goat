@@ -8,8 +8,9 @@ use std::{
 
 use goat_protocol::{TaskId, ToolCallId, ToolDisplay};
 use goat_tool::{
-    Tool, ToolDefinitionContext, ToolError, ToolFuture, ToolInvocation, ToolOutput, ToolSandbox,
+    Tool, ToolCall, ToolContext, ToolDefinitionContext, ToolError, ToolFuture, ToolName, ToolOutput,
 };
+use std::borrow::Cow;
 
 const SLUG_MAX_LEN: usize = 48;
 
@@ -38,12 +39,12 @@ impl ProposePlanTool {
 }
 
 impl Tool for ProposePlanTool {
-    fn name(&self) -> &'static str {
-        "ProposePlan"
+    fn name(&self) -> ToolName {
+        ToolName::from_static("ProposePlan")
     }
 
-    fn description(&self) -> &'static str {
-        "Submit the plan you wrote for the user to approve. Call this only after the plan file is complete. The user reviews it and either approves — which leaves plan mode and starts implementation — or rejects it with feedback for you to revise. Takes no arguments; the plan is read from the plan file."
+    fn description(&self) -> Cow<'static, str> {
+        "Submit the plan you wrote for the user to approve. Call this only after the plan file is complete. The user reviews it and either approves — which leaves plan mode and starts implementation — or rejects it with feedback for you to revise. Takes no arguments; the plan is read from the plan file.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -54,18 +55,9 @@ impl Tool for ProposePlanTool {
         })
     }
 
-    fn run<'a>(&'a self, _input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
-        Box::pin(async { Err(ToolError::execution("plan invocation is unavailable")) })
-    }
-
-    fn invoke<'a>(
-        &'a self,
-        _input: &'a str,
-        _ctx: &'a ToolSandbox,
-        invocation: ToolInvocation<'a>,
-    ) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, _call: &'a ToolCall, ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let path = self.service.path(invocation.host).ok_or_else(|| {
+            let path = self.service.path(ctx.host).ok_or_else(|| {
                 ToolError::execution("no plan file is bound to this session; write the plan first")
             })?;
             let plan = tokio::fs::read_to_string(&path).await.map_err(|err| {
@@ -79,8 +71,12 @@ impl Tool for ProposePlanTool {
             }
             self.service
                 .submit(PlanSubmission {
-                    task: invocation.task,
-                    call: invocation.call,
+                    task: ctx.task.ok_or_else(|| {
+                        ToolError::execution("ProposePlan requires a task context")
+                    })?,
+                    call: ctx.call.ok_or_else(|| {
+                        ToolError::execution("ProposePlan requires a call context")
+                    })?,
                     plan,
                     path,
                 })
@@ -98,7 +94,7 @@ impl Tool for ProposePlanTool {
     }
 
     fn display_input(&self, _input: &str) -> ToolDisplay {
-        ToolDisplay::primary(goat_tool::display::call_sig(self.name(), &[]))
+        ToolDisplay::primary(goat_tool::display::call_sig(self.name().as_str(), &[]))
     }
 }
 

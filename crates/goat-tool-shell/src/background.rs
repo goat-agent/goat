@@ -1,9 +1,10 @@
+use std::borrow::Cow;
 use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
 use goat_protocol::{ProcessState, RunId, ToolDisplay};
 use goat_tool::{
-    SandboxPolicy, Tool, ToolDefinitionContext, ToolError, ToolFuture, ToolInvocation, ToolOutput,
-    ToolSandbox, ToolSpec, display,
+    SandboxPolicy, Tool, ToolCall, ToolContext, ToolDefinitionContext, ToolError, ToolFuture,
+    ToolName, ToolOutput, ToolSpec, display,
 };
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -59,12 +60,12 @@ struct StartInput {
 }
 
 impl Tool for BackgroundBashTool {
-    fn name(&self) -> &'static str {
-        "Bash"
+    fn name(&self) -> ToolName {
+        ToolName::from_static("Bash")
     }
 
-    fn description(&self) -> &'static str {
-        "Run a shell command via `sh -c` in the session directory and return its combined output. A nonzero exit code is reported in the output, not as an error. Set background=true to start it in the background instead: the call returns a run id immediately and a fresh turn wakes you when the command exits, so if you are only waiting for it, end your turn rather than polling. Read buffered output meanwhile with BashOutput, answer a prompt with BashInput, stop it with BashKill. Add watch=true to also be woken while it is still running, every time it prints output you have not read."
+    fn description(&self) -> Cow<'static, str> {
+        "Run a shell command via `sh -c` in the session directory and return its combined output. A nonzero exit code is reported in the output, not as an error. Set background=true to start it in the background instead: the call returns a run id immediately and a fresh turn wakes you when the command exits, so if you are only waiting for it, end your turn rather than polling. Read buffered output meanwhile with BashOutput, answer a prompt with BashInput, stop it with BashKill. Add watch=true to also be woken while it is still running, every time it prints output you have not read.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -102,16 +103,12 @@ impl Tool for BackgroundBashTool {
                 );
             }
         }
-        Some(ToolSpec {
-            name: self.name(),
-            description: if context.top_level {
-                self.description()
-            } else {
-                BashTool.description()
-            }
-            .to_owned(),
-            parameters,
-        })
+        let description = if context.top_level {
+            self.description()
+        } else {
+            BashTool.description()
+        };
+        Some(ToolSpec::new(self.name(), description, parameters))
     }
 
     fn display_input(&self, input: &str) -> ToolDisplay {
@@ -124,27 +121,18 @@ impl Tool for BackgroundBashTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, context: &'a ToolSandbox) -> ToolFuture<'a> {
-        BashTool.run(input, context)
-    }
-
-    fn invoke<'a>(
-        &'a self,
-        input: &'a str,
-        context: &'a ToolSandbox,
-        invocation: ToolInvocation<'a>,
-    ) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let args: StartInput = serde_json::from_str(input)?;
+            let args: StartInput = serde_json::from_value(call.arguments.clone())?;
             if !args.background {
-                return BashTool.run(input, context).await;
+                return BashTool.call(call, ctx).await;
             }
-            if !invocation.definition_context.top_level {
+            if !ctx.definition_context.top_level {
                 return Err(ToolError::policy(
                     "background processes are unavailable in this execution scope",
                 ));
             }
-            if !matches!(context.exec_policy, SandboxPolicy::Full) {
+            if !matches!(ctx.exec_policy, SandboxPolicy::Full) {
                 return Err(ToolError::policy(
                     "background runs are only available with full shell access, not while planning",
                 ));
@@ -157,10 +145,10 @@ impl Tool for BackgroundBashTool {
                         label: "bash",
                         command: args.command,
                         name: args.name,
-                        cwd: context.cwd.clone(),
+                        cwd: ctx.cwd.clone(),
                         watch: args.watch,
                     },
-                    invocation.cancellation,
+                    ctx.cancellation,
                 )
                 .await
                 .map_err(ToolError::execution)?;
@@ -200,16 +188,16 @@ struct InputArgs {
 }
 
 impl Tool for BackgroundProcessTool {
-    fn name(&self) -> &'static str {
-        match self.operation {
+    fn name(&self) -> ToolName {
+        ToolName::from_static(match self.operation {
             Operation::Output => "BashOutput",
             Operation::Input => "BashInput",
             Operation::Kill => "BashKill",
-        }
+        })
     }
 
-    fn description(&self) -> &'static str {
-        match self.operation {
+    fn description(&self) -> Cow<'static, str> {
+        Cow::Borrowed(match self.operation {
             Operation::Output => {
                 "Read output produced by a background Bash run since the last read. Returns immediately with whatever is buffered, plus whether the run is still going or has exited. To wait for a result, end your turn: the run wakes you when it exits."
             }
@@ -217,7 +205,7 @@ impl Tool for BackgroundProcessTool {
                 "Send keystrokes to a background Bash run's stdin. Include a trailing newline to submit a line."
             }
             Operation::Kill => "Terminate a background Bash run and its process group.",
-        }
+        })
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -247,31 +235,18 @@ impl Tool for BackgroundProcessTool {
     fn display_input(&self, input: &str) -> ToolDisplay {
         match serde_json::from_str::<RunRef>(input) {
             Ok(args) => ToolDisplay::primary(format!("{}(#{})", self.name(), args.run)),
-            Err(_) => ToolDisplay::primary(self.name()),
+            Err(_) => ToolDisplay::primary(self.name().as_str()),
         }
     }
 
-    fn run<'a>(&'a self, _input: &'a str, _context: &'a ToolSandbox) -> ToolFuture<'a> {
-        Box::pin(async {
-            Err(ToolError::execution(
-                "background invocation context is unavailable",
-            ))
-        })
-    }
-
-    fn invoke<'a>(
-        &'a self,
-        input: &'a str,
-        _context: &'a ToolSandbox,
-        invocation: ToolInvocation<'a>,
-    ) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            if invocation.cancellation.is_cancelled() {
+            if ctx.cancellation.is_cancelled() {
                 return Err(ToolError::execution("interrupted"));
             }
             match self.operation {
                 Operation::Output => {
-                    let args: RunRef = serde_json::from_str(input)?;
+                    let args: RunRef = serde_json::from_value(call.arguments.clone())?;
                     let chunk = self
                         .service
                         .output(args.run)
@@ -280,7 +255,7 @@ impl Tool for BackgroundProcessTool {
                     Ok(ToolOutput::text(output_reply(args.run, &chunk)))
                 }
                 Operation::Input => {
-                    let args: InputArgs = serde_json::from_str(input)?;
+                    let args: InputArgs = serde_json::from_value(call.arguments.clone())?;
                     self.service
                         .input(args.run, args.text)
                         .await
@@ -288,7 +263,7 @@ impl Tool for BackgroundProcessTool {
                     Ok(ToolOutput::text(format!("Wrote to run #{}.", args.run)))
                 }
                 Operation::Kill => {
-                    let args: RunRef = serde_json::from_str(input)?;
+                    let args: RunRef = serde_json::from_value(call.arguments.clone())?;
                     self.service
                         .kill(args.run)
                         .await
@@ -300,18 +275,18 @@ impl Tool for BackgroundProcessTool {
     }
 }
 
-pub fn all_with_background(service: Arc<dyn BackgroundProcessService>) -> Vec<Box<dyn Tool>> {
+pub fn all_with_background(service: Arc<dyn BackgroundProcessService>) -> Vec<Arc<dyn Tool>> {
     vec![
-        Box::new(BackgroundBashTool::new(service.clone())),
-        Box::new(BackgroundProcessTool::new(
+        Arc::new(BackgroundBashTool::new(service.clone())),
+        Arc::new(BackgroundProcessTool::new(
             service.clone(),
             Operation::Output,
         )),
-        Box::new(BackgroundProcessTool::new(
+        Arc::new(BackgroundProcessTool::new(
             service.clone(),
             Operation::Input,
         )),
-        Box::new(BackgroundProcessTool::new(service, Operation::Kill)),
+        Arc::new(BackgroundProcessTool::new(service, Operation::Kill)),
     ]
 }
 
@@ -404,11 +379,12 @@ mod tests {
                 planning: false,
             })
             .unwrap();
-        let properties = definition.parameters.get("properties").unwrap();
+        let properties = definition.input_schema.get("properties").unwrap();
         assert!(properties.get("command").is_some());
         assert!(properties.get("background").is_some());
         assert!(properties.get("watch").is_some());
-        assert!(!definition.description.to_lowercase().contains("poll with"));
+        let description = definition.description.as_deref().unwrap_or_default();
+        assert!(!description.to_lowercase().contains("poll with"));
     }
 
     #[test]

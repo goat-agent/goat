@@ -68,7 +68,6 @@ goat-capability = { path = "crates/goat-capability" }
 goat-browser-host = { path = "crates/goat-browser-host" }
 goat-computer-host = { path = "crates/goat-computer-host" }
 goat-tool-computer = { path = "crates/goat-tool-computer" }
-goat-agent-tool-computer = { path = "crates/goat-agent-tool-computer" }
 goat-channel-desktop = { path = "crates/goat-channel-desktop" }
 tauri = { version = "2", features = ["macos-private-api"] }
 tauri-build = "2"
@@ -197,17 +196,12 @@ goat-integration-posthog = { path = "crates/goat-integration-posthog" }
 goat-integration-sentry = { path = "crates/goat-integration-sentry" }
 goat-integration-slack  = { path = "crates/goat-integration-slack" }
 goat-integration-tiro   = { path = "crates/goat-integration-tiro" }
-goat-agent-tool               = { path = "crates/goat-agent-tool" }
-goat-agent-tool-observation   = { path = "crates/goat-agent-tool-observation" }
-goat-agent-tool-fs            = { path = "crates/goat-agent-tool-fs" }
-goat-agent-tool-shell         = { path = "crates/goat-agent-tool-shell" }
-goat-agent-tool-skill         = { path = "crates/goat-agent-tool-skill" }
-goat-agent-tool-schedule      = { path = "crates/goat-agent-tool-schedule" }
-goat-agent-tool-goal          = { path = "crates/goat-agent-tool-goal" }
-goat-agent-tool-code          = { path = "crates/goat-agent-tool-code" }
-goat-agent-tool-browser       = { path = "crates/goat-agent-tool-browser" }
-goat-agent-tool-memory        = { path = "crates/goat-agent-tool-memory" }
-goat-agent-tool-pty           = { path = "crates/goat-agent-tool-pty" }
+goat-tool-observation   = { path = "crates/goat-tool-observation" }
+goat-tool-schedule      = { path = "crates/goat-tool-schedule" }
+goat-tool-goal          = { path = "crates/goat-tool-goal" }
+goat-tool-code               = { path = "crates/goat-tool-code" }
+goat-tool-memory        = { path = "crates/goat-tool-memory" }
+goat-tool-pty           = { path = "crates/goat-tool-pty" }
 goat-brain              = { path = "crates/goat-brain" }
 goat-agent-config       = { path = "crates/goat-agent-config" }
 goat-runtime            = { path = "crates/goat-runtime" }

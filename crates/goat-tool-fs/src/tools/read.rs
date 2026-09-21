@@ -1,7 +1,8 @@
+use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolFuture, ToolOutput, ToolSandbox, display};
+use goat_tool::{Tool, ToolCall, ToolContext, ToolFuture, ToolName, ToolOutput, display};
 use serde::Deserialize;
 
 use crate::error::FsError;
@@ -16,12 +17,12 @@ struct Input {
 }
 
 impl Tool for ReadTool {
-    fn name(&self) -> &'static str {
-        "Read"
+    fn name(&self) -> ToolName {
+        ToolName::from_static("Read")
     }
 
-    fn description(&self) -> &'static str {
-        "Read a file from the session directory, returning cat -n style numbered lines. Supports line-based offset and limit."
+    fn description(&self) -> Cow<'static, str> {
+        "Read a file from the session directory, returning cat -n style numbered lines. Supports line-based offset and limit.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -46,9 +47,9 @@ impl Tool for ReadTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let args: Input = serde_json::from_str(input)?;
+            let args: Input = serde_json::from_value(call.arguments.clone())?;
             let resolved = ctx.resolve(&args.path)?;
             if !resolved.exists() {
                 return Err(FsError::NotFound { path: args.path }.into());

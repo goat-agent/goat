@@ -1,18 +1,17 @@
 # AGENTS.md — goat-mcp-tools
 
-Both tool shells over one neutral pair, `ResolvedTool` and `McpToolSource`.
+One neutral pair, `ResolvedTool` and `McpToolSource`, and one adapter over them:
+`tools(resolved) -> Vec<Arc<dyn goat_tool::Tool>>`. The same `Arc<dyn Tool>` drops into the agent
+registry (`goat-runtime`'s `register` block) and the code registry (`goat_tools::builtin_with` /
+`CodingEngine::new`) — the unified `Tool` contract is what makes a single adapter possible.
 
-| Shell | Builds | For |
-|---|---|---|
-| `install` | `goat_agent_tool::ToolHandler` | the agent |
-| `adapt` | `goat_tool::Tool` | code |
+**Add a source, not a pair of adapters.** Today the sources are `goat-integration-mcp`'s
+`code_tools`/`register` for hosted integrations, and `from_manager` for `goat mcp` servers. A
+source applies its own policy before the adapter sees a tool.
 
-**Add a source, not a pair of adapters.** The shells stay at two however many sources exist. Today
-they are `goat-integration-mcp`'s `code_tools`/`register` for hosted integrations, and
-`from_manager` for `goat mcp` servers. A source applies its own policy before a shell sees a tool.
-
-`McpToolSource::call` takes an optional `AgentId`, because a hosted integration resolves its binding
-per calling agent. Sources with no such axis ignore it.
+`McpToolSource::call` takes an optional `AgentId`, because a hosted integration resolves its
+binding per calling agent. The adapter reads it from `ctx.agent` — `Some` when the agent's brain
+invokes the tool, `None` in a code session. Sources with no such axis ignore it.
 
 ## Registration is global; selection is per-consumer
 
@@ -22,3 +21,7 @@ per calling agent. Sources with no such axis ignore it.
 | code session | every connected integration and every user-scope server, unfiltered, because a person is driving it |
 
 Project-scope `goat mcp` servers are code-only. The agent has no working directory.
+
+A `ResolvedTool.enabled = false` lands in the registry but not in `default_specs()` (agent) or
+`specs_for()` (code) — the code side surfaces those through the `ToolSearch` deferred catalog
+instead.
