@@ -16,6 +16,7 @@ pub struct BuiltinCapabilities {
     pub delegation: Arc<dyn DelegationService>,
     pub native_search: Arc<dyn NativeSearchService>,
     pub plans: Arc<dyn PlanService>,
+    pub skills: goat_skill::Shared,
 }
 
 struct UnavailableQuestions;
@@ -113,6 +114,7 @@ impl Default for BuiltinCapabilities {
             delegation: Arc::new(UnavailableDelegation),
             native_search: Arc::new(UnavailableNativeSearch),
             plans: Arc::new(UnavailablePlans),
+            skills: goat_skill::Shared::default(),
         }
     }
 }
@@ -131,7 +133,7 @@ pub fn builtin_with(capabilities: BuiltinCapabilities) -> ToolRegistry {
     tools.extend(goat_tool_search::all_with_native(
         capabilities.native_search,
     ));
-    tools.extend(goat_tool_skill::all());
+    tools.extend(goat_tool_skill::all_with(capabilities.skills));
     tools.extend(goat_tool_web::all());
     tools.push(Box::new(AskTool::new(capabilities.questions)));
     tools.push(Box::new(ProposePlanTool::new(capabilities.plans)));

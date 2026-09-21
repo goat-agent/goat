@@ -3430,6 +3430,18 @@
               {
                 "properties": {
                   "type": {
+                    "const": "ReloadSkills",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
                     "const": "ListConversations",
                     "type": "string"
                   }
@@ -4201,6 +4213,18 @@
                 "properties": {
                   "type": {
                     "const": "RefreshAccounts",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "const": "ReloadSkills",
                     "type": "string"
                   }
                 },

@@ -34,6 +34,7 @@ pub enum Op {
         decision: PlanDecision,
     },
     RefreshAccounts {},
+    ReloadSkills {},
     ListConversations {},
     ListRewindPoints {},
     Rewind {

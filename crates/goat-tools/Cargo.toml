@@ -18,6 +18,7 @@ goat-tool-shell = { workspace = true }
 goat-tool-search = { workspace = true }
 goat-tool-skill = { workspace = true }
 goat-tool-web = { workspace = true }
+goat-skill = { workspace = true }
 goat-protocol = { workspace = true }
 tokio-util = { workspace = true }
 

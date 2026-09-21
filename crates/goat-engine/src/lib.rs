@@ -169,7 +169,7 @@ pub(crate) struct SessionServices {
     pub(crate) subagents: SubagentRegistry,
     pub(crate) store: Store,
     pub(crate) events: mpsc::Sender<Event>,
-    pub(crate) skills: goat_skill::SkillSet,
+    pub(crate) skills: goat_skill::Shared,
     pub(crate) instructions: Option<String>,
     pub(crate) semaphore: Arc<Semaphore>,
     pub(crate) child_ids: AtomicU64,
@@ -385,7 +385,7 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
             .await;
     }
 
-    let skills = prompt::load_skills(&cwd);
+    let skills = goat_skill::Shared::new(prompt::load_skills(&cwd));
     let subagents = SubagentRegistry::load(&cwd);
     let project_instructions = instructions::load_project_instructions(&cwd);
     let session_date = prompt::current_utc_date();
@@ -417,6 +417,7 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
         delegation: delegation_service.clone(),
         native_search: Arc::new(websearch::EngineNativeSearchService),
         plans: Arc::new(plan::EnginePlanService::new(events.clone())),
+        skills: skills.clone(),
     })
     .with_many(tools);
     if !deferred_catalog.is_empty() {
@@ -426,11 +427,22 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
         )));
     }
     let checkpoints = checkpoint::CheckpointTracker::new(store.clone());
-    let _ = events
-        .send(Event::SkillsChanged {
-            skills: skills.iter().map(prompt::skill_info).collect(),
-        })
-        .await;
+    {
+        let loaded = skills.get();
+        let _ = events
+            .send(Event::SkillsChanged {
+                skills: loaded.iter().map(prompt::skill_info).collect(),
+            })
+            .await;
+        if let Some(message) = prompt::diagnostics_message(&loaded) {
+            let _ = events
+                .send(Event::Notify {
+                    kind: goat_protocol::NotifyKind::Error,
+                    message,
+                })
+                .await;
+        }
+    }
 
     let rl_path = goat_config::rate_limits_path();
     let rl_cache_data = rl_path
@@ -549,6 +561,9 @@ async fn run(agent: CodingEngine, mut ops: mpsc::Receiver<Op>, events: mpsc::Sen
             }
             Op::RefreshAccounts {} => {
                 accounts::refresh_accounts(&ctx).await;
+            }
+            Op::ReloadSkills {} => {
+                prompt::reload_skills(&ctx).await;
             }
             Op::ListConversations {} => {
                 conversations::handle_list_conversations(&ctx.store, &ctx.cwd, &ctx.events).await;
@@ -1019,6 +1034,29 @@ mod tests {
             }
         }
         assert_eq!(text_dones, 2, "follow-up must produce its own response");
+    }
+
+    #[tokio::test]
+    async fn reload_skills_re_emits_the_catalog_and_reports() {
+        let agent = agent_with("ok", 0).await;
+        let session = Session::spawn(agent);
+        let (ops, mut events, _handle) = session.into_parts();
+        ops.send(Op::ReloadSkills {}).await.unwrap();
+
+        let mut catalogs = 0usize;
+        let mut notified = false;
+        while !(catalogs >= 2 && notified) {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                .await
+                .expect("engine stalled before answering the reload")
+                .expect("engine closed");
+            match event {
+                Event::SkillsChanged { .. } => catalogs += 1,
+                Event::Notify { .. } if catalogs >= 2 => notified = true,
+                _ => {}
+            }
+        }
+        assert_eq!(catalogs, 2, "startup and reload each publish the catalog");
     }
 
     struct OverflowThenRecoverProvider {

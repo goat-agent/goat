@@ -10,7 +10,7 @@ use thiserror::Error;
 pub use args::{Call, Resolved, resolve};
 pub use manifest::{Argument, ArgumentValue, Choice};
 pub use render::render;
-pub use scan::{Diagnostic, Resource, Scope, Scopes, Skill, SkillSet, Survey, survey};
+pub use scan::{Diagnostic, Resource, Scope, Scopes, Shared, Skill, SkillSet, Survey, survey};
 
 pub const PROJECT_SUBDIR: &str = ".goat/skills";
 

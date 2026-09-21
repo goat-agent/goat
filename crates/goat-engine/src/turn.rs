@@ -162,6 +162,9 @@ pub(crate) async fn handle_idle_op(op: Op, ctx: &SessionContext, state: &mut Ses
         Op::RefreshAccounts {} => {
             crate::accounts::refresh_accounts(ctx).await;
         }
+        Op::ReloadSkills {} => {
+            crate::prompt::reload_skills(ctx).await;
+        }
         Op::ListRewindPoints { .. }
         | Op::Rewind { .. }
         | Op::Resume { .. }
@@ -563,7 +566,7 @@ pub(crate) async fn handle_shell(
                 MessageRole::System,
                 build_system_prompt(
                     &ctx.cwd,
-                    &ctx.skills,
+                    &ctx.skills.get(),
                     ctx.instructions.as_deref(),
                     &ctx.date,
                     state.plan_prompt_path(),
@@ -832,7 +835,7 @@ async fn run_one_turn(
     bind_plan_path(ctx, state, ids.stored_conversation, &text).await;
     let system = build_system_prompt(
         &ctx.cwd,
-        &ctx.skills,
+        &ctx.skills.get(),
         ctx.instructions.as_deref(),
         &ctx.date,
         state.plan_prompt_path(),
