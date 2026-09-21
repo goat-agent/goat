@@ -333,12 +333,7 @@ impl CodeSessionHub {
         }
     }
 
-    pub(crate) async fn hold_for_attach(
-        &self,
-        session: SessionId,
-        client: ClientId,
-        cancel: tokio_util::sync::CancellationToken,
-    ) {
+    pub(crate) async fn hold_for_attach(&self, session: SessionId, client: ClientId) {
         {
             let table = self.inner.sessions.lock().await;
             let Some(live) = table.get(&session) else {
@@ -351,11 +346,6 @@ impl CodeSessionHub {
             .lock()
             .await
             .insert((client, session));
-        let this = self.clone();
-        tokio::spawn(async move {
-            cancel.cancelled().await;
-            this.release_attach_hold(session, client).await;
-        });
     }
 
     async fn release_attach_hold(&self, session: SessionId, client: ClientId) {
@@ -549,7 +539,6 @@ impl CodeSessionHub {
         sender: mpsc::Sender<Update>,
         lagged: tokio_util::sync::CancellationToken,
     ) -> Result<(), String> {
-        self.release_attach_hold(session, client).await;
         let live = {
             let table = self.inner.sessions.lock().await;
             let live = table.get(&session).cloned();
@@ -559,6 +548,7 @@ impl CodeSessionHub {
             live
         };
         let live = live.ok_or("unknown session")?;
+        self.release_attach_hold(session, client).await;
         wait_subscribe_ready(&live).await;
         let (snapshot, live_rx) = {
             let mut inner = live.inner.lock().await;
@@ -593,6 +583,7 @@ impl CodeSessionHub {
             live
         };
         let live = live.ok_or("unknown session")?;
+        self.release_attach_hold(session, client).await;
         wait_subscribe_ready(&live).await;
         let (backlog, cwd, live_rx) = {
             let mut inner = live.inner.lock().await;
@@ -676,6 +667,17 @@ impl CodeSessionHub {
     }
 
     pub(crate) async fn drop_client(&self, client: ClientId) {
+        let held: Vec<SessionId> = {
+            let holds = self.inner.attach_holds.lock().await;
+            holds
+                .iter()
+                .filter(|(holder, _)| *holder == client)
+                .map(|(_, session)| *session)
+                .collect()
+        };
+        for session in held {
+            self.release_attach_hold(session, client).await;
+        }
         let lives: Vec<(SessionId, LiveSession)> = {
             let table = self.inner.sessions.lock().await;
             table.iter().map(|(id, live)| (*id, live.clone())).collect()
