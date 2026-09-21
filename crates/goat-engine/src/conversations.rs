@@ -563,7 +563,7 @@ pub(crate) async fn handle_resume(
     state: &mut crate::SessionState,
 ) {
     let store = &ctx.store;
-    let skills = &ctx.skills;
+    let skills = ctx.skills.get();
     let tools = &ctx.tools;
     let instructions = ctx.instructions.as_deref();
     let date = ctx.date.as_str();
@@ -654,7 +654,7 @@ pub(crate) async fn handle_resume(
             MessageRole::System,
             build_system_prompt(
                 std::path::Path::new(&conversation.cwd),
-                skills,
+                &skills,
                 instructions,
                 date,
                 None,

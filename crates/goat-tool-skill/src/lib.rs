@@ -1,14 +1,23 @@
 pub mod agent;
 use std::borrow::Cow;
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use goat_skill::{Call, Scopes, SkillError, SkillSet};
+use goat_skill::{Call, Shared, SkillError};
 use goat_tool::{
     Tool, ToolCall, ToolContext, ToolError, ToolErrorClass, ToolFuture, ToolName, ToolOutput,
 };
 use serde::Deserialize;
 
-pub struct SkillTool;
+pub struct SkillTool {
+    skills: Shared,
+}
+
+impl SkillTool {
+    pub fn new(skills: Shared) -> Self {
+        Self { skills }
+    }
+}
 
 fn class(error: &SkillError) -> ToolErrorClass {
     match error {
@@ -64,12 +73,10 @@ impl Tool for SkillTool {
         }
     }
 
-    fn call<'a>(&'a self, call: &'a ToolCall, ctx: ToolContext<'a>) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, _ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
             let args: Input = serde_json::from_value(call.arguments.clone())?;
-            let root = goat_config::root()
-                .ok_or_else(|| ToolError::new(ToolErrorClass::Io, goat_config::HOME_NOT_FOUND))?;
-            let skills = SkillSet::load(&Scopes::code(root, &ctx.cwd));
+            let skills = self.skills.get();
             let skill = skills
                 .activate(&args.name)
                 .map_err(|error| ToolError::new(class(&error), error.to_string()))?;
@@ -88,19 +95,26 @@ impl Tool for SkillTool {
     }
 }
 
-pub fn all() -> Vec<Arc<dyn Tool>> {
-    vec![Arc::new(SkillTool)]
+pub fn all_with(skills: Shared) -> Vec<Arc<dyn Tool>> {
+    vec![Arc::new(SkillTool::new(skills))]
 }
 
 #[cfg(test)]
 mod tests {
-    use super::SkillTool;
+    use goat_skill::{Scopes, Shared, SkillSet};
     use goat_tool::{Tool, ToolErrorClass, ToolSandbox};
+
+    use super::SkillTool;
 
     fn write_project_skill(dir: &std::path::Path, name: &str, contents: &str) {
         let skill_dir = dir.join(goat_skill::PROJECT_SUBDIR).join(name);
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), contents).unwrap();
+    }
+
+    fn tool_at(dir: &std::path::Path) -> SkillTool {
+        let set = SkillSet::load(&Scopes::code(dir, dir).with_agents_user(None));
+        SkillTool::new(Shared::new(set))
     }
 
     #[tokio::test]
@@ -112,7 +126,10 @@ mod tests {
             "---\ndescription: a demo\n---\nThe full instructions.",
         );
         let ctx = ToolSandbox::new(dir.path()).unwrap();
-        let out = SkillTool.run(r#"{"name":"demo"}"#, &ctx).await.unwrap();
+        let out = tool_at(dir.path())
+            .run(r#"{"name":"demo"}"#, &ctx)
+            .await
+            .unwrap();
         let text = out.as_text().unwrap();
         assert!(text.contains("<skill_content name=\"demo\">"));
         assert!(text.contains("The full instructions."));
@@ -127,7 +144,7 @@ mod tests {
             "---\ndescription: audits\narguments:\n  - name: target\n    description: what to audit\n    required: true\n    value: text_tail\n---\nAudit $target now.",
         );
         let ctx = ToolSandbox::new(dir.path()).unwrap();
-        let out = SkillTool
+        let out = tool_at(dir.path())
             .run(
                 r#"{"name":"audit","arguments":{"target":"the payments service"}}"#,
                 &ctx,
@@ -150,7 +167,7 @@ mod tests {
             "---\ndescription: audits\narguments:\n  - name: target\n    description: what to audit\n    required: true\n    value: word\n---\nAudit $target now.",
         );
         let ctx = ToolSandbox::new(dir.path()).unwrap();
-        let result = SkillTool.run(r#"{"name":"audit"}"#, &ctx).await;
+        let result = tool_at(dir.path()).run(r#"{"name":"audit"}"#, &ctx).await;
         assert!(matches!(
             result,
             Err(error) if error.class() == ToolErrorClass::InvalidInput
@@ -161,10 +178,30 @@ mod tests {
     async fn unknown_skill_errors() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ToolSandbox::new(dir.path()).unwrap();
-        let result = SkillTool.run(r#"{"name":"missing"}"#, &ctx).await;
+        let result = tool_at(dir.path()).run(r#"{"name":"missing"}"#, &ctx).await;
         assert!(matches!(
             result,
             Err(error) if error.class() == ToolErrorClass::NotFound
         ));
+    }
+
+    #[tokio::test]
+    async fn a_skill_written_after_load_is_not_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = tool_at(dir.path());
+        write_project_skill(
+            dir.path(),
+            "late",
+            "---\ndescription: added later\n---\nlate body.",
+        );
+        let ctx = ToolSandbox::new(dir.path()).unwrap();
+        let result = tool.run(r#"{"name":"late"}"#, &ctx).await;
+        assert!(
+            matches!(
+                result,
+                Err(error) if error.class() == ToolErrorClass::NotFound
+            ),
+            "the session's skill set is pinned until an explicit reload"
+        );
     }
 }

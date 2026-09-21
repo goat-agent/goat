@@ -89,6 +89,33 @@ pub struct Scopes {
     agents_user: Option<PathBuf>,
 }
 
+#[derive(Clone, Default)]
+pub struct Shared(std::sync::Arc<std::sync::Mutex<std::sync::Arc<SkillSet>>>);
+
+impl Shared {
+    #[must_use]
+    pub fn new(set: SkillSet) -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(
+            std::sync::Arc::new(set),
+        )))
+    }
+
+    #[must_use]
+    pub fn get(&self) -> std::sync::Arc<SkillSet> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn replace(&self, next: SkillSet) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = std::sync::Arc::new(next);
+    }
+}
+
 impl Scopes {
     #[must_use]
     pub fn agent(root: impl Into<PathBuf>, slug: impl Into<String>) -> Self {
@@ -450,6 +477,28 @@ mod tests {
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].kind, "scripts");
         assert!(resources[0].path.ends_with("run.sh"));
+    }
+
+    #[test]
+    fn a_shared_set_swaps_while_a_held_snapshot_stays_pinned() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("skills"), "one", &manifest("one", "first"));
+        let shared = super::Shared::new(SkillSet::load(
+            &Scopes::code(root, root).with_agents_user(None),
+        ));
+        let before = shared.get();
+        write(&root.join("skills"), "two", &manifest("two", "second"));
+        shared.replace(SkillSet::load(
+            &Scopes::code(root, root).with_agents_user(None),
+        ));
+        assert!(
+            before.get("two").is_none(),
+            "a snapshot taken before the swap keeps the old set"
+        );
+        let after = shared.get();
+        assert!(after.get("one").is_some());
+        assert!(after.get("two").is_some());
     }
 
     #[test]

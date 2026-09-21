@@ -12,8 +12,11 @@ provider, target, tool defs and cwd rather than borrowing them.
 Both are owned because a detached run outlives the turn that started it, so anything it reads must be
 `'static` and `Send`.
 
-The one interior mutability is `SessionServices::registry`, a `Mutex<Arc<Registry>>` swapped wholesale
-by login and account removal. Never mutate it in place.
+Interior mutability lives in two places: `SessionServices::registry`, a `Mutex<Arc<Registry>>` swapped
+wholesale by login and account removal, and `SessionServices::skills`, a `goat_skill::Shared` swapped
+wholesale by `Op::ReloadSkills`. Never mutate either in place. The prompt catalog, the `Skill` tool
+and the TUI's slash registry all read the same `Shared`, so a session's skill set is pinned until a
+reload replaces it; `SkillSet::diagnostics` is reported as a `Notify` at boot and on each reload.
 
 `SessionState` bundles the four mutable per-session fields (`target`, `conversation`, `tracker`,
 `conversation_id`) threaded through the turn lifecycle. Keep it outside `SessionContext`: a background

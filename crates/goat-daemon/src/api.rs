@@ -240,11 +240,7 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
                     .await
                     .map_err(refused)?;
                 manager
-                    .hold_for_attach(
-                        session,
-                        crate::wire::ClientId(ctx.client),
-                        ctx.cancel.clone(),
-                    )
+                    .hold_for_attach(session, crate::wire::ClientId(ctx.client))
                     .await;
                 Ok(SessionOpenOutput {
                     session: SessionId(session.0),

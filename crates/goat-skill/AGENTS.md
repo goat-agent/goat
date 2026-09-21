@@ -12,6 +12,10 @@ The only `SKILL.md` crate: one parser, one renderer, and every scope.
 
 `~/.agents/skills` is a skill scope outside the goat tree.
 
+`Shared` is the session-pinned handle over a `SkillSet`: `get()` clones the current `Arc`, `replace()`
+swaps it wholesale. The engine holds one per session so the prompt catalog and the `Skill` tool always
+read the same snapshot until `/reload-skills` replaces it.
+
 ## Keep the dependency list at three
 
 serde, thiserror and tracing. **Never depend on `goat-config` or `goat-protocol`.** A caller hands
