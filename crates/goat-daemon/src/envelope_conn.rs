@@ -83,7 +83,7 @@ pub async fn serve_envelope<Si, St>(
     let device = device_for(&origin);
     let router = api::build(
         api::DaemonApi {
-            manager,
+            manager: manager.clone(),
             broker,
             browser_events,
             device,
@@ -141,6 +141,7 @@ pub async fn serve_envelope<Si, St>(
         }
     }
     disconnect.cancel();
+    manager.drop_client(client_id).await;
 }
 
 #[cfg(test)]

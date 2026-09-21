@@ -163,6 +163,44 @@ async fn busy_counts_a_live_session_and_clears_when_it_is_killed() {
 }
 
 #[tokio::test]
+async fn a_session_is_evicted_once_its_client_disconnects() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = start_daemon(dir.path()).await;
+
+    let holder = connect(&socket).await;
+    let session = holder
+        .api
+        .call::<SessionOpen>(SessionOpenParams {
+            cwd: dir.path().display().to_string(),
+            resume: ResumeMode::New {},
+        })
+        .await
+        .unwrap()
+        .session;
+    let mut watch = holder
+        .api
+        .open::<SessionWatch>(SessionWatchParams {
+            session,
+            from: WatchFrom::Snapshot {},
+        })
+        .await
+        .expect("watch opens");
+    let _ = tokio::time::timeout(Duration::from_secs(5), watch.recv()).await;
+
+    drop(watch);
+    holder.shutdown();
+    drop(holder);
+
+    for _ in 0..100 {
+        if busy(&socket).await == (0, 0) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the session outlived its client");
+}
+
+#[tokio::test]
 async fn a_second_daemon_loses_the_lock_and_leaves_the_first_alive() {
     let dir = tempfile::tempdir().unwrap();
     let socket = start_daemon(dir.path()).await;
