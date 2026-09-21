@@ -275,6 +275,10 @@ mod tests {
             resolve(&registry, "/help"),
             CommandEffect::Show(_)
         ));
+        assert!(matches!(
+            resolve(&registry, "/reload-skills"),
+            CommandEffect::Dispatch(_)
+        ));
         assert!(matches!(resolve(&registry, "/exit"), CommandEffect::Quit));
     }
 

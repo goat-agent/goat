@@ -4457,7 +4457,6 @@ dependencies = [
 name = "goat-tool-skill"
 version = "0.1.0"
 dependencies = [
- "goat-config",
  "goat-protocol",
  "goat-skill",
  "goat-tool",
@@ -4493,6 +4492,7 @@ name = "goat-tools"
 version = "0.1.0"
 dependencies = [
  "goat-protocol",
+ "goat-skill",
  "goat-tool",
  "goat-tool-ask",
  "goat-tool-delegate",

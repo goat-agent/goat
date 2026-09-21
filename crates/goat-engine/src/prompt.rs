@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use goat_protocol::{SkillArgument, SkillArgumentValue, SkillChoice, SkillInfo};
+use goat_protocol::{Event, NotifyKind, SkillArgument, SkillArgumentValue, SkillChoice, SkillInfo};
 use goat_provider::ContentBlock;
 use goat_skill::{Argument, ArgumentValue, Scopes, Skill, SkillSet};
 
@@ -157,6 +157,40 @@ pub(crate) fn load_skills(cwd: &std::path::Path) -> SkillSet {
         return SkillSet::default();
     };
     SkillSet::load(&Scopes::code(root, cwd))
+}
+
+pub(crate) fn diagnostics_message(set: &SkillSet) -> Option<String> {
+    let diagnostics = set.diagnostics();
+    if diagnostics.is_empty() {
+        return None;
+    }
+    let mut message = String::from("skill diagnostics:");
+    for diagnostic in diagnostics {
+        let _ = write!(
+            message,
+            "\n{}: {}",
+            diagnostic.path.display(),
+            diagnostic.message
+        );
+    }
+    Some(message)
+}
+
+pub(crate) async fn reload_skills(ctx: &crate::SessionContext) {
+    let next = load_skills(&ctx.cwd);
+    let infos = next.iter().map(skill_info).collect();
+    let report = diagnostics_message(&next);
+    let count = next.len();
+    ctx.skills.replace(next);
+    let _ = ctx
+        .events
+        .send(Event::SkillsChanged { skills: infos })
+        .await;
+    let (kind, message) = match report {
+        Some(text) => (NotifyKind::Error, text),
+        None => (NotifyKind::Success, format!("{count} skills reloaded")),
+    };
+    let _ = ctx.events.send(Event::Notify { kind, message }).await;
 }
 
 pub(crate) fn skill_info(skill: &Skill) -> SkillInfo {
