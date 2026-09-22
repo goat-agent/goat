@@ -10,7 +10,6 @@ use embed::OpenAiEmbedderAdapter;
 use anyhow::{Context, Result, bail};
 use goat_agent_command::{CommandFactory, CommandProviderContext, CommandRegistry};
 use goat_agent_config::AgentConfig;
-use goat_agent_tool::ToolRegistry;
 use goat_brain::{Brain, BrainDeps, ProviderRegistry};
 use goat_bus::EventBus;
 use goat_channel::{Channel, ChannelBinding, ChannelFactory, ChannelHandle};
@@ -20,6 +19,7 @@ use goat_integration::{Integration, IntegrationBinding, IntegrationRuntime, Watc
 use goat_memory::Embedder;
 use goat_render::{DefaultStreamRenderer, StreamRenderer};
 use goat_store::{SqliteStore, Store};
+use goat_tool::ToolRegistry;
 use goat_types::{AgentId, Event, InstanceId};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -29,7 +29,7 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 pub struct AgentRuntime {
     join_handles: Vec<tokio::task::JoinHandle<()>>,
     cancel: CancellationToken,
-    _pty_manager: Arc<goat_agent_tool_pty::PtyManager>,
+    _pty_manager: Arc<goat_tool_pty::PtyManager>,
     _log_guard: Option<WorkerGuard>,
 }
 
@@ -111,9 +111,9 @@ impl AgentRuntime {
             .await
             .context("open memory engine")?,
         );
-        let pty_manager = Arc::new(goat_agent_tool_pty::PtyManager::new(
+        let pty_manager = Arc::new(goat_tool_pty::PtyManager::new(
             cancel.clone(),
-            goat_agent_tool_pty::MAX_SESSIONS,
+            goat_tool_pty::MAX_SESSIONS,
         ));
 
         let agent_turns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -744,7 +744,7 @@ struct RuntimeBase {
     provider_specs: goat_config::ProviderSpecs,
     meter: Option<goat_proxy::Meter>,
     memory_engine: Arc<goat_memory::MemoryEngine>,
-    pty_manager: Arc<goat_agent_tool_pty::PtyManager>,
+    pty_manager: Arc<goat_tool_pty::PtyManager>,
     scheduler_handle: goat_loop::scheduler::SchedulerHandle,
     code: Option<goat_daemon::CodeSessionHub>,
     bus: EventBus,
@@ -752,26 +752,29 @@ struct RuntimeBase {
     agent_turns: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+fn register_agent_tools(tools_reg: &mut ToolRegistry, base: &RuntimeBase) {
+    goat_tool_fs::agent::register(tools_reg);
+    goat_tool_shell::agent::register(tools_reg);
+    goat_tool_skill::agent::register(tools_reg);
+    goat_tool_schedule::register(tools_reg, base.store.clone(), base.scheduler_handle.clone());
+    goat_tool_goal::register(tools_reg, base.store.clone());
+    goat_tool_observation::register(tools_reg, base.store.clone());
+    goat_tool_memory::register(tools_reg, base.memory_engine.clone());
+    goat_tool_pty::register(tools_reg, base.pty_manager.clone());
+    if let Some(manager) = base.code.clone() {
+        goat_tool_browser::agent::register(tools_reg, manager.clone());
+        goat_tool_computer::agent::register(tools_reg, manager.clone());
+        goat_tool_code::register(tools_reg, manager);
+    }
+}
+
 async fn build_shared(base: &RuntimeBase, agents: &[AgentConfig]) -> RuntimeShared {
     let providers =
         build_provider_registry(&base.credentials, &base.provider_specs, base.meter.as_ref());
     let channels = build_channel_registry();
 
-    let mut tools_reg = ToolRegistry::from_inventory();
-    goat_agent_tool_schedule::register(
-        &mut tools_reg,
-        base.store.clone(),
-        base.scheduler_handle.clone(),
-    );
-    goat_agent_tool_goal::register(&mut tools_reg, base.store.clone());
-    goat_agent_tool_observation::register(&mut tools_reg, base.store.clone());
-    goat_agent_tool_memory::register(&mut tools_reg, base.memory_engine.clone());
-    goat_agent_tool_pty::register(&mut tools_reg, base.pty_manager.clone());
-    if let Some(manager) = base.code.clone() {
-        goat_agent_tool_browser::register(&mut tools_reg, manager.clone());
-        goat_agent_tool_computer::register(&mut tools_reg, manager.clone());
-        goat_agent_tool_code::register(&mut tools_reg, manager);
-    }
+    let mut tools_reg = ToolRegistry::default();
+    register_agent_tools(&mut tools_reg, base);
 
     let integrations = goat_integration::registry_from_inventory();
     let connections = load_integration_connections(&base.paths.config_toml);
@@ -800,10 +803,13 @@ async fn build_shared(base: &RuntimeBase, agents: &[AgentConfig]) -> RuntimeShar
         &base.paths.root,
     )
     .await;
-    let user_mcp_tools =
-        goat_mcp_tools::install(&mut tools_reg, goat_mcp_tools::from_manager(&user_mcp));
-    if !user_mcp_tools.is_empty() {
-        info!(count = user_mcp_tools.len(), "registered user mcp tools");
+    let user_mcp_tools = goat_mcp_tools::tools(goat_mcp_tools::from_manager(&user_mcp));
+    let user_mcp_count = user_mcp_tools.len();
+    for tool in user_mcp_tools {
+        tools_reg.insert(tool);
+    }
+    if user_mcp_count > 0 {
+        info!(count = user_mcp_count, "registered user mcp tools");
     }
 
     let tools = Arc::new(tools_reg);
@@ -1322,8 +1328,8 @@ mod tests {
             _registry: &mut ToolRegistry,
             _runtime: &IntegrationRuntime,
             _bindings: Arc<goat_integration::BindingMap>,
-        ) -> Vec<goat_agent_tool::ToolName> {
-            vec![goat_agent_tool::ToolName::from_static("fake")]
+        ) -> Vec<goat_tool::ToolName> {
+            vec![goat_tool::ToolName::from_static("fake")]
         }
 
         async fn verify(
@@ -1445,6 +1451,58 @@ mod tests {
             !on_disk.contains("gone"),
             "a directory without agent.md is not an agent",
         );
+    }
+
+    #[tokio::test]
+    async fn agent_tools_register_the_full_builtin_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let store = Arc::new(SqliteStore::open(&paths.state_db).await.unwrap());
+        let base = RuntimeBase {
+            credentials: goat_auth::CredentialStore::new(paths.credentials_json.clone()),
+            provider_specs: goat_config::ProviderSpecs::at(paths.config_toml.clone()),
+            meter: None,
+            memory_engine: Arc::new(
+                goat_memory::MemoryEngine::open(&paths.state_db, &paths.root, None, 180.0)
+                    .await
+                    .unwrap(),
+            ),
+            pty_manager: Arc::new(goat_tool_pty::PtyManager::new(CancellationToken::new(), 1)),
+            scheduler_handle: goat_loop::scheduler::SchedulerHandle::detached(),
+            code: None,
+            bus: EventBus::new(),
+            renderer: Arc::new(DefaultStreamRenderer),
+            agent_turns: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            paths,
+            store,
+        };
+        let mut registry = ToolRegistry::default();
+        register_agent_tools(&mut registry, &base);
+        let names = registry.default_tool_names();
+        for expected in [
+            "read",
+            "write",
+            "edit",
+            "glob",
+            "grep",
+            "shell",
+            "skill",
+            "schedule_once",
+            "schedule_cron",
+            "cancel_task",
+            "list_tasks",
+            "goal",
+            "memory",
+            "memory_search",
+            "fact",
+            "observation",
+            "pty",
+        ] {
+            assert!(
+                names.iter().any(|name| name == expected),
+                "missing tool: {expected}"
+            );
+        }
     }
 
     #[test]

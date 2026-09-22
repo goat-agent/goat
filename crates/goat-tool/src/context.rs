@@ -27,7 +27,21 @@ impl ToolSandbox {
         })
     }
 
-    pub fn resolve(&self, raw: &str) -> Result<PathBuf, ToolError> {
+    pub fn rooted(root: &Path) -> Result<Self, ToolError> {
+        let cwd = root
+            .canonicalize()
+            .map_err(|source| ToolError::io(format!("could not resolve tool root: {source}")))?;
+        Ok(Self {
+            cwd,
+            max_output_bytes: 64 * 1024,
+            extra_path: None,
+            blocked_paths: Vec::new(),
+            write_allow: None,
+            exec_policy: SandboxPolicy::Full,
+        })
+    }
+
+    pub fn resolve(&self, raw: impl AsRef<Path>) -> Result<PathBuf, ToolError> {
         resolve_with_policy(
             &self.cwd,
             self.extra_path.as_deref(),

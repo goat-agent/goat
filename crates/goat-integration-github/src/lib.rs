@@ -4,13 +4,13 @@ mod watch;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use goat_agent_tool::{ToolName, ToolRegistry};
 use goat_auth::CredentialStore;
 use goat_integration::query::{LimitSpec, Residue, TermPolicy, WatchVocabulary};
 use goat_integration::{
     BindingMap, CompiledWatch, Integration, IntegrationAuth, IntegrationBinding, IntegrationError,
     IntegrationFactory, IntegrationMetadata, IntegrationResult, IntegrationRuntime, WatchSpec,
 };
+use goat_tool::{ToolName, ToolRegistry};
 use goat_types::IntegrationId;
 use serde::Deserialize;
 use serde_json::Value;

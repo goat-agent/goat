@@ -35,9 +35,6 @@ goat-mcp = { workspace = true }
 goat-agent = { workspace = true }
 goat-runtime = { workspace = true }
 goat-agent-command-skill = { workspace = true }
-goat-agent-tool-fs = { workspace = true }
-goat-agent-tool-shell = { workspace = true }
-goat-agent-tool-skill = { workspace = true }
 goat-channel = { workspace = true }
 goat-integration = { workspace = true }
 goat-channel-discord = { workspace = true }

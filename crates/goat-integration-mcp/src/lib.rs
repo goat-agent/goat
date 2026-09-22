@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use goat_agent_tool::{ToolName, ToolRegistry};
 use goat_auth::{Credential, CredentialStore};
 use goat_integration::query::WatchVocabulary;
 use goat_integration::{
@@ -11,6 +10,7 @@ use goat_integration::{
     IntegrationMetadata, IntegrationResult, IntegrationRuntime, WatchSpec,
 };
 use goat_mcp::{HttpEndpoint, McpError, McpSession};
+use goat_tool::{ToolName, ToolRegistry};
 use goat_types::IntegrationId;
 use serde_json::Value;
 

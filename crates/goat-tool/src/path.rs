@@ -10,14 +10,14 @@ pub fn relative_display(cwd: &Path, resolved: &Path) -> String {
         .to_string()
 }
 
-pub fn resolve_in_cwd(cwd: &Path, raw: &str) -> Result<PathBuf, ToolError> {
+pub fn resolve_in_cwd(cwd: &Path, raw: impl AsRef<Path>) -> Result<PathBuf, ToolError> {
     resolve_with_extra(cwd, None, raw)
 }
 
 pub fn resolve_with_extra(
     cwd: &Path,
     extra: Option<&Path>,
-    raw: &str,
+    raw: impl AsRef<Path>,
 ) -> Result<PathBuf, ToolError> {
     resolve_with_policy(cwd, extra, &[], raw)
 }
@@ -26,18 +26,24 @@ pub fn resolve_with_policy(
     cwd: &Path,
     extra: Option<&Path>,
     blocked: &[PathBuf],
-    raw: &str,
+    raw: impl AsRef<Path>,
 ) -> Result<PathBuf, ToolError> {
-    let candidate = Path::new(raw);
+    let raw = raw.as_ref();
+    let raw_display = raw.display().to_string();
+    let candidate = raw;
     let joined = if candidate.is_absolute() {
         candidate.to_path_buf()
     } else {
         cwd.join(candidate)
     };
     let normalized = lexical_normalize(&joined);
-    let escaped = || ToolError::policy(format!("path escapes the session directory: {raw}"));
-    let blocked_error =
-        || ToolError::policy(format!("path is outside the active workspace: {raw}"));
+    let escaped =
+        || ToolError::policy(format!("path escapes the session directory: {raw_display}"));
+    let blocked_error = || {
+        ToolError::policy(format!(
+            "path is outside the active workspace: {raw_display}"
+        ))
+    };
     if !within(cwd, extra, &normalized) {
         return Err(escaped());
     }
@@ -47,7 +53,7 @@ pub fn resolve_with_policy(
     if normalized.exists() {
         let canonical = normalized
             .canonicalize()
-            .map_err(|source| ToolError::io(format!("io error on {raw}: {source}")))?;
+            .map_err(|source| ToolError::io(format!("io error on {raw_display}: {source}")))?;
         if !within(cwd, extra, &canonical) {
             return Err(escaped());
         }

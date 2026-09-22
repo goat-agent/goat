@@ -1,7 +1,8 @@
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use goat_provider::ToolDefinition;
-use goat_tool::{Tool, ToolFuture, ToolOutput, ToolSandbox};
+use goat_tool::{Tool, ToolCall, ToolContext, ToolFuture, ToolName, ToolOutput};
 use serde_json::Value;
 
 pub const NAME: &str = "ToolSearch";
@@ -30,12 +31,12 @@ impl ToolSearchTool {
 }
 
 impl Tool for ToolSearchTool {
-    fn name(&self) -> &'static str {
-        NAME
+    fn name(&self) -> ToolName {
+        ToolName::from_static(NAME)
     }
 
-    fn description(&self) -> &'static str {
-        "Search the deferred tool catalog for tools that are not loaded upfront. Matching tools are loaded immediately: their full definitions are returned here and become callable for the rest of the session. Use this when a task needs a capability the loaded tools do not cover."
+    fn description(&self) -> Cow<'static, str> {
+        "Search the deferred tool catalog for tools that are not loaded upfront. Matching tools are loaded immediately: their full definitions are returned here and become callable for the rest of the session. Use this when a task needs a capability the loaded tools do not cover.".into()
     }
 
     fn parameters(&self) -> Value {
@@ -57,13 +58,9 @@ impl Tool for ToolSearchTool {
         })
     }
 
-    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, _ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let args: Value = if input.trim().is_empty() {
-                Value::Object(serde_json::Map::new())
-            } else {
-                serde_json::from_str(input)?
-            };
+            let args = &call.arguments;
             let query = args
                 .get("query")
                 .and_then(Value::as_str)
@@ -141,6 +138,8 @@ fn search<'a>(catalog: &'a [ToolDefinition], query: &str, limit: usize) -> Vec<&
 
 #[cfg(test)]
 mod tests {
+    use goat_tool::ToolSandbox;
+
     use super::*;
 
     fn def(name: &str, description: &str) -> ToolDefinition {

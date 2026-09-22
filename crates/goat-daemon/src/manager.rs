@@ -1261,6 +1261,38 @@ fn apply_edit(
     Ok(())
 }
 
+impl goat_tool_code::CodeDelegate for CodeSessionHub {
+    fn delegate_code(
+        &self,
+        cwd: std::path::PathBuf,
+        prompt: String,
+    ) -> goat_tool_code::DelegateFuture<'_> {
+        Box::pin(async move { self.delegate_code(cwd, prompt).await.map(|_| ()) })
+    }
+}
+
+impl goat_tool_browser::agent::AgentTransport for CodeSessionHub {
+    fn transport(
+        &self,
+        holder: &goat_api::Holder,
+    ) -> std::sync::Arc<dyn goat_tool_browser::Transport> {
+        std::sync::Arc::new(crate::BrowserRelay::new(
+            self.broker(),
+            self.browser_events(),
+            holder.clone(),
+        ))
+    }
+}
+
+impl goat_tool_computer::agent::AgentTransport for CodeSessionHub {
+    fn transport(
+        &self,
+        holder: &goat_api::Holder,
+    ) -> std::sync::Arc<dyn goat_tool_computer::Transport> {
+        std::sync::Arc::new(crate::ComputerRelay::new(self.broker(), holder.clone()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

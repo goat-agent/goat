@@ -1,7 +1,7 @@
-use goat_protocol::{Event, ToolCall, ToolCallId, ToolDisplay, ToolImageData, ToolOutcome};
+use goat_protocol::{Event, ToolCallId, ToolDisplay, ToolImageData, ToolOutcome};
 use goat_provider::{ContentBlock, Provider, ToolDefinition};
 use goat_tool::{
-    ToolBatchCall, ToolBatchInvocation, ToolContent, ToolDefinitionContext, ToolInvocation,
+    ToolBatchCall, ToolBatchInvocation, ToolCall, ToolContent, ToolContext, ToolDefinitionContext,
     ToolOutput, ToolRegistry, ToolSandbox,
 };
 use tokio_util::sync::CancellationToken;
@@ -34,7 +34,7 @@ pub(crate) fn tool_outcome(result: &Result<ToolOutput, String>) -> ToolOutcome {
     match result {
         Ok(output) => {
             let mut outcome = ToolOutcome {
-                ok: true,
+                ok: !output.is_error,
                 summary: output.summary.clone(),
                 body: output.body.clone(),
                 image: outcome_image(&output.content),
@@ -55,16 +55,16 @@ pub(crate) fn tool_outcome(result: &Result<ToolOutput, String>) -> ToolOutcome {
 
 const MAX_OUTCOME_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
-fn outcome_image(content: &ToolContent) -> Option<ToolImageData> {
-    match content {
-        ToolContent::Image(img) if img.data.len() <= MAX_OUTCOME_IMAGE_BYTES => {
+fn outcome_image(content: &[ToolContent]) -> Option<ToolImageData> {
+    content.iter().find_map(|part| match part {
+        ToolContent::Image { media_type, data } if data.len() <= MAX_OUTCOME_IMAGE_BYTES => {
             Some(ToolImageData {
-                media_type: img.media_type.clone(),
-                data: img.data.clone(),
+                media_type: media_type.clone(),
+                data: data.clone(),
             })
         }
         _ => None,
-    }
+    })
 }
 
 pub(crate) fn call_display(tools: &ToolRegistry, name: &str, input: &str) -> ToolDisplay {
@@ -85,6 +85,7 @@ pub(crate) fn summarize_line(text: &str) -> Option<String> {
 struct RegularToolCall<'a> {
     task: goat_protocol::TaskId,
     call: ToolCallId,
+    vendor_id: &'a str,
     definition_context: ToolDefinitionContext,
     host: &'a (dyn std::any::Any + Send + Sync),
     name: &'a str,
@@ -100,6 +101,7 @@ async fn run_regular_tool(
     let RegularToolCall {
         task,
         call,
+        vendor_id,
         definition_context,
         host,
         name,
@@ -112,14 +114,26 @@ async fn run_regular_tool(
     }) else {
         return Some(Err(format!("unknown tool: {name}")));
     };
-    let invocation = ToolInvocation {
-        task,
-        call,
+    let arguments: serde_json::Value = match serde_json::from_str(input_json) {
+        Ok(value) => value,
+        Err(_) if input_json.trim().is_empty() => serde_json::Value::Null,
+        Err(error) => return Some(Err(format!("invalid tool input: {error}"))),
+    };
+    let tool_call = ToolCall {
+        call_id: vendor_id.to_owned(),
+        name: tool.name(),
+        arguments,
+    };
+    let tool_ctx = ToolContext {
+        sandbox: tool_ctx,
         cancellation: token,
         definition_context,
         host: Some(host),
+        task: Some(task),
+        call: Some(call),
+        agent: None,
     };
-    let future = tool.invoke(input_json, tool_ctx, invocation);
+    let future = tool.call(&tool_call, tool_ctx);
     if tool.handles_cancellation() {
         return Some(future.await.map_err(|error| error.to_string()));
     }
@@ -166,6 +180,7 @@ async fn execute_tool(
             RegularToolCall {
                 task: run.id,
                 call: ToolCallId(prep.tui_id),
+                vendor_id: prep.vendor_id,
                 definition_context: ToolDefinitionContext {
                     interactive: env.interactive,
                     top_level: env.allow_delegate,
@@ -214,26 +229,31 @@ async fn execute_tool(
         })
         .await;
     let content = match result {
-        Ok(output) => match output.content {
-            ToolContent::Text(text) => {
-                vec![ContentBlock::Text {
-                    text: cap_tool_result(text),
-                }]
-            }
-            ToolContent::Image(img) => {
-                let mut content = Vec::with_capacity(1 + usize::from(output.summary.is_some()));
-                if let Some(summary) = output.summary {
-                    content.push(ContentBlock::Text {
-                        text: cap_tool_result(summary),
-                    });
-                }
-                content.push(ContentBlock::Image {
-                    media_type: img.media_type,
-                    data: img.data,
+        Ok(output) => {
+            let has_image = output
+                .content
+                .iter()
+                .any(|part| matches!(part, ToolContent::Image { .. }));
+            let mut content =
+                Vec::with_capacity(output.content.len() + usize::from(output.summary.is_some()));
+            if has_image && let Some(summary) = &output.summary {
+                content.push(ContentBlock::Text {
+                    text: cap_tool_result(summary.clone()),
                 });
-                content
             }
-        },
+            for part in output.content {
+                match part {
+                    ToolContent::Text { text } => content.push(ContentBlock::Text {
+                        text: cap_tool_result(text),
+                    }),
+                    ToolContent::Image { media_type, data } => {
+                        content.push(ContentBlock::Image { media_type, data });
+                    }
+                    _ => {}
+                }
+            }
+            content
+        }
         Err(msg) => vec![ContentBlock::Text { text: msg }],
     };
     ToolExecResult {
@@ -307,7 +327,7 @@ pub(crate) async fn run_tool_batch(
             .events
             .send(Event::ToolStarted {
                 id: run.id,
-                call: ToolCall {
+                call: goat_protocol::ToolCall {
                     id: ToolCallId(prep.tui_id),
                     name: prep.name.to_owned(),
                     display: call_display(&ctx.tools, prep.name, prep.input_json),
@@ -367,12 +387,12 @@ pub(crate) fn build_tool_defs(
             planning: availability.planning,
         })
         .into_iter()
-        .filter(|spec| selection.is_none_or(|sel| sel.allows(spec.name)))
-        .filter(|spec| !native || spec.name != goat_tool_discovery::NAME)
+        .filter(|spec| selection.is_none_or(|sel| sel.allows(spec.name.as_str())))
+        .filter(|spec| !native || spec.name.as_str() != goat_tool_discovery::NAME)
         .map(|spec| ToolDefinition {
-            name: spec.name.to_owned(),
-            description: spec.description.clone(),
-            input_schema: spec.parameters,
+            name: spec.name.as_str().to_owned(),
+            description: spec.description.unwrap_or_default(),
+            input_schema: spec.input_schema,
             defer_loading: false,
         })
         .collect();

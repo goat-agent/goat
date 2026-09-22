@@ -2772,177 +2772,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "goat-agent-tool"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "goat-types",
- "inventory",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "goat-agent-tool-browser"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "goat-agent-tool",
- "goat-api",
- "goat-daemon",
- "goat-tool",
- "goat-tool-browser",
-]
-
-[[package]]
-name = "goat-agent-tool-code"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "goat-agent-tool",
- "goat-daemon",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "goat-agent-tool-computer"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "goat-agent-tool",
- "goat-api",
- "goat-daemon",
- "goat-tool",
- "goat-tool-computer",
- "parking_lot",
-]
-
-[[package]]
-name = "goat-agent-tool-fs"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "globset",
- "goat-agent-tool",
- "goat-types",
- "inventory",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "walkdir",
-]
-
-[[package]]
-name = "goat-agent-tool-goal"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "goat-agent-tool",
- "goat-store",
- "goat-types",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "goat-agent-tool-memory"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "goat-agent-tool",
- "goat-memory",
- "goat-types",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "goat-agent-tool-observation"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "goat-agent-tool",
- "goat-store",
- "goat-types",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "goat-agent-tool-pty"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "goat-agent-tool",
- "goat-agent-tool-shell",
- "goat-process",
- "libc",
- "pty-process",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
- "vt100",
-]
-
-[[package]]
-name = "goat-agent-tool-schedule"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "goat-agent-tool",
- "goat-loop",
- "goat-store",
- "goat-types",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "goat-agent-tool-shell"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "goat-agent-tool",
- "goat-process",
- "goat-types",
- "inventory",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "goat-agent-tool-skill"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "goat-agent-tool",
- "goat-skill",
- "goat-types",
- "inventory",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "goat-api"
 version = "0.1.0"
 dependencies = [
@@ -2987,7 +2816,6 @@ dependencies = [
  "futures",
  "goat-agent-command",
  "goat-agent-config",
- "goat-agent-tool",
  "goat-bus",
  "goat-channel",
  "goat-memory",
@@ -2996,6 +2824,7 @@ dependencies = [
  "goat-render",
  "goat-skill",
  "goat-store",
+ "goat-tool",
  "goat-types",
  "serde_json",
  "sqlx",
@@ -3147,9 +2976,6 @@ dependencies = [
  "flate2",
  "goat-agent",
  "goat-agent-command-skill",
- "goat-agent-tool-fs",
- "goat-agent-tool-shell",
- "goat-agent-tool-skill",
  "goat-api",
  "goat-auth",
  "goat-browser-host",
@@ -3399,6 +3225,7 @@ dependencies = [
  "goat-remote",
  "goat-store",
  "goat-tool-browser",
+ "goat-tool-code",
  "goat-tool-computer",
  "goat-types",
  "goat-wire",
@@ -3524,11 +3351,11 @@ name = "goat-integration"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "goat-agent-tool",
  "goat-auth",
  "goat-bus",
  "goat-integration",
  "goat-store",
+ "goat-tool",
  "goat-types",
  "inventory",
  "rand 0.10.2",
@@ -3612,11 +3439,11 @@ name = "goat-integration-github"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "goat-agent-tool",
  "goat-auth",
  "goat-github",
  "goat-integration",
  "goat-integration-mcp",
+ "goat-tool",
  "goat-types",
  "inventory",
  "serde",
@@ -3682,11 +3509,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
- "goat-agent-tool",
  "goat-auth",
  "goat-integration",
  "goat-mcp",
  "goat-mcp-tools",
+ "goat-tool",
  "goat-types",
  "serde",
  "serde_json",
@@ -3861,8 +3688,6 @@ dependencies = [
 name = "goat-mcp-tools"
 version = "0.1.0"
 dependencies = [
- "async-trait",
- "goat-agent-tool",
  "goat-mcp",
  "goat-protocol",
  "goat-tool",
@@ -4154,15 +3979,6 @@ dependencies = [
  "futures",
  "goat-agent-command",
  "goat-agent-config",
- "goat-agent-tool",
- "goat-agent-tool-browser",
- "goat-agent-tool-code",
- "goat-agent-tool-computer",
- "goat-agent-tool-goal",
- "goat-agent-tool-memory",
- "goat-agent-tool-observation",
- "goat-agent-tool-pty",
- "goat-agent-tool-schedule",
  "goat-auth",
  "goat-brain",
  "goat-bus",
@@ -4182,6 +3998,18 @@ dependencies = [
  "goat-render",
  "goat-sleep",
  "goat-store",
+ "goat-tool",
+ "goat-tool-browser",
+ "goat-tool-code",
+ "goat-tool-computer",
+ "goat-tool-fs",
+ "goat-tool-goal",
+ "goat-tool-memory",
+ "goat-tool-observation",
+ "goat-tool-pty",
+ "goat-tool-schedule",
+ "goat-tool-shell",
+ "goat-tool-skill",
  "goat-types",
  "inventory",
  "serde_json",
@@ -4330,6 +4158,8 @@ name = "goat-tool"
 version = "0.1.0"
 dependencies = [
  "goat-protocol",
+ "goat-types",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
@@ -4364,6 +4194,15 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
+]
+
+[[package]]
+name = "goat-tool-code"
+version = "0.1.0"
+dependencies = [
+ "goat-tool",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4405,13 +4244,61 @@ dependencies = [
 name = "goat-tool-fs"
 version = "0.1.0"
 dependencies = [
+ "globset",
  "goat-protocol",
  "goat-tool",
+ "goat-types",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-util",
+ "walkdir",
+]
+
+[[package]]
+name = "goat-tool-goal"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "goat-store",
+ "goat-tool",
+ "goat-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "goat-tool-memory"
+version = "0.1.0"
+dependencies = [
+ "goat-memory",
+ "goat-tool",
+ "goat-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "goat-tool-observation"
+version = "0.1.0"
+dependencies = [
+ "goat-store",
+ "goat-tool",
+ "goat-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -4423,6 +4310,38 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "goat-tool-pty"
+version = "0.1.0"
+dependencies = [
+ "goat-process",
+ "goat-tool",
+ "goat-tool-shell",
+ "libc",
+ "pty-process",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "vt100",
+]
+
+[[package]]
+name = "goat-tool-schedule"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "goat-loop",
+ "goat-store",
+ "goat-tool",
+ "goat-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -4452,6 +4371,7 @@ dependencies = [
  "goat-protocol",
  "goat-sandbox",
  "goat-tool",
+ "goat-types",
  "serde",
  "serde_json",
  "tempfile",
@@ -4468,10 +4388,12 @@ dependencies = [
  "goat-protocol",
  "goat-skill",
  "goat-tool",
+ "goat-types",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

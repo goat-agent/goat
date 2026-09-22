@@ -3,6 +3,8 @@ mod grep;
 mod native;
 mod web_search;
 
+use std::sync::Arc;
+
 pub use glob::GlobTool;
 pub use goat_search_provider::{
     SearchBuiltinTarget, SearchCredentialMetadata, SearchProviderKind, SearchProviderMetadata,
@@ -19,20 +21,18 @@ pub use native::{
 };
 pub use web_search::WebSearchTool;
 
-pub fn all_with_native(
-    service: std::sync::Arc<dyn NativeSearchService>,
-) -> Vec<Box<dyn goat_tool::Tool>> {
-    let mut tools: Vec<Box<dyn goat_tool::Tool>> =
-        vec![Box::new(NativeWebSearchTool::new(service))];
+pub fn all_with_native(service: Arc<dyn NativeSearchService>) -> Vec<Arc<dyn goat_tool::Tool>> {
+    let mut tools: Vec<Arc<dyn goat_tool::Tool>> =
+        vec![Arc::new(NativeWebSearchTool::new(service))];
     tools.extend(all());
     tools
 }
 
-pub fn all() -> Vec<Box<dyn goat_tool::Tool>> {
+pub fn all() -> Vec<Arc<dyn goat_tool::Tool>> {
     vec![
-        Box::new(GrepTool),
-        Box::new(GlobTool),
-        Box::new(WebSearchTool::new()),
+        Arc::new(GrepTool),
+        Arc::new(GlobTool),
+        Arc::new(WebSearchTool::new()),
     ]
 }
 

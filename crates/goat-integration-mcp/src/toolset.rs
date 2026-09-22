@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use goat_agent_tool::{ToolName, ToolRegistry};
 use goat_auth::CredentialStore;
 use goat_integration::{
     BindingMap, IntegrationBinding, IntegrationResult, IntegrationRuntime, drop_placeholder_args,
 };
 use goat_mcp_tools::{McpCallFuture, McpOutcome, McpToolSource, ResolvedTool};
+use goat_tool::{ToolName, ToolRegistry};
 use goat_types::AgentId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -92,7 +92,12 @@ pub async fn register(
     });
     let planned = plan(service, &discovered, &binding.config, &source);
     warn_about_missing_tools(service, &discovered);
-    goat_mcp_tools::install(registry, planned)
+    let tools = goat_mcp_tools::tools(planned);
+    let names = tools.iter().map(|tool| tool.name()).collect();
+    for tool in tools {
+        registry.insert(tool);
+    }
+    names
 }
 
 pub async fn code_tools(

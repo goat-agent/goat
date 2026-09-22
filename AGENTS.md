@@ -44,7 +44,7 @@ structure. Intent that needs prose goes in the nearest `AGENTS.md`.
 - Declare versions, `edition` and `rust-version` in the root workspace tables. Inherit with
   `{ workspace = true }`.
 - `unsafe` is forbidden workspace-wide (`unsafe_code = "forbid"`). The two FFI-isolation leaves, `goat-sqlite-vec` and
-  `goat-agent-tool-pty`, opt out by omitting `[lints.rust]`. Do not add a third; put new FFI in its
+  `goat-tool-pty`, opt out by omitting `[lints.rust]`. Do not add a third; put new FFI in its
   own leaf crate.
 - Errors: `thiserror` enums in library crates, `anyhow` at the agent binary/runtime boundary,
   `color_eyre::Result` at the code application boundary (bridged by `goat-code`'s `into_eyre`).
@@ -77,16 +77,16 @@ Check before assuming `inventory` picks your crate up.
 |---|---|
 | channels, integrations | `inventory` + `pub const ID` via `from_static(...)` |
 | agent commands | `inventory`, with a plain `pub const ID: &str` |
-| agent tools | `inventory` + `pub const NAME: ToolName` for `fs`/`shell`/`skill` only; the rest are explicit `register()` calls in `goat-runtime` |
-| code tools | `ToolRegistry::builtin()`, which `goat-tool-browser` bypasses |
+| agent tools | explicit `register()` calls in `goat-runtime` |
+| code tools | `goat_tools::builtin_with()`, which `goat-tool-browser`/`goat-tool-computer` bypass via `CodingEngine::new` |
 | LLM and search providers | no `inventory` at all; one ordered list in `Registry::load_metered` |
 
 ## Crates
 
 `crates/` is flat and every crate is prefixed `goat-`. Run `ls crates/` rather than keeping a list
 here. The prefix names the family: `goat-agent*` is the autonomous actor;
-`goat-code`/`goat-core`/`goat-engine`/`goat-tui` and the `goat-tool-*`/`goat-command-*` families are
-coding; the rest is shared.
+`goat-code`/`goat-core`/`goat-engine`/`goat-tui` and the `goat-command-*` family are
+coding; `goat-tool-*` is the tool family (one crate per domain, both consumers' impls inside); the rest is shared.
 
 Keep concrete leaf names (`openai`, `discord`, …) out of shared crates.
 
@@ -95,7 +95,6 @@ file for the crate you are touching before changing anything below its surface.*
 
 | Crate | Its `AGENTS.md` covers |
 |---|---|
-| `goat-agent-tool` | the agent-side tool contract, caller and audience |
 | `goat-api` | the method surface, its two frozen artifacts, grant-built routers |
 | `goat-auth` | credential storage, the acquisition/storage split, the OAuth redirect |
 | `goat-capability` | host capability leases, the browser connection, why desktop control left |
@@ -118,7 +117,7 @@ file for the crate you are touching before changing anything below its surface.*
 | `goat-sandbox` | the read-only Seatbelt profile around every shell call |
 | `goat-skill` | scope layering and the `arguments` grammar |
 | `goat-store` | the agent tables, and the four crates owning migrations |
-| `goat-tool` | the code-side tool contract and path resolution |
+| `goat-tool` | the tool contract (both consumers), `ToolContext`, path resolution |
 | `goat-tool-browser` | the browser vocabulary over a `Transport` |
 | `goat-tui` | slash-command families, testing without a tty |
 | `goat-wire` | the frame envelope, framing, the duplex peer |

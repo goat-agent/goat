@@ -18,8 +18,9 @@ extension's end of the pipe is uncovered.
 `CodingEngine::new` takes a `browser: Option<Arc<dyn Transport>>` and pushes the tool only when one is
 present. The gate is "a capability provider is attached", not a config flag.
 
-The agent reaches the same browser through `goat_agent_tool_browser::register`, which needs the
-`CodeSessionHub` and is therefore wired explicitly in `goat-runtime`.
+The agent reaches the same browser through `agent::register` in this crate, which takes an
+`AgentTransport` — a one-method trait `CodeSessionHub` implements in `goat-daemon` — and is wired
+explicitly in `goat-runtime`.
 
 ## Not a second backend
 

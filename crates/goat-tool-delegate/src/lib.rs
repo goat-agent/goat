@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::{any::Any, future::Future, pin::Pin, sync::Arc};
 
 use goat_protocol::{
@@ -5,8 +6,8 @@ use goat_protocol::{
     TranscriptEntry,
 };
 use goat_tool::{
-    Tool, ToolBatchCall, ToolBatchFuture, ToolBatchInvocation, ToolDefinitionContext, ToolError,
-    ToolFuture, ToolHistoryGroup, ToolInvocation, ToolOutput, ToolSandbox, ToolSpec,
+    Tool, ToolBatchCall, ToolBatchFuture, ToolBatchInvocation, ToolCall, ToolContext,
+    ToolDefinitionContext, ToolError, ToolFuture, ToolHistoryGroup, ToolName, ToolOutput, ToolSpec,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -77,30 +78,22 @@ impl DelegateTool {
 }
 
 impl Tool for DelegateTool {
-    fn name(&self) -> &'static str {
-        DELEGATE_TOOL_NAME
+    fn name(&self) -> ToolName {
+        ToolName::from_static(DELEGATE_TOOL_NAME)
     }
 
-    fn description(&self) -> &'static str {
-        "Delegate a self-contained task to a subagent"
+    fn description(&self) -> Cow<'static, str> {
+        "Delegate a self-contained task to a subagent".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
         delegate_parameters(&self.agents)
     }
 
-    fn run<'a>(&'a self, _input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
-        Box::pin(async { Err(ToolError::execution("delegation invocation is unavailable")) })
-    }
-
-    fn invoke<'a>(
-        &'a self,
-        input: &'a str,
-        _ctx: &'a ToolSandbox,
-        invocation: ToolInvocation<'a>,
-    ) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let request: DelegateRequest = serde_json::from_str(input).map_err(ToolError::from)?;
+            let request: DelegateRequest =
+                serde_json::from_value(call.arguments.clone()).map_err(ToolError::from)?;
             if !self
                 .agents
                 .iter()
@@ -118,10 +111,14 @@ impl Tool for DelegateTool {
                     request,
                     DelegateInvocation {
                         run_label: "subagent",
-                        parent: invocation.task,
-                        call: invocation.call,
-                        cancellation: invocation.cancellation,
-                        host: invocation.host,
+                        parent: ctx.task.ok_or_else(|| {
+                            ToolError::execution("Subagent requires a task context")
+                        })?,
+                        call: ctx.call.ok_or_else(|| {
+                            ToolError::execution("Subagent requires a call context")
+                        })?,
+                        cancellation: ctx.cancellation,
+                        host: ctx.host,
                     },
                 )
                 .await
@@ -141,10 +138,12 @@ impl Tool for DelegateTool {
     }
 
     fn definition(&self, context: ToolDefinitionContext) -> Option<ToolSpec> {
-        self.enabled(context).then(|| ToolSpec {
-            name: self.name(),
-            description: delegate_description(&self.agents),
-            parameters: self.parameters(),
+        self.enabled(context).then(|| {
+            ToolSpec::new(
+                self.name(),
+                delegate_description(&self.agents),
+                self.parameters(),
+            )
         })
     }
 
@@ -201,12 +200,12 @@ impl KillDelegateTool {
 }
 
 impl Tool for KillDelegateTool {
-    fn name(&self) -> &'static str {
-        KILL_TOOL_NAME
+    fn name(&self) -> ToolName {
+        ToolName::from_static(KILL_TOOL_NAME)
     }
 
-    fn description(&self) -> &'static str {
-        "Stop a detached subagent run started with Subagent(background=true). It will not report back."
+    fn description(&self) -> Cow<'static, str> {
+        "Stop a detached subagent run started with Subagent(background=true). It will not report back.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -219,9 +218,10 @@ impl Tool for KillDelegateTool {
         })
     }
 
-    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, _ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let request: KillRequest = serde_json::from_str(input).map_err(ToolError::from)?;
+            let request: KillRequest =
+                serde_json::from_value(call.arguments.clone()).map_err(ToolError::from)?;
             self.service
                 .kill(request.run)
                 .await
@@ -245,11 +245,11 @@ impl Tool for KillDelegateTool {
     }
 }
 
-pub fn tools(agents: Vec<AgentSpec>, service: Arc<dyn DelegationService>) -> Vec<Box<dyn Tool>> {
+pub fn tools(agents: Vec<AgentSpec>, service: Arc<dyn DelegationService>) -> Vec<Arc<dyn Tool>> {
     let enabled = !agents.is_empty();
     vec![
-        Box::new(DelegateTool::new(agents, service.clone())),
-        Box::new(KillDelegateTool::new(enabled, service)),
+        Arc::new(DelegateTool::new(agents, service.clone())),
+        Arc::new(KillDelegateTool::new(enabled, service)),
     ]
 }
 

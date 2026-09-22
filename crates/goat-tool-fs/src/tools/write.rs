@@ -1,6 +1,7 @@
 use goat_protocol::ToolDisplay;
-use goat_tool::{Tool, ToolFuture, ToolOutput, ToolSandbox, display};
+use goat_tool::{Tool, ToolCall, ToolContext, ToolFuture, ToolName, ToolOutput, display};
 use serde::Deserialize;
+use std::borrow::Cow;
 
 use crate::{error::FsError, tools::relative_display};
 
@@ -13,12 +14,12 @@ struct Input {
 }
 
 impl Tool for WriteTool {
-    fn name(&self) -> &'static str {
-        "Write"
+    fn name(&self) -> ToolName {
+        ToolName::from_static("Write")
     }
 
-    fn description(&self) -> &'static str {
-        "Write content to a file in the session directory, creating parent directories and overwriting any existing file."
+    fn description(&self) -> Cow<'static, str> {
+        "Write content to a file in the session directory, creating parent directories and overwriting any existing file.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -48,9 +49,9 @@ impl Tool for WriteTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, ctx: &'a ToolSandbox) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let args: Input = serde_json::from_str(input)?;
+            let args: Input = serde_json::from_value(call.arguments.clone())?;
             let resolved = ctx.resolve(&args.path)?;
             ctx.ensure_writable(&resolved, &args.path)?;
             if let Some(parent) = resolved.parent() {

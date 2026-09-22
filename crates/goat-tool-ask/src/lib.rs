@@ -1,9 +1,10 @@
+use std::borrow::Cow;
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use goat_protocol::{AskQuestion, TaskId, ToolCallId, ToolDisplay};
 use goat_tool::{
-    Tool, ToolDefinitionContext, ToolError, ToolFuture, ToolInvocation, ToolOutput, ToolSandbox,
-    ToolSummaryKind, display,
+    Tool, ToolCall, ToolContext, ToolDefinitionContext, ToolError, ToolFuture, ToolName,
+    ToolOutput, ToolSummaryKind, display,
 };
 use tokio_util::sync::CancellationToken;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -37,12 +38,12 @@ struct Input {
 }
 
 impl Tool for AskTool {
-    fn name(&self) -> &'static str {
-        "Ask"
+    fn name(&self) -> ToolName {
+        ToolName::from_static("Ask")
     }
 
-    fn description(&self) -> &'static str {
-        "Pause execution and ask the user one or more questions, each with optional choice options. Returns the user's answers as a JSON array of strings in the same order as the questions. Use when you need the user's input or a decision before proceeding."
+    fn description(&self) -> Cow<'static, str> {
+        "Pause execution and ask the user one or more questions, each with optional choice options. Returns the user's answers as a JSON array of strings in the same order as the questions. Use when you need the user's input or a decision before proceeding.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -82,20 +83,23 @@ impl Tool for AskTool {
 
     fn display_input(&self, input: &str) -> ToolDisplay {
         let Ok(args) = serde_json::from_str::<Input>(input) else {
-            return display::generic_named(self.name(), input);
+            return display::generic_named(self.name().as_str(), input);
         };
         let Some(first) = args.questions.first() else {
-            return display::generic_named(self.name(), input);
+            return display::generic_named(self.name().as_str(), input);
         };
         let question = display::flatten(&first.question);
         if args.questions.len() > 1 {
             let more = format!("+{} more", args.questions.len() - 1);
             ToolDisplay::primary(display::call_sig(
-                self.name(),
+                self.name().as_str(),
                 &[question.as_str(), more.as_str()],
             ))
         } else {
-            ToolDisplay::primary(display::call_sig(self.name(), &[question.as_str()]))
+            ToolDisplay::primary(display::call_sig(
+                self.name().as_str(),
+                &[question.as_str()],
+            ))
         }
     }
 
@@ -111,32 +115,21 @@ impl Tool for AskTool {
         ToolSummaryKind::Body
     }
 
-    fn run<'a>(&'a self, _input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
-        Box::pin(async {
-            Err(ToolError::execution(
-                "question invocation context is unavailable",
-            ))
-        })
-    }
-
-    fn invoke<'a>(
-        &'a self,
-        input: &'a str,
-        _ctx: &'a ToolSandbox,
-        invocation: ToolInvocation<'a>,
-    ) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let args: Input = serde_json::from_str(input)?;
+            let args: Input = serde_json::from_value(call.arguments.clone())?;
             if args.questions.is_empty() {
                 return Err(ToolError::invalid_input("questions must not be empty"));
             }
             let answers = self
                 .broker
                 .ask(
-                    invocation.task,
-                    invocation.call,
+                    ctx.task
+                        .ok_or_else(|| ToolError::execution("Ask requires a task context"))?,
+                    ctx.call
+                        .ok_or_else(|| ToolError::execution("Ask requires a call context"))?,
                     args.questions.clone(),
-                    invocation.cancellation,
+                    ctx.cancellation,
                 )
                 .await
                 .map_err(ToolError::execution)?;

@@ -3,29 +3,30 @@ use std::sync::Arc;
 
 use goat_protocol::ToolDisplay;
 use goat_tool::{
-    Tool, ToolDefinitionContext, ToolError, ToolFuture, ToolImage, ToolOutput, ToolSandbox,
+    Tool, ToolCall, ToolContext, ToolDefinitionContext, ToolError, ToolFuture, ToolImage, ToolName,
+    ToolOutput,
 };
 use serde_json::Value;
 
 use crate::{McpOutcome, McpToolSource, ResolvedTool};
 
-pub fn adapt(tools: Vec<ResolvedTool>) -> Vec<Box<dyn Tool>> {
+pub fn tools(tools: Vec<ResolvedTool>) -> Vec<Arc<dyn Tool>> {
     let mut taken = HashSet::new();
     let mut adapters: Vec<Adapter> = tools
         .into_iter()
         .filter(|tool| taken.insert(tool.exposed_name.clone()))
-        .map(Adapter::new)
+        .filter_map(Adapter::new)
         .collect();
-    adapters.sort_by(|a, b| a.name.cmp(b.name));
+    adapters.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
     adapters
         .into_iter()
-        .map(|tool| Box::new(tool) as Box<dyn Tool>)
+        .map(|tool| Arc::new(tool) as Arc<dyn Tool>)
         .collect()
 }
 
 struct Adapter {
-    name: &'static str,
-    description: &'static str,
+    name: ToolName,
+    description: String,
     parameters: Value,
     original_name: String,
     label: String,
@@ -34,26 +35,26 @@ struct Adapter {
 }
 
 impl Adapter {
-    fn new(tool: ResolvedTool) -> Self {
-        Self {
-            name: leak(tool.exposed_name),
-            description: leak(tool.description),
+    fn new(tool: ResolvedTool) -> Option<Self> {
+        Some(Self {
+            name: ToolName::new(tool.exposed_name).ok()?,
+            description: tool.description,
             parameters: tool.input_schema,
             original_name: tool.original_name,
             label: tool.source.label().to_owned(),
             enabled: tool.enabled,
             source: tool.source,
-        }
+        })
     }
 }
 
 impl Tool for Adapter {
-    fn name(&self) -> &'static str {
-        self.name
+    fn name(&self) -> ToolName {
+        self.name.clone()
     }
 
-    fn description(&self) -> &'static str {
-        self.description
+    fn description(&self) -> std::borrow::Cow<'static, str> {
+        self.description.clone().into()
     }
 
     fn parameters(&self) -> Value {
@@ -64,12 +65,16 @@ impl Tool for Adapter {
         self.enabled
     }
 
-    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
+    fn default_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    fn call<'a>(&'a self, call: &'a ToolCall, ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let arguments = arguments_from(input)?;
+            let caller = ctx.agent.map(|agent| agent.id);
             let outcome = self
                 .source
-                .call(&self.original_name, arguments, None)
+                .call(&self.original_name, call.arguments.clone(), caller)
                 .await
                 .map_err(ToolError::execution)?;
             Ok(output_from(outcome))
@@ -82,14 +87,6 @@ impl Tool for Adapter {
             input.to_owned(),
         )
     }
-}
-
-fn arguments_from(input: &str) -> Result<Value, ToolError> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Ok(Value::Null);
-    }
-    Ok(serde_json::from_str(trimmed)?)
 }
 
 fn output_from(outcome: McpOutcome) -> ToolOutput {
@@ -121,15 +118,12 @@ fn summary(parts: &[String]) -> String {
         .map_or_else(String::new, |line| line.chars().take(80).collect())
 }
 
-fn leak(value: String) -> &'static str {
-    Box::leak(value.into_boxed_str())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::output_from;
+    use crate::McpOutcome;
     use goat_mcp::{McpContent, McpToolResult};
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     fn outcome(content: Vec<McpContent>, structured: Option<Value>, is_error: bool) -> McpOutcome {
         McpOutcome::from_result(
@@ -195,13 +189,6 @@ mod tests {
             false,
         ));
         assert!(out.as_text().is_none());
-    }
-
-    #[test]
-    fn blank_input_means_no_arguments() {
-        assert_eq!(arguments_from("   ").unwrap(), Value::Null);
-        assert_eq!(arguments_from("{\"a\":1}").unwrap(), json!({"a": 1}));
-        assert!(arguments_from("not json").is_err());
     }
 
     #[test]

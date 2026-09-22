@@ -1,4 +1,5 @@
 mod action;
+pub mod agent;
 mod browser;
 mod cdp;
 mod dialog;

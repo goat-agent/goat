@@ -1,7 +1,12 @@
+pub mod agent;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use goat_skill::{Call, Shared, SkillError};
-use goat_tool::{Tool, ToolError, ToolErrorClass, ToolFuture, ToolOutput, ToolSandbox};
+use goat_tool::{
+    Tool, ToolCall, ToolContext, ToolError, ToolErrorClass, ToolFuture, ToolName, ToolOutput,
+};
 use serde::Deserialize;
 
 pub struct SkillTool {
@@ -31,12 +36,12 @@ struct Input {
 }
 
 impl Tool for SkillTool {
-    fn name(&self) -> &'static str {
-        "Skill"
+    fn name(&self) -> ToolName {
+        ToolName::from_static("Skill")
     }
 
-    fn description(&self) -> &'static str {
-        "Load a skill's instructions by name. Available skills are listed in the system prompt; call this to read the full instructions for one before following it."
+    fn description(&self) -> Cow<'static, str> {
+        "Load a skill's instructions by name. Available skills are listed in the system prompt; call this to read the full instructions for one before following it.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -68,9 +73,9 @@ impl Tool for SkillTool {
         }
     }
 
-    fn run<'a>(&'a self, input: &'a str, _ctx: &'a ToolSandbox) -> ToolFuture<'a> {
+    fn call<'a>(&'a self, call: &'a ToolCall, _ctx: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
-            let args: Input = serde_json::from_str(input)?;
+            let args: Input = serde_json::from_value(call.arguments.clone())?;
             let skills = self.skills.get();
             let skill = skills
                 .activate(&args.name)
@@ -90,8 +95,8 @@ impl Tool for SkillTool {
     }
 }
 
-pub fn all_with(skills: Shared) -> Vec<Box<dyn Tool>> {
-    vec![Box::new(SkillTool::new(skills))]
+pub fn all_with(skills: Shared) -> Vec<Arc<dyn Tool>> {
+    vec![Arc::new(SkillTool::new(skills))]
 }
 
 #[cfg(test)]
