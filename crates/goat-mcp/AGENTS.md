@@ -29,12 +29,12 @@ Classify new failures in `handshake::sort`, the single place that reads meaning 
 | Identity | Behavior |
 |---|---|
 | `preregistered` set | wins outright |
-| none | rmcp falls back to Dynamic Client Registration, which writes `integrations.<kind>.client_id` back into `config.json` |
+| none | rmcp falls back to Dynamic Client Registration; the registered client id travels inside the stored `TokenSet` |
 
 Every leaf but the Google trio uses DCR. Declaring `.preregistered()` asserts that the authorization
-server has no `registration_endpoint`, so `goat integration add` prompts for a client id and secret
+server has no `registration_endpoint`, so `goat integration add` asks for a client id and secret
 first. That pair lives in `credentials.json` under the `client_id` / `client_secret` slots of the
-same integration key, and disconnect removes both.
+same connection key, and `goat integration logout` and `remove` delete both.
 
 ### The third rung, CIMD, is deferred
 

@@ -12,6 +12,8 @@ Start at `McpService::new(...)`, chain `const fn` setters, and finish with `.bui
 
 | Setter | Declares |
 |---|---|
+| `.summary(text)` | the one line `goat integration list` shows |
+| `.binding_keys(&[ConfigKey…])` | the usage keys the leaf reads; `host` is added for `ServiceUrl::FromHost` |
 | `.secret(label, scheme)` / `.oauth(scopes)` | how a connection is established |
 | `.preregistered()` | the auth server has no `registration_endpoint`, so the CLI prompts for a client id and secret |
 | `.token_scheme` / `.env_var` / `.headers` | how the credential reaches the wire |
@@ -31,13 +33,14 @@ Use `ToolPolicy::all(prefix)` or `ToolPolicy::only(prefix, names)`, optionally `
 with `Prefix`/`Suffix` rules.
 
 The prefix namespaces a hosted server's tool names, so it is not cosmetic. Changing it renames every
-tool the model has learned.
+tool the model has learned. It applies to the primary connection; any other connection's tools take
+a prefix derived from its name (`goat_integration::tool_prefix`).
 
 ## Bindings
 
 Read a leaf's slice of the agent's `integrations` map through `validate_binding::<T>` and
-`read_binding::<T>`; `client_id_of` reads back what DCR wrote. Do not parse the binding `Value` by
-hand.
+`read_binding::<T>`. Do not parse the binding `Value` by hand. The value is the connection's
+config with the use layered on top, and `binding.account` is the connection name.
 
 ## Errors
 
