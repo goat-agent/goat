@@ -3,7 +3,7 @@ use goat_protocol::{
     TranscriptEntry,
 };
 
-use super::{App, MainView, PendingScreen, ProcessRunView};
+use super::{App, ComposerMenu, MainView, PendingScreen, ProcessRunView};
 use crate::{ask::AskPicker, native_screen::AskScreen};
 
 impl App {
@@ -54,9 +54,9 @@ impl App {
             EngineEvent::FilesListed { entries } => {
                 self.files = entries;
                 self.files_loaded = true;
-                if let Some(menu) = self.screens.handles.file_menu.upgrade() {
+                if let Some(ComposerMenu::Files(menu)) = &mut self.composer_menu {
                     let query = self.composer.at_query().unwrap_or_default();
-                    menu.lock().unwrap().fill(self.files.clone(), &query);
+                    menu.fill(self.files.clone(), &query);
                 }
             }
             EngineEvent::ConversationRestored {
@@ -461,9 +461,7 @@ impl App {
                     self.queue_notification(crate::notification::Notification::Attention);
                 }
                 let screen = AskScreen::new(AskPicker::new(questions), id, call);
-                if matches!(self.screens.active, PendingScreen::None)
-                    || self.screens.handles.command_menu.upgrade().is_some()
-                {
+                if matches!(self.screens.active, PendingScreen::None) {
                     self.screens.active = PendingScreen::Screen(Box::new(screen));
                 } else {
                     self.screens.waiting = Some(Box::new(screen));

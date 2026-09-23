@@ -1,5 +1,6 @@
 mod engine;
 mod keys;
+pub(crate) mod menu;
 
 use std::{collections::HashMap, path::Path, time::Duration};
 
@@ -7,7 +8,8 @@ use crossterm::event::{Event as CtEvent, EventStream, KeyEventKind, MouseEventKi
 use futures::StreamExt;
 use goat_client::Identity;
 use goat_command::{
-    InputOutcome, Screen, ScreenOutcome, Session, SessionSnapshot, Settings, UsageState, Viewport,
+    InputOutcome, Placement, Screen, ScreenOutcome, Session, SessionSnapshot, Settings, UsageState,
+    Viewport,
 };
 use goat_commands::{CommandEffect, CommandRegistry};
 use goat_protocol::{
@@ -18,18 +20,17 @@ use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::{
-    command::{CommandMenu, CommandMenuContext, RuntimeChoice, RuntimeChoiceGroup},
+    command::RuntimeChoice,
     composer::Composer,
-    files::FileMenu,
     highlight::SyntectHighlighter,
-    native_screen::{
-        CommandMenuScreen, FileMenuScreen, ImageZoomScreen, RunRow, RunScreen, RunScreenState,
-    },
+    native_screen::{ImageZoomScreen, RunRow, RunScreen, RunScreenState},
     symbols,
     theme::Theme,
     transcript::Transcript,
     tui, view,
 };
+
+pub(crate) use menu::ComposerMenu;
 
 pub(crate) struct SubagentRunView {
     pub(crate) subagent_type: String,
@@ -165,8 +166,6 @@ struct ArmingTimers {
 
 #[derive(Default)]
 struct ScreenHandles {
-    command_menu: std::sync::Weak<std::sync::Mutex<CommandMenu>>,
-    file_menu: std::sync::Weak<std::sync::Mutex<FileMenu>>,
     run_screen: std::sync::Weak<std::sync::Mutex<RunScreenState>>,
 }
 
@@ -187,6 +186,9 @@ pub struct App {
     arming: ArmingTimers,
     screens: ScreenState,
     pub(crate) composer: Composer,
+    pub(crate) composer_menu: Option<ComposerMenu>,
+    pub(crate) panel_visible: bool,
+    menu_dismissed: Option<u64>,
     pub(crate) highlighter: SyntectHighlighter,
     pub(crate) cwd: String,
     pub(crate) remote: Option<String>,
@@ -362,6 +364,9 @@ impl App {
                 handles: ScreenHandles::default(),
             },
             composer: Composer::default(),
+            composer_menu: None,
+            panel_visible: true,
+            menu_dismissed: None,
             highlighter: SyntectHighlighter::new(),
             cwd,
             remote: origin.remote.clone(),
@@ -395,6 +400,7 @@ impl App {
 
     pub(crate) fn update(&mut self, event: AppEvent) -> Vec<Op> {
         let mut ops = self.reduce(event);
+        self.sync_composer_menu();
         ops.append(&mut self.outbox);
         ops
     }
@@ -469,7 +475,6 @@ impl App {
                     }
                     Err(err) => self.push_toast(NotifyKind::Error, err.to_string()),
                 }
-                self.update_command_menu();
                 self.dirty = true;
                 Vec::new()
             }
@@ -492,7 +497,10 @@ impl App {
                 self.focused = false;
                 Vec::new()
             }
-            AppEvent::Input(_) => Vec::new(),
+            AppEvent::Input(event) => {
+                tracing::debug!(?event, "input event dropped");
+                Vec::new()
+            }
             AppEvent::Engine(event) => {
                 let mut ops = self.notify_screen(&event);
                 ops.extend(self.on_engine(event));
@@ -505,21 +513,27 @@ impl App {
                 result,
                 fallback,
             } => {
+                if self.modal_owns_input() {
+                    tracing::debug!("attachment paste dropped; a modal screen owns input");
+                    return Vec::new();
+                }
                 match result {
                     Ok(attachments) => self.composer.push_attachments(attachments),
                     Err(_message) if fallback => self.composer.insert_paste(&text),
                     Err(message) => self.push_toast(NotifyKind::Error, message),
                 }
-                self.update_command_menu();
                 self.dirty = true;
                 Vec::new()
             }
             AppEvent::ClipboardImage(result) => {
+                if self.modal_owns_input() {
+                    tracing::debug!("clipboard image dropped; a modal screen owns input");
+                    return Vec::new();
+                }
                 match result {
                     Ok(attachment) => self.composer.push_attachment(attachment),
                     Err(message) => self.push_toast(NotifyKind::Error, message),
                 }
-                self.update_command_menu();
                 self.dirty = true;
                 Vec::new()
             }
@@ -617,22 +631,50 @@ impl App {
                 return None;
             }
         };
+        let placement = screen.placement();
+        if matches!(placement, Placement::Panel { .. }) && !self.panel_visible {
+            tracing::debug!(?event, "input bypassed; panel screen has no rows");
+            self.screens.active = PendingScreen::Screen(screen);
+            return None;
+        }
         self.viewport.run_cursor = self.run_selector();
         self.viewport.run_count = self.run_row_count();
         let input = screen.handle_input(event, self);
         self.apply_collaborator_changes();
         match input {
             InputOutcome::Ignored => {
+                let falls_through = matches!(event, CtEvent::Mouse(_))
+                    || matches!(
+                        placement,
+                        Placement::Panel {
+                            composer_focused: true,
+                            ..
+                        }
+                    );
                 self.screens.active = PendingScreen::Screen(screen);
-                None
+                if falls_through {
+                    None
+                } else {
+                    tracing::debug!(?event, "input swallowed by modal screen");
+                    Some(Vec::new())
+                }
             }
             InputOutcome::Handled(outcome) => {
                 let ops = self.apply_screen_outcome(screen, outcome);
-                if self.screens.handles.command_menu.upgrade().is_some() {
-                    self.update_command_menu();
-                }
                 Some(ops)
             }
+        }
+    }
+
+    fn modal_owns_input(&self) -> bool {
+        let PendingScreen::Screen(screen) = &self.screens.active else {
+            return false;
+        };
+        match screen.placement() {
+            Placement::Panel {
+                composer_focused, ..
+            } => !composer_focused && self.panel_visible,
+            _ => true,
         }
     }
 
@@ -900,76 +942,6 @@ impl App {
             .collect()
     }
 
-    pub(crate) fn update_command_menu(&mut self) {
-        if self.composer.shell() {
-            if self.screens.handles.command_menu.upgrade().is_some()
-                || self.screens.handles.file_menu.upgrade().is_some()
-            {
-                self.screens.active = PendingScreen::None;
-            }
-            return;
-        }
-        if let Some(query) = self.composer.at_query() {
-            if let Some(menu) = self.screens.handles.file_menu.upgrade() {
-                menu.lock().unwrap().update(&query);
-            } else {
-                if !self.files_loaded {
-                    self.outbox.push(Op::ListFiles {});
-                }
-                let (screen, handle) = FileMenuScreen::new(FileMenu::new(
-                    self.files.clone(),
-                    !self.files_loaded,
-                    &query,
-                ));
-                self.screens.handles.file_menu = handle;
-                self.screens.active = PendingScreen::Screen(Box::new(screen));
-            }
-            return;
-        }
-        if self.screens.handles.file_menu.upgrade().is_some() {
-            self.screens.active = PendingScreen::None;
-        }
-        let text = self.composer.text();
-        let trimmed = text.trim_start();
-        let effort_options = self.effort_choice_options();
-        let model_options = self.model_choice_options();
-        let groups = [
-            RuntimeChoiceGroup {
-                command: "effort",
-                parameter: "level",
-                options: &effort_options,
-                empty_hint: if self.catalog.selected.is_some() {
-                    "this model does not support reasoning effort"
-                } else {
-                    "select a model first"
-                },
-            },
-            RuntimeChoiceGroup {
-                command: "model",
-                parameter: "name",
-                options: &model_options,
-                empty_hint: "no models yet — run /config to connect a provider",
-            },
-        ];
-        let context = CommandMenuContext { choices: &groups };
-        if trimmed.starts_with('/')
-            && slash_command_name(trimmed).is_none_or(|name| !name.contains('/'))
-        {
-            if let Some(menu) = self.screens.handles.command_menu.upgrade() {
-                menu.lock()
-                    .unwrap()
-                    .update(&self.commands, trimmed, &context);
-            } else {
-                let (screen, handle) =
-                    CommandMenuScreen::new(CommandMenu::new(&self.commands, trimmed, &context));
-                self.screens.handles.command_menu = handle;
-                self.screens.active = PendingScreen::Screen(Box::new(screen));
-            }
-        } else if self.screens.handles.command_menu.upgrade().is_some() {
-            self.screens.active = PendingScreen::None;
-        }
-    }
-
     pub(crate) fn clamp_scroll(&mut self, viewport_height: u16, content_width: u16) {
         self.viewport.rows = viewport_height;
         let max = self
@@ -996,8 +968,6 @@ impl App {
     pub(crate) fn wheel_scroll_allowed(&self) -> bool {
         matches!(self.screens.active, PendingScreen::None)
             || self.screens.handles.run_screen.upgrade().is_some()
-            || self.screens.handles.command_menu.upgrade().is_some()
-            || self.screens.handles.file_menu.upgrade().is_some()
     }
 
     pub(crate) fn overlay_captures_text(&self) -> bool {
@@ -1217,8 +1187,7 @@ impl App {
         self.turn.compacting = false;
     }
     pub(crate) fn promote_waiting_screen(&mut self) {
-        if (matches!(self.screens.active, PendingScreen::None)
-            || self.screens.handles.command_menu.upgrade().is_some())
+        if matches!(self.screens.active, PendingScreen::None)
             && let Some(screen) = self.screens.waiting.take()
         {
             self.screens.active = PendingScreen::Screen(screen);
@@ -1907,7 +1876,11 @@ async fn event_loop(
                     Some(event) => event,
                     None => continue,
                 },
-                Some(Err(_)) | None => break,
+                Some(Err(err)) => {
+                    tracing::debug!(error = %err, "input stream error");
+                    break;
+                }
+                None => break,
             },
             _ = ticker.tick() => AppEvent::Tick,
             maybe = events.recv() => match maybe {
@@ -4004,5 +3977,293 @@ mod tests {
                 _ => None,
             })
             .expect("the group is in the transcript")
+    }
+
+    fn key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Vec<Op> {
+        app.update(AppEvent::Input(crossterm::event::Event::Key(press(
+            code, modifiers,
+        ))))
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for ch in text.chars() {
+            key(app, KeyCode::Char(ch), KeyModifiers::NONE);
+        }
+    }
+
+    fn command_menu_open(app: &App) -> bool {
+        matches!(app.composer_menu, Some(super::ComposerMenu::Commands(_)))
+    }
+
+    #[test]
+    fn slash_menu_opens_on_history_recall() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        app.on_engine(EngineEvent::ModelListChanged {
+            entries: vec![
+                single_entry("openai", "gpt"),
+                single_entry("anthropic", "claude"),
+            ],
+        });
+        app.composer.insert_str("/model");
+        app.composer.take();
+
+        key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.composer.text(), "/model");
+        assert!(
+            command_menu_open(&app),
+            "a recalled slash command must open the menu"
+        );
+
+        let ops = key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(ops.is_empty(), "enter completes the command name first");
+        assert_eq!(app.composer.text(), "/model ");
+        assert!(command_menu_open(&app));
+
+        let ops = key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            matches!(ops.as_slice(), [Op::SelectModel { target }] if target.model == "gpt"),
+            "expected the highlighted model, got {ops:?}"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_discard_closes_the_menu() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        type_text(&mut app, "/mo");
+        assert!(command_menu_open(&app));
+
+        key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(app.composer.is_empty());
+        assert!(
+            app.composer_menu.is_none(),
+            "a discarded composer must not leave a stale menu"
+        );
+
+        type_text(&mut app, "hi");
+        let ops = key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(ops.as_slice(), [Op::SubmitMessage { .. }]));
+    }
+
+    #[test]
+    fn esc_dismisses_the_menu_until_the_text_changes() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        type_text(&mut app, "/mo");
+        assert!(command_menu_open(&app));
+
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.composer_menu.is_none());
+        assert_eq!(app.composer.text(), "/mo");
+        assert!(!app.clear_armed(), "menu esc must not arm clear");
+
+        key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert!(
+            app.composer_menu.is_none(),
+            "a cursor move keeps the menu dismissed"
+        );
+
+        key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(command_menu_open(&app), "editing the text reopens the menu");
+    }
+
+    #[test]
+    fn history_recall_reopens_a_dismissed_menu() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        app.composer.insert_str("/model");
+        app.composer.take();
+        type_text(&mut app, "/mo");
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.composer_menu.is_none());
+
+        key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.composer.text(), "/model");
+        assert!(
+            command_menu_open(&app),
+            "recalling slash text clears the dismiss latch"
+        );
+    }
+
+    #[test]
+    fn invisible_menu_does_not_capture_enter() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        app.on_engine(EngineEvent::ModelListChanged {
+            entries: vec![single_entry("openai", "gpt")],
+        });
+        type_text(&mut app, "/model");
+        assert!(command_menu_open(&app));
+
+        app.panel_visible = false;
+        let ops = key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(ops.is_empty());
+        assert!(
+            matches!(app.screens.active, PendingScreen::Screen(_)),
+            "enter submits /model, opening the visible picker"
+        );
+        assert!(app.composer_menu.is_none());
+
+        let ops = key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(ops.as_slice(), [Op::SelectModel { .. }]));
+    }
+
+    #[test]
+    fn modal_screen_swallows_ignored_keys_instead_of_leaking() {
+        use goat_protocol::ConversationSummary;
+        let mut app = App::new(Theme::dark(), &test_origin());
+        let ops = app.dispatch_slash_command("/resume 1");
+        assert!(matches!(ops.as_slice(), [Op::ListConversations {}]));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
+
+        type_text(&mut app, "/x");
+        assert!(
+            app.composer.is_empty(),
+            "keys must not leak to the composer under a modal"
+        );
+        assert!(
+            app.composer_menu.is_none(),
+            "the menu must not clobber the modal"
+        );
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
+
+        let ops = app.update(AppEvent::Engine(EngineEvent::ConversationsListed {
+            conversations: vec![ConversationSummary {
+                id: 42,
+                title: "chat".to_owned(),
+                model: "openai/gpt".to_owned(),
+                updated_at: 1,
+                live: false,
+            }],
+        }));
+        assert!(matches!(
+            ops.as_slice(),
+            [Op::Resume {
+                conversation_id: 42
+            }]
+        ));
+    }
+
+    #[test]
+    fn ask_screen_preempts_the_menu_and_the_menu_returns() {
+        use goat_protocol::{AskOption, AskQuestion, ToolCallId};
+        let mut app = App::new(Theme::dark(), &test_origin());
+        type_text(&mut app, "/mo");
+        assert!(command_menu_open(&app));
+
+        app.update(AppEvent::Engine(EngineEvent::AskStarted {
+            id: TaskId(1),
+            call: ToolCallId(9),
+            questions: vec![AskQuestion {
+                question: "ok?".to_owned(),
+                options: vec![AskOption {
+                    label: "yes".to_owned(),
+                    description: None,
+                }],
+                multiple: false,
+            }],
+        }));
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
+        assert!(
+            app.composer_menu.is_some(),
+            "the menu is dormant under the modal, not lost"
+        );
+
+        let ops = key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(ops.as_slice(), [Op::Answer { .. }]));
+        assert!(matches!(app.screens.active, PendingScreen::None));
+        assert!(
+            command_menu_open(&app),
+            "the menu returns once the modal closes"
+        );
+
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.composer.text(), "/mo", "menu keys stay in the menu");
+    }
+
+    #[test]
+    fn ctrl_n_and_p_move_the_menu_cursor() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        type_text(&mut app, "/");
+        let selected = |app: &App| match &app.composer_menu {
+            Some(super::ComposerMenu::Commands(menu)) => {
+                menu.selected_completion().map(|c| c.apply("/"))
+            }
+            _ => panic!("the command menu must be open"),
+        };
+        let first = selected(&app);
+        key(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL);
+        let second = selected(&app);
+        assert_ne!(first, second, "ctrl+n moves the cursor down");
+        key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert_eq!(first, selected(&app), "ctrl+p moves the cursor back up");
+    }
+
+    #[test]
+    fn file_menu_derives_from_the_at_query() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        app.files = vec!["src/main.rs".to_owned(), "README.md".to_owned()];
+        app.files_loaded = true;
+        type_text(&mut app, "see @sr");
+        assert!(matches!(
+            app.composer_menu,
+            Some(super::ComposerMenu::Files(_))
+        ));
+
+        let ops = key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(ops.is_empty(), "a file pick completes without submitting");
+        assert_eq!(app.composer.text(), "see @src/main.rs ");
+        assert!(app.composer_menu.is_none());
+    }
+
+    #[test]
+    fn interrupted_task_restores_queued_text_and_menu() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        app.queued
+            .push((TaskId(9), "/model".to_owned(), None, Vec::new()));
+        app.update(AppEvent::Engine(EngineEvent::TaskDone {
+            id: TaskId(1),
+            interrupted: true,
+        }));
+        assert_eq!(app.composer.text(), "/model");
+        assert!(
+            command_menu_open(&app),
+            "restored slash text must reopen the menu"
+        );
+    }
+
+    #[test]
+    fn up_is_menu_navigation_not_history() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        app.composer.insert_str("earlier");
+        app.composer.take();
+        type_text(&mut app, "/");
+        key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(
+            app.composer.text(),
+            "/",
+            "the menu owns up/down while it is open"
+        );
+    }
+
+    #[test]
+    fn tab_completes_the_highlighted_command() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        type_text(&mut app, "/mo");
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.composer.text(), "/model ");
+        assert!(command_menu_open(&app));
+    }
+
+    #[test]
+    fn invisible_panel_screen_is_bypassed() {
+        let mut app = App::new(Theme::dark(), &test_origin());
+        subagent_started(&mut app, 1, "explore");
+        app.move_run_cursor(0);
+        assert!(matches!(app.screens.active, PendingScreen::Screen(_)));
+
+        app.panel_visible = false;
+        key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+        assert_eq!(
+            app.composer.text(),
+            "x",
+            "a panel with zero rows must not eat keys"
+        );
     }
 }

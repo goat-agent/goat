@@ -6,12 +6,21 @@ use crate::keymap;
 
 impl App {
     pub(crate) fn on_key(&mut self, key: KeyEvent) -> Vec<Op> {
+        let ops = self.dispatch_key(key);
+        self.sync_composer_menu();
+        ops
+    }
+
+    fn dispatch_key(&mut self, key: KeyEvent) -> Vec<Op> {
         tracing::trace!(code = ?key.code, modifiers = ?key.modifiers, "key");
         if keymap::super_char(&key) == Some('c') {
             self.copy_selection();
             return Vec::new();
         }
         if let Some(ops) = self.handle_screen_input(&crossterm::event::Event::Key(key)) {
+            return ops;
+        }
+        if let Some(ops) = self.composer_menu_key(&key) {
             return ops;
         }
         if let Some(ch) = keymap::ctrl_key(&key) {
@@ -30,10 +39,11 @@ impl App {
                 }
                 'w' => {
                     self.composer.delete_word_before();
-                    self.update_command_menu();
                     self.dirty = true;
                 }
-                _ => {}
+                _ => {
+                    tracing::debug!(%ch, "ctrl key has no binding");
+                }
             }
             return Vec::new();
         }
@@ -90,14 +100,12 @@ impl App {
                     return vec![Op::DequeueMessage { id }];
                 } else {
                     self.composer.backspace();
-                    self.update_command_menu();
                 }
                 self.dirty = true;
                 Vec::new()
             }
             KeyCode::Delete => {
                 self.composer.delete_forward();
-                self.update_command_menu();
                 self.dirty = true;
                 Vec::new()
             }
@@ -197,11 +205,13 @@ impl App {
             }
             KeyCode::Char(c) => {
                 self.composer.insert_char(c);
-                self.update_command_menu();
                 self.dirty = true;
                 Vec::new()
             }
-            _ => Vec::new(),
+            _ => {
+                tracing::debug!(code = ?key.code, modifiers = ?key.modifiers, "key has no binding");
+                Vec::new()
+            }
         }
     }
 

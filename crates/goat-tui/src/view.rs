@@ -68,22 +68,25 @@ struct PanelLayout {
 const HEADER_H: u16 = 2;
 
 fn active_panel(app: &App) -> Option<PanelLayout> {
-    let PendingScreen::Screen(screen) = app.overlay() else {
-        return None;
-    };
-    let Placement::Panel {
-        height,
-        hints,
-        composer_focused,
-    } = screen.placement()
-    else {
-        return None;
-    };
-    Some(PanelLayout {
-        height,
-        hints,
-        composer_focused,
-    })
+    match app.overlay() {
+        PendingScreen::Screen(screen) => match screen.placement() {
+            Placement::Panel {
+                height,
+                hints,
+                composer_focused,
+            } => Some(PanelLayout {
+                height,
+                hints,
+                composer_focused,
+            }),
+            _ => None,
+        },
+        PendingScreen::None => app.composer_menu.as_ref().map(|menu| PanelLayout {
+            height: menu.desired_height(),
+            hints: menu.hints(),
+            composer_focused: true,
+        }),
+    }
 }
 
 fn composer_focused(app: &App, panel: Option<&PanelLayout>) -> bool {
@@ -115,6 +118,7 @@ fn render_main(frame: &mut Frame, area: Rect, app: &mut App, theme: Theme) {
         composer_preview_height(app)
     };
     let (panel_h, preview_h) = fit_stack(panel_want, preview_want, stack_budget);
+    app.panel_visible = panel.is_none() || panel_h > 0;
 
     let [
         header,
@@ -200,6 +204,10 @@ fn render_panel(
     }
     if let PendingScreen::Screen(screen) = app.overlay_mut() {
         screen.render(frame, area, &theme);
+        return;
+    }
+    if let Some(menu) = app.composer_menu.as_ref() {
+        menu.render(frame, area, theme);
     }
 }
 
@@ -839,5 +847,44 @@ mod tests {
     #[test]
     fn format_rate_status_empty() {
         assert!(format_rate_status(&[]).is_empty());
+    }
+
+    fn buffer_text(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        buffer
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn a_zero_row_panel_marks_itself_not_visible() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = crate::app::App::new(
+            crate::theme::Theme::dark(),
+            &crate::app::Origin::local(".".to_owned()),
+        );
+        app.composer.insert_str("/mo");
+        app.update(crate::app::AppEvent::Tick);
+        assert!(app.composer_menu.is_some());
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| super::render(frame, &mut app))
+            .unwrap();
+        assert!(app.panel_visible);
+        assert!(
+            buffer_text(&terminal).contains("/model"),
+            "the menu panel renders its rows"
+        );
+
+        let mut tiny = Terminal::new(TestBackend::new(80, 6)).unwrap();
+        tiny.draw(|frame| super::render(frame, &mut app)).unwrap();
+        assert!(
+            !app.panel_visible,
+            "a panel clipped to zero rows reports itself invisible"
+        );
     }
 }
