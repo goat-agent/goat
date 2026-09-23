@@ -49,7 +49,7 @@ pub fn compile(
     let plan = plan(&spec.query)?;
     let cloud = cloud_id(binding).ok_or_else(|| {
         IntegrationError::Config(
-            "atlassian needs `cloud_id` in the agent's atlassian binding; \
+            "atlassian needs `cloud_id`; set it with `goat agent integration set <connection> --set cloud_id=<id>`; \
              read it from the `getAccessibleAtlassianResources` tool"
                 .to_owned(),
         )

@@ -20,21 +20,22 @@ pub fn resolve(
     client_id: Option<&str>,
 ) -> IntegrationResult<ResolvedAuth> {
     let key = CredentialKey::integration(name, account);
-    if env_overrides_stored_oauth(spec.env_var, credentials, &key) {
+    let env_var = spec.env_var.filter(|_| account == name);
+    if env_overrides_stored_oauth(env_var, credentials, &key) {
         info!(
             integration = name,
-            env_var = spec.env_var,
+            env_var = env_var,
             "token from the environment overrides the stored oauth credential",
         );
     }
-    match credentials.resolve(&key, spec.env_var) {
+    match credentials.resolve(&key, env_var) {
         Some(Credential::ApiKey(secret) | Credential::ApiKeyWithEndpoint { secret, .. }) => Ok(
             ResolvedAuth::Token(header_value(spec.scheme, secret.expose())),
         ),
         Some(Credential::OAuth(tokens)) => {
             if tokens.client_id.is_none() && client_id.is_none() {
                 return Err(IntegrationError::Config(format!(
-                    "{name} connection missing `client_id`; run `goat integration add {name}`"
+                    "{account} is missing its oauth client; run `goat integration login {account}`"
                 )));
             }
             Ok(ResolvedAuth::OAuth(StoredOAuth::new(
@@ -43,17 +44,12 @@ pub fn resolve(
                 client_id.map(str::to_owned),
             )))
         }
-        None => Err(IntegrationError::Auth(missing_credential(
-            name,
-            account,
-            spec.env_var,
-        ))),
+        None => Err(IntegrationError::Auth(missing_credential(account, env_var))),
     }
 }
 
-fn missing_credential(name: &str, account: &str, env_var: Option<&str>) -> String {
-    let base =
-        format!("no {name} credential for account `{account}`; run `goat integration add {name}`");
+fn missing_credential(account: &str, env_var: Option<&str>) -> String {
+    let base = format!("`{account}` is not logged in; run `goat integration login {account}`");
     match env_var {
         Some(var) => format!("{base} or set {var}"),
         None => base,
@@ -139,11 +135,11 @@ mod tests {
 
     #[test]
     fn the_missing_credential_message_mentions_the_env_var_when_there_is_one() {
-        let with = missing_credential("sentry", "default", Some("GOAT_SENTRY_ACCESS_TOKEN"));
-        assert!(with.contains("goat integration add sentry"));
+        let with = missing_credential("sentry", Some("GOAT_SENTRY_ACCESS_TOKEN"));
+        assert!(with.contains("goat integration login sentry"));
         assert!(with.contains("GOAT_SENTRY_ACCESS_TOKEN"));
-        let without = missing_credential("notion", "default", None);
-        assert!(without.contains("goat integration add notion"));
+        let without = missing_credential("notion-work", None);
+        assert!(without.contains("goat integration login notion-work"));
         assert!(!without.contains("set "));
     }
 }

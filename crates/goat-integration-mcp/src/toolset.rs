@@ -90,7 +90,7 @@ pub async fn register(
         credentials: runtime.credentials.clone(),
         binding: HostedBinding::PerAgent(bindings.clone()),
     });
-    let planned = plan(service, &discovered, &binding.config, &source);
+    let planned = plan(service, &discovered, binding, &source);
     warn_about_missing_tools(service, &discovered);
     let tools = goat_mcp_tools::tools(planned);
     let names = tools.iter().map(|tool| tool.name()).collect();
@@ -111,7 +111,7 @@ pub async fn code_tools(
         credentials: credentials.clone(),
         binding: HostedBinding::Fixed(binding.clone()),
     });
-    let planned = plan(service, &discovered, &binding.config, &source);
+    let planned = plan(service, &discovered, binding, &source);
     warn_about_missing_tools(service, &discovered);
     Ok(planned)
 }
@@ -119,10 +119,12 @@ pub async fn code_tools(
 fn plan(
     service: &Arc<McpService>,
     discovered: &[CachedTool],
-    config: &Value,
+    binding: &IntegrationBinding,
     source: &Arc<dyn McpToolSource>,
 ) -> Vec<ResolvedTool> {
-    let deny = DenyRules::effective(&service.tools, config);
+    let deny = DenyRules::effective(&service.tools, &binding.config);
+    let prefix =
+        goat_integration::tool_prefix(service.tools.prefix, service.name, &binding.account);
     let mut planned = Vec::new();
     let mut enabled = 0usize;
     let mut deferred = 0usize;
@@ -134,7 +136,7 @@ fn plan(
             skipped += 1;
             continue;
         }
-        let Some(name) = usable_name(service, tool) else {
+        let Some(name) = usable_name(service, &prefix, tool) else {
             skipped += 1;
             continue;
         };
@@ -278,8 +280,8 @@ fn schema_is_usable(schema: &Value) -> bool {
             .is_some_and(|back| &back == schema)
 }
 
-fn usable_name(service: &McpService, tool: &CachedTool) -> Option<ToolName> {
-    let candidate = prefixed(service.tools.prefix, &tool.name);
+fn usable_name(service: &McpService, prefix: &str, tool: &CachedTool) -> Option<ToolName> {
+    let candidate = prefixed(prefix, &tool.name);
     if candidate.len() > MAX_TOOL_NAME_LEN {
         warn!(
             integration = service.id.as_str(),
@@ -383,7 +385,7 @@ impl McpToolSource for HostedSource {
             let name = self.service.id.as_str();
             let Some(binding) = self.binding_for(caller) else {
                 return Err(format!(
-                    "{name} is not configured for this agent; run `goat agent integration add {name}`"
+                    "{name} is not configured for this agent; run `goat agent integration list`"
                 ));
             };
             let session = self
@@ -571,14 +573,21 @@ mod tests {
     #[test]
     fn an_over_long_name_is_skipped_rather_than_registered_broken() {
         let service = service();
-        assert!(usable_name(&service, &tool("x")).is_some());
-        assert!(usable_name(&service, &tool(&"x".repeat(MAX_TOOL_NAME_LEN))).is_none());
+        assert!(usable_name(&service, service.tools.prefix, &tool("x")).is_some());
+        assert!(
+            usable_name(
+                &service,
+                service.tools.prefix,
+                &tool(&"x".repeat(MAX_TOOL_NAME_LEN))
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn a_name_the_registry_would_reject_is_skipped() {
         let service = service();
-        assert!(usable_name(&service, &tool("bad name!")).is_none());
+        assert!(usable_name(&service, service.tools.prefix, &tool("bad name!")).is_none());
     }
 
     #[test]

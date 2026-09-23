@@ -35,17 +35,19 @@ while it is idle, and reported instead of replaced while it is busy.
 
 ```
 goat                     help
-goat setup               first-run setup — providers, then an optional agent
+goat setup               first-run setup — providers, an optional agent, integrations
 goat code                launch the coding TUI (-c resume, -w worktree)
 goat code worktree       manage git worktrees
 goat code search         manage search providers
 goat code session        list or end live coding sessions
+goat code integration    narrow which connections this project's sessions use
 goat agent add | list    manage agents
 goat agent show | remove inspect or delete an agent
 goat agent channel       bind an agent to a chat channel (verifies the secrets)
-goat agent integration   bind an agent to a connected service
+goat agent integration   choose which connections an agent uses
+goat agent watch         choose what the agent watches and is briefed on
 goat agent status | log  show state and recent actions
-goat integration         manage shared external-service connections
+goat integration         list, connect, log in to and check external services
 goat provider            manage LLM keys
 goat mcp                 manage MCP servers
 goat reload              validate and apply manual config changes
@@ -71,13 +73,17 @@ two tokens (a `xoxb-` bot token to speak, a `xapp-` app-level token to open the 
 text printed by `goat agent channel add slack` carries the app manifest.
 
 Integrations: Asana, Atlassian, Datadog, GitHub, Gmail, Google Calendar, Google Drive, Intercom,
-Langfuse, Linear, Notion, PagerDuty, PostHog, Sentry, Slack, Stripe, Supabase, Tiro, Vercel — connect with
-`goat integration add`, bind per agent with `goat agent integration add`. GitHub reads its
-credential from the `gh` cli, so run `gh auth login` first. The three Google servers are in
-Google's Workspace Developer Preview and do not register clients dynamically, so `goat integration
-add` asks for an OAuth client id and secret you create in a Google Cloud project. Langfuse takes the project's public and
-secret key joined by a colon, and a `host` in its binding reaches a cloud region or a self-hosted
-instance.
+Langfuse, Linear, Notion, PagerDuty, PostHog, Sentry, Slack, Stripe, Supabase, Tiro, Vercel. Run
+`goat integration` to see all of them with what each offers, and `goat integration info <name>` for
+setup details. `goat integration add <name>` creates a connection; add the same integration again
+with `--name` (say `linear-work`) to hold a second account or a second host. Every code session can
+use every connection; `goat code integration add` narrows a project to the ones it lists. An agent
+uses only the connections you give it with `goat agent integration add`, and `goat agent watch`
+chooses what it is briefed on. GitHub reads its credential from the `gh` cli, so run
+`gh auth login` first. The three Google servers are in Google's Workspace Developer Preview and do
+not register clients dynamically, so `goat integration add` asks for an OAuth client id and secret
+you create in a Google Cloud project. Langfuse takes the project's public and secret key joined by
+a colon, and `--host` reaches a cloud region or a self-hosted instance.
 
 Slack appears in both lists and they are different things. The **channel** is the bot people address;
 the **integration** reaches into Slack as *you* (`xoxp-` user token) to search and read history. The

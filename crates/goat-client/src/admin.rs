@@ -23,6 +23,9 @@ pub enum AdminRequest {
         account: String,
         method: LoginMethod,
     },
+    IntegrationStatus {
+        verify: bool,
+    },
 }
 
 pub enum LoginMethod {
@@ -70,7 +73,59 @@ pub(crate) async fn dispatch(
             let events = events.clone();
             tokio::spawn(async move { run_login(&api, provider, account, method, &events).await });
         }
+        AdminRequest::IntegrationStatus { verify } => {
+            let api = api.clone();
+            let events = events.clone();
+            tokio::spawn(async move {
+                let (kind, message) = match api
+                    .call::<goat_api::AdminIntegrationStatus>(
+                        goat_api::AdminIntegrationStatusParams { name: None, verify },
+                    )
+                    .await
+                {
+                    Ok(status) => (NotifyKind::Info, integration_summary(&status)),
+                    Err(err) => (NotifyKind::Error, err.message),
+                };
+                let _ = events.send(Event::Notify { kind, message }).await;
+            });
+        }
     }
+}
+
+fn integration_summary(status: &goat_api::AdminIntegrationStatusOutput) -> String {
+    if status.connections.is_empty() && status.invalid.is_empty() {
+        return "no integrations are connected; run `goat integration` in a terminal to see what \
+                you can connect"
+            .to_owned();
+    }
+    let mut lines = vec!["integrations:".to_owned()];
+    for connection in &status.connections {
+        let state = match &connection.state {
+            goat_api::IntegrationState::Ready { .. } => connection.identity.as_ref().map_or_else(
+                || "ready".to_owned(),
+                |identity| format!("ready as {identity}"),
+            ),
+            goat_api::IntegrationState::NeedsLogin { reason } => format!(
+                "needs login ({reason}); run `goat integration login {}`",
+                connection.name
+            ),
+            goat_api::IntegrationState::Failed { message } => format!("failed: {message}"),
+        };
+        let name = if connection.name == connection.kind {
+            connection.name.clone()
+        } else {
+            format!("{} ({})", connection.name, connection.kind)
+        };
+        lines.push(format!("  {name}: {state}"));
+    }
+    for invalid in &status.invalid {
+        lines.push(format!("  {}: invalid, {}", invalid.name, invalid.reason));
+    }
+    lines.push(
+        "this project's sessions use every connection unless `goat code integration add` narrows them"
+            .to_owned(),
+    );
+    lines.join("\n")
 }
 
 fn local_world() -> Result<(CredentialStore, goat_config::ProviderSpecs), String> {
@@ -227,4 +282,44 @@ pub async fn remove_credential(link: &Link, key: CredentialKey) -> Result<bool, 
     })
     .await
     .map(|out| out.removed)
+}
+
+pub async fn connect_integration(
+    link: &Link,
+    params: goat_api::AdminIntegrationConnectParams,
+) -> Result<goat_api::AdminIntegrationConnectOutput, ClientError> {
+    crate::admin_call(link, |api| async move {
+        api.call::<goat_api::AdminIntegrationConnect>(params).await
+    })
+    .await
+}
+
+pub async fn remove_integration(
+    link: &Link,
+    name: String,
+    scope: goat_api::IntegrationRemoveScope,
+) -> Result<goat_api::AdminIntegrationRemoveOutput, ClientError> {
+    crate::admin_call(link, |api| async move {
+        api.call::<goat_api::AdminIntegrationRemove>(goat_api::AdminIntegrationRemoveParams {
+            name,
+            scope,
+        })
+        .await
+    })
+    .await
+}
+
+pub async fn integration_status(
+    link: &Link,
+    name: Option<String>,
+    verify: bool,
+) -> Result<goat_api::AdminIntegrationStatusOutput, ClientError> {
+    crate::admin_call(link, |api| async move {
+        api.call::<goat_api::AdminIntegrationStatus>(goat_api::AdminIntegrationStatusParams {
+            name,
+            verify,
+        })
+        .await
+    })
+    .await
 }

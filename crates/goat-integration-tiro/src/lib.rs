@@ -11,6 +11,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 pub const ID: IntegrationId = IntegrationId::from_static("tiro");
+
+const SUMMARY: &str = "search and read meeting notes; watch new notes";
 pub const PREFIX: &str = "tiro_";
 
 const MCP_URL: &str = "https://mcp.tiro.ooo/mcp";
@@ -19,7 +21,7 @@ const TOOL_AUTH_STATUS: &str = "auth_status";
 
 const SETUP: &str = "connects to Tiro's hosted MCP server; a browser window will ask you to approve access.\n\
      the scopes you were actually granted are printed on connect — an oauth session can be read-only, and folder or share-link writes then need an api key instead.\n\
-     the watcher stays off until you declare a workflow in the agent's `watch` section, e.g.\n\
+     the watcher stays off until you add a workflow with `goat agent watch add`; an entry looks like\n\
      { \"source\": \"tiro\", \"query\": \"workspace:<name>\" } or { \"source\": \"tiro\", \"query\": \"folder:<id>\" } —\n\
      known keys: workspace, folder, limit; at least one of workspace/folder is required;\n\
      find values with `tiro_list_workspaces` and `tiro_search_private_folders`.\n\
@@ -38,6 +40,7 @@ pub const VOCABULARY: WatchVocabulary = WatchVocabulary {
 
 pub fn service() -> McpService {
     McpService::new("tiro", "Tiro", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .summary(SUMMARY)
         .env_var(ENV_VAR)
         .token_scheme(AuthScheme::Bearer)
         .tools(ToolPolicy::all(PREFIX))
@@ -98,7 +101,8 @@ mod tests {
     #[test]
     fn the_binding_keeps_only_connection_keys() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "account": "work" })).is_err());
         assert!(validate_config(&json!("nope")).is_err());
         assert!(validate_config(&json!({ "folderid": "F2" })).is_err());
     }

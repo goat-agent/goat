@@ -66,8 +66,10 @@ structure. Intent that needs prose goes in the nearest `AGENTS.md`.
   `methods_fingerprint.txt` refusing to match on `session.submit` and `session.watch`.
 - Never edit or delete an applied migration; `sqlx::migrate!` checksums them. Express a removal as a
   new migration.
-- `goat integration` manages the global connection to a service. `goat agent integration` binds a
-  connected service to one agent. Both take `-a <agent>` where an agent is implied.
+- `goat integration` manages **connections**: named, several per integration (`linear`,
+  `linear-work`). `goat agent integration` and `goat code integration` choose which connections a
+  consumer uses; `goat agent watch` chooses what an agent is briefed on. Agent commands take
+  `-a <agent>`. See `crates/goat-integration/AGENTS.md`.
 
 ## Registration is not uniform
 

@@ -1,13 +1,25 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use goat_integration::{IntegrationFactory, IntegrationResult};
+use goat_integration::{ConfigKey, IntegrationFactory, IntegrationResult};
 use goat_integration_mcp::{McpService, NameRule, ServiceUrl, ToolPolicy};
 use goat_types::IntegrationId;
 use serde::Deserialize;
 use serde_json::Value;
 
 pub const ID: IntegrationId = IntegrationId::from_static("posthog");
+
+const SUMMARY: &str = "run product analytics queries and read insights";
+const BINDING_KEYS: &[ConfigKey] = &[
+    ConfigKey {
+        name: "project_id",
+        about: "project to query when the account has more than one",
+    },
+    ConfigKey {
+        name: "organization_id",
+        about: "organization to query when the account has more than one",
+    },
+];
 pub const PREFIX: &str = "posthog_";
 
 const MCP_URL: &str = "https://mcp.posthog.com/mcp";
@@ -18,7 +30,7 @@ const ORGANIZATION_HEADER: &str = "x-posthog-organization-id";
 const SETUP: &str = "connects to PostHog's hosted MCP server; a browser window will ask you to approve access.\n\
      this integration adds `posthog_*` tools — it does not watch PostHog or brief you on its own.\n\
      to run headless, or to recover if the browser flow fails, set GOAT_POSTHOG_API_KEY to a PostHog personal API key (phx-…).\n\
-     with more than one project, add `\"project_id\": \"<id>\"` to the agent's posthog binding in ~/.goat/agents/<slug>/config.json";
+     with more than one project, run `goat agent integration set posthog --set project_id=<id>`";
 
 pub const SCOPES: &[&str] = &[
     "openid",
@@ -75,6 +87,8 @@ pub const DENY: &[NameRule] = &[NameRule::Suffix("-delete"), NameRule::Suffix("-
 
 pub fn service() -> McpService {
     McpService::new("posthog", "PostHog", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .summary(SUMMARY)
+        .binding_keys(BINDING_KEYS)
         .oauth(SCOPES)
         .env_var(ENV_VAR)
         .headers(scope_headers)
@@ -143,7 +157,8 @@ mod tests {
     #[test]
     fn the_binding_is_typo_checked() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "account": "work" })).is_err());
         assert!(validate_config(&json!({ "project_id": "1", "organization_id": "2" })).is_ok());
         assert!(validate_config(&json!({ "deny_suffixes": ["-delete"] })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());

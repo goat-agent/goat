@@ -23,21 +23,48 @@ Every hosted-MCP integration is an `McpService` descriptor, and `McpIntegration`
 `impl Integration` among them. `goat-integration-github` implements the trait itself because it uses
 no MCP.
 
+## Connections
+
+A connection is a named instance of one integration: `[integrations.<name>]` in `config.toml`, plus
+a credential at `(integration, kind, name)` in `credentials.json`. A name equal to its kind omits
+`kind`; any other name carries it, the same rule `[providers.<id>]` follows. `Connection` in
+`connection.rs` is the one parser, and `connection_state` is the one answer to "is it logged in".
+
+Only the daemon writes connections, through `admin.integration_connect` and
+`admin.integration_remove`; the CLI only acquires a credential. A connect verifies the candidate
+through a staged `CredentialStore` first: an `Auth` or `Config` error stores nothing, a `Service`
+error or a timeout stores it unverified.
+
+The connection name is the binding's `account`, so it keys credentials, watch state and
+observations, and derives the tool prefix: the primary connection keeps the leaf's prefix,
+`linear-work` gets `linear_work_`. An integration's env var applies only to its primary connection.
+
+`host` and `client_id` belong to the connection. `reject_connection_keys` refuses them in a use,
+so a repository's `.goat/integrations.json` cannot point a credential at another server.
+
 ## Auth
 
-Connections are global. `IntegrationAuth` picks how one is established:
+`IntegrationAuth` picks how a connection is established:
 
 | Variant | Meaning |
 |---|---|
 | `Secret` | a pasted credential |
 | `OAuth` | a round trip; mechanics live in `goat-mcp` |
-| `External` | a host tool such as `gh` owns the credential, and the `config.json` entry is itself the connection marker |
+| `External` | a host tool such as `gh` owns the credential, and the `config.toml` entry is itself the connection |
 
-## Per-agent binding
+## Uses: agents and code sessions
 
-Put only connection-scoped keys in the agent's `integrations` map: `account`, `organization_slug`,
-`user_id`, `host`. Watch policy keys belong in the `watch` section, and a stale one fails validation
-with a pointer there.
+Two consumers use connections, with the same shape `{ "<connection>": { <usage keys> } }`:
+
+| Consumer | Where | Default |
+|---|---|---|
+| agent | the `integrations` map in `agents/<slug>/config.json` | nothing; bind explicitly |
+| code session | `.goat/integrations.json` in the project | every logged-in connection when the file is absent |
+
+Usage keys are the leaf's `binding_keys` plus `deny_prefixes`/`deny_suffixes`. Declare every key a
+leaf reads in `IntegrationMetadata::binding_keys`; `goat integration info` shows them and a
+`goat-code` test checks each one passes `validate_config`. Watch policy keys belong in the `watch`
+section, and a stale one fails validation with a pointer there.
 
 Observations persist losslessly in `integration_observations`. The `observation` agent tool reads
 them back, so a briefing citing `observation:<id>` resolves.

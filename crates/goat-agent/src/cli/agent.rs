@@ -3,7 +3,7 @@ use std::io::IsTerminal;
 use anyhow::{Result, anyhow};
 use clap::Subcommand;
 use goat_auth::{CredentialService, CredentialStore};
-use goat_config::{GoatPaths, write_atomic};
+use goat_config::{AGENT_CONFIG_FILE, GoatPaths, write_atomic};
 use goat_model::{Model, ProviderId};
 use goat_providers::Registry;
 use serde_json::{Map, Value, json};
@@ -22,8 +22,13 @@ pub enum Cmd {
     Remove { slug: String },
     #[command(subcommand, about = "Manage an agent's channel bindings")]
     Channel(super::channel::Cmd),
-    #[command(subcommand, about = "Manage an agent's integration bindings")]
-    Integration(super::integration::Cmd),
+    #[command(
+        subcommand,
+        about = "Choose which integration connections an agent uses"
+    )]
+    Integration(super::integration::usage::AgentCmd),
+    #[command(subcommand, about = "Choose what the agent watches and is briefed on")]
+    Watch(super::watch::Cmd),
     #[command(about = "Show agent and channel state")]
     Status,
     #[command(about = "Show recent actions the agent took")]
@@ -51,7 +56,8 @@ pub async fn run(cmd: Cmd) -> Result<()> {
             Ok(())
         }
         Cmd::Channel(c) => super::channel::run(c).await,
-        Cmd::Integration(c) => super::integration::run(c).await,
+        Cmd::Integration(c) => super::integration::usage::run_agent(c).await,
+        Cmd::Watch(c) => super::watch::run(c).await,
         Cmd::Status => super::governance::status().await,
         Cmd::Log { limit } => super::governance::log(limit).await,
     }
@@ -74,16 +80,16 @@ fn write_agent(paths: &GoatPaths, slug: &str) -> Result<String> {
     std::fs::create_dir_all(&dir)?;
     let agent_md = dir.join("agent.md");
     std::fs::write(&agent_md, format!("You are {slug}.\n"))?;
-    let config_toml = dir.join("config.toml");
+    let config_file = dir.join(AGENT_CONFIG_FILE);
     let body = serde_json::to_string_pretty(&json!({
         "display": slug,
         "model": model.to_string(),
         "tools": ["*"],
         "channels": {}
     }))?;
-    write_atomic(&config_toml, format!("{body}\n").as_bytes())?;
+    write_atomic(&config_file, format!("{body}\n").as_bytes())?;
     ui::pair("file", &agent_md.display().to_string());
-    ui::pair("config", &config_toml.display().to_string());
+    ui::pair("config", &config_file.display().to_string());
     Ok(slug)
 }
 
@@ -132,7 +138,7 @@ fn list(paths: &GoatPaths) -> Result<()> {
             ui::line(&ui::dim("no agents dir"));
             return Ok(Footer::Hint("None", "goat setup".into()));
         }
-        let mut table = Table::new(["slug", "display", "model", "channels"]);
+        let mut table = Table::new(["slug", "display", "model", "channels", "integrations"]);
         let mut rows = 0usize;
         for entry in std::fs::read_dir(&paths.agents_dir)? {
             let entry = entry?;
@@ -152,6 +158,7 @@ fn list(paths: &GoatPaths) -> Result<()> {
                         "config error".into(),
                         e.to_string(),
                         "—".into(),
+                        "—".into(),
                     ]);
                     rows += 1;
                     continue;
@@ -168,19 +175,17 @@ fn list(paths: &GoatPaths) -> Result<()> {
                 .ok_or_else(|| {
                     anyhow!(
                         "missing or invalid model in {}",
-                        dir.join("config.toml").display()
+                        dir.join(AGENT_CONFIG_FILE).display()
                     )
                 })?;
             let bindings = bindings_for(&dir)?;
+            let integrations = section_keys(&dir, "integrations")?;
             table.row(vec![
                 slug.to_string(),
                 display,
                 model,
-                if bindings.is_empty() {
-                    "—".into()
-                } else {
-                    bindings.join(", ")
-                },
+                joined_or_dash(&bindings),
+                joined_or_dash(&integrations),
             ]);
             rows += 1;
         }
@@ -190,7 +195,16 @@ fn list(paths: &GoatPaths) -> Result<()> {
         }
         table.render();
         Ok(Footer::None)
-    })
+    })?;
+    Ok(())
+}
+
+fn joined_or_dash(items: &[String]) -> String {
+    if items.is_empty() {
+        "—".into()
+    } else {
+        items.join(", ")
+    }
 }
 
 fn bindings_for(dir: &std::path::Path) -> Result<Vec<String>> {
@@ -225,18 +239,19 @@ fn show(paths: &GoatPaths, slug: &str) -> Result<()> {
         for raw_line in std::fs::read_to_string(&agent_md)?.lines() {
             ui::line(raw_line);
         }
-        let config_toml = dir.join("config.toml");
-        if !config_toml.exists() {
-            return Err(anyhow!("missing {}", config_toml.display()));
+        let config_file = dir.join(AGENT_CONFIG_FILE);
+        if !config_file.exists() {
+            return Err(anyhow!("missing {}", config_file.display()));
         }
         ui::blank();
-        ui::line(&ui::dim(&config_toml.display().to_string()));
+        ui::line(&ui::dim(&config_file.display().to_string()));
         ui::blank();
-        for raw_line in std::fs::read_to_string(&config_toml)?.lines() {
+        for raw_line in std::fs::read_to_string(&config_file)?.lines() {
             ui::line(raw_line);
         }
         Ok(Footer::None)
-    })
+    })?;
+    Ok(())
 }
 
 fn remove(paths: &GoatPaths, slug: &str) -> Result<bool> {
@@ -330,7 +345,7 @@ pub(crate) fn resolve_agent(paths: &GoatPaths, explicit: Option<&str>) -> Result
 }
 
 pub(crate) fn read_agent_config(dir: &std::path::Path) -> Result<Value> {
-    let path = dir.join("config.toml");
+    let path = dir.join(AGENT_CONFIG_FILE);
     if !path.exists() {
         return Err(anyhow!("missing {}", path.display()));
     }
@@ -341,9 +356,9 @@ pub(crate) fn read_agent_config(dir: &std::path::Path) -> Result<Value> {
     Ok(cfg)
 }
 
-fn write_agent_config(dir: &std::path::Path, value: &Value) -> Result<()> {
+pub(crate) fn write_agent_config(dir: &std::path::Path, value: &Value) -> Result<()> {
     let body = serde_json::to_string_pretty(value)?;
-    write_atomic(&dir.join("config.toml"), format!("{body}\n").as_bytes())?;
+    write_atomic(&dir.join(AGENT_CONFIG_FILE), format!("{body}\n").as_bytes())?;
     Ok(())
 }
 
@@ -458,7 +473,7 @@ mod tests {
     fn channel_upsert_preserves_existing_channel_fields() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
-            dir.path().join("config.toml"),
+            dir.path().join(AGENT_CONFIG_FILE),
             r#"{
               "channels": {
                 "discord": {
@@ -482,7 +497,7 @@ mod tests {
     fn channel_remove_deletes_only_config_channel() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
-            dir.path().join("config.toml"),
+            dir.path().join(AGENT_CONFIG_FILE),
             r#"{
               "channels": {
                 "discord": {
@@ -511,7 +526,7 @@ mod tests {
     fn channel_helpers_error_when_channels_is_not_object() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
-            dir.path().join("config.toml"),
+            dir.path().join(AGENT_CONFIG_FILE),
             r#"{
               "model": "openai/gpt-4o-mini",
               "channels": []
@@ -527,7 +542,7 @@ mod tests {
     #[test]
     fn agent_config_root_must_be_object() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), "[]").unwrap();
+        std::fs::write(dir.path().join(AGENT_CONFIG_FILE), "[]").unwrap();
 
         assert!(read_agent_config(dir.path()).is_err());
     }

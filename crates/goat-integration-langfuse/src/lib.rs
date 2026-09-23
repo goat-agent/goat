@@ -13,6 +13,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 pub const ID: IntegrationId = IntegrationId::from_static("langfuse");
+
+const SUMMARY: &str = "inspect traces, prompts and scores; watch failing traces";
 pub const PREFIX: &str = "langfuse_";
 
 const DEFAULT_HOST: &str = "https://cloud.langfuse.com";
@@ -22,8 +24,8 @@ const TOOL_HEALTH: &str = "getHealth";
 
 const SETUP: &str = "connects to your Langfuse deployment's MCP server.\n\
      paste the project's public and secret key joined by a colon: pk-lf-…:sk-lf-…\n\
-     for the us/jp/hipaa cloud regions or a self-hosted instance, add `\"host\": \"https://us.cloud.langfuse.com\"` to the langfuse entry in ~/.goat/config.json — a self-hosted instance must be recent enough to serve the full MCP tool catalogue\n\
-     the watcher stays off until the agent's `watch` section declares a langfuse stream, e.g.\n\
+     for the us/jp/hipaa cloud regions or a self-hosted instance, connect with `goat integration add langfuse --host https://us.cloud.langfuse.com` — a self-hosted instance must be recent enough to serve the full MCP tool catalogue\n\
+     the watcher stays off until you add a workflow with `goat agent watch add`; an entry looks like\n\
      { \"source\": \"langfuse\", \"query\": \"level:ERROR limit:25\" } —\n\
      each key:value pair becomes a listObservations filter column, a value may carry a comparison (timestamp:>2026-01-01), a leading `-` negates an equality (-level:DEBUG), and limit:N caps each poll.\n\
      to run headless, set GOAT_LANGFUSE_API_KEY to the same colon-joined pair";
@@ -72,6 +74,7 @@ pub fn service() -> McpService {
         },
         SETUP,
     )
+    .summary(SUMMARY)
     .secret(
         "Langfuse public and secret key, colon-joined (pk-lf-…:sk-lf-…)",
         AuthScheme::Basic,
@@ -162,7 +165,8 @@ mod tests {
     #[test]
     fn the_binding_is_typo_checked() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "account": "work" })).is_err());
         assert!(validate_config(&json!({ "host": "https://us.cloud.langfuse.com" })).is_ok());
         assert!(validate_config(&json!({ "deny_prefixes": ["delete"] })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());

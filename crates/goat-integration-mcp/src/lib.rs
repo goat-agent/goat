@@ -3,11 +3,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use goat_auth::{Credential, CredentialStore};
+use goat_auth::CredentialStore;
+use goat_auth::TokenSet;
 use goat_integration::query::WatchVocabulary;
 use goat_integration::{
-    BindingMap, CompiledWatch, Integration, IntegrationAuth, IntegrationBinding, IntegrationError,
-    IntegrationMetadata, IntegrationResult, IntegrationRuntime, WatchSpec,
+    BindingMap, CompiledWatch, ConfigKey, Connection, HOST_KEY, Integration, IntegrationAuth,
+    IntegrationBinding, IntegrationError, IntegrationMetadata, IntegrationResult,
+    IntegrationRuntime, OAuthClient, WatchSpec,
 };
 use goat_mcp::{HttpEndpoint, McpError, McpSession};
 use goat_tool::{ToolName, ToolRegistry};
@@ -20,8 +22,7 @@ mod toolset;
 pub use auth::{ResolvedAuth, header_value};
 pub use toolset::{CachedTool, code_tools, normalized, pick_tool};
 
-pub const CLIENT_ID_SLOT: &str = "client_id";
-pub const CLIENT_SECRET_SLOT: &str = "client_secret";
+pub use goat_integration::{CLIENT_ID_SLOT, CLIENT_SECRET_SLOT};
 
 pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_mins(2);
 pub const MAX_RESULT_BYTES: usize = 96 * 1024;
@@ -139,6 +140,8 @@ pub struct McpService {
     pub name: &'static str,
     pub id: IntegrationId,
     pub display: &'static str,
+    pub summary: &'static str,
+    pub binding_keys: &'static [ConfigKey],
     pub url: ServiceUrl,
     pub setup: &'static str,
     pub credential: CredentialSpec,
@@ -164,6 +167,8 @@ impl McpService {
             name,
             id: IntegrationId::from_static(name),
             display,
+            summary: "",
+            binding_keys: &[],
             url,
             setup,
             credential: CredentialSpec {
@@ -183,6 +188,18 @@ impl McpService {
             compile: None,
             defaults: None,
         }
+    }
+
+    #[must_use]
+    pub const fn summary(mut self, summary: &'static str) -> Self {
+        self.summary = summary;
+        self
+    }
+
+    #[must_use]
+    pub const fn binding_keys(mut self, keys: &'static [ConfigKey]) -> Self {
+        self.binding_keys = keys;
+        self
     }
 
     #[must_use]
@@ -383,7 +400,7 @@ impl McpService {
     }
 }
 
-pub const COMMON_BINDING_KEYS: &[&str] = &["account", "client_id"];
+pub const COMMON_BINDING_KEYS: &[&str] = &["client_id"];
 pub const COMMON_DENY_KEYS: &[&str] = &["deny_prefixes", "deny_suffixes"];
 
 pub fn validate_binding<T>(name: &str, config: &Value) -> IntegrationResult<()>
@@ -458,6 +475,8 @@ fn looks_like_auth_failure(lowered: &str) -> bool {
         "invalid_grant",
         "authorization required",
         "authorizationrequired",
+        "auth required",
+        "did not authorize",
     ]
     .iter()
     .any(|marker| lowered.contains(marker))
@@ -492,29 +511,23 @@ impl McpIntegration {
 
     fn client_identity(
         &self,
-        credentials: &CredentialStore,
-        account: &str,
+        connection: &Connection,
+        client: Option<&OAuthClient>,
     ) -> IntegrationResult<goat_mcp::auth::ClientIdentity> {
         if !self.service.credential.preregistered {
             return Ok(goat_mcp::auth::ClientIdentity::default());
         }
-        let name = self.service.id.as_str();
-        let read = |slot: &str| match credentials.get(&goat_auth::CredentialKey::integration_slot(
-            name, account, slot,
-        )) {
-            Some(Credential::ApiKey(secret)) => Some(secret),
-            _ => None,
-        };
-        let client_id = read(CLIENT_ID_SLOT).ok_or_else(|| {
+        let client = client.ok_or_else(|| {
             IntegrationError::Auth(format!(
-                "{name} needs an oauth client of its own; run `goat integration add {name}` \
-                 and paste the client id it asks for"
+                "{} needs an oauth client of its own; run `goat integration login {}` \
+                 with --client-id",
+                self.service.display, connection.name
             ))
         })?;
         Ok(goat_mcp::auth::ClientIdentity {
             preregistered: Some(goat_mcp::auth::Preregistered {
-                client_id: client_id.expose().to_owned(),
-                client_secret: read(CLIENT_SECRET_SLOT),
+                client_id: client.id.clone(),
+                client_secret: client.secret.as_deref().map(goat_auth::SecretString::from),
             }),
         })
     }
@@ -534,11 +547,18 @@ impl Integration for McpIntegration {
         IntegrationMetadata {
             id: self.service.name,
             display: self.service.display,
+            summary: self.service.summary,
             auth: self.service.credential.auth,
             secret_label: self.service.credential.label,
             env_var: self.service.credential.env_var,
             setup: self.service.setup,
             preregistered: self.service.credential.preregistered,
+            tools: true,
+            connection_keys: match self.service.url {
+                ServiceUrl::FromHost { .. } => &[HOST_KEY],
+                ServiceUrl::Fixed(_) => &[],
+            },
+            binding_keys: self.service.binding_keys,
         }
     }
 
@@ -579,11 +599,10 @@ impl Integration for McpIntegration {
 
     async fn verify(
         &self,
-        config: &Value,
+        binding: &IntegrationBinding,
         credentials: &CredentialStore,
     ) -> IntegrationResult<String> {
-        let binding = IntegrationBinding::from_config(config.clone());
-        let session = self.service.connect(credentials, &binding).await?;
+        let session = self.service.connect(credentials, binding).await?;
         let described = match self.service.identity {
             Some(probe) => {
                 let value = self.service.call(&session, probe.tool, Value::Null).await;
@@ -600,23 +619,17 @@ impl Integration for McpIntegration {
 
     async fn oauth_login(
         &self,
-        credentials: &CredentialStore,
-        account: &str,
+        connection: &Connection,
+        client: Option<&OAuthClient>,
         present_url: &(dyn for<'a> Fn(&'a str) + Send + Sync),
-    ) -> IntegrationResult<Value> {
-        let url = self.service.url.resolve(&Value::Null)?;
-        let identity = self.client_identity(credentials, account)?;
+    ) -> IntegrationResult<TokenSet> {
+        let url = self.service.url.resolve(&connection.config)?;
+        let identity = self.client_identity(connection, client)?;
         let authorization =
             goat_mcp::auth::run_login(&url, self.service.credential.scopes, &identity, present_url)
                 .await
                 .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        credentials
-            .store(
-                &goat_auth::CredentialKey::integration(self.service.id.as_str(), account),
-                Credential::OAuth(authorization.tokens),
-            )
-            .map_err(|e| IntegrationError::Auth(e.to_string()))?;
-        Ok(serde_json::json!({ "client_id": authorization.client_id }))
+        Ok(authorization.tokens)
     }
 }
 
@@ -642,6 +655,7 @@ mod tests {
             "invalid_grant",
             "authorization required",
             "AuthorizationRequired",
+            "Auth required, when send initialize request",
         ] {
             assert!(
                 matches!(SERVICE.classify(rendered), IntegrationError::Auth(_)),
@@ -830,14 +844,12 @@ mod tests {
         }
 
         assert!(validate_binding::<Leaf>("acme", &json!({})).is_ok());
-        assert!(
-            validate_binding::<Leaf>("acme", &json!({ "account": "work", "client_id": "cid" }))
-                .is_ok()
-        );
+        assert!(validate_binding::<Leaf>("acme", &json!({ "client_id": "cid" })).is_ok());
+        assert!(validate_binding::<Leaf>("acme", &json!({ "account": "work" })).is_err());
         assert!(validate_binding::<Leaf>("acme", &json!({ "deny_suffixes": ["-delete"] })).is_ok());
         assert!(validate_binding::<Leaf>("acme", &json!({ "deny_prefixes": ["delete"] })).is_ok());
         assert!(validate_binding::<Leaf>("acme", &json!({ "project": "p" })).is_ok());
-        let read: Leaf = read_binding(&json!({ "account": "work", "project": "p" }));
+        let read: Leaf = read_binding(&json!({ "client_id": "cid", "project": "p" }));
         assert_eq!(read.project.as_deref(), Some("p"));
     }
 
@@ -877,7 +889,7 @@ mod tests {
             project: Option<String>,
         }
 
-        let read: Leaf = read_binding(&json!({ "account": "work", "project": "p" }));
+        let read: Leaf = read_binding(&json!({ "client_id": "cid", "project": "p" }));
         assert_eq!(read.project.as_deref(), Some("p"));
         let read: Leaf = read_binding(&json!("not an object"));
         assert!(read.project.is_none());

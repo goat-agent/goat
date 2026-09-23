@@ -46,6 +46,9 @@ use goat_integration_tiro as _;
 use goat_integration_vercel as _;
 
 fn into_eyre(err: &anyhow::Error) -> color_eyre::Report {
+    if err.is::<goat_console::Reported>() {
+        std::process::exit(1);
+    }
     eyre!("{err:#}")
 }
 
@@ -64,7 +67,7 @@ async fn main() -> color_eyre::Result<()> {
         Some(Command::Agent(c)) => goat_agent::cli::agent::run(c)
             .await
             .map_err(|e| into_eyre(&e)),
-        Some(Command::Integration(c)) => goat_agent::cli::integration::run_connect(c)
+        Some(Command::Integration(c)) => goat_agent::cli::integration::run(c)
             .await
             .map_err(|e| into_eyre(&e)),
         Some(Command::Setup) => auth::run_setup().await,
@@ -171,6 +174,11 @@ async fn run_code(args: CodeArgs) -> color_eyre::Result<()> {
                 WorktreeCommand::Remove { label } => goat_worktree::remove(&label),
             };
             return result.map_err(color_eyre::Report::from);
+        }
+        Some(CodeCommand::Integration(command)) => {
+            return goat_agent::cli::integration::usage::run_code(command)
+                .await
+                .map_err(|e| into_eyre(&e));
         }
         Some(CodeCommand::Search(command)) => return search::run(command).await,
         Some(CodeCommand::Session(command)) => {
@@ -432,6 +440,7 @@ async fn run_unified_daemon(
         goat_config::ProviderSpecs::at(paths.config_toml.clone()),
         db_path.clone(),
     );
+    manager.set_agents_dir(paths.agents_dir.clone());
     let config = goat_daemon::DaemonConfig {
         socket_path,
         lock_path: paths.daemon_lock.clone(),
@@ -842,6 +851,38 @@ fn print_pairing_qr(info: &goat_client::PairingInfo) {
         }
         Err(_) => {
             println!("(could not render QR; use the values above)");
+        }
+    }
+}
+
+#[cfg(test)]
+mod integration_catalog {
+    #[test]
+    fn every_integration_describes_itself_and_accepts_its_declared_keys() {
+        let factories = goat_integration::factories();
+        assert_eq!(factories.len(), 19);
+        for factory in factories {
+            let metadata = (factory.ctor)().metadata();
+            assert!(
+                !metadata.summary.is_empty(),
+                "{} has no summary",
+                metadata.id
+            );
+            for key in metadata.binding_keys {
+                let usage = serde_json::json!({ key.name: "x" });
+                assert!(
+                    (factory.validate_config)(&usage).is_ok(),
+                    "{} declares `{}` but rejects it",
+                    metadata.id,
+                    key.name
+                );
+            }
+            let unknown = serde_json::json!({ "not_a_declared_key": "x" });
+            assert!(
+                (factory.validate_config)(&unknown).is_err(),
+                "{} accepts an undeclared key",
+                metadata.id
+            );
         }
     }
 }

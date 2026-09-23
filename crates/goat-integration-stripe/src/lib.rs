@@ -7,6 +7,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 pub const ID: IntegrationId = IntegrationId::from_static("stripe");
+
+const SUMMARY: &str = "read customers, payments and subscriptions";
 pub const PREFIX: &str = "stripe_";
 
 const MCP_URL: &str = "https://mcp.stripe.com/";
@@ -26,6 +28,7 @@ pub const DENY: &[NameRule] = &[
 
 pub fn service() -> McpService {
     McpService::new("stripe", "Stripe", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .summary(SUMMARY)
         .env_var(ENV_VAR)
         .tools(ToolPolicy::all(PREFIX).deny(DENY))
         .truncation_hint(
@@ -59,7 +62,8 @@ mod tests {
     #[test]
     fn the_binding_keeps_only_connection_keys() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "account": "work" })).is_err());
         assert!(validate_config(&json!({ "deny_suffixes": ["-delete"] })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());
         assert!(validate_config(&json!({ "assignee": "@me" })).is_err());

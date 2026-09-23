@@ -7,15 +7,17 @@ use goat_api::{
     AdminCredentialSetParams, AdminDaemonStop, AdminDaemonStopOutput, AdminDaemonStopParams,
     AdminDeviceList, AdminDeviceListOutput, AdminDevicePair, AdminDevicePairOutput,
     AdminDevicePairParams, AdminDeviceRevoke, AdminDeviceRevokeOutput, AdminDeviceRevokeParams,
-    AgentWatch, AgentWatchParams, AnswerOutcome, AskAnswer, AskAnswerOutput, AskAnswerParams,
-    ConversationInfo, ConversationList, ConversationListOutput, ConversationListParams,
-    DaemonStatus, DaemonStatus2, DeviceInfo, DirEntry, DirEntryKind, Empty, FsList, FsListOutput,
-    FsListParams, FsRead, FsReadParams, FsWrite, FsWriteOutput, FsWriteParams, GitDiff,
-    GitDiffParams, Grant, PtyOpen, PtyOpenParams, PtyResize, PtyResizeParams, PtyWrite,
-    PtyWriteParams, ReloadFailure, Router, SessionControl, SessionControlParams, SessionId,
-    SessionInfo, SessionKill, SessionKillParams, SessionList, SessionListOutput, SessionLiveState,
-    SessionOpen, SessionOpenOutput, SessionOpenParams, SessionSubmit, SessionSubmitOutput,
-    SessionSubmitParams, SessionWatch, SessionWatchParams,
+    AdminIntegrationConnect, AdminIntegrationConnectParams, AdminIntegrationRemove,
+    AdminIntegrationRemoveParams, AdminIntegrationStatus, AdminIntegrationStatusParams, AgentWatch,
+    AgentWatchParams, AnswerOutcome, AskAnswer, AskAnswerOutput, AskAnswerParams, ConversationInfo,
+    ConversationList, ConversationListOutput, ConversationListParams, DaemonStatus, DaemonStatus2,
+    DeviceInfo, DirEntry, DirEntryKind, Empty, FsList, FsListOutput, FsListParams, FsRead,
+    FsReadParams, FsWrite, FsWriteOutput, FsWriteParams, GitDiff, GitDiffParams, Grant, PtyOpen,
+    PtyOpenParams, PtyResize, PtyResizeParams, PtyWrite, PtyWriteParams, ReloadFailure, Router,
+    SessionControl, SessionControlParams, SessionId, SessionInfo, SessionKill, SessionKillParams,
+    SessionList, SessionListOutput, SessionLiveState, SessionOpen, SessionOpenOutput,
+    SessionOpenParams, SessionSubmit, SessionSubmitOutput, SessionSubmitParams, SessionWatch,
+    SessionWatchParams,
 };
 use goat_capability::Broker;
 use goat_store::Store as _;
@@ -174,6 +176,9 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
     let edit_manager = manager.clone();
     let credential_set_manager = manager.clone();
     let credential_remove_manager = manager.clone();
+    let integration_connect_manager = manager.clone();
+    let integration_remove_manager = manager.clone();
+    let integration_status_manager = manager.clone();
     let submit_manager = manager.clone();
     let ask_manager = manager.clone();
     let activity_db = db_path.clone();
@@ -358,6 +363,29 @@ pub fn build(api: DaemonApi, grants: &[Grant]) -> Router {
                     .await
                     .map_err(refused)?;
                 Ok(AdminCredentialRemoveOutput { removed })
+            }
+        })
+        .unary::<AdminIntegrationConnect, _, _>(
+            move |params: AdminIntegrationConnectParams, _ctx| {
+                let manager = integration_connect_manager.clone();
+                async move { manager.connect_integration(params).await.map_err(refused) }
+            },
+        )
+        .unary::<AdminIntegrationRemove, _, _>(move |params: AdminIntegrationRemoveParams, _ctx| {
+            let manager = integration_remove_manager.clone();
+            async move {
+                manager
+                    .remove_integration(&params.name, params.scope)
+                    .map_err(refused)
+            }
+        })
+        .unary::<AdminIntegrationStatus, _, _>(move |params: AdminIntegrationStatusParams, _ctx| {
+            let manager = integration_status_manager.clone();
+            async move {
+                manager
+                    .integration_status(params.name.as_deref(), params.verify)
+                    .await
+                    .map_err(refused)
             }
         })
         .unary::<AdminDaemonStop, _, _>(move |params: AdminDaemonStopParams, _ctx| {

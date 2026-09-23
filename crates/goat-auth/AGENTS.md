@@ -16,7 +16,10 @@ out to every live session, which is why `goat provider login` in one terminal re
 `goat code` in another.
 
 Store a credential that failed validation and report `verification_failed`. A network blip must not
-delete a key.
+delete a key. Integration connects are stricter: a credential the service rejects is never stored.
+They check the candidate through `CredentialStore::staged`, an in-memory layer read before the env
+var and the file, so a check writes nothing to disk; tokens refreshed during the check are taken
+from `staged_entries` and committed with `store_many`.
 
 ## The redirect is parsed here and validated elsewhere
 

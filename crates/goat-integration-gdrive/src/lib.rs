@@ -7,6 +7,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 pub const ID: IntegrationId = IntegrationId::from_static("gdrive");
+
+const SUMMARY: &str = "search and read Drive files";
 pub const PREFIX: &str = "gdrive_";
 
 const MCP_URL: &str = "https://drivemcp.googleapis.com/mcp/v1";
@@ -33,6 +35,7 @@ pub const DENY: &[NameRule] = &[
 
 pub fn service() -> McpService {
     McpService::new("gdrive", "Google Drive", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .summary(SUMMARY)
         .oauth(SCOPES)
         .preregistered()
         .env_var(ENV_VAR)
@@ -66,7 +69,8 @@ mod tests {
     #[test]
     fn the_binding_keeps_only_connection_keys() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "account": "work" })).is_err());
         assert!(validate_config(&json!("nope")).is_err());
         assert!(validate_config(&json!({ "calendar": "primary" })).is_err());
     }

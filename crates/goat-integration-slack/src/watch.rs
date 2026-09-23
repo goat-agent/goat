@@ -27,7 +27,7 @@ const SEARCH_TOOL_CANDIDATES: &[&str] = &[
 pub fn defaults(binding: &IntegrationBinding) -> Vec<WatchSpec> {
     if SlackBinding::read(&binding.config).user_id.is_none() {
         warn!(
-            "slack watcher disabled; set `user_id` to your Slack member ID in the agent's slack binding",
+            "slack watcher disabled; set `user_id` to your Slack member ID with `goat agent integration set`",
         );
         return Vec::new();
     }
@@ -70,7 +70,7 @@ struct Plan {
 fn plan(raw: &str, user_id: Option<&str>) -> IntegrationResult<Plan> {
     let Some(user_id) = user_id else {
         return Err(IntegrationError::Config(
-            "slack watch needs `user_id`; set it to your Slack member ID in the agent's slack binding"
+            "slack watch needs `user_id`; set it to your Slack member ID with `goat agent integration set`"
                 .into(),
         ));
     };
@@ -119,7 +119,7 @@ impl MentionSearch {
         )
         .ok_or_else(|| {
             IntegrationError::Config(format!(
-                "slack mcp exposes no recognized search tool; set `search_tool` in the agent's slack binding (available: {})",
+                "slack mcp exposes no recognized search tool; set `search_tool` with `goat agent integration set` (available: {})",
                 names.join(", ")
             ))
         })?;
@@ -199,7 +199,7 @@ mod tests {
     fn compiling_without_a_member_id_points_at_the_binding() {
         let err = plan(DEFAULT_QUERY, None).unwrap_err();
         assert!(err.to_string().contains("`user_id`"));
-        assert!(err.to_string().contains("slack binding"));
+        assert!(err.to_string().contains("goat agent integration set"));
     }
 
     #[test]

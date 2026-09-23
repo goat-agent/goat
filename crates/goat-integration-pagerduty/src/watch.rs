@@ -78,7 +78,7 @@ fn plan(raw: &str, user_id: Option<&str>) -> IntegrationResult<Value> {
                 TokenValue::SelfRef => {
                     let me = user_id.ok_or_else(|| {
                         IntegrationError::Config(
-                            "pagerduty needs `user_id` in the agent's pagerduty binding \
+                            "pagerduty needs `user_id`; set it with `goat agent integration set <connection> --set user_id=P…` \
                              before `assignee:@me` can resolve"
                                 .to_owned(),
                         )

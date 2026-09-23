@@ -22,13 +22,13 @@ daemon's stay behind.
 ## The daemon's config has one writer: `admin.config_edit`
 
 It takes a list of `ConfigEdit`, a closed set of intents (`provider_set`, `search_default_set`,
-`integration_remove`, …). The daemon is the only place that opens the file.
+`search_account_set`, …). The daemon is the only place that opens the file.
 
 One method rather than nine keeps the method table small, and the enum is the vocabulary. Pass
 provider-shaped payloads (a search account, an integration entry, a provider spec) as **opaque
 JSON**, so `goat-api` never learns a concrete provider name.
 
-`goat provider`, `goat code search` and `goat agent integration` call it. A local target autostarts
+`goat provider` and `goat code search` call it. A local target autostarts
 the daemon, so a write works from a cold machine.
 
 Two writers bypass it, both deliberately:
@@ -37,6 +37,7 @@ Two writers bypass it, both deliberately:
 |---|---|
 | `goat mcp` | its secrets and `mcp.json` move as a pair with rollback. See `crates/goat-mcp/AGENTS.md`. |
 | `goat remote` | device key material is read by the client, so the client owns it. See `crates/goat-remote/AGENTS.md`. |
+| `admin.integration_*` | an integration connection is a credential and a config entry that move as a pair with rollback. See `crates/goat-integration/AGENTS.md`. |
 
 ## Reads vs writes
 

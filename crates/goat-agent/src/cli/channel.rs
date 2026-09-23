@@ -11,7 +11,7 @@ use super::agent::{
     channel_in_config, channels_from_config_with_values, remove_channel_config, resolve_agent,
     upsert_channel_config,
 };
-use super::ui::{self, Footer, Palette, Table};
+use super::ui::{self, Footer, Palette, Settled, Table};
 
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -62,14 +62,16 @@ pub async fn run(cmd: Cmd) -> Result<()> {
             no_verify,
         } => {
             let slug = agent.clone();
-            channel_add(&paths, kind, agent, no_verify).await?;
-            super::apply::config_changed(slug.as_deref()).await;
+            if channel_add(&paths, kind, agent, no_verify).await? == Settled::Done {
+                super::apply::config_changed(slug.as_deref()).await;
+            }
             Ok(())
         }
         Cmd::List { agent } => channel_list(&paths, agent.as_deref()),
         Cmd::Remove { kind, agent } => {
-            channel_remove(&paths, &kind, agent.as_deref())?;
-            super::apply::config_changed(agent.as_deref()).await;
+            if channel_remove(&paths, &kind, agent.as_deref())? == Settled::Done {
+                super::apply::config_changed(agent.as_deref()).await;
+            }
             Ok(())
         }
     }
@@ -80,7 +82,7 @@ async fn channel_add(
     kind: Option<String>,
     agent: Option<String>,
     no_verify: bool,
-) -> Result<()> {
+) -> Result<Settled> {
     ui::cell_async("Channel Add", || async move {
         let slug = resolve_agent(paths, agent.as_deref())?;
         ui::pair("agent", &slug);
@@ -155,10 +157,11 @@ fn channel_list(paths: &GoatPaths, agent: Option<&str>) -> Result<()> {
         }
         table.render();
         Ok(Footer::None)
-    })
+    })?;
+    Ok(())
 }
 
-fn channel_remove(paths: &GoatPaths, kind: &str, agent: Option<&str>) -> Result<()> {
+fn channel_remove(paths: &GoatPaths, kind: &str, agent: Option<&str>) -> Result<Settled> {
     ui::cell("Channel Remove", || {
         let slug = resolve_agent(paths, agent)?;
         ui::pair("agent", &slug);

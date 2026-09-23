@@ -4,20 +4,26 @@ mod watch;
 use std::sync::Arc;
 
 use goat_integration::query::{KeySpec, LimitSpec, Residue, TermPolicy, WatchVocabulary};
-use goat_integration::{IntegrationError, IntegrationFactory, IntegrationResult};
+use goat_integration::{ConfigKey, IntegrationError, IntegrationFactory, IntegrationResult};
 use goat_integration_mcp::{McpService, ServiceUrl, ToolPolicy};
 use goat_types::IntegrationId;
 use serde::Deserialize;
 use serde_json::Value;
 
 pub const ID: IntegrationId = IntegrationId::from_static("notion");
+
+const SUMMARY: &str = "search and edit pages and databases; watch database views";
+const BINDING_KEYS: &[ConfigKey] = &[ConfigKey {
+    name: "query_tool",
+    about: "name of the database query tool when the server exposes a custom one",
+}];
 pub const PREFIX: &str = "notion_";
 pub const STREAM: &str = "view";
 
 const MCP_URL: &str = "https://mcp.notion.com/mcp";
 
 const SETUP: &str = "connects to Notion's hosted MCP server; a browser window will ask you to approve access.\n\
-     to get briefed when work lands, declare a workflow in the agent's `watch` section, e.g.\n\
+     to get briefed when work lands, add a workflow with `goat agent watch add`; an entry looks like\n\
      { \"source\": \"notion\", \"query\": \"view:<url>\" } — the value is a saved Notion view URL (the one with ?v=).\n\
      known keys: view, limit; free text is not accepted.\n\
      without a watch entry the tools work and the watcher stays off.";
@@ -35,6 +41,8 @@ pub const VOCABULARY: WatchVocabulary = WatchVocabulary {
 
 pub fn service() -> McpService {
     McpService::new("notion", "Notion", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .summary(SUMMARY)
+        .binding_keys(BINDING_KEYS)
         .tools(ToolPolicy::all(PREFIX))
         .truncation_hint("narrow the view, or request a smaller page")
         .watch(&VOCABULARY, watch::compile)
@@ -99,7 +107,8 @@ mod tests {
     #[test]
     fn the_binding_is_typo_checked() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "account": "work" })).is_err());
         assert!(validate_config(&json!({ "query_tool": "t" })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());
         assert!(validate_config(&json!({ "query_tool": 3 })).is_err());

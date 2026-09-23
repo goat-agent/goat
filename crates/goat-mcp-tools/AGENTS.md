@@ -17,8 +17,8 @@ invokes the tool, `None` in a code session. Sources with no such axis ignore it.
 
 | Consumer | Gets |
 |---|---|
-| agent | the integrations bound in its own `config.json`, plus every user-scope `goat mcp` server, filtered by its `tools` selectors |
-| code session | every connected integration and every user-scope server, unfiltered, because a person is driving it |
+| agent | the connections bound in its own `config.json`, plus every user-scope `goat mcp` server, filtered by its `tools` selectors |
+| code session | every logged-in connection, or only those the project's `.goat/integrations.json` lists, and every user-scope server, unfiltered, because a person is driving it |
 
 Project-scope `goat mcp` servers are code-only. The agent has no working directory.
 

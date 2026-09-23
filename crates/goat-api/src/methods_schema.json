@@ -187,40 +187,6 @@
                   "edit"
                 ],
                 "type": "object"
-              },
-              {
-                "properties": {
-                  "config": true,
-                  "edit": {
-                    "const": "integration_set",
-                    "type": "string"
-                  },
-                  "kind": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "edit",
-                  "kind",
-                  "config"
-                ],
-                "type": "object"
-              },
-              {
-                "properties": {
-                  "edit": {
-                    "const": "integration_remove",
-                    "type": "string"
-                  },
-                  "kind": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "edit",
-                  "kind"
-                ],
-                "type": "object"
               }
             ]
           }
@@ -241,7 +207,7 @@
         "type": "object"
       },
       "shape": "unary",
-      "version": 2
+      "version": 3
     },
     {
       "direction": "to_daemon",
@@ -732,6 +698,424 @@
           "device"
         ],
         "title": "AdminDeviceRevokeParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "admin",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "admin.integration_connect",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "properties": {
+              "identity": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "verified",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "identity"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "unverified",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "message"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "AdminIntegrationConnectOutput"
+      },
+      "params": {
+        "$defs": {
+          "CredentialValue": {
+            "oneOf": [
+              {
+                "properties": {
+                  "kind": {
+                    "const": "api_key",
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "secret"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "endpoint": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "api_key_with_endpoint",
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "secret",
+                  "endpoint"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "const": "oauth",
+                    "type": "string"
+                  },
+                  "tokens": {
+                    "$ref": "#/$defs/TokenSet"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "tokens"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "IntegrationClient": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "secret": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "type": "object"
+          },
+          "TokenSet": {
+            "properties": {
+              "access_token": {
+                "type": "string"
+              },
+              "client_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "expires_at": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "issuer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "refresh_token": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "scopes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "access_token"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/IntegrationClient"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "config": {
+            "default": null
+          },
+          "credential": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CredentialValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "verify": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "kind"
+        ],
+        "title": "AdminIntegrationConnectParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "admin",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "admin.integration_remove",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          },
+          "used_by": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "removed",
+          "used_by"
+        ],
+        "title": "AdminIntegrationRemoveOutput",
+        "type": "object"
+      },
+      "params": {
+        "$defs": {
+          "IntegrationRemoveScope": {
+            "enum": [
+              "credential",
+              "connection"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/$defs/IntegrationRemoveScope"
+          }
+        },
+        "required": [
+          "name",
+          "scope"
+        ],
+        "title": "AdminIntegrationRemoveParams",
+        "type": "object"
+      },
+      "shape": "unary",
+      "version": 1
+    },
+    {
+      "direction": "to_daemon",
+      "grant": "admin",
+      "item": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "null",
+        "type": "null"
+      },
+      "name": "admin.integration_status",
+      "output": {
+        "$defs": {
+          "IntegrationConnectionStatus": {
+            "oneOf": [
+              {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "const": "ready",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state",
+                  "source"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "const": "needs_login",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state",
+                  "reason"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "message": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "const": "failed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state",
+                  "message"
+                ],
+                "type": "object"
+              }
+            ],
+            "properties": {
+              "config": true,
+              "identity": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "used_by": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "name",
+              "kind",
+              "config",
+              "used_by"
+            ],
+            "type": "object"
+          },
+          "InvalidIntegrationConnection": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "reason"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "connections": {
+            "items": {
+              "$ref": "#/$defs/IntegrationConnectionStatus"
+            },
+            "type": "array"
+          },
+          "invalid": {
+            "items": {
+              "$ref": "#/$defs/InvalidIntegrationConnection"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "connections",
+          "invalid"
+        ],
+        "title": "AdminIntegrationStatusOutput",
+        "type": "object"
+      },
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verify": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "title": "AdminIntegrationStatusParams",
         "type": "object"
       },
       "shape": "unary",

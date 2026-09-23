@@ -55,6 +55,11 @@ pub struct CodeArgs {
 pub enum CodeCommand {
     #[command(subcommand, about = "Manage git worktrees")]
     Worktree(WorktreeCommand),
+    #[command(
+        subcommand,
+        about = "Choose which integration connections this project's sessions use"
+    )]
+    Integration(goat_agent::cli::integration::usage::CodeCmd),
     #[command(subcommand, about = "Manage search providers")]
     Search(SearchCommand),
     #[command(subcommand, about = "Inspect and end live coding sessions")]
@@ -75,11 +80,8 @@ pub enum Command {
     Code(CodeArgs),
     #[command(subcommand, about = "Manage agents")]
     Agent(goat_agent::cli::agent::Cmd),
-    #[command(
-        subcommand,
-        about = "Connect external services (Linear, …) shared by every agent"
-    )]
-    Integration(goat_agent::cli::integration::ConnectCmd),
+    #[command(about = "Connect external services (Linear, Sentry, …) for agents and code sessions")]
+    Integration(goat_agent::cli::integration::IntegrationArgs),
     #[command(about = "First-run setup — providers, then an optional agent")]
     Setup,
     #[command(about = "Parse every config file and report what would load")]

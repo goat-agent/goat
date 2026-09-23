@@ -7,6 +7,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 pub const ID: IntegrationId = IntegrationId::from_static("intercom");
+
+const SUMMARY: &str = "search conversations and contacts";
 pub const PREFIX: &str = "intercom_";
 
 const MCP_URL: &str = "https://mcp.intercom.com/sse";
@@ -26,6 +28,7 @@ pub const DENY: &[NameRule] = &[
 
 pub fn service() -> McpService {
     McpService::new("intercom", "Intercom", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .summary(SUMMARY)
         .env_var(ENV_VAR)
         .tools(ToolPolicy::all(PREFIX).deny(DENY))
         .truncation_hint("narrow the search or time window, or fetch a single conversation instead")
@@ -57,7 +60,8 @@ mod tests {
     #[test]
     fn the_binding_keeps_only_connection_keys() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "account": "work" })).is_err());
         assert!(validate_config(&json!({ "deny_suffixes": ["-delete"] })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());
         assert!(validate_config(&json!({ "assignee": "@me" })).is_err());

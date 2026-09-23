@@ -3,20 +3,26 @@ mod watch;
 use std::sync::Arc;
 
 use goat_integration::query::{KeySpec, LimitSpec, Residue, TermPolicy, WatchVocabulary};
-use goat_integration::{IntegrationFactory, IntegrationResult};
+use goat_integration::{ConfigKey, IntegrationFactory, IntegrationResult};
 use goat_integration_mcp::{McpService, NameRule, ServiceUrl, ToolPolicy};
 use goat_types::IntegrationId;
 use serde::Deserialize;
 use serde_json::Value;
 
 pub const ID: IntegrationId = IntegrationId::from_static("atlassian");
+
+const SUMMARY: &str = "search and edit Jira issues and Confluence pages; watch Jira";
+const BINDING_KEYS: &[ConfigKey] = &[ConfigKey {
+    name: "cloud_id",
+    about: "Atlassian site id; the watch needs it (atlassian_getAccessibleAtlassianResources prints it)",
+}];
 pub const PREFIX: &str = "atlassian_";
 
 const MCP_URL: &str = "https://mcp.atlassian.com/v1/sse";
 const ENV_VAR: &str = "GOAT_ATLASSIAN_TOKEN";
 
 const SETUP: &str = "connects to Atlassian's hosted Rovo MCP server (Jira and Confluence); a browser window will ask you to approve access.\n\
-     add `\"cloud_id\": \"<id>\"` to the agent's atlassian binding in ~/.goat/agents/<slug>/config.json — the `atlassian_getAccessibleAtlassianResources` tool prints it. without it the tools still work but the watch stays off.\n\
+     run `goat agent integration set atlassian --set cloud_id=<id>` — the `atlassian_getAccessibleAtlassianResources` tool prints it. without it the tools still work but the watch stays off.\n\
      to run headless, or to recover if the browser flow fails, set GOAT_ATLASSIAN_TOKEN.\n\
      deletion tools are refused; tighten further with `deny_prefixes` or `deny_suffixes` in the agent's binding";
 
@@ -52,6 +58,8 @@ pub const VOCABULARY: WatchVocabulary = WatchVocabulary {
 
 pub fn service() -> McpService {
     McpService::new("atlassian", "Atlassian", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .summary(SUMMARY)
+        .binding_keys(BINDING_KEYS)
         .env_var(ENV_VAR)
         .tools(ToolPolicy::all(PREFIX).deny(DENY))
         .truncation_hint("narrow the JQL, request fewer fields, or fetch a single issue instead")
@@ -106,7 +114,8 @@ mod tests {
     #[test]
     fn the_binding_keeps_only_connection_keys() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "account": "work" })).is_err());
         assert!(validate_config(&json!({ "cloud_id": "abc" })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());
         assert!(validate_config(&json!({ "assignee": "@me" })).is_err());

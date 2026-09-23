@@ -11,6 +11,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 pub const ID: IntegrationId = IntegrationId::from_static("datadog");
+
+const SUMMARY: &str = "query metrics, logs and monitors; watch alerting monitors";
 pub const PREFIX: &str = "datadog_";
 
 const DEFAULT_HOST: &str = "https://mcp.datadoghq.com";
@@ -19,7 +21,7 @@ const ENV_VAR: &str = "GOAT_DATADOG_TOKEN";
 
 const SETUP: &str = "connects to Datadog's hosted MCP server; a browser window will ask you to approve access.\n\
      the default watch briefs monitors that are alerting.\n\
-     outside the US1 site, add `\"host\": \"https://mcp.datadoghq.eu\"` (or your site's host) to the agent's datadog binding in ~/.goat/agents/<slug>/config.json.\n\
+     outside the US1 site, connect with `goat integration add datadog --host https://mcp.datadoghq.eu` (or your site's host).\n\
      to run headless, or to recover if the browser flow fails, set GOAT_DATADOG_TOKEN.\n\
      deletion tools are refused; tighten further with `deny_prefixes` or `deny_suffixes` in the agent's binding";
 
@@ -58,6 +60,7 @@ pub fn service() -> McpService {
         },
         SETUP,
     )
+    .summary(SUMMARY)
     .env_var(ENV_VAR)
     .tools(ToolPolicy::all(PREFIX).deny(DENY))
     .truncation_hint("narrow the time window, request fewer series, or add a filter and call again")
@@ -104,7 +107,8 @@ mod tests {
     #[test]
     fn the_binding_keeps_only_connection_keys() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "account": "work" })).is_err());
         assert!(validate_config(&json!({ "host": "https://mcp.datadoghq.eu" })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());
         assert!(validate_config(&json!({ "site": "eu" })).is_err());

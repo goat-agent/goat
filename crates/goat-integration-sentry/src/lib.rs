@@ -4,13 +4,19 @@ mod watch;
 use std::sync::Arc;
 
 use goat_integration::query::{KeySpec, Residue, TermPolicy, WatchVocabulary};
-use goat_integration::{IntegrationError, IntegrationFactory, IntegrationResult};
+use goat_integration::{ConfigKey, IntegrationError, IntegrationFactory, IntegrationResult};
 use goat_integration_mcp::{AuthScheme, McpService, ServiceUrl, ToolPolicy};
 use goat_types::IntegrationId;
 use serde::Deserialize;
 use serde_json::Value;
 
 pub const ID: IntegrationId = IntegrationId::from_static("sentry");
+
+const SUMMARY: &str = "search issues and events; watch new unresolved issues";
+const BINDING_KEYS: &[ConfigKey] = &[ConfigKey {
+    name: "organization_slug",
+    about: "Sentry organization the watch reads; the watch needs it",
+}];
 pub const PREFIX: &str = "sentry_";
 
 const MCP_URL: &str = "https://mcp.sentry.dev/mcp";
@@ -18,9 +24,9 @@ const ENV_VAR: &str = "GOAT_SENTRY_ACCESS_TOKEN";
 
 const SETUP: &str = "connects to Sentry's hosted MCP server; a browser window will ask you to approve access.\n\
      the approval screen lists skills — uncheck anything you do not want; `Manage Projects & Teams` grants project and team writes.\n\
-     the watcher stays off until you set `organization_slug` in the agent's sentry binding.\n\
+     the watcher stays off until you run `goat agent integration set sentry --set organization_slug=<slug>`.\n\
      by default it briefs you on fresh unresolved issues awaiting review (`is:unresolved is:for_review sort:new`).\n\
-     declare workflows in the agent's `watch` section to change that, e.g.\n\
+     change that with `goat agent watch add`; a workflow entry looks like\n\
      { \"source\": \"sentry\", \"query\": \"is:unresolved level:error project:backend sort:freq\" } —\n\
      documented issue properties pass through to Sentry, project and sort become tool arguments, and bare text stays a raw search (`@me` becomes `me`); unknown keys are rejected.\n\
      to run headless, or to recover if the browser flow fails, set GOAT_SENTRY_ACCESS_TOKEN to a Sentry user auth token.";
@@ -110,6 +116,8 @@ pub const VOCABULARY: WatchVocabulary = WatchVocabulary {
 
 pub fn service() -> McpService {
     McpService::new("sentry", "Sentry", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .summary(SUMMARY)
+        .binding_keys(BINDING_KEYS)
         .env_var(ENV_VAR)
         .token_scheme(AuthScheme::Custom("Sentry-Bearer"))
         .tools(ToolPolicy::all(PREFIX))
@@ -182,7 +190,8 @@ mod tests {
     #[test]
     fn the_binding_keeps_only_connection_keys() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "account": "work" })).is_err());
         assert!(validate_config(&json!({ "organization_slug": "acme" })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());
         assert!(validate_config(&json!({ "organization_slug": 3 })).is_err());

@@ -1,11 +1,14 @@
 admin.agent_reload@1 unary admin to_daemon d8901cba39dcf5b1
-admin.config_edit@2 unary admin to_daemon b65e883655aeb85a
+admin.config_edit@3 unary admin to_daemon 93dc1f04ba097ee0
 admin.credential_remove@1 unary admin to_daemon 57ceff3694f6d84b
 admin.credential_set@1 unary admin to_daemon fc6ac81f45989c0f
 admin.daemon_stop@1 unary admin to_daemon 481f399d850707af
 admin.device_list@1 unary admin to_daemon 808a5aa9ead18a03
 admin.device_pair@1 unary admin to_daemon a269b916790d85ca
 admin.device_revoke@1 unary admin to_daemon 863c6f11ba2a2d7f
+admin.integration_connect@1 unary admin to_daemon 4d3a6bb51bb23994
+admin.integration_remove@1 unary admin to_daemon 17352fa8693862e1
+admin.integration_status@1 unary admin to_daemon a6df97f58988e4b2
 agent.chat@1 stream:reliable any to_daemon 422e3d414717cc9e
 agent.conversations@1 unary any to_daemon 8fa8aea8d92b7f9d
 agent.list@1 unary any to_daemon a9c1e1db36ce5462

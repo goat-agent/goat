@@ -6,3 +6,4 @@ pub mod governance;
 pub mod integration;
 pub mod ui;
 pub mod verify;
+pub mod watch;

@@ -308,7 +308,7 @@ fn auth_broken_event(
         external_ref: format!("{name}/{account}:auth"),
         summary: format!(
             "{name} polling keeps failing to authenticate ({error}); \
-             reconnect with `goat integration add {name}`"
+             log in again with `goat integration login {account}`"
         ),
         observation: None,
     }
@@ -647,8 +647,7 @@ mod tests {
         };
         assert_eq!(kind, IntegrationUpdateKind::AuthBroken);
         assert_eq!(external_ref, "linear/default:auth");
-        assert!(summary.contains("goat integration add linear"));
-        assert!(!summary.contains("goat agent integration add"));
+        assert!(summary.contains("goat integration login default"));
     }
 }
 

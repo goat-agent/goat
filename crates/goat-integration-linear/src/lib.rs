@@ -11,6 +11,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 pub const ID: IntegrationId = IntegrationId::from_static("linear");
+
+const SUMMARY: &str = "read and update issues and projects; watch issues assigned to you";
 pub const PREFIX: &str = "linear_";
 
 const MCP_URL: &str = "https://mcp.linear.app/mcp";
@@ -18,7 +20,7 @@ const ENV_VAR: &str = "LINEAR_API_KEY";
 
 const SETUP: &str = "connects to Linear's hosted MCP server; a browser window will ask you to approve access.\n\
      by default the watcher briefs you on open issues assigned to you (`assignee:@me is:open`).\n\
-     declare workflows in the agent's `watch` section to change that, e.g.\n\
+     change that with `goat agent watch add`; a workflow entry looks like\n\
      { \"source\": \"linear\", \"query\": \"assignee:@me is:open label:bug priority:urgent limit:25\" } —\n\
      known keys: assignee, team, project, label, state, cycle, priority, is:open/closed, limit; free text searches title and body.\n\
      to run headless, set LINEAR_API_KEY to a Linear personal API key.";
@@ -48,6 +50,7 @@ pub const VOCABULARY: WatchVocabulary = WatchVocabulary {
 
 pub fn service() -> McpService {
     McpService::new("linear", "Linear", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .summary(SUMMARY)
         .env_var(ENV_VAR)
         .tools(ToolPolicy::all(PREFIX))
         .truncation_hint("narrow the filter, request fewer issues, or fetch a single issue instead")
@@ -98,7 +101,8 @@ mod tests {
     #[test]
     fn the_binding_keeps_only_connection_keys() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "account": "work" })).is_err());
         assert!(validate_config(&json!("nope")).is_err());
         assert!(validate_config(&json!({ "unknown": true })).is_err());
     }

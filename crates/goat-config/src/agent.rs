@@ -19,6 +19,7 @@ const DEFAULT_INTAKE_DEBOUNCE_MS: u64 = 1000;
 const DEFAULT_INTAKE_CEILING_MS: u64 = 5000;
 
 pub const AGENT_DEFINITION_FILE: &str = "agent.md";
+pub const AGENT_CONFIG_FILE: &str = "config.json";
 
 pub(crate) fn scan_agents(dir: &Path) -> Result<Vec<AgentConfig>> {
     if !dir.exists() {
@@ -119,7 +120,7 @@ fn validate_timezone(slug: &str, value: String) -> Result<String> {
 }
 
 fn load_runtime_config(dir: &Path) -> Result<AgentRuntimeConfig> {
-    let path = dir.join("config.json");
+    let path = dir.join(AGENT_CONFIG_FILE);
     if !path.exists() {
         return Err(anyhow!("missing {}", path.display()));
     }
