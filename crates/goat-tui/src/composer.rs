@@ -52,6 +52,7 @@ pub struct Composer {
     history: Vec<HistEntry>,
     hist_cursor: Option<usize>,
     draft: Option<HistEntry>,
+    revision: u64,
 }
 
 impl Default for Composer {
@@ -64,6 +65,7 @@ impl Default for Composer {
             history: Vec::new(),
             hist_cursor: None,
             draft: None,
+            revision: 0,
         }
     }
 }
@@ -120,6 +122,10 @@ impl Composer {
         self.lines.iter().all(Vec::is_empty)
     }
 
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn push_attachment(&mut self, attachment: InputAttachment) {
         self.insert_cell(Cell::Image(attachment));
     }
@@ -148,10 +154,12 @@ impl Composer {
 
     pub fn enter_shell(&mut self) {
         self.shell = true;
+        self.revision += 1;
     }
 
     pub fn exit_shell(&mut self) {
         self.shell = false;
+        self.revision += 1;
     }
 
     pub fn desired_height(&self, width: u16) -> u16 {
@@ -181,6 +189,7 @@ impl Composer {
         self.lines[self.row].insert(self.col, cell);
         self.col += 1;
         self.hist_cursor = None;
+        self.revision += 1;
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -212,6 +221,7 @@ impl Composer {
         self.row += 1;
         self.col = 0;
         self.hist_cursor = None;
+        self.revision += 1;
     }
 
     pub fn backspace(&mut self) {
@@ -225,6 +235,7 @@ impl Composer {
             self.lines[self.row].extend(current);
         }
         self.hist_cursor = None;
+        self.revision += 1;
     }
 
     pub fn delete_forward(&mut self) {
@@ -235,6 +246,7 @@ impl Composer {
             self.lines[self.row].extend(next);
         }
         self.hist_cursor = None;
+        self.revision += 1;
     }
 
     pub fn delete_word_before(&mut self) {
@@ -247,6 +259,7 @@ impl Composer {
             self.col -= 1;
         }
         self.hist_cursor = None;
+        self.revision += 1;
     }
 
     pub fn move_left(&mut self) -> bool {
@@ -341,6 +354,7 @@ impl Composer {
         let history = std::mem::take(&mut self.history);
         *self = Self {
             history,
+            revision: self.revision + 1,
             ..Self::default()
         };
     }
@@ -394,6 +408,7 @@ impl Composer {
         self.lines[self.row].splice(start..self.col, inserted);
         self.col = start + new_len;
         self.hist_cursor = None;
+        self.revision += 1;
     }
 
     pub fn take(&mut self) -> String {
@@ -404,6 +419,7 @@ impl Composer {
         let history = std::mem::take(&mut self.history);
         *self = Self {
             history,
+            revision: self.revision + 1,
             ..Self::default()
         };
         text
@@ -516,6 +532,7 @@ impl Composer {
         };
         self.row = self.lines.len() - 1;
         self.col = self.lines[self.row].len();
+        self.revision += 1;
     }
 
     pub(crate) fn cursor_token(&self) -> Option<CursorToken<'_>> {
