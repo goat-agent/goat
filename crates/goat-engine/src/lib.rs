@@ -110,7 +110,8 @@ impl CodingEngine {
         )
         .await;
         let mut resolved = goat_mcp_tools::from_manager(&mcp);
-        let (integration_tools, failures) = integration_tools::resolve(&config, &credentials).await;
+        let (integration_tools, failures) =
+            integration_tools::resolve(&config, &credentials, &project_root).await;
         for failure in &failures {
             tracing::warn!(failure, "integration tool discovery failed");
         }

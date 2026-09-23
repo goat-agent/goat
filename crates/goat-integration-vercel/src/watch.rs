@@ -38,7 +38,7 @@ pub fn compile(
 ) -> IntegrationResult<CompiledWatch> {
     let team = VercelBinding::read(&binding.config).team.ok_or_else(|| {
         IntegrationError::Config(
-            "vercel needs `team` in the agent's vercel binding; \
+            "vercel needs `team`; set it with `goat agent integration set <connection> --set team=team_…`; \
              the `vercel_list_teams` tool prints the id"
                 .to_owned(),
         )

@@ -165,6 +165,14 @@ impl Config {
         Self::load_path(path)
     }
 
+    #[must_use]
+    pub fn read_at(path: &Path) -> Self {
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| toml::from_str::<Self>(&raw).ok())
+            .unwrap_or_default()
+    }
+
     fn save_path(&self, path: &Path) -> Result<(), SettingsError> {
         let value = serde_json::to_value(self)?;
         let mut doc = toml_edit::DocumentMut::new();

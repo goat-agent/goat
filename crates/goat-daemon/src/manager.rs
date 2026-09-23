@@ -40,6 +40,8 @@ struct ManagerInner {
     started_at: i64,
     ready: AtomicBool,
     agent_turns: std::sync::OnceLock<Arc<AtomicUsize>>,
+    pub(crate) agents_dir: std::sync::OnceLock<PathBuf>,
+    pub(crate) config_writes: std::sync::Mutex<()>,
 }
 
 pub struct ReloadRequest {
@@ -79,6 +81,8 @@ impl CodeSessionHub {
                 started_at: Self::now_ms(),
                 ready: AtomicBool::new(false),
                 agent_turns: std::sync::OnceLock::new(),
+                agents_dir: std::sync::OnceLock::new(),
+                config_writes: std::sync::Mutex::new(()),
             }),
         }
     }
@@ -139,6 +143,33 @@ impl CodeSessionHub {
 
     pub fn set_reload(&self, sender: mpsc::Sender<ReloadRequest>) {
         let _ = self.inner.reload.set(sender);
+    }
+
+    pub fn set_agents_dir(&self, dir: PathBuf) {
+        let _ = self.inner.agents_dir.set(dir);
+    }
+
+    pub(crate) fn auth_path(&self) -> &std::path::Path {
+        &self.inner.auth_path
+    }
+
+    pub(crate) fn config_path(&self) -> Result<PathBuf, String> {
+        self.inner
+            .provider_specs
+            .path()
+            .map(std::path::Path::to_path_buf)
+            .ok_or_else(|| "this daemon has no config file".to_owned())
+    }
+
+    pub(crate) fn agents_dir(&self) -> Option<&std::path::Path> {
+        self.inner.agents_dir.get().map(PathBuf::as_path)
+    }
+
+    pub(crate) fn config_writes(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.inner
+            .config_writes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub async fn reload_agents(
@@ -246,12 +277,8 @@ impl CodeSessionHub {
     }
 
     pub(crate) fn edit_config(&self, edits: Vec<goat_api::ConfigEdit>) -> Result<bool, String> {
-        let path = self
-            .inner
-            .provider_specs
-            .path()
-            .ok_or("this daemon has no config file")?
-            .to_path_buf();
+        let path = self.config_path()?;
+        let _writes = self.config_writes();
         let mut doc = goat_config::ConfigDocument::load_at(&path);
         let mut config = goat_config::Config::load_at(&path);
         let before = doc.render();
@@ -1246,16 +1273,6 @@ fn apply_edit(
             config.search.default_target = target;
             doc.set_search(&config.search)
                 .map_err(|err| err.to_string())?;
-        }
-        ConfigEdit::IntegrationSet {
-            kind,
-            config: entry,
-        } => {
-            doc.set_integration(&kind, &entry)
-                .map_err(|err| err.to_string())?;
-        }
-        ConfigEdit::IntegrationRemove { kind } => {
-            doc.remove_integration(&kind);
         }
     }
     Ok(())

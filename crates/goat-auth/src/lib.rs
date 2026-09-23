@@ -540,9 +540,12 @@ async fn respond(stream: &mut tokio::net::TcpStream, granted: bool) {
     let _ = stream.flush().await;
 }
 
+type Staged = Arc<std::sync::Mutex<HashMap<CredentialKey, Credential>>>;
+
 #[derive(Clone)]
 pub struct CredentialStore {
     path: PathBuf,
+    staged: Option<Staged>,
 }
 
 struct FileLock {
@@ -603,10 +606,44 @@ impl Drop for TempCleanup {
 
 impl CredentialStore {
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self { path, staged: None }
+    }
+
+    #[must_use]
+    pub fn staged(&self, entries: impl IntoIterator<Item = (CredentialKey, Credential)>) -> Self {
+        Self {
+            path: self.path.clone(),
+            staged: Some(Arc::new(std::sync::Mutex::new(
+                entries.into_iter().collect(),
+            ))),
+        }
+    }
+
+    pub fn staged_entries(&self) -> Vec<(CredentialKey, Credential)> {
+        self.staged.as_ref().map_or_else(Vec::new, |staged| {
+            staged
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect()
+        })
+    }
+
+    fn staged_get(&self, key: &CredentialKey) -> Option<Credential> {
+        self.staged.as_ref().and_then(|staged| {
+            staged
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(key)
+                .cloned()
+        })
     }
 
     pub fn resolve(&self, key: &CredentialKey, env_var: Option<&str>) -> Option<Credential> {
+        if let Some(staged) = self.staged_get(key) {
+            return Some(staged);
+        }
         if let Some(var) = env_var
             && let Ok(value) = std::env::var(var)
             && !value.is_empty()
@@ -636,12 +673,49 @@ impl CredentialStore {
     }
 
     pub fn remove(&self, key: &CredentialKey) -> Result<bool, AuthError> {
+        Ok(self.remove_many(std::slice::from_ref(key))? > 0)
+    }
+
+    pub fn store_many(
+        &self,
+        entries: impl IntoIterator<Item = (CredentialKey, Credential)>,
+    ) -> Result<(), AuthError> {
+        if let Some(staged) = &self.staged {
+            staged
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend(entries);
+            return Ok(());
+        }
+        let _lock = FileLock::acquire(&self.path)?;
+        let mut file = self.load_file()?;
+        for (key, value) in entries {
+            let stored = CredentialValue::from(value);
+            if let Some(entry) = file.credentials.iter_mut().find(|entry| entry.key == key) {
+                entry.value = stored;
+            } else {
+                file.credentials.push(StoredEntry { key, value: stored });
+            }
+        }
+        self.save_file(&file)
+    }
+
+    pub fn remove_many(&self, keys: &[CredentialKey]) -> Result<usize, AuthError> {
+        if let Some(staged) = &self.staged {
+            let mut staged = staged
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            return Ok(keys
+                .iter()
+                .filter(|key| staged.remove(key).is_some())
+                .count());
+        }
         let _lock = FileLock::acquire(&self.path)?;
         let mut file = self.load_file()?;
         let before = file.credentials.len();
-        file.credentials.retain(|entry| &entry.key != key);
-        let removed = file.credentials.len() != before;
-        if removed {
+        file.credentials.retain(|entry| !keys.contains(&entry.key));
+        let removed = before - file.credentials.len();
+        if removed > 0 {
             self.save_file(&file)?;
         }
         Ok(removed)
@@ -731,6 +805,9 @@ impl CredentialStore {
     }
 
     fn file_get(&self, key: &CredentialKey) -> Option<Credential> {
+        if let Some(staged) = self.staged_get(key) {
+            return Some(staged);
+        }
         self.read_file()
             .credentials
             .into_iter()
@@ -739,18 +816,54 @@ impl CredentialStore {
     }
 
     fn file_set(&self, key: &CredentialKey, value: Credential) -> Result<(), AuthError> {
-        let _lock = FileLock::acquire(&self.path)?;
-        let mut file = self.load_file()?;
-        let stored = CredentialValue::from(value);
-        if let Some(entry) = file.credentials.iter_mut().find(|entry| &entry.key == key) {
-            entry.value = stored;
-        } else {
-            file.credentials.push(StoredEntry {
-                key: key.clone(),
-                value: stored,
-            });
-        }
-        self.save_file(&file)
+        self.store_many([(key.clone(), value)])
+    }
+}
+
+#[cfg(test)]
+mod staged_tests {
+    use super::{Credential, CredentialKey, CredentialStore, SecretString};
+
+    fn key(account: &str) -> CredentialKey {
+        CredentialKey::integration("fake", account)
+    }
+
+    fn secret(value: &str) -> Credential {
+        Credential::ApiKey(SecretString::from(value))
+    }
+
+    #[test]
+    fn a_staged_store_reads_its_candidate_and_never_touches_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("credentials.json"));
+        store.store(&key("a"), secret("on-disk")).unwrap();
+
+        let staged = store.staged([(key("a"), secret("candidate"))]);
+        assert_eq!(staged.get(&key("a")), Some(secret("candidate")));
+        assert_eq!(
+            staged.resolve(&key("a"), Some("PATH")),
+            Some(secret("candidate"))
+        );
+
+        staged.store(&key("b"), secret("refreshed")).unwrap();
+        assert!(store.get(&key("b")).is_none());
+        assert_eq!(store.get(&key("a")), Some(secret("on-disk")));
+        assert_eq!(staged.staged_entries().len(), 2);
+    }
+
+    #[test]
+    fn store_many_and_remove_many_write_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("credentials.json"));
+        store
+            .store_many([(key("a"), secret("1")), (key("b"), secret("2"))])
+            .unwrap();
+        assert_eq!(store.get(&key("b")), Some(secret("2")));
+        assert_eq!(
+            store.remove_many(&[key("a"), key("b"), key("c")]).unwrap(),
+            2
+        );
+        assert!(store.entries().is_empty());
     }
 }
 

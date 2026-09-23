@@ -15,7 +15,9 @@ use goat_bus::EventBus;
 use goat_channel::{Channel, ChannelBinding, ChannelFactory, ChannelHandle};
 use goat_config::{GoatPaths, LoadedConfig};
 use goat_integration::watch::{Workflow, WorkflowSource, run_workflow};
-use goat_integration::{Integration, IntegrationBinding, IntegrationRuntime, WatchSpec};
+use goat_integration::{
+    Connections, Integration, IntegrationBinding, IntegrationRuntime, WatchSpec,
+};
 use goat_memory::Embedder;
 use goat_render::{DefaultStreamRenderer, StreamRenderer};
 use goat_store::{SqliteStore, Store};
@@ -437,55 +439,36 @@ fn build_channel_registry() -> HashMap<String, Arc<dyn Channel>> {
     by_name
 }
 
-fn load_integration_connections(
-    config_toml: &std::path::Path,
-) -> std::collections::BTreeMap<String, serde_json::Value> {
-    std::fs::read_to_string(config_toml)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<goat_config::Config>(&raw).ok())
-        .map(|config| config.integrations)
-        .unwrap_or_default()
-}
-
-fn merge_binding_config(
-    connection: Option<&serde_json::Value>,
-    binding: &serde_json::Value,
-) -> serde_json::Value {
-    match (
-        connection.and_then(serde_json::Value::as_object),
-        binding.as_object(),
-    ) {
-        (Some(base), Some(over)) => {
-            let mut merged = base.clone();
-            merged.extend(over.clone());
-            serde_json::Value::Object(merged)
-        }
-        (Some(base), None) => serde_json::Value::Object(base.clone()),
-        (None, _) => binding.clone(),
+pub fn load_integration_connections(config_toml: &std::path::Path) -> Connections {
+    let connections = Connections::parse(&goat_config::Config::read_at(config_toml).integrations);
+    for (name, reason) in &connections.invalid {
+        warn!(integration = %name, reason = %reason, "skipping an invalid integration connection");
     }
+    connections
 }
 
 fn build_integration_bindings(
     agents: &[AgentConfig],
-    integrations: &HashMap<String, Arc<dyn Integration>>,
-    connections: &std::collections::BTreeMap<String, serde_json::Value>,
+    connections: &Connections,
 ) -> HashMap<String, Arc<goat_integration::BindingMap>> {
     let mut maps: HashMap<String, goat_integration::BindingMap> = HashMap::new();
     for agent in agents {
         for agent_integration in &agent.integrations {
             let name = agent_integration.name.as_str();
-            if !integrations.contains_key(name) {
+            let Some(connection) = connections.get(name) else {
                 warn!(
                     agent = %agent.slug,
                     integration = %name,
-                    "unknown integration in agent config",
+                    "the agent uses an integration connection that does not exist",
                 );
                 continue;
-            }
-            let Some(factory) = goat_integration::factory_for(name) else {
+            };
+            let Some(factory) = goat_integration::factory_for(&connection.kind) else {
                 continue;
             };
-            if let Err(e) = (factory.validate_config)(&agent_integration.config) {
+            if let Err(e) = goat_integration::reject_connection_keys(&agent_integration.config)
+                .and_then(|()| (factory.validate_config)(&agent_integration.config))
+            {
                 warn!(
                     agent = %agent.slug,
                     integration = %name,
@@ -494,10 +477,9 @@ fn build_integration_bindings(
                 );
                 continue;
             }
-            let merged = merge_binding_config(connections.get(name), &agent_integration.config);
             maps.entry(name.to_string())
                 .or_default()
-                .insert(agent.id, IntegrationBinding::from_config(merged));
+                .insert(agent.id, connection.binding(&agent_integration.config));
         }
     }
     maps.into_iter().map(|(k, v)| (k, Arc::new(v))).collect()
@@ -604,11 +586,11 @@ fn resolve_watch_sources(
                 });
             };
             let Some(integration) = integrations.get(&name) else {
-                reject("no compiled-in integration with this name");
+                reject("no integration connection has this name; see `goat integration list`");
                 continue;
             };
             let Some(binding) = bindings.get(&name).and_then(|map| map.get(&raw.id)) else {
-                reject("the integration is not bound to this agent");
+                reject("the agent does not use this connection; see `goat agent integration add`");
                 continue;
             };
             if spec.state_key == "id:" {
@@ -637,9 +619,9 @@ fn resolve_watch_sources(
 }
 
 pub fn validate_agents(cfg: &LoadedConfig) -> Vec<(String, Vec<WatchIssue>)> {
-    let integrations = goat_integration::registry_from_inventory();
     let connections = load_integration_connections(&cfg.paths.config_toml);
-    let bindings = build_integration_bindings(&cfg.agents, &integrations, &connections);
+    let integrations = goat_integration::registry_for(&connections);
+    let bindings = build_integration_bindings(&cfg.agents, &connections);
     cfg.agents
         .iter()
         .map(|agent| {
@@ -649,6 +631,22 @@ pub fn validate_agents(cfg: &LoadedConfig) -> Vec<(String, Vec<WatchIssue>)> {
             )
         })
         .collect()
+}
+
+pub struct EffectiveWatch {
+    pub workflows: Vec<(String, Vec<(String, WatchSpec)>)>,
+    pub defaulted: bool,
+    pub issues: Vec<WatchIssue>,
+}
+
+pub fn effective_watch(agent: &AgentConfig, connections: &Connections) -> EffectiveWatch {
+    let integrations = goat_integration::registry_for(connections);
+    let bindings = build_integration_bindings(std::slice::from_ref(agent), connections);
+    EffectiveWatch {
+        workflows: declared_watch(agent, &integrations, &bindings),
+        defaulted: agent.watch.is_none(),
+        issues: validate_watch(agent, &integrations, &bindings),
+    }
 }
 
 pub fn validate_watch(
@@ -776,9 +774,9 @@ async fn build_shared(base: &RuntimeBase, agents: &[AgentConfig]) -> RuntimeShar
     let mut tools_reg = ToolRegistry::default();
     register_agent_tools(&mut tools_reg, base);
 
-    let integrations = goat_integration::registry_from_inventory();
     let connections = load_integration_connections(&base.paths.config_toml);
-    let integration_bindings = build_integration_bindings(agents, &integrations, &connections);
+    let integrations = goat_integration::registry_for(&connections);
+    let integration_bindings = build_integration_bindings(agents, &connections);
     let integration_runtime = IntegrationRuntime::new(
         base.credentials.clone(),
         base.store.clone(),
@@ -838,9 +836,7 @@ async fn build_shared(base: &RuntimeBase, agents: &[AgentConfig]) -> RuntimeShar
 }
 
 fn shared_fingerprint(config_toml: &Path, agents: &[AgentConfig]) -> String {
-    let raw = std::fs::read_to_string(config_toml).unwrap_or_default();
-    let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
-    let pick = |key: &str| parsed.get(key).cloned().unwrap_or(serde_json::Value::Null);
+    let config = goat_config::Config::read_at(config_toml);
     let mut bound: Vec<&str> = agents
         .iter()
         .flat_map(|agent| agent.integrations.iter().map(|i| i.name.as_str()))
@@ -848,15 +844,16 @@ fn shared_fingerprint(config_toml: &Path, agents: &[AgentConfig]) -> String {
     bound.sort_unstable();
     bound.dedup();
     serde_json::json!({
-        "integrations": pick("integrations"),
-        "providers": pick("providers"),
+        "integrations": config.integrations,
+        "providers": config.providers,
         "bound": bound,
     })
     .to_string()
 }
 
 fn agent_fingerprint(agents_dir: &Path, slug: &str) -> String {
-    std::fs::read_to_string(agents_dir.join(slug).join("config.toml")).unwrap_or_default()
+    std::fs::read_to_string(agents_dir.join(slug).join(goat_config::AGENT_CONFIG_FILE))
+        .unwrap_or_default()
 }
 
 fn declared_agents(agents_dir: &Path) -> std::collections::HashSet<String> {
@@ -1034,7 +1031,6 @@ impl Supervisor {
         if shared_key == self.shared_key {
             let bindings = build_integration_bindings(
                 &cfg.agents,
-                &self.shared.integrations,
                 &load_integration_connections(&self.base.paths.config_toml),
             );
             self.shared.integration_bindings = Arc::new(bindings);
@@ -1315,11 +1311,15 @@ mod tests {
             goat_integration::IntegrationMetadata {
                 id: "fake",
                 display: "Fake",
+                summary: "",
                 auth: goat_integration::IntegrationAuth::Secret,
                 secret_label: "key",
                 env_var: None,
                 setup: "none",
                 preregistered: false,
+                tools: true,
+                connection_keys: &[],
+                binding_keys: &[],
             }
         }
 
@@ -1334,7 +1334,7 @@ mod tests {
 
         async fn verify(
             &self,
-            _config: &serde_json::Value,
+            _binding: &IntegrationBinding,
             _credentials: &goat_auth::CredentialStore,
         ) -> goat_integration::IntegrationResult<String> {
             Ok("fake".into())
@@ -1356,14 +1356,40 @@ mod tests {
     }
 
     #[test]
-    fn integration_bindings_validate_and_group_by_agent() {
-        let integrations = goat_integration::registry_from_inventory();
-        assert!(integrations.contains_key("fake"));
+    fn integration_connections_and_the_shared_fingerprint_read_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_toml = dir.path().join("config.toml");
+        std::fs::write(&config_toml, "[integrations.fake]\nhost = \"eu\"\n").unwrap();
 
+        let connections = load_integration_connections(&config_toml);
+        assert_eq!(connections.get("fake").unwrap().config["host"], "eu");
+
+        let before = shared_fingerprint(&config_toml, &[]);
+        std::fs::write(&config_toml, "[integrations.fake]\nhost = \"us\"\n").unwrap();
+        assert_ne!(before, shared_fingerprint(&config_toml, &[]));
+    }
+
+    #[test]
+    fn the_agent_fingerprint_follows_its_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("alice")).unwrap();
+        let config = dir
+            .path()
+            .join("alice")
+            .join(goat_config::AGENT_CONFIG_FILE);
+        std::fs::write(&config, "{\"model\":\"a/b\"}").unwrap();
+        let before = agent_fingerprint(dir.path(), "alice");
+        assert!(!before.is_empty());
+        std::fs::write(&config, "{\"model\":\"a/c\"}").unwrap();
+        assert_ne!(before, agent_fingerprint(dir.path(), "alice"));
+    }
+
+    #[test]
+    fn integration_bindings_validate_and_group_by_agent() {
         let mut good = agent("good", "gpt-x");
         good.integrations = vec![goat_agent_config::AgentIntegration {
-            name: "fake".into(),
-            config: serde_json::json!({ "account": "work" }),
+            name: "fake-work".into(),
+            config: serde_json::json!({ "scope": "mine" }),
         }];
         let mut bad = agent("bad", "gpt-x");
         bad.integrations = vec![
@@ -1377,16 +1403,22 @@ mod tests {
             },
         ];
 
-        let connections = std::collections::BTreeMap::from([(
-            "fake".to_string(),
-            serde_json::json!({ "client_id": "shared-client" }),
-        )]);
-        let maps = build_integration_bindings(&[good.clone(), bad], &integrations, &connections);
-        let fake = maps.get("fake").expect("fake map");
-        assert_eq!(fake.len(), 1);
-        let binding = fake.get(&good.id).expect("good binding");
-        assert_eq!(binding.account, "work");
+        let connections = Connections::parse(&std::collections::BTreeMap::from([
+            (
+                "fake-work".to_string(),
+                serde_json::json!({ "kind": "fake", "client_id": "shared-client" }),
+            ),
+            ("fake".to_string(), serde_json::json!({})),
+        ]));
+        let maps = build_integration_bindings(&[good.clone(), bad], &connections);
+        let work = maps.get("fake-work").expect("fake-work map");
+        assert_eq!(work.len(), 1);
+        let binding = work.get(&good.id).expect("good binding");
+        assert_eq!(binding.account, "fake-work");
         assert_eq!(binding.config["client_id"], "shared-client");
+        assert_eq!(binding.config["scope"], "mine");
+        assert!(binding.config.get("kind").is_none());
+        assert!(maps.get("fake").is_none_or(|map| map.is_empty()));
         assert!(!maps.contains_key("unknown"));
     }
 
@@ -1394,7 +1426,7 @@ mod tests {
         let mut agent = agent(slug, "gpt-x");
         agent.integrations = vec![goat_agent_config::AgentIntegration {
             name: "fake".into(),
-            config: serde_json::json!({ "account": "work" }),
+            config: serde_json::json!({}),
         }];
         agent.watch = Some(vec![goat_agent_config::WatchWorkflow {
             name: "inbox".into(),
@@ -1409,12 +1441,12 @@ mod tests {
     }
 
     fn issues_for(agent: &AgentConfig) -> Vec<WatchIssue> {
-        let integrations = goat_integration::registry_from_inventory();
-        let bindings = build_integration_bindings(
-            std::slice::from_ref(agent),
-            &integrations,
-            &std::collections::BTreeMap::new(),
-        );
+        let connections = Connections::parse(&std::collections::BTreeMap::from([(
+            "fake".to_string(),
+            serde_json::json!({}),
+        )]));
+        let integrations = goat_integration::registry_for(&connections);
+        let bindings = build_integration_bindings(std::slice::from_ref(agent), &connections);
         validate_watch(agent, &integrations, &bindings)
     }
 
@@ -1439,7 +1471,13 @@ mod tests {
         let agents_dir = dir.path().join("agents");
         std::fs::create_dir_all(agents_dir.join("alice")).unwrap();
         std::fs::write(agents_dir.join("alice").join("agent.md"), "You are alice.").unwrap();
-        std::fs::write(agents_dir.join("alice").join("config.toml"), "{ oops").unwrap();
+        std::fs::write(
+            agents_dir
+                .join("alice")
+                .join(goat_config::AGENT_CONFIG_FILE),
+            "{ oops",
+        )
+        .unwrap();
         std::fs::create_dir_all(agents_dir.join("gone")).unwrap();
 
         let on_disk = declared_agents(&agents_dir);
@@ -1512,7 +1550,7 @@ mod tests {
         let issues = issues_for(&agent);
         assert_eq!(issues.len(), 1);
         assert!(
-            issues[0].reason.contains("not bound"),
+            issues[0].reason.contains("does not use this connection"),
             "{}",
             issues[0].reason
         );

@@ -54,7 +54,7 @@ pub fn compile(
 fn plan(config: &Value, raw: &str) -> IntegrationResult<Value> {
     let Some(organization_slug) = SentryBinding::read(config).organization_slug else {
         return Err(IntegrationError::Config(
-            "sentry watch needs `organization_slug` in the agent's sentry binding".into(),
+            "sentry watch needs `organization_slug`; set it with `goat agent integration set <connection> --set organization_slug=<slug>`".into(),
         ));
     };
     let tokens = query::parse(raw)?;

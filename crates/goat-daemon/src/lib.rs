@@ -4,6 +4,7 @@ mod browser;
 mod computer;
 mod envelope_conn;
 mod files;
+mod integrations;
 mod manager;
 mod pty;
 mod pty_spawn;

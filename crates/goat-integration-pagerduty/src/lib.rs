@@ -3,13 +3,19 @@ mod watch;
 use std::sync::Arc;
 
 use goat_integration::query::{KeySpec, LimitSpec, Residue, TermPolicy, WatchVocabulary};
-use goat_integration::{IntegrationFactory, IntegrationResult};
+use goat_integration::{ConfigKey, IntegrationFactory, IntegrationResult};
 use goat_integration_mcp::{McpService, NameRule, ServiceUrl, ToolPolicy};
 use goat_types::IntegrationId;
 use serde::Deserialize;
 use serde_json::Value;
 
 pub const ID: IntegrationId = IntegrationId::from_static("pagerduty");
+
+const SUMMARY: &str = "read incidents and on-call schedules; watch triggered incidents";
+const BINDING_KEYS: &[ConfigKey] = &[ConfigKey {
+    name: "user_id",
+    about: "your PagerDuty user id (P…), which `assignee:@me` resolves to",
+}];
 pub const PREFIX: &str = "pagerduty_";
 
 const DEFAULT_HOST: &str = "https://mcp.pagerduty.com";
@@ -17,7 +23,7 @@ const MCP_PATH: &str = "/mcp";
 const ENV_VAR: &str = "GOAT_PAGERDUTY_TOKEN";
 
 const SETUP: &str = "connects to PagerDuty's hosted MCP server; a browser window will ask you to approve access.\n\
-     the default watch briefs triggered incidents. to use `assignee:@me`, add `\"user_id\": \"P…\"` to the agent's pagerduty binding in ~/.goat/agents/<slug>/config.json.\n\
+     the default watch briefs triggered incidents. to use `assignee:@me`, run `goat agent integration set pagerduty --set user_id=P…`.\n\
      on the EU service region, add `\"host\": \"https://mcp.eu.pagerduty.com\"` to the same binding.\n\
      to run headless, or to recover if the browser flow fails, set GOAT_PAGERDUTY_TOKEN.\n\
      deletion tools are refused; tighten further with `deny_prefixes` or `deny_suffixes` in the agent's binding";
@@ -61,6 +67,8 @@ pub fn service() -> McpService {
         },
         SETUP,
     )
+    .summary(SUMMARY)
+    .binding_keys(BINDING_KEYS)
     .env_var(ENV_VAR)
     .tools(ToolPolicy::all(PREFIX).deny(DENY))
     .truncation_hint("narrow the time window or service, or fetch a single incident instead")

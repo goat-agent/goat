@@ -21,7 +21,7 @@ const SETUP: &str = "goat reaches github through the `gh` cli — it holds the c
      install gh, then run `gh auth login`.\n\
      by default the watcher briefs you on review requests (`is:open is:pr review-requested:@me`)\n\
      and assigned items (`is:open assignee:@me`).\n\
-     declare workflows in the agent's `watch` section to change that, e.g.\n\
+     change that with `goat agent watch add`; a workflow entry looks like\n\
      { \"source\": \"github\", \"query\": \"is:open author:@me label:bug limit:25\" } —\n\
      the query is github's native search syntax and passes through unchanged;\n\
      only `limit:N` is read out to cap the page size (default 50, max 100).";
@@ -62,11 +62,15 @@ impl Integration for GithubIntegration {
         IntegrationMetadata {
             id: "github",
             display: "GitHub",
+            summary: "watch review requests and assigned issues; the agent works through `gh`",
             auth: IntegrationAuth::External,
             secret_label: "",
             env_var: None,
             setup: SETUP,
             preregistered: false,
+            tools: false,
+            connection_keys: &[],
+            binding_keys: &[],
         }
     }
 
@@ -98,7 +102,7 @@ impl Integration for GithubIntegration {
 
     async fn verify(
         &self,
-        _config: &Value,
+        _binding: &IntegrationBinding,
         _credentials: &CredentialStore,
     ) -> IntegrationResult<String> {
         if !goat_github::gh_available() {
@@ -169,7 +173,7 @@ mod tests {
     #[test]
     fn the_binding_keeps_only_connection_keys() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "account": "work" })).is_ok());
+        assert!(validate_config(&json!({ "account": "work" })).is_err());
         assert!(validate_config(&json!("nope")).is_err());
         assert!(validate_config(&json!({ "unknown": true })).is_err());
         assert!(validate_config(&json!({ "wach": [] })).is_err());

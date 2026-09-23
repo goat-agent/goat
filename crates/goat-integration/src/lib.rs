@@ -1,3 +1,4 @@
+pub mod connection;
 pub mod diff;
 pub mod query;
 pub mod schema;
@@ -7,6 +8,11 @@ pub mod watch;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
+pub use connection::{
+    CLIENT_ID_SLOT, CLIENT_SECRET_SLOT, CONNECTION_KEYS, Connection, ConnectionState, Connections,
+    CredentialSource, connection_state, load_project_usage, project_usage_path,
+    reject_connection_keys, tool_prefix,
+};
 pub use schema::drop_placeholder_args;
 pub use watch::{CompiledWatch, WatchSpec};
 
@@ -14,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use goat_auth::CredentialStore;
+use goat_auth::{CredentialStore, TokenSet};
 use goat_bus::EventBus;
 use goat_store::{NewObservation, Store, StoreError};
 use goat_tool::{ToolName, ToolRegistry};
@@ -153,15 +159,36 @@ pub enum IntegrationAuth {
     External,
 }
 
+#[derive(Clone, Debug)]
+pub struct OAuthClient {
+    pub id: String,
+    pub secret: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConfigKey {
+    pub name: &'static str,
+    pub about: &'static str,
+}
+
+pub const HOST_KEY: ConfigKey = ConfigKey {
+    name: "host",
+    about: "base URL of a self-hosted or regional instance",
+};
+
 #[derive(Clone, Copy, Debug)]
 pub struct IntegrationMetadata {
     pub id: &'static str,
     pub display: &'static str,
+    pub summary: &'static str,
     pub auth: IntegrationAuth,
     pub secret_label: &'static str,
     pub env_var: Option<&'static str>,
     pub setup: &'static str,
     pub preregistered: bool,
+    pub tools: bool,
+    pub connection_keys: &'static [ConfigKey],
+    pub binding_keys: &'static [ConfigKey],
 }
 
 #[async_trait]
@@ -203,17 +230,17 @@ pub trait Integration: Send + Sync + 'static {
 
     async fn verify(
         &self,
-        config: &serde_json::Value,
+        binding: &IntegrationBinding,
         credentials: &CredentialStore,
     ) -> IntegrationResult<String>;
 
     async fn oauth_login(
         &self,
-        credentials: &CredentialStore,
-        account: &str,
+        connection: &Connection,
+        client: Option<&OAuthClient>,
         present_url: &(dyn for<'a> Fn(&'a str) + Send + Sync),
-    ) -> IntegrationResult<serde_json::Value> {
-        let _ = (credentials, account, present_url);
+    ) -> IntegrationResult<TokenSet> {
+        let _ = (connection, client, present_url);
         Err(IntegrationError::Config(
             "oauth login is not supported by this integration".into(),
         ))
@@ -234,6 +261,17 @@ pub fn factories() -> Vec<&'static IntegrationFactory> {
 
 pub fn factory_for(id: &str) -> Option<&'static IntegrationFactory> {
     inventory::iter::<IntegrationFactory>().find(|f| f.id.as_str() == id)
+}
+
+pub fn registry_for(connections: &Connections) -> HashMap<String, Arc<dyn Integration>> {
+    connections
+        .valid
+        .iter()
+        .filter_map(|connection| {
+            let factory = factory_for(&connection.kind)?;
+            Some((connection.name.clone(), (factory.ctor)()))
+        })
+        .collect()
 }
 
 pub fn registry_from_inventory() -> HashMap<String, Arc<dyn Integration>> {

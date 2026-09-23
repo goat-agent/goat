@@ -13,5 +13,6 @@ pub use interact::{
     warning,
 };
 pub use layout::{
-    Cell, Footer, Table, blank, cell, cell_async, dim, line, pair, pair_styled, raw, section,
+    Cell, Footer, Reported, Settled, Table, blank, cell, cell_async, dim, line, pair, pair_styled,
+    raw, section,
 };

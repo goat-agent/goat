@@ -10,7 +10,7 @@ mod settings;
 
 pub use atomic::write_atomic;
 
-pub use agent::AGENT_DEFINITION_FILE;
+pub use agent::{AGENT_CONFIG_FILE, AGENT_DEFINITION_FILE};
 pub use goat_provider::ProviderSpecConfig;
 pub use paths::{
     GoatPaths, HOME_NOT_FOUND, INSTRUCTIONS_MAX_BYTES, PROJECT_INSTRUCTIONS_FILE,

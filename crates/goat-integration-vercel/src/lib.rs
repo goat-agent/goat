@@ -4,22 +4,28 @@ use std::sync::Arc;
 
 use goat_integration::query::{KeySpec, LimitSpec, Residue, TermPolicy, WatchVocabulary};
 
-use goat_integration::{IntegrationFactory, IntegrationResult};
+use goat_integration::{ConfigKey, IntegrationFactory, IntegrationResult};
 use goat_integration_mcp::{McpService, NameRule, ServiceUrl, ToolPolicy};
 use goat_types::IntegrationId;
 use serde::Deserialize;
 use serde_json::Value;
 
 pub const ID: IntegrationId = IntegrationId::from_static("vercel");
+
+const SUMMARY: &str = "inspect projects and deployments; watch failed deployments";
+const BINDING_KEYS: &[ConfigKey] = &[ConfigKey {
+    name: "team",
+    about: "Vercel team slug the watch reads; the watch needs it",
+}];
 pub const PREFIX: &str = "vercel_";
 
 const MCP_URL: &str = "https://mcp.vercel.com/";
 const ENV_VAR: &str = "GOAT_VERCEL_TOKEN";
 
 const SETUP: &str = "connects to Vercel's hosted MCP server; a browser window will ask you to approve access.\n\
-     the watch is off until you ask for it: add \"team\": \"team_…\" to the agent's vercel binding, plus a workflow whose query names a project, as in `project:goat-web state:error`. the deployment list tool takes no wildcard, so there is no zero-config default.\n\
+     the watch is off until you ask for it: run `goat agent integration set vercel --set team=team_…`, then `goat agent watch add` a workflow whose query names a project, as in `project:goat-web state:error`. the deployment list tool takes no wildcard, so there is no zero-config default.\n\
      to run headless, or to recover if the browser flow fails, set GOAT_VERCEL_TOKEN.\n\
-     deletion tools are refused; tighten further with `deny_prefixes` or `deny_suffixes` in the agent's binding";
+     deletion tools are refused; tighten further with `goat agent integration set vercel --set deny_prefixes=…`";
 
 pub const DENY: &[NameRule] = &[
     NameRule::Prefix("delete_"),
@@ -51,6 +57,8 @@ pub const VOCABULARY: WatchVocabulary = WatchVocabulary {
 
 pub fn service() -> McpService {
     McpService::new("vercel", "Vercel", ServiceUrl::Fixed(MCP_URL), SETUP)
+        .summary(SUMMARY)
+        .binding_keys(BINDING_KEYS)
         .env_var(ENV_VAR)
         .tools(ToolPolicy::all(PREFIX).deny(DENY))
         .truncation_hint("narrow the project or time window, or fetch a single deployment instead")
@@ -103,7 +111,8 @@ mod tests {
     #[test]
     fn the_binding_keeps_only_connection_keys() {
         assert!(validate_config(&json!({})).is_ok());
-        assert!(validate_config(&json!({ "account": "work", "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "client_id": "cid" })).is_ok());
+        assert!(validate_config(&json!({ "account": "work" })).is_err());
         assert!(validate_config(&json!({ "deny_suffixes": ["-delete"] })).is_ok());
         assert!(validate_config(&json!({ "team": "team_1" })).is_ok());
         assert!(validate_config(&json!("nope")).is_err());

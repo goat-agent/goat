@@ -3,23 +3,31 @@ use std::future::Future;
 use anyhow::{Error, Result, anyhow};
 
 pub use goat_console::{
-    Cell, ColorMode, Footer, Palette, Table, blank, confirm, dim, format_failure, line, note, pair,
-    pick, prompt, secret, section, success, truncate_to_width, warning,
+    Cell, ColorMode, Footer, Palette, Reported, Settled, Table, blank, confirm, dim,
+    format_failure, line, note, pair, pair_styled, pick, prompt, secret, section, success,
+    truncate_to_width, warning,
 };
 
-pub fn cell<F>(title: &str, body: F) -> Result<()>
+pub fn cell<F>(title: &str, body: F) -> Result<Settled>
 where
     F: FnOnce() -> Result<Footer>,
 {
-    goat_console::cell(title, body)
+    Ok(goat_console::cell(title, body)?)
 }
 
-pub async fn cell_async<F, Fut>(title: &str, body: F) -> Result<()>
+pub async fn cell_async<F, Fut>(title: &str, body: F) -> Result<Settled>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<Footer>>,
 {
-    goat_console::cell_async(title, body).await
+    Ok(goat_console::cell_async(title, body).await?)
+}
+
+pub fn within<T>(title: &str, result: Result<T>) -> Result<T> {
+    result.map_err(|error| {
+        let _ = goat_console::cell(title, || Err::<Footer, _>(error));
+        Reported.into()
+    })
 }
 
 pub fn report(message: impl Into<String>) -> Error {

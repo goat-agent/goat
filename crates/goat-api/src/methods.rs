@@ -353,13 +353,6 @@ pub enum ConfigEdit {
     SearchDefaultSet {
         target: Option<String>,
     },
-    IntegrationSet {
-        kind: String,
-        config: serde_json::Value,
-    },
-    IntegrationRemove {
-        kind: String,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -394,6 +387,97 @@ pub struct AdminCredentialRemoveParams {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AdminCredentialRemoveOutput {
     pub removed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct IntegrationClient {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AdminIntegrationConnectParams {
+    pub name: String,
+    pub kind: String,
+    #[serde(default)]
+    pub config: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<goat_auth::CredentialValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<IntegrationClient>,
+    #[serde(default = "verify_by_default")]
+    pub verify: bool,
+}
+
+fn verify_by_default() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum AdminIntegrationConnectOutput {
+    Verified { identity: String },
+    Unverified { message: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum IntegrationRemoveScope {
+    Credential,
+    Connection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AdminIntegrationRemoveParams {
+    pub name: String,
+    pub scope: IntegrationRemoveScope,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AdminIntegrationRemoveOutput {
+    pub removed: bool,
+    pub used_by: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct AdminIntegrationStatusParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub verify: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum IntegrationState {
+    Ready { source: String },
+    NeedsLogin { reason: String },
+    Failed { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct IntegrationConnectionStatus {
+    pub name: String,
+    pub kind: String,
+    pub config: serde_json::Value,
+    #[serde(flatten)]
+    pub state: IntegrationState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
+    pub used_by: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InvalidIntegrationConnection {
+    pub name: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct AdminIntegrationStatusOutput {
+    pub connections: Vec<IntegrationConnectionStatus>,
+    pub invalid: Vec<InvalidIntegrationConnection>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1218,7 +1302,7 @@ method!(
 method!(
     AdminConfigEdit,
     "admin.config_edit",
-    2,
+    3,
     Shape::Unary,
     Grant::Admin,
     Direction::ToDaemon,
@@ -1246,6 +1330,39 @@ method!(
     Direction::ToDaemon,
     AdminCredentialRemoveParams,
     AdminCredentialRemoveOutput,
+    ()
+);
+method!(
+    AdminIntegrationConnect,
+    "admin.integration_connect",
+    1,
+    Shape::Unary,
+    Grant::Admin,
+    Direction::ToDaemon,
+    AdminIntegrationConnectParams,
+    AdminIntegrationConnectOutput,
+    ()
+);
+method!(
+    AdminIntegrationRemove,
+    "admin.integration_remove",
+    1,
+    Shape::Unary,
+    Grant::Admin,
+    Direction::ToDaemon,
+    AdminIntegrationRemoveParams,
+    AdminIntegrationRemoveOutput,
+    ()
+);
+method!(
+    AdminIntegrationStatus,
+    "admin.integration_status",
+    1,
+    Shape::Unary,
+    Grant::Admin,
+    Direction::ToDaemon,
+    AdminIntegrationStatusParams,
+    AdminIntegrationStatusOutput,
     ()
 );
 method!(

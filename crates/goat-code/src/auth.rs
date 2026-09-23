@@ -40,6 +40,15 @@ pub async fn run_setup() -> color_eyre::Result<()> {
     let agent = setup_agent(&paths).await?;
 
     ui::blank();
+    ui::section("Integrations");
+    ui::note(
+        "Connect services agents and code sessions can use; list them with `goat integration`.",
+    );
+    goat_agent::cli::integration::setup(agent.as_deref())
+        .await
+        .map_err(|e| ui::report(e.to_string()))?;
+
+    ui::blank();
     ui::section("Ready");
     ui::pair("code", "goat code");
     match agent {

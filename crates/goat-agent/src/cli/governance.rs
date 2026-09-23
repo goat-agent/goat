@@ -18,7 +18,7 @@ pub async fn status() -> Result<()> {
         if agents.is_empty() {
             ui::line(&ui::dim("none — run `goat agent add`"));
         } else {
-            let mut table = Table::new(["agent", "model", "channels"]);
+            let mut table = Table::new(["agent", "model", "channels", "integrations"]);
             for a in &agents {
                 let channels = if a.bindings.is_empty() {
                     "—".to_owned()
@@ -29,16 +29,27 @@ pub async fn status() -> Result<()> {
                         .collect::<Vec<_>>()
                         .join(", ")
                 };
+                let integrations = if a.integrations.is_empty() {
+                    "—".to_owned()
+                } else {
+                    a.integrations
+                        .iter()
+                        .map(|i| i.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
                 table.styled_row(vec![
                     (a.slug.clone(), Palette::Plain),
                     (a.default_model.to_string(), Palette::Muted),
                     (channels, Palette::Muted),
+                    (integrations, Palette::Muted),
                 ]);
             }
             table.render();
         }
         Ok(Footer::None)
-    })
+    })?;
+    Ok(())
 }
 
 async fn daemon_state() -> String {
@@ -92,7 +103,8 @@ pub async fn log(limit: usize) -> Result<()> {
         }
         table.render();
         Ok(Footer::None)
-    })
+    })?;
+    Ok(())
 }
 
 async fn open() -> Result<SqliteStore> {

@@ -90,7 +90,7 @@ impl ViewRows {
         let picked = pick_tool(names.iter().map(String::as_str), VIEW_TOOL_CANDIDATES, PREFIX)
             .ok_or_else(|| {
                 IntegrationError::Config(format!(
-                    "notion mcp exposes no database query tool; set `query_tool` in the agent's notion binding (available: {})",
+                    "notion mcp exposes no database query tool; set `query_tool` with `goat agent integration set` (available: {})",
                     names.join(", ")
                 ))
             })?;

@@ -18,7 +18,10 @@ mod admin;
 mod link;
 mod session;
 
-pub use admin::{AdminRequest, LoginMethod, edit_config, remove_credential, set_credential};
+pub use admin::{
+    AdminRequest, LoginMethod, connect_integration, edit_config, integration_status,
+    remove_credential, remove_integration, set_credential,
+};
 pub use link::{EnvelopeConn, LOCAL, Link};
 pub use session::{ApiSession, open as open_api, open_serving};
 

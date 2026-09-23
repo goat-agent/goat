@@ -1,5 +1,6 @@
 mod config;
 mod effort;
+mod integration;
 mod model;
 mod provider;
 mod search;
@@ -10,6 +11,7 @@ use goat_command::Command;
 
 pub use config::{Config, ConfigScreen, ConfigScreenSettings};
 pub use effort::Effort;
+pub use integration::Integration;
 pub use model::{AccountScreen, Model, ModelScreen};
 pub use provider::Provider;
 pub use search::Search;
@@ -23,6 +25,7 @@ pub fn all() -> Vec<Box<dyn Command>> {
         Box::new(Config),
         Box::new(Provider),
         Box::new(Search),
+        Box::new(Integration),
         Box::new(Status),
         Box::new(Usage),
     ]

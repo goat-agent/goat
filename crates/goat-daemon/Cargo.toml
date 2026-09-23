@@ -27,6 +27,7 @@ goat-tool-computer = { workspace = true }
 goat-remote = { workspace = true }
 goat-engine = { workspace = true }
 goat-auth = { workspace = true }
+goat-integration = { workspace = true }
 goat-code-store = { workspace = true }
 goat-provider = { workspace = true }
 goat-providers = { workspace = true }
@@ -47,6 +48,8 @@ goat-client = { workspace = true }
 goat-browser-host = { workspace = true }
 goat-computer-host = { workspace = true }
 async-trait = { workspace = true }
+inventory = { workspace = true }
+goat-tool = { workspace = true }
 rustls = { workspace = true }
 bytes = { workspace = true }
 

@@ -26,6 +26,7 @@ pub async fn run(args: Args) -> Result<()> {
     } else {
         None
     };
+    let integrations = integration_rows(&paths, &cfg, &store, args.check).await;
 
     let daemon = daemon_line().await;
 
@@ -45,6 +46,10 @@ pub async fn run(args: Args) -> Result<()> {
 
         ui::section("Agents");
         render_agents(&paths, &cfg, &store, &user, &mut warnings, &mut hint)?;
+        ui::blank();
+
+        ui::section("Integrations");
+        render_integrations(&integrations, &mut warnings, &mut hint);
         ui::blank();
 
         ui::section("Skills");
@@ -228,7 +233,14 @@ fn render_agents(
         return Ok(());
     }
 
-    let mut t = Table::new(["agent", "status", "model", "bindings", "watch"]);
+    let mut t = Table::new([
+        "agent",
+        "status",
+        "model",
+        "channels",
+        "integrations",
+        "watch",
+    ]);
     for slug in &slugs {
         if let Some(p) = loaded.get(slug.as_str()) {
             let issues = watch.get(slug).map_or(&[][..], Vec::as_slice);
@@ -248,6 +260,15 @@ fn render_agents(
                     .collect::<Vec<_>>()
                     .join(", ")
             };
+            let integrations = if p.integrations.is_empty() {
+                "—".into()
+            } else {
+                p.integrations
+                    .iter()
+                    .map(|i| i.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
             let in_catalog = catalog.contains(&(
                 p.default_model.provider.to_string(),
                 p.default_model.id.clone(),
@@ -263,6 +284,7 @@ fn render_agents(
                 (badge.to_string(), style),
                 (model, Palette::Plain),
                 (bindings, Palette::Plain),
+                (integrations, Palette::Plain),
                 (watch_cell, watch_style),
             ]);
         } else {
@@ -270,6 +292,7 @@ fn render_agents(
             t.styled_row(vec![
                 (slug.clone(), Palette::Plain),
                 ("warn".into(), Palette::Warning),
+                ("?".into(), Palette::Plain),
                 ("?".into(), Palette::Plain),
                 ("?".into(), Palette::Plain),
                 ("?".into(), Palette::Plain),
@@ -284,6 +307,149 @@ fn render_agents(
         }
     }
     Ok(())
+}
+
+struct IntegrationRow {
+    name: String,
+    kind: String,
+    state: goat_integration::ConnectionState,
+    used_by: Vec<String>,
+    check: Option<Result<String, String>>,
+}
+
+struct IntegrationReport {
+    rows: Vec<IntegrationRow>,
+    invalid: Vec<(String, String)>,
+    dangling: Vec<(String, String)>,
+}
+
+async fn integration_rows(
+    paths: &GoatPaths,
+    cfg: &LoadedConfig,
+    store: &CredentialStore,
+    check: bool,
+) -> IntegrationReport {
+    let connections = goat_runtime::load_integration_connections(&paths.config_toml);
+    let mut rows = Vec::new();
+    for connection in &connections.valid {
+        let Some(factory) = goat_integration::factory_for(&connection.kind) else {
+            continue;
+        };
+        let integration = (factory.ctor)();
+        let state = goat_integration::connection_state(&integration.metadata(), connection, store);
+        let checked = if check && state.is_ready() {
+            let binding = connection.binding(&serde_json::Value::Null);
+            Some(
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(15),
+                    integration.verify(&binding, store),
+                )
+                .await
+                {
+                    Ok(Ok(identity)) => Ok(identity),
+                    Ok(Err(e)) => Err(e.to_string()),
+                    Err(_) => Err("timed out after 15s".to_owned()),
+                },
+            )
+        } else {
+            None
+        };
+        rows.push(IntegrationRow {
+            name: connection.name.clone(),
+            kind: connection.kind.clone(),
+            state,
+            used_by: cfg
+                .agents
+                .iter()
+                .filter(|agent| agent.integrations.iter().any(|i| i.name == connection.name))
+                .map(|agent| agent.slug.clone())
+                .collect(),
+            check: checked,
+        });
+    }
+    let dangling = cfg
+        .agents
+        .iter()
+        .flat_map(|agent| {
+            agent
+                .integrations
+                .iter()
+                .filter(|i| connections.get(&i.name).is_none())
+                .map(|i| (agent.slug.clone(), i.name.clone()))
+        })
+        .collect();
+    IntegrationReport {
+        rows,
+        invalid: connections.invalid,
+        dangling,
+    }
+}
+
+fn render_integrations(
+    report: &IntegrationReport,
+    warnings: &mut usize,
+    hint: &mut Option<(&'static str, String)>,
+) {
+    if report.rows.is_empty() && report.invalid.is_empty() {
+        ui::line(&ui::dim("no connections"));
+    } else {
+        let checked = report.rows.iter().any(|row| row.check.is_some());
+        let mut columns = vec!["connection", "integration", "state", "used by"];
+        if checked {
+            columns.push("check");
+        }
+        let mut t = Table::new(columns);
+        for row in &report.rows {
+            let (state, style) = match &row.state {
+                goat_integration::ConnectionState::Ready(_) => {
+                    ("ready".to_owned(), Palette::Success)
+                }
+                goat_integration::ConnectionState::NeedsLogin(reason) => {
+                    *warnings += 1;
+                    hint.get_or_insert((
+                        "needs login",
+                        format!("goat integration login {}", row.name),
+                    ));
+                    (format!("needs login: {reason}"), Palette::Warning)
+                }
+            };
+            let mut cells = vec![
+                (row.name.clone(), Palette::Plain),
+                (row.kind.clone(), Palette::Muted),
+                (state, style),
+                (
+                    if row.used_by.is_empty() {
+                        "code only".to_owned()
+                    } else {
+                        row.used_by.join(", ")
+                    },
+                    Palette::Plain,
+                ),
+            ];
+            if checked {
+                cells.push(match &row.check {
+                    Some(Ok(identity)) => (identity.clone(), Palette::Success),
+                    Some(Err(message)) => {
+                        *warnings += 1;
+                        (message.clone(), Palette::Warning)
+                    }
+                    None => (String::new(), Palette::Plain),
+                });
+            }
+            t.styled_row(cells);
+        }
+        t.render();
+    }
+    for (name, reason) in &report.invalid {
+        *warnings += 1;
+        ui::line(&ui::dim(&format!("invalid connection {name}: {reason}")));
+    }
+    for (agent, name) in &report.dangling {
+        *warnings += 1;
+        ui::line(&ui::dim(&format!(
+            "{agent} uses `{name}`, which is not a connection; see `goat agent integration list -a {agent}`"
+        )));
+    }
 }
 
 fn render_skills(paths: &GoatPaths, warnings: &mut usize) {

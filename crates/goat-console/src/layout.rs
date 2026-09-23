@@ -20,33 +20,50 @@ pub enum Footer {
     Hint(&'static str, String),
 }
 
-pub fn cell<F, E>(title: &str, body: F) -> Result<(), E>
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Settled {
+    Done,
+    Cancelled,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("reported")]
+pub struct Reported;
+
+pub fn cell<F, E>(title: &str, body: F) -> Result<Settled, Reported>
 where
     F: FnOnce() -> Result<Footer, E>,
     E: Display,
 {
     print_title(title);
-    let footer = match body() {
-        Ok(f) => f,
-        Err(e) => Footer::Warn(e.to_string()),
-    };
-    close_cell(&footer);
-    Ok(())
+    settle(body())
 }
 
-pub async fn cell_async<F, Fut, E>(title: &str, body: F) -> Result<(), E>
+pub async fn cell_async<F, Fut, E>(title: &str, body: F) -> Result<Settled, Reported>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<Footer, E>>,
     E: Display,
 {
     print_title(title);
-    let footer = match body().await {
-        Ok(f) => f,
-        Err(e) => Footer::Warn(e.to_string()),
-    };
-    close_cell(&footer);
-    Ok(())
+    settle(body().await)
+}
+
+fn settle<E: Display>(outcome: Result<Footer, E>) -> Result<Settled, Reported> {
+    match outcome {
+        Ok(footer) => {
+            close_cell(&footer);
+            Ok(if matches!(footer, Footer::Cancel) {
+                Settled::Cancelled
+            } else {
+                Settled::Done
+            })
+        }
+        Err(e) => {
+            close_cell(&Footer::Warn(e.to_string()));
+            Err(Reported)
+        }
+    }
 }
 
 fn print_title(title: &str) {
@@ -232,4 +249,22 @@ fn visible_width(s: &str) -> usize {
         }
     }
     width
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cell_settles_by_its_footer_and_reports_a_failure() {
+        assert_eq!(
+            cell("t", || Ok::<_, String>(Footer::Ok("done"))).unwrap(),
+            Settled::Done
+        );
+        assert_eq!(
+            cell("t", || Ok::<_, String>(Footer::Cancel)).unwrap(),
+            Settled::Cancelled
+        );
+        assert!(cell("t", || Err::<Footer, _>("boom")).is_err());
+    }
 }
