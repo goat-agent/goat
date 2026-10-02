@@ -1,0 +1,20 @@
+pre-commit:
+  parallel: true
+  jobs:
+    - name: format
+      glob: "*.{ts,tsx,js,mjs,json,jsonc,md,yml,yaml,toml}"
+      run: bun x oxfmt {staged_files}
+      stage_fixed: true
+    - name: lint
+      glob: "*.{ts,tsx}"
+      run: bun x oxlint --type-aware --deny-warnings {staged_files}
+
+pre-push:
+  parallel: true
+  jobs:
+    - name: typecheck
+      run: bun run typecheck
+    - name: test
+      run: bun run test
+    - name: knip
+      run: bun run knip
