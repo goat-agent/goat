@@ -1,0 +1,29 @@
+{
+  "name": "goat",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "type": "module",
+  "scripts": {
+    "check": "bun run format:check && bun run lint && bun run typecheck && bun run test && bun run knip",
+    "fix": "oxfmt && oxlint --type-aware --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "lint": "oxlint --type-aware --deny-warnings --no-error-on-unmatched-pattern",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "knip": "knip"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "knip": "6.38.0",
+    "oxfmt": "0.71.0",
+    "oxlint": "1.86.0",
+    "oxlint-tsgolint": "7.0.2003",
+    "turbo": "2.11.5",
+    "typescript": "7.0.2"
+  },
+  "packageManager": "bun@1.4.2"
+}
