@@ -16,7 +16,24 @@
     "typescript/no-non-null-assertion": "error",
     "typescript/consistent-type-imports": "error",
     "import/no-cycle": "error",
-    "eslint/require-await": "off"
+    "eslint/require-await": "off",
+    "typescript/prefer-readonly-parameter-types": [
+      "error",
+      {
+        "allow": [
+          {
+            "from": "package",
+            "name": "AbortSignal",
+            "package": "bun-types"
+          },
+          {
+            "from": "package",
+            "name": "AbortSignal",
+            "package": "@types/node"
+          }
+        ]
+      }
+    ]
   },
   "env": {
     "builtin": true
