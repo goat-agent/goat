@@ -51,6 +51,16 @@ The types are in `src/`. This document records why they look the way they do, an
 - Handle provider quirks internally: continuing paused turns, mapping stop reasons, normalizing tool call ids without rewriting stored ids, sending `{}` for malformed calls where the wire format needs an object, omitting the provider's own refused turns, and placing non-leading system messages.
 - Pass the shared conformance suite.
 
+## Testing
+
+`@goat/provider/testing` holds the contract as code.
+
+- `checkStream(events)` checks the event contract and returns the final message or every violation.
+- `conformance(subject)` registers the shared scenarios for an implementation. Scenarios are defined by intent; the implementation supplies recorded responses for each. A scenario without a recording is skipped visibly.
+- `recordedFetch(fixtures, chunking)` replays recorded responses, records requests, honors abort, and can split the body into recorded chunks, single bytes or one piece. Every reply scenario must produce the same events for all three.
+- `recordFetch(fetch, keepHeader)` records live responses into fixtures. The implementation decides which response headers to keep.
+- `scriptedModel(script)` is a fake `Model` for testing consumers such as the agent loop.
+
 ## Accepted costs
 
 - A stored opaque value the provider no longer accepts costs one rejected request on each later turn.

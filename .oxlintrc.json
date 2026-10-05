@@ -22,6 +22,10 @@
       {
         "allow": [
           {
+            "from": "lib",
+            "name": "Uint8Array"
+          },
+          {
             "from": "package",
             "name": "AbortSignal",
             "package": "bun-types"
@@ -30,8 +34,104 @@
             "from": "package",
             "name": "AbortSignal",
             "package": "@types/node"
+          },
+          {
+            "from": "package",
+            "name": "AbortSignal",
+            "package": "undici-types"
+          },
+          {
+            "from": "package",
+            "name": "Request",
+            "package": "bun-types"
+          },
+          {
+            "from": "package",
+            "name": "Request",
+            "package": "@types/node"
+          },
+          {
+            "from": "package",
+            "name": "Request",
+            "package": "undici-types"
+          },
+          {
+            "from": "package",
+            "name": "RequestInit",
+            "package": "bun-types"
+          },
+          {
+            "from": "package",
+            "name": "RequestInit",
+            "package": "@types/node"
+          },
+          {
+            "from": "package",
+            "name": "RequestInit",
+            "package": "undici-types"
+          },
+          {
+            "from": "package",
+            "name": "Response",
+            "package": "bun-types"
+          },
+          {
+            "from": "package",
+            "name": "Response",
+            "package": "@types/node"
+          },
+          {
+            "from": "package",
+            "name": "Response",
+            "package": "undici-types"
+          },
+          {
+            "from": "package",
+            "name": "Headers",
+            "package": "bun-types"
+          },
+          {
+            "from": "package",
+            "name": "Headers",
+            "package": "@types/node"
+          },
+          {
+            "from": "package",
+            "name": "Headers",
+            "package": "undici-types"
+          },
+          {
+            "from": "package",
+            "name": "URL",
+            "package": "bun-types"
+          },
+          {
+            "from": "package",
+            "name": "URL",
+            "package": "@types/node"
+          },
+          {
+            "from": "package",
+            "name": "URL",
+            "package": "undici-types"
+          },
+          {
+            "from": "package",
+            "name": "ReadableStream",
+            "package": "bun-types"
+          },
+          {
+            "from": "package",
+            "name": "ReadableStream",
+            "package": "@types/node"
+          },
+          {
+            "from": "package",
+            "name": "ReadableStream",
+            "package": "undici-types"
           }
-        ]
+        ],
+        "treatMethodsAsReadonly": true
       }
     ]
   },
