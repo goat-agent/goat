@@ -1,4 +1,5 @@
 import type { ProviderError } from "./error.ts";
+import { isJsonObject } from "./json.ts";
 import type {
   AgentMessage,
   AgentPart,
@@ -117,15 +118,6 @@ function isFilledText(part: TextPart): boolean {
 
 function isMalformedCall(part: AgentPart): boolean {
   return part.type === "tool_call" && !isJsonObject(part.input);
-}
-
-function isJsonObject(text: string): boolean {
-  try {
-    const value: unknown = JSON.parse(text);
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-  } catch {
-    return false;
-  }
 }
 
 function orderToolResults(messages: readonly Message[]): readonly Message[] {
