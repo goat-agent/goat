@@ -26,7 +26,7 @@ The types are in `src/`. This document records why they look the way they do, an
 ## Contract
 
 1. A stop reason means the model produced output and stopped for that reason. `{ reason: "error" }` means the request failed. Context overflow and refusal therefore appear as a stop reason when generation halted, and as an error kind when the request was rejected.
-2. The agent loop runs tools when an agent message contains tool calls and did not end with `error` or `aborted`. A call whose input is not a JSON object gets an error result instead of running.
+2. The agent loop runs tools when an agent message contains tool calls and did not end with `error`, `aborted` or `refusal`. A call whose input is not a JSON object gets an error result instead of running.
 3. `producer.provider` names the scope in which the producer's opaque data is valid, so backends with incompatible opaque data are different providers. `producer.model` is the id passed to `Provider.model()`. An implementation that cannot use opaque data treats the message as foreign and never fails because of it.
 4. Several parts may be open at once; `index` tells them apart. Deltas append to `text` for text and reasoning parts and to `input` for tool calls. `part_end` carries the authoritative final part. `end.message` contains every started part in its final state.
 5. A capability the model lacks is rejected as `unsupported` without a network call when `ModelInfo` is known. Otherwise the provider's rejection is mapped to an error kind.
