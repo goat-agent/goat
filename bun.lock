@@ -4,6 +4,9 @@
   "workspaces": {
     "": {
       "name": "goat",
+      "dependencies": {
+        "zod": "4.6.5",
+      },
       "devDependencies": {
         "@types/bun": "1.4.2",
         "knip": "6.39.0",
@@ -14,28 +17,6 @@
         "typescript": "7.0.2",
       },
     },
-    "packages/provider": {
-      "name": "@goat/provider",
-    },
-    "packages/provider-anthropic": {
-      "name": "@goat/provider-anthropic",
-      "dependencies": {
-        "@goat/provider": "workspace:*",
-        "@goat/sse": "workspace:*",
-        "zod": "4.6.5",
-      },
-    },
-    "packages/provider-openai": {
-      "name": "@goat/provider-openai",
-      "dependencies": {
-        "@goat/provider": "workspace:*",
-        "@goat/sse": "workspace:*",
-        "zod": "4.6.5",
-      },
-    },
-    "packages/sse": {
-      "name": "@goat/sse",
-    },
   },
   "packages": {
     "@emnapi/core": ["@emnapi/core@1.11.2", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.2", "tslib": "^2.4.0" } }, "sha512-TC8MkTuZUtcTSiFeuC0ksCh9QIJ5+F21MvZ4Wn4ORfYaFJ/0dsiudv5tVkejgwZlwQ39jL9WWDe2lz8x0WglOA=="],
@@ -43,14 +24,6 @@
     "@emnapi/runtime": ["@emnapi/runtime@1.11.2", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-kyOl3X0DuTiT1h2ft8r2fYO8JYtU9a9Xis/zBSiGArNaagCOWx90N1k2wxp18czFDH+OgcWGb5ZP/XMt3dcyPA=="],
 
     "@emnapi/wasi-threads": ["@emnapi/wasi-threads@1.2.2", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-c95qOXkHdydNKhscBTebqEC1CVAZpyqOfVfBzQ1qgzyl3gfeldUjIggDbIZgDKsHLgnsM+igH7TJ/eAasaVuMA=="],
-
-    "@goat/provider": ["@goat/provider@workspace:packages/provider"],
-
-    "@goat/provider-anthropic": ["@goat/provider-anthropic@workspace:packages/provider-anthropic"],
-
-    "@goat/provider-openai": ["@goat/provider-openai@workspace:packages/provider-openai"],
-
-    "@goat/sse": ["@goat/sse@workspace:packages/sse"],
 
     "@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.2.4", "", { "dependencies": { "@tybys/wasm-util": "^0.10.3" }, "peerDependencies": { "@emnapi/core": "^1.7.1 || ^2.0.0-alpha.4", "@emnapi/runtime": "^1.7.1 || ^2.0.0-alpha.4" } }, "sha512-AJxoUD2/15ESHbvpcyjU274nsAPLuOtPHCk0vKJM5pj//Fg/B1FXNWjPnXTT9PymCYYiHo4zPj0ZomXBKhoy7g=="],
 
