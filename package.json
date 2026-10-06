@@ -1,21 +1,29 @@
 {
-  "name": "goat",
+  "name": "@goat/sdk",
   "private": true,
   "license": "MIT",
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
   "type": "module",
+  "exports": {
+    "./provider": "./src/provider/index.ts",
+    "./provider/testing": "./src/provider/testing/index.ts",
+    "./provider-anthropic": "./src/provider-anthropic/index.ts",
+    "./provider-openai": "./src/provider-openai/index.ts",
+    "./sse": "./src/sse/index.ts"
+  },
   "scripts": {
-    "check": "bun run format:check && bun run lint && bun run typecheck && bun run test && bun run knip",
+    "check": "bun run format:check && bun run lint && turbo run typecheck test && bun run knip",
     "fix": "oxfmt && oxlint --type-aware --fix",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "lint": "oxlint --type-aware --deny-warnings --no-error-on-unmatched-pattern",
-    "typecheck": "turbo run typecheck",
-    "test": "turbo run test",
-    "knip": "knip"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "knip": "knip",
+    "record:anthropic": "bun scripts/record-anthropic.ts",
+    "record:openai": "bun scripts/record-openai.ts"
+  },
+  "dependencies": {
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@types/bun": "1.4.2",

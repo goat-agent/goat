@@ -1,6 +1,6 @@
 # goat
 
-goat is an ecosystem of agent products built with TypeScript on Bun. `apps/` holds deployable products. `packages/` holds the shared building blocks that apps assemble.
+The shared TypeScript libraries that goat products build on, in one package, `@goat/sdk`. Products install a release tag from GitHub, as `"@goat/sdk": "github:goat-agent/goat#vX.Y.Z"`, never from npm.
 
 ## Setup
 
@@ -12,10 +12,10 @@ lefthook install
 
 ## Commands
 
-- `bun run check` runs every gate: format, lint, typecheck, tests, unused-code scan.
+- `bun run check` runs every gate: format, lint, typecheck, tests, unused-code scan. It runs typecheck and tests through Turborepo with caching.
 - `bun run fix` applies formatting and autofixable lint.
-- `bun run typecheck` and `bun run test` run per package through Turborepo with caching. Scope them with `--filter=@goat/<name>`.
-- `bun test <file>` runs one test file from inside its package.
+- `bun run typecheck` and `bun run test` run one gate.
+- `bun test <file>` runs one test file.
 
 ## Done means
 
@@ -30,16 +30,17 @@ lefthook install
 - Keep TypeScript runnable by Node: no enums, namespaces or parameter properties, and import local files with their `.ts` extension.
 - Validate data from outside the process with Zod at the boundary: model output, config files, network and IPC.
 
-## Monorepo
+## Package
 
-- Name a package after the capability it provides, as `packages/<capability>` and `@goat/<capability>`, never after the app that uses it.
-- Apps only wire packages together. Logic belongs in `packages/`.
-- Every app sets `"exports": {}` so nothing can import it. Internal dependencies use `workspace:*`.
-- Every package has a `tsconfig.json` that extends `../../tsconfig.base.json` and `typecheck` and `test` scripts.
+- Bun cannot install a subdirectory of a git repository, so the SDK stays one package.
+- Each directory in `src/` is one module, exported as `@goat/sdk/<module>`.
+- A module imports another module only through its `index.ts`, with a relative path.
+- `provider` never imports an implementation. `import/no-cycle` enforces this, because implementations import values from `provider`.
+- A release is a `vX.Y.Z` tag on `main`.
 - Dependencies are pinned to exact versions. `bunfig.toml` refuses releases younger than three days.
 
 ## Ask first
 
 - Adding a dependency.
-- Changing a package's public exports.
+- Changing the public exports.
 - Editing lint, format, TypeScript, Turborepo, lefthook or mise configuration.

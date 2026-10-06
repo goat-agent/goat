@@ -2,14 +2,7 @@
   "$schema": "./node_modules/turbo/schema.json",
   "agentGuidance": false,
   "tasks": {
-    "transit": {
-      "dependsOn": ["^transit"]
-    },
-    "typecheck": {
-      "dependsOn": ["transit"]
-    },
-    "test": {
-      "dependsOn": ["transit"]
-    }
+    "typecheck": {},
+    "test": {}
   }
 }
