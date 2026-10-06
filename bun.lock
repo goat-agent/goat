@@ -17,6 +17,14 @@
     "packages/provider": {
       "name": "@goat/provider",
     },
+    "packages/provider-anthropic": {
+      "name": "@goat/provider-anthropic",
+      "dependencies": {
+        "@goat/provider": "workspace:*",
+        "@goat/sse": "workspace:*",
+        "zod": "4.6.5",
+      },
+    },
     "packages/sse": {
       "name": "@goat/sse",
     },
@@ -29,6 +37,8 @@
     "@emnapi/wasi-threads": ["@emnapi/wasi-threads@1.2.2", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-c95qOXkHdydNKhscBTebqEC1CVAZpyqOfVfBzQ1qgzyl3gfeldUjIggDbIZgDKsHLgnsM+igH7TJ/eAasaVuMA=="],
 
     "@goat/provider": ["@goat/provider@workspace:packages/provider"],
+
+    "@goat/provider-anthropic": ["@goat/provider-anthropic@workspace:packages/provider-anthropic"],
 
     "@goat/sse": ["@goat/sse@workspace:packages/sse"],
 
