@@ -1,6 +1,6 @@
-# goat
+# goat-sdk
 
-The shared TypeScript libraries that goat products build on, in one package, `@goat/sdk`. Products install a release tag from GitHub, as `"@goat/sdk": "github:goat-agent/goat#vX.Y.Z"`, never from npm.
+The shared TypeScript libraries that goat products build on, in one package, `@goat/sdk`. Products install a release tag from GitHub, as `"@goat/sdk": "github:goat-agent/goat-sdk#vX.Y.Z"`, never from npm.
 
 ## Setup
 
