@@ -1,6 +1,6 @@
-# @goat/provider
+# @goat/sdk/provider
 
-The abstraction every goat product uses to talk to language models. Implementations live in separate packages (`@goat/provider-anthropic`, `@goat/provider-openai`, ...). They depend on this package; this package never knows them. Consumers depend only on this package.
+The abstraction every goat product uses to talk to language models. Implementations live in sibling modules (`@goat/sdk/provider-anthropic`, `@goat/sdk/provider-openai`, ...). They import this module; this module never imports them. Consumers depend only on this module.
 
 The types are in `src/`. This document records why they look the way they do, and the contract every implementation must keep.
 
@@ -53,7 +53,7 @@ The types are in `src/`. This document records why they look the way they do, an
 
 ## Testing
 
-`@goat/provider/testing` holds the contract as code.
+`@goat/sdk/provider/testing` holds the contract as code.
 
 - `checkStream(events)` checks the event contract and returns the final message or every violation.
 - `conformance(subject)` registers the shared scenarios for an implementation. Scenarios are defined by intent; the implementation supplies recorded responses for each. A scenario without a recording is skipped visibly.

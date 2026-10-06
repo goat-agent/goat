@@ -1,10 +1,10 @@
-# @goat/provider-anthropic
+# @goat/sdk/provider-anthropic
 
-Implements `@goat/provider` for the Anthropic Messages API with `fetch` and `@goat/sse`. This document records the choices the code cannot explain.
+Implements `@goat/sdk/provider` for the Anthropic Messages API with `fetch` and `@goat/sdk/sse`. This document records the choices the code cannot explain.
 
 ## Authentication
 
-- `apiKey({ key })` and `oauth({ token })` both send `Authorization: Bearer`. OAuth adds the `oauth-2025-04-20` beta. A token function is called for every request, so refreshing stays outside this package.
+- `apiKey({ key })` and `oauth({ token })` both send `Authorization: Bearer`. OAuth adds the `oauth-2025-04-20` beta. A token function is called for every request, so refreshing stays outside this module.
 - OAuth requests are standard third-party requests. Since 2026-04 they draw from extra usage, billed at API prices, so `usage.cost` is computed for both.
 - Compatible backends such as z.ai are not supported yet. They need their own provider id, no catalog and no cost, and will be added as a separate constructor.
 
@@ -26,7 +26,7 @@ Implements `@goat/provider` for the Anthropic Messages API with `fetch` and `@go
 
 ## Responses
 
-- Leftover block fields such as citations, and blocks this package does not understand, are kept verbatim as opaque data so they replay unchanged.
+- Leftover block fields such as citations, and blocks this module does not understand, are kept verbatim as opaque data so they replay unchanged.
 - `model_context_window_exceeded` maps to `overflow`, not `length`: the conversation needs compacting, not a larger output limit.
 - A stream that ends without `message_stop` ends with a `network` error.
 - 413 maps to `overflow`; the common cause is accumulated images, which compaction removes.
@@ -34,6 +34,6 @@ Implements `@goat/provider` for the Anthropic Messages API with `fetch` and `@go
 ## Testing
 
 - Every scenario the API can produce on demand is recorded live into `fixtures/recorded.json`, together with the model and effort it was recorded with. `fixtures.ts` hand-writes only the failures that cannot be triggered on demand.
-- `bun run record <model>` reads credentials from the variables the Anthropic SDK and Claude Code use: `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` with an optional `ANTHROPIC_BASE_URL`, or `CLAUDE_CODE_OAUTH_TOKEN`. Products never read these; they pass accounts to the constructors.
+- `bun run record:anthropic <model>` reads credentials from the variables the Anthropic SDK and Claude Code use: `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` with an optional `ANTHROPIC_BASE_URL`, or `CLAUDE_CODE_OAUTH_TOKEN`. Products never read these; they pass accounts to the constructors.
 - `auth_error` is always recorded against api.anthropic.com with an invalid key, so a gateway's own 401 never stands in for Anthropic's.
 - Nothing is saved unless every recording passes `checkStream` and ends as its scenario expects.

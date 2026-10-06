@@ -1,4 +1,4 @@
-import type { Json } from "@goat/provider";
+import type { Json } from "../provider/index.ts";
 
 export type JsonObject = { readonly [key: string]: Json };
 

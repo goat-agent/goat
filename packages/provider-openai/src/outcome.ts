@@ -1,4 +1,4 @@
-import type { Stop } from "@goat/provider";
+import type { Stop } from "../provider/index.ts";
 import { eventFailure, type Failure } from "./error.ts";
 import type { WireResponse } from "./wire.ts";
 

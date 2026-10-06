@@ -5,7 +5,7 @@ import {
   type Provider,
   type ProviderError,
   type Result,
-} from "@goat/provider";
+} from "../provider/index.ts";
 import { catalogProfile, catalogProfiles } from "./catalog.ts";
 import { Client, type Credentials, type Fetch } from "./client.ts";
 import { type Route, Settings, streamTurn } from "./turn.ts";

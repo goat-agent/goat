@@ -1,5 +1,5 @@
-import type { AgentPart, Event, Producer, Stop } from "@goat/provider";
-import type { ServerSentEvent } from "@goat/sse";
+import type { AgentPart, Event, Producer, Stop } from "../provider/index.ts";
+import type { ServerSentEvent } from "../sse/index.ts";
 import type { Price } from "./catalog.ts";
 import { apply, type Draft, draftOf, finalPart, startPart } from "./draft.ts";
 import { eventError, malformed } from "./error.ts";

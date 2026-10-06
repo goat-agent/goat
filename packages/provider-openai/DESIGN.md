@@ -1,10 +1,10 @@
-# @goat/provider-openai
+# @goat/sdk/provider-openai
 
-Implements `@goat/provider` for the OpenAI Responses API with `fetch` and `@goat/sse`. This document records the choices the code cannot explain.
+Implements `@goat/sdk/provider` for the OpenAI Responses API with `fetch` and `@goat/sdk/sse`. This document records the choices the code cannot explain.
 
 ## Accounts
 
-- `apiKey({ key })` uses an OpenAI Platform account. `chatgpt({ token })` uses a ChatGPT plan through Sign in with ChatGPT. The token function is called for every request, so sign-in and refresh stay outside this package.
+- `apiKey({ key })` uses an OpenAI Platform account. `chatgpt({ token })` uses a ChatGPT plan through Sign in with ChatGPT. The token function is called for every request, so sign-in and refresh stay outside this module.
 - Both are the provider `openai`. They reach the same backend. Encrypted reasoning from another organization is a rejected opaque value, which the replay ladder already handles.
 - `chatgpt` follows the Sign in with ChatGPT limits: function tools are grouped in one namespace, `max_output_tokens` is not sent, and nothing is priced. `maxOutputTokens` therefore has no effect there.
 - The Codex backend (`chatgpt.com/backend-api/codex`) is not supported. It is a different service with its own limits, catalog and errors.
@@ -31,7 +31,7 @@ Implements `@goat/provider` for the OpenAI Responses API with `fetch` and `@goat
 
 - A part is final only at `response.output_item.done`. `encrypted_content` changes after `response.output_item.added`.
 - Each summary of a reasoning item becomes one reasoning part, and the last part carries the encrypted item. Replay merges consecutive parts with the same id.
-- Items this package does not understand, such as compaction, are kept verbatim as opaque parts.
+- Items this module does not understand, such as compaction, are kept verbatim as opaque parts.
 - A refusal in a message ends the turn as `refusal`. An incomplete response ends as `length` at the output limit, as `refusal` at the content filter, and as an error otherwise.
 - `invalid_encrypted_content` starts the replay ladder, whether it arrives as an HTTP error or as `response.failed` before any part.
 - Error bodies are parsed whatever their content type. The API sends a 401 as `text/plain`.
@@ -39,7 +39,7 @@ Implements `@goat/provider` for the OpenAI Responses API with `fetch` and `@goat
 
 ## Testing
 
-- `bun run record auth` records the 401 from api.openai.com. `bun run record api <model>` and `bun run record chatgpt <model>` record replies with `OPENAI_API_KEY` or `OPENAI_CHATGPT_TOKEN`. Products never read these variables; they pass accounts to the constructors.
+- `bun run record:openai auth` records the 401 from api.openai.com. `bun run record:openai api <model>` and `bun run record:openai chatgpt <model>` record replies with `OPENAI_API_KEY` or `OPENAI_CHATGPT_TOKEN`. Products never read these variables; they pass accounts to the constructors.
 - Until replies are recorded, `fixtures.ts` writes them by hand in the shape the API streams. Recordings replace them.
 - The plan route has not been recorded yet, so its namespace and model list are taken from the documentation.
 - Nothing is saved unless every recording passes `checkStream` and ends as its scenario expects.

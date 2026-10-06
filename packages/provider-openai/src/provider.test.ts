@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import type { AgentMessage, Event, Message, Stop } from "@goat/provider";
-import { conformance, type Fetch, recordedFetch } from "@goat/provider/testing";
-import api from "../fixtures/api.json";
-import auth from "../fixtures/auth.json";
-import plan from "../fixtures/chatgpt.json";
+import type { AgentMessage, Event, Message, Stop } from "../provider/index.ts";
+import { conformance, type Fetch, recordedFetch } from "../provider/testing/index.ts";
+import api from "./fixtures/api.json";
+import auth from "./fixtures/auth.json";
+import plan from "./fixtures/chatgpt.json";
 import {
   completed,
   created,

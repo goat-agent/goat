@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import type { AgentMessage, Event, Message, Stop } from "@goat/provider";
-import { type Fixture, recordedFetch } from "@goat/provider/testing";
+import type { AgentMessage, Event, Message, Stop } from "../provider/index.ts";
+import { type Fixture, recordedFetch } from "../provider/testing/index.ts";
 import { completed, created, errorFixture, message, streamFixture } from "./fixtures.ts";
 import { apiKey, chatgpt } from "./provider.ts";
 

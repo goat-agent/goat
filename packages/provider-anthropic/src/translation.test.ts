@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import type { AgentMessage, Event } from "@goat/provider";
-import { checkStream } from "@goat/provider/testing";
-import { Decoder } from "@goat/sse";
+import type { AgentMessage, Event } from "../provider/index.ts";
+import { checkStream } from "../provider/testing/index.ts";
+import { Decoder } from "../sse/index.ts";
 import { catalogProfile } from "./catalog.ts";
 import { block, finish, sse, start, text, thinking, toolUse, type WireEvent } from "./fixtures.ts";
 import { Translation } from "./translation.ts";

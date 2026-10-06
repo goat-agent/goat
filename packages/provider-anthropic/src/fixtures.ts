@@ -1,6 +1,6 @@
-import type { Json } from "@goat/provider";
-import type { Fixture, FixtureName } from "@goat/provider/testing";
-import { encode } from "@goat/sse";
+import type { Json } from "../provider/index.ts";
+import type { Fixture, FixtureName } from "../provider/testing/index.ts";
+import { encode } from "../sse/index.ts";
 
 export type WireEvent = readonly [type: string, data: Json];
 
