@@ -1,4 +1,4 @@
-import type { AgentPart } from "@goat/provider";
+import type { AgentPart } from "../provider/index.ts";
 import { type JsonObject, stringOf, withoutKeys } from "./json.ts";
 import { callItem, messageItem, reasoningItem } from "./wire.ts";
 

@@ -10,8 +10,8 @@ import {
   replay,
   type Stop,
   type StreamOptions,
-} from "@goat/provider";
-import { decode } from "@goat/sse";
+} from "../provider/index.ts";
+import { decode } from "../sse/index.ts";
 import type { Profile } from "./catalog.ts";
 import type { Client } from "./client.ts";
 import { isOpaqueRejection, networkError, responseError } from "./error.ts";

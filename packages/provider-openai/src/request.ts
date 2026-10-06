@@ -9,7 +9,7 @@ import type {
   ReasoningPart,
   TextPart,
   ToolResultPart,
-} from "@goat/provider";
+} from "../provider/index.ts";
 import { asObject, type JsonObject, stringOf, withoutKeys } from "./json.ts";
 
 export interface Shape {

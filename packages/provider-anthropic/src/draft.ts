@@ -1,4 +1,4 @@
-import type { AgentPart, Json } from "@goat/provider";
+import type { AgentPart, Json } from "../provider/index.ts";
 import { type JsonObject, withoutKeys } from "./json.ts";
 
 export type Draft =

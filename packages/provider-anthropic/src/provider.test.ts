@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import type { AgentMessage, Event, Message, Stop } from "@goat/provider";
-import { conformance, type Fetch, type Fixture, recordedFetch } from "@goat/provider/testing";
+import type { AgentMessage, Event, Message, Stop } from "../provider/index.ts";
+import { conformance, type Fetch, type Fixture, recordedFetch } from "../provider/testing/index.ts";
 import {
   errorFixture,
   finish,
@@ -10,7 +10,7 @@ import {
   text,
   toolUse,
 } from "./fixtures.ts";
-import recorded from "../fixtures/recorded.json";
+import recorded from "./fixtures/recorded.json";
 import { apiKey, oauth } from "./provider.ts";
 
 conformance({

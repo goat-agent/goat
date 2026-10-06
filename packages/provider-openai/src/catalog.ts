@@ -1,4 +1,4 @@
-import type { ModelInfo } from "@goat/provider";
+import type { ModelInfo } from "../provider/index.ts";
 
 export interface Profile {
   readonly info: ModelInfo;

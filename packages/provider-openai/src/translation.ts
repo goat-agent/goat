@@ -1,4 +1,4 @@
-import type { AgentPart, Event, Producer, Stop } from "@goat/provider";
+import type { AgentPart, Event, Producer, Stop } from "../provider/index.ts";
 import { z } from "zod";
 import type { Profile } from "./catalog.ts";
 import { eventFailure, type Failure, malformed } from "./error.ts";

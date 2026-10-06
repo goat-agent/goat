@@ -1,4 +1,4 @@
-import type { ErrorKind, Json, ProviderError } from "@goat/provider";
+import type { ErrorKind, Json, ProviderError } from "../provider/index.ts";
 import { z } from "zod";
 import { errorBody, type WireFailure } from "./wire.ts";
 

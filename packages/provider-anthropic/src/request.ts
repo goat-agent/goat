@@ -8,7 +8,7 @@ import type {
   SystemMessage,
   TextPart,
   ToolResultPart,
-} from "@goat/provider";
+} from "../provider/index.ts";
 import { budgets, type Profile } from "./catalog.ts";
 import { asObject, type JsonObject } from "./json.ts";
 import { block } from "./wire.ts";

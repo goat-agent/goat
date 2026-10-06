@@ -1,4 +1,4 @@
-import { err, ok, type ProviderError, type Result } from "@goat/provider";
+import { err, ok, type ProviderError, type Result } from "../provider/index.ts";
 import { malformed, networkError, responseError } from "./error.ts";
 
 export type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;

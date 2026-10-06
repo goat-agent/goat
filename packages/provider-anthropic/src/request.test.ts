@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import type { AgentMessage, AgentPart, Input, Message } from "@goat/provider";
-import { weatherTool } from "@goat/provider/testing";
+import type { AgentMessage, AgentPart, Input, Message } from "../provider/index.ts";
+import { weatherTool } from "../provider/testing/index.ts";
 import { catalogProfile, type Profile } from "./catalog.ts";
 import { request, wireId } from "./request.ts";
 

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import type { AgentMessage, Event } from "@goat/provider";
-import { checkStream } from "@goat/provider/testing";
+import type { AgentMessage, Event } from "../provider/index.ts";
+import { checkStream } from "../provider/testing/index.ts";
 import { catalogProfile } from "./catalog.ts";
 import {
   call,

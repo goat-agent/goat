@@ -1,4 +1,4 @@
-import type { Usage } from "@goat/provider";
+import type { Usage } from "../provider/index.ts";
 import { longContextThreshold, type Profile } from "./catalog.ts";
 import type { WireUsage } from "./wire.ts";
 
