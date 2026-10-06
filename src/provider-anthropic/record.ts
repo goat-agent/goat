@@ -1,4 +1,4 @@
-import type { Event, Provider } from "../src/provider/index.ts";
+import type { Event, Provider } from "../provider/index.ts";
 import {
   checkStream,
   type Fetch,
@@ -7,9 +7,9 @@ import {
   recordFetch,
   scenarioInput,
   secondTurn,
-} from "../src/provider/testing/index.ts";
+} from "../provider/testing/index.ts";
 import { z } from "zod";
-import { apiKey, oauth, type Options } from "../src/provider-anthropic/index.ts";
+import { apiKey, oauth, type Options } from "./index.ts";
 
 interface Recording {
   readonly name: FixtureName;
@@ -128,7 +128,7 @@ async function record(source: Credential, model: string): Promise<readonly strin
   if (problems.length === 0) {
     const fixtures = Object.fromEntries(recordings.map((item) => [item.name, item.fixtures]));
     await Bun.write(
-      new URL("../src/provider-anthropic/fixtures/recorded.json", import.meta.url),
+      new URL("./fixtures/recorded.json", import.meta.url),
       `${JSON.stringify({ model, effort, fixtures }, null, 2)}\n`,
     );
   }

@@ -1,4 +1,4 @@
-import type { Event, Provider } from "../src/provider/index.ts";
+import type { Event, Provider } from "../provider/index.ts";
 import {
   checkStream,
   type Fetch,
@@ -7,9 +7,9 @@ import {
   recordFetch,
   scenarioInput,
   secondTurn,
-} from "../src/provider/testing/index.ts";
+} from "../provider/testing/index.ts";
 import { z } from "zod";
-import { apiKey, chatgpt } from "../src/provider-openai/index.ts";
+import { apiKey, chatgpt } from "./index.ts";
 
 interface Recording {
   readonly name: FixtureName;
@@ -114,7 +114,7 @@ async function save(
   if (problems.length === 0) {
     const fixtures = Object.fromEntries(recordings.map((item) => [item.name, item.fixtures]));
     await Bun.write(
-      new URL(`../src/provider-openai/fixtures/${file}`, import.meta.url),
+      new URL(`./fixtures/${file}`, import.meta.url),
       `${JSON.stringify({ ...header, fixtures }, null, 2)}\n`,
     );
   }

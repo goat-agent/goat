@@ -19,8 +19,8 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "knip": "knip",
-    "record:anthropic": "bun scripts/record-anthropic.ts",
-    "record:openai": "bun scripts/record-openai.ts"
+    "record:anthropic": "bun src/provider-anthropic/record.ts",
+    "record:openai": "bun src/provider-openai/record.ts"
   },
   "dependencies": {
     "zod": "4.6.5"
