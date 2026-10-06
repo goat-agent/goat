@@ -25,6 +25,14 @@
         "zod": "4.6.5",
       },
     },
+    "packages/provider-openai": {
+      "name": "@goat/provider-openai",
+      "dependencies": {
+        "@goat/provider": "workspace:*",
+        "@goat/sse": "workspace:*",
+        "zod": "4.6.5",
+      },
+    },
     "packages/sse": {
       "name": "@goat/sse",
     },
@@ -39,6 +47,8 @@
     "@goat/provider": ["@goat/provider@workspace:packages/provider"],
 
     "@goat/provider-anthropic": ["@goat/provider-anthropic@workspace:packages/provider-anthropic"],
+
+    "@goat/provider-openai": ["@goat/provider-openai@workspace:packages/provider-openai"],
 
     "@goat/sse": ["@goat/sse@workspace:packages/sse"],
 
