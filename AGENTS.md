@@ -1,6 +1,6 @@
 # goat-code
 
-goat-code is a coding agent built with TypeScript on Bun. `apps/` holds what ships. `packages/` holds the building blocks that apps assemble. Libraries that other goat products share come from `@goat/sdk`, installed from a release tag as `"@goat/sdk": "github:goat-agent/goat-sdk#vX.Y.Z"`.
+goat-code is a coding agent built with TypeScript on Bun. `apps/` holds what ships. `packages/` holds the building blocks that apps assemble. Libraries that other goat products share come from `@goat/sdk`, installed from GitHub as `"@goat/sdk": "github:goat-agent/goat-sdk#main"`.
 
 ## Setup
 

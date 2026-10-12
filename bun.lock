@@ -27,7 +27,7 @@
     "packages/tool": {
       "name": "@goat/code-tool",
       "dependencies": {
-        "@goat/sdk": "github:goat-agent/goat-sdk#v0.1.0",
+        "@goat/sdk": "github:goat-agent/goat-sdk#main",
         "zod": "4.6.5",
       },
     },
@@ -42,7 +42,7 @@
       "name": "@goat/code-tui",
       "dependencies": {
         "@goat/code-terminal": "workspace:*",
-        "@goat/sdk": "github:goat-agent/goat-sdk#v0.1.0",
+        "@goat/sdk": "github:goat-agent/goat-sdk#main",
       },
     },
   },
@@ -63,7 +63,7 @@
 
     "@goat/code-tui": ["@goat/code-tui@workspace:packages/tui"],
 
-    "@goat/sdk": ["@goat/sdk@github:goat-agent/goat-sdk#ee14a51", { "dependencies": { "zod": "4.6.5" } }, "goat-agent-goat-sdk-ee14a51", "sha512-auw7lAHvg1f2qFGojvWZH3TQ7e+TH2GFtIloVpwhy4gLaYCzs/afbV8XF0I4f2owL7k2a4mNa1UDccfx6xxI1A=="],
+    "@goat/sdk": ["@goat/sdk@github:goat-agent/goat-sdk#a083a01", { "dependencies": { "zod": "4.6.5" } }, "goat-agent-goat-sdk-a083a01", "sha512-3id8A5QDI6axaedUnIOc+o0Dp7FfX1jOBdLASsoLgJYOb4LiRRTfNR3/9tTObD6ixmO3VkPWdgLLbUVpnRTUMQ=="],
 
     "@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.2.4", "", { "dependencies": { "@tybys/wasm-util": "^0.10.3" }, "peerDependencies": { "@emnapi/core": "^1.7.1 || ^2.0.0-alpha.4", "@emnapi/runtime": "^1.7.1 || ^2.0.0-alpha.4" } }, "sha512-AJxoUD2/15ESHbvpcyjU274nsAPLuOtPHCk0vKJM5pj//Fg/B1FXNWjPnXTT9PymCYYiHo4zPj0ZomXBKhoy7g=="],
 
