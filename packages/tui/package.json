@@ -11,6 +11,6 @@
   },
   "dependencies": {
     "@goat/code-terminal": "workspace:*",
-    "@goat/sdk": "github:goat-agent/goat-sdk#v0.1.0"
+    "@goat/sdk": "github:goat-agent/goat-sdk#main"
   }
 }

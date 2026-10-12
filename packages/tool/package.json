@@ -10,7 +10,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@goat/sdk": "github:goat-agent/goat-sdk#v0.1.0",
+    "@goat/sdk": "github:goat-agent/goat-sdk#main",
     "zod": "4.6.5"
   }
 }
