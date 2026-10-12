@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import type { Event } from "../event.ts";
 import type { AgentMessage, AgentPart } from "../message.ts";
-import { err, ok, type Result } from "../result.ts";
+import { err, ok, type Result } from "../../result/index.ts";
 
 interface StreamState {
   readonly started: readonly AgentPart[];

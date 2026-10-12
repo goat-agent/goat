@@ -6,3 +6,4 @@ export {
   chatgpt,
   type Options,
 } from "./provider.ts";
+export { methods } from "./methods.ts";
