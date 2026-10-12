@@ -36,6 +36,7 @@ Stores the named credentials that goat products share, for any service, and turn
 ## Evolution
 
 - The table never changes. Everything new goes inside `fields`.
+- The table is never migrated in place, because products of older versions and other languages share it. A change that needs another table uses a new database file, and the new version copies the rows from the old file once. Older products keep the old file.
 - A method gains a field only if older readers can safely ignore it. A field that older products must obey, such as one that routes requests, makes a new method, which older products refuse as `unsupported`.
 - A method never gains a required field. A field may accept more values later; older products refuse them as `invalid`.
 - `email`, `plan` and `label` at the top of `fields` are reserved for display. They are never secret.
