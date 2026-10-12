@@ -10,6 +10,12 @@ Implements `@goat/sdk/provider` for the OpenAI Responses API with `fetch` and `@
 - The Codex backend (`chatgpt.com/backend-api/codex`) is not supported. It is a different service with its own limits, catalog and errors.
 - `baseUrl` includes the version path, as in the OpenAI SDK.
 
+## Credentials
+
+`methods` holds one method for `@goat/sdk/credentials`:
+
+- `apiKey`: `key`, printable ASCII without spaces, and an optional `baseUrl` that passes `secureUrl`, including `/v1`; requests go to `<baseUrl>/...`. It builds `apiKey({ key, baseUrl })`; the default base URL is `https://api.openai.com/v1`.
+
 ## Models
 
 - The catalog in `catalog.ts` is the source of truth for limits, effort levels, prices, the long-context tier and Fast multipliers. `/v1/models` reports none of these.

@@ -8,6 +8,12 @@ Implements `@goat/sdk/provider` for the Anthropic Messages API with `fetch` and 
 - OAuth requests are standard third-party requests. Since 2026-04 they draw from extra usage, billed at API prices, so `usage.cost` is computed for both.
 - Compatible backends such as z.ai are not supported yet. They need their own provider id, no catalog and no cost, and will be added as a separate constructor.
 
+## Credentials
+
+`methods` holds one method for `@goat/sdk/credentials`:
+
+- `apiKey`: `key`, printable ASCII without spaces, and an optional `baseUrl` that passes `secureUrl`, without `/v1`; requests go to `<baseUrl>/v1/...`. It builds `apiKey({ key, baseUrl })`; the default base URL is `https://api.anthropic.com`.
+
 ## Models
 
 - The catalog in `catalog.ts` is the source of truth for models it lists: price, default effort, mid-conversation system support and thinking binding. `/v1/models` does not report these.
