@@ -1,6 +1,6 @@
 export type { ErrorKind, ProviderError } from "./error.ts";
 export type { Event } from "./event.ts";
-export type { Json, JsonSchema } from "./json.ts";
+export type { Json, JsonSchema } from "../json/index.ts";
 export type {
   AgentMessage,
   AgentPart,
@@ -30,4 +30,4 @@ export type {
   Tool,
 } from "./model.ts";
 export { replay, type ReplayOptions } from "./replay.ts";
-export { err, ok, type Result } from "./result.ts";
+export { err, ok, type Result } from "../result/index.ts";

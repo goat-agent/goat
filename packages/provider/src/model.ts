@@ -1,8 +1,8 @@
 import type { ProviderError } from "./error.ts";
 import type { Event } from "./event.ts";
-import type { JsonSchema } from "./json.ts";
+import type { JsonSchema } from "../json/index.ts";
 import type { Message } from "./message.ts";
-import type { Result } from "./result.ts";
+import type { Result } from "../result/index.ts";
 
 export interface FunctionTool {
   readonly type: "function";

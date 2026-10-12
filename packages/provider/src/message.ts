@@ -1,5 +1,5 @@
 import type { ProviderError } from "./error.ts";
-import type { Json } from "./json.ts";
+import type { Json } from "../json/index.ts";
 
 export interface TextPart {
   readonly type: "text";

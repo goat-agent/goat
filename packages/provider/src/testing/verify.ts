@@ -1,5 +1,6 @@
 import { expect } from "bun:test";
-import { isJsonObject, type Json } from "../json.ts";
+import type { Json } from "../../json/index.ts";
+import { isJsonObject } from "../json.ts";
 import type { AgentMessage, AgentPart, ToolCallPart } from "../message.ts";
 import { weatherTool } from "./scenarios.ts";
 

@@ -1,7 +1,7 @@
 import type { Event } from "../event.ts";
 import type { AgentMessage, AgentPart } from "../message.ts";
 import type { Model, ModelInfo } from "../model.ts";
-import { ok } from "../result.ts";
+import { ok } from "../../result/index.ts";
 
 export interface Script {
   readonly provider: string;

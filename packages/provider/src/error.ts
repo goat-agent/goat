@@ -1,4 +1,4 @@
-import type { Json } from "./json.ts";
+import type { Json } from "../json/index.ts";
 
 export type ErrorKind =
   | "auth"

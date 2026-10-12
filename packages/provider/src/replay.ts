@@ -11,7 +11,7 @@ import type {
   ToolMessage,
   ToolResultPart,
 } from "./message.ts";
-import { err, ok, type Result } from "./result.ts";
+import { err, ok, type Result } from "../result/index.ts";
 
 export interface ReplayOptions {
   readonly foreign?: "beforeLastUser" | "all";
