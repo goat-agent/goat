@@ -1,4 +1,4 @@
-import type { FunctionTool, Json, MediaPart, TextPart } from "@goat/sdk/provider";
+import type { FunctionTool, Json, MediaPart, TextPart } from "@goat/provider";
 
 export type JsonObject = { readonly [key: string]: Json };
 

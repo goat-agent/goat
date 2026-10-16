@@ -1,6 +1,6 @@
-# @goat/code-tui
+# @goat/tui
 
-The terminal screen of goat-code, drawn by its own renderer on Bun built-ins. `@goat/code-terminal` owns the terminal device. This package owns everything the user sees. `apps/cli` connects them to the engine.
+The terminal screen of goat, drawn by its own renderer on Bun built-ins. `@goat/terminal` owns the terminal device. This package owns everything the user sees. `apps/cli` connects them to the engine.
 
 This document records the models that are hard to change later and where each future feature goes. Code is written against it.
 
@@ -11,14 +11,14 @@ This document records the models that are hard to change later and where each fu
 3. **Extensible.** Every planned feature has a place in the models below. Adding a feature adds a registration, not a model.
 4. **One session, many screens.** The screen is a client of the engine protocol. Data that every screen must show comes from the engine. Code in this package only draws and handles local interaction.
 
-Not planned: inline mode, a default status line, a working indicator, animation, approval prompts. goat-code always runs with full access and has no permission modes.
+Not planned: inline mode, a default status line, a working indicator, animation, approval prompts. goat always runs with full access and has no permission modes.
 
 ## Packages
 
-| Package               | Owns                                                                                        | Does not know                  |
-| --------------------- | ------------------------------------------------------------------------------------------- | ------------------------------ |
-| `@goat/code-terminal` | Terminal modes, input parsing, capability detection, frame writing, cursor, restore on exit | goat-code, sessions, providers |
-| `@goat/code-tui`      | Screen state, layout, blocks, composer, dock, overlays, commands, keymap, theme             | How bytes reach the terminal   |
+| Package          | Owns                                                                                        | Does not know                |
+| ---------------- | ------------------------------------------------------------------------------------------- | ---------------------------- |
+| `@goat/terminal` | Terminal modes, input parsing, capability detection, frame writing, cursor, restore on exit | goat, sessions, providers    |
+| `@goat/tui`      | Screen state, layout, blocks, composer, dock, overlays, commands, keymap, theme             | How bytes reach the terminal |
 
 Widgets such as the editor and the list belong here, not in the terminal package, so the terminal package stays small. Text width, wrapping, slicing and markdown use `Bun.stringWidth`, `Bun.wrapAnsi`, `Bun.sliceAnsi` and `Bun.markdown`.
 

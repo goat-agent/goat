@@ -1,5 +1,5 @@
 {
-  "name": "@goat/code-tool-shell",
+  "name": "@goat/tool-shell",
   "private": true,
   "type": "module",
   "exports": {
@@ -10,7 +10,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@goat/code-tool": "workspace:*",
+    "@goat/tool": "workspace:*",
     "zod": "4.6.7"
   }
 }

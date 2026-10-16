@@ -1,5 +1,5 @@
 {
-  "name": "@goat/code-terminal",
+  "name": "@goat/terminal",
   "private": true,
   "type": "module",
   "exports": {

@@ -1,4 +1,4 @@
-import type { Key } from "@goat/code-terminal";
+import type { Key } from "@goat/terminal";
 
 export type Command =
   | "submit"

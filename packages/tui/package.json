@@ -1,5 +1,5 @@
 {
-  "name": "@goat/code-tui",
+  "name": "@goat/tui",
   "private": true,
   "type": "module",
   "exports": {
@@ -10,7 +10,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@goat/code-terminal": "workspace:*",
-    "@goat/sdk": "github:goat-agent/goat-sdk#main"
+    "@goat/provider": "workspace:*",
+    "@goat/terminal": "workspace:*"
   }
 }

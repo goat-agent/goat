@@ -1,0 +1,20 @@
+{
+  "name": "@goat/provider-openai",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "record": "bun src/record.ts"
+  },
+  "dependencies": {
+    "@goat/credentials": "workspace:*",
+    "@goat/provider": "workspace:*",
+    "@goat/result": "workspace:*",
+    "@goat/sse": "workspace:*",
+    "zod": "4.6.7"
+  }
+}

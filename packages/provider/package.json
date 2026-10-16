@@ -1,0 +1,17 @@
+{
+  "name": "@goat/provider",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@goat/json": "workspace:*",
+    "@goat/result": "workspace:*"
+  }
+}

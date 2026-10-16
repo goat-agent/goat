@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ScreenEvent } from "./event.ts";
-import type { AgentMessage } from "@goat/sdk/provider";
+import type { AgentMessage } from "@goat/provider";
 import { emptyTranscript, reduce, type Transcript } from "./transcript.ts";
 
 const reply: AgentMessage = {

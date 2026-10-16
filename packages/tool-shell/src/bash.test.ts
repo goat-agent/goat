@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Tool, ToolOutput } from "@goat/code-tool";
+import type { Tool, ToolOutput } from "@goat/tool";
 import { bash } from "./bash.ts";
 
 let root = "";
