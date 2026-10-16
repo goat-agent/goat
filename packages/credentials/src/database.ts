@@ -5,7 +5,6 @@ import { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 import { err, ok, type Result } from "@goat/result";
 import type { CredentialError } from "./credential.ts";
-import { schema } from "./schema.ts";
 
 export interface Sql {
   get(query: string, ...values: readonly string[]): unknown;
@@ -13,15 +12,18 @@ export interface Sql {
   run(query: string, ...values: readonly string[]): number;
 }
 
-// SQLite stores the statement without IF NOT EXISTS and keeps the writer's whitespace.
-const table = flat(schema.replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE"));
-const findTable = "SELECT sql FROM sqlite_schema WHERE name = 'credentials' COLLATE NOCASE";
+const schema = `CREATE TABLE IF NOT EXISTS credentials (
+  name TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  method TEXT NOT NULL,
+  fields TEXT NOT NULL
+) STRICT`;
+const findTable = "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'credentials'";
 const posix = process.platform !== "win32";
 const create = constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 const lockWait = 10_000;
 const lockRetry = 25;
 const busy = 5;
-const constraint = 19;
 
 export async function read<R>(
   path: string,
@@ -35,13 +37,9 @@ export async function read<R>(
     return undefined;
   }
   try {
-    return await session(path, false, (sql) => {
-      const found = sql.get(findTable);
-      if (found !== undefined && !sameTable(found)) {
-        return err(foreignTable());
-      }
-      return found === undefined ? undefined : ok(query(sql));
-    });
+    return await session(path, false, (sql) =>
+      sql.get(findTable) === undefined ? undefined : ok(query(sql)),
+    );
   } catch (error) {
     return err(failure(error));
   }
@@ -114,9 +112,6 @@ async function session<R>(path: string, transaction: boolean, use: (sql: Sql) =>
 function commit<R>(exec: (query: string) => void, sql: Sql, use: (sql: Sql) => R): R {
   try {
     exec(schema);
-    if (!sameTable(sql.get(findTable))) {
-      throw new ForeignTable();
-    }
     const result = use(sql);
     exec("COMMIT");
     return result;
@@ -136,29 +131,6 @@ async function retry<R>(attempt: () => R, deadline: number): Promise<R> {
   }
   await sleep(lockRetry);
   return retry(attempt, deadline);
-}
-
-class ForeignTable extends Error {}
-
-function sameTable(row: unknown): boolean {
-  return (
-    typeof row === "object" &&
-    row !== null &&
-    "sql" in row &&
-    typeof row.sql === "string" &&
-    flat(row.sql) === table
-  );
-}
-
-function flat(sql: string): string {
-  return sql.replaceAll(/\s+/gu, " ").trim();
-}
-
-function foreignTable(): CredentialError {
-  return {
-    kind: "malformed",
-    message: "The credential store has a table this module does not know.",
-  };
 }
 
 async function unsafeFolder(path: string): Promise<CredentialError | undefined> {
@@ -196,15 +168,9 @@ async function inspect(path: string): Promise<Result<boolean, CredentialError>> 
 }
 
 function failure(error: unknown): CredentialError {
-  if (error instanceof ForeignTable) {
-    return foreignTable();
-  }
   const code = errcode(error);
   if (code === busy) {
     return { kind: "unavailable", message: "Another process kept the credential store busy." };
-  }
-  if (code === constraint) {
-    return { kind: "invalid", message: "The credential breaks the rules of the store." };
   }
   return { kind: "unavailable", message: error instanceof Error ? error.message : String(error) };
 }

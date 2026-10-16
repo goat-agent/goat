@@ -96,10 +96,10 @@ test("refuses what the method refuses and saves nothing", async () => {
   expect(await store().list()).toEqual(ok([]));
 });
 
-test("refuses methods the product does not know", async () => {
+test("refuses methods it was not given", async () => {
   expect(await store().set("work", { ...work, method: "oauth" })).toEqual({
     kind: "unsupported",
-    message: 'The credential "work" is test oauth, which this product cannot use.',
+    message: 'The credential "work" is test oauth, which goat cannot use.',
   });
   await store().set("work", work);
   insert("bot", "discord", "botToken", '{"token":"t"}');
@@ -151,23 +151,16 @@ test("deletes a credential", async () => {
   expect((await store().delete("work"))?.kind).toBe("missing");
 });
 
-test("enforces the rules in the database for writers in other languages", async () => {
+test("reports rows it cannot read as malformed", async () => {
   await store().set("work", work);
-  const rows: readonly (readonly [string, string, string, string])[] = [
-    ["Bad", "test", "key", "{}"],
-    ["ok\u0000Bad", "test", "key", "{}"],
-    ["ok", "test\u0000\u001B[2J", "key", "{}"],
-    ["ok", "test", "key", '{}\u0000"'],
-    ["ok", "te st", "key", "{}"],
-    ["ok", "test", "api_key", "{}"],
-    ["ok", "test", "key", "[]"],
-    ["ok", "test", "key", "{"],
-  ];
-  for (const row of rows) {
-    expect(() => {
-      insert(...row);
-    }).toThrow();
-  }
+  insert("list", "test", "key", "[]");
+  expect(await kindOf("list")).toBe("malformed");
+  insert("Bad\u001B[2J", "te st", "key", "{}");
+  const listed = await store().list();
+  expect(listed.ok ? undefined : listed.error).toEqual({
+    kind: "malformed",
+    message: "The credential store holds rows it cannot read.",
+  });
 });
 
 test("refuses a store that is a link, that others can open, or in a folder others can write", async () => {
@@ -186,43 +179,6 @@ test("refuses a store that is a link, that others can open, or in a folder other
   const linked = openCredentials({ methods: [keyMethod], path: link });
   const connected = await linked.connect("work");
   expect(connected.ok ? undefined : connected.error.kind).toBe("invalid");
-});
-
-test("refuses a table that another writer created with other rules", async () => {
-  await mkdir(join(root, "goat"), { mode: 0o700 });
-  const database = new DatabaseSync(path);
-  database.exec(
-    "CREATE TABLE credentials (name TEXT PRIMARY KEY, provider TEXT NOT NULL, method TEXT NOT NULL, fields TEXT NOT NULL) STRICT",
-  );
-  database.close();
-  await chmod(path, 0o600);
-  insert("Bad\u001B[2J", "te st", "key", "{}");
-  expect((await store().list()).ok).toBe(false);
-  expect((await store().set("work", work))?.kind).toBe("malformed");
-});
-
-test("accepts the table from DESIGN.md whatever its indentation and line ends", async () => {
-  const design = await Bun.file(join(import.meta.dir, "..", "DESIGN.md")).text();
-  const statement = /```sql\n([^`]*)```/u.exec(design)?.[1] ?? "";
-  await mkdir(join(root, "goat"), { mode: 0o700 });
-  const database = new DatabaseSync(path);
-  database.exec(statement.replaceAll("\n", "\r\n"));
-  database.close();
-  await chmod(path, 0o600);
-  expect(await store().set("work", work)).toBeUndefined();
-  expect(await store().connect("work")).toEqual(ok("client for secret"));
-});
-
-test("refuses a credentials table in any letter case", async () => {
-  await mkdir(join(root, "goat"), { mode: 0o700 });
-  const database = new DatabaseSync(path);
-  database.exec(
-    "CREATE TABLE Credentials (name TEXT PRIMARY KEY, provider TEXT NOT NULL, method TEXT NOT NULL, fields TEXT NOT NULL) STRICT",
-  );
-  database.close();
-  await chmod(path, 0o600);
-  const listed = await store().list();
-  expect(listed.ok ? undefined : listed.error.kind).toBe("malformed");
 });
 
 test("refuses a link, pipe or folder at the store path when saving", async () => {

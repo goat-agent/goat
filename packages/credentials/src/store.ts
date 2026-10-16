@@ -168,7 +168,7 @@ function connectWith<T>(
   if (method === undefined) {
     return err({
       kind: "unsupported",
-      message: `The credential "${name}" is ${credential.provider} ${credential.method}, which this product cannot use.`,
+      message: `The credential "${name}" is ${credential.provider} ${credential.method}, which goat cannot use.`,
     });
   }
   const connected = method.connect(credential.fields);
