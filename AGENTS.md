@@ -1,6 +1,6 @@
 # goat
 
-goat is an agent built with TypeScript on Bun. `apps/` holds what ships. `packages/` holds the building blocks that apps assemble. Libraries that other goat products share come from `@goat/sdk`, installed from GitHub as `"@goat/sdk": "github:goat-agent/goat-sdk#main"`.
+goat is an agent built with TypeScript on Bun. `apps/` holds what ships. `packages/` holds the building blocks that apps assemble.
 
 ## Setup
 
@@ -36,7 +36,7 @@ lefthook install
 - Apps only wire packages together. Logic belongs in `packages/`.
 - Every app sets `"exports": {}` so nothing can import it. Internal dependencies use `workspace:*`.
 - Every package has a `tsconfig.json` that extends `../../tsconfig.base.json` and `typecheck` and `test` scripts.
-- A change that other goat products need belongs in goat-sdk, not here.
+- `@goat/provider` is the model contract. Implementations such as `@goat/provider-anthropic` depend on it, never the reverse, and consumers depend only on it.
 - Dependencies are pinned to exact versions. `bunfig.toml` refuses releases younger than three days.
 
 ## Ask first

@@ -1,4 +1,4 @@
-import type { JsonSchema } from "@goat/sdk/provider";
+import type { JsonSchema } from "@goat/provider";
 import { z } from "zod";
 import type { Tool, ToolContext, ToolOutput } from "./tool.ts";
 

@@ -21,13 +21,57 @@
         "@goat/tui": "workspace:*",
       },
     },
+    "packages/credentials": {
+      "name": "@goat/credentials",
+      "dependencies": {
+        "@goat/json": "workspace:*",
+        "@goat/result": "workspace:*",
+        "zod": "4.6.5",
+      },
+    },
+    "packages/json": {
+      "name": "@goat/json",
+    },
+    "packages/provider": {
+      "name": "@goat/provider",
+      "dependencies": {
+        "@goat/json": "workspace:*",
+        "@goat/result": "workspace:*",
+      },
+    },
+    "packages/provider-anthropic": {
+      "name": "@goat/provider-anthropic",
+      "dependencies": {
+        "@goat/credentials": "workspace:*",
+        "@goat/provider": "workspace:*",
+        "@goat/result": "workspace:*",
+        "@goat/sse": "workspace:*",
+        "zod": "4.6.5",
+      },
+    },
+    "packages/provider-openai": {
+      "name": "@goat/provider-openai",
+      "dependencies": {
+        "@goat/credentials": "workspace:*",
+        "@goat/provider": "workspace:*",
+        "@goat/result": "workspace:*",
+        "@goat/sse": "workspace:*",
+        "zod": "4.6.5",
+      },
+    },
+    "packages/result": {
+      "name": "@goat/result",
+    },
+    "packages/sse": {
+      "name": "@goat/sse",
+    },
     "packages/terminal": {
       "name": "@goat/terminal",
     },
     "packages/tool": {
       "name": "@goat/tool",
       "dependencies": {
-        "@goat/sdk": "github:goat-agent/goat-sdk#main",
+        "@goat/provider": "workspace:*",
         "zod": "4.6.5",
       },
     },
@@ -41,7 +85,7 @@
     "packages/tui": {
       "name": "@goat/tui",
       "dependencies": {
-        "@goat/sdk": "github:goat-agent/goat-sdk#main",
+        "@goat/provider": "workspace:*",
         "@goat/terminal": "workspace:*",
       },
     },
@@ -55,7 +99,19 @@
 
     "@goat/cli": ["@goat/cli@workspace:apps/cli"],
 
-    "@goat/sdk": ["@goat/sdk@github:goat-agent/goat-sdk#fbab862", { "dependencies": { "zod": "4.6.7" } }, "goat-agent-goat-sdk-fbab862", "sha512-dTSnY7oWh8hQcSEKpeWNncxUJiuOhN36PxEsZwmPYZoLe468TUuXpQDkz8hax7Pvhw9jPMaqMuVIUWy4dNmWZg=="],
+    "@goat/credentials": ["@goat/credentials@workspace:packages/credentials"],
+
+    "@goat/json": ["@goat/json@workspace:packages/json"],
+
+    "@goat/provider": ["@goat/provider@workspace:packages/provider"],
+
+    "@goat/provider-anthropic": ["@goat/provider-anthropic@workspace:packages/provider-anthropic"],
+
+    "@goat/provider-openai": ["@goat/provider-openai@workspace:packages/provider-openai"],
+
+    "@goat/result": ["@goat/result@workspace:packages/result"],
+
+    "@goat/sse": ["@goat/sse@workspace:packages/sse"],
 
     "@goat/terminal": ["@goat/terminal@workspace:packages/terminal"],
 
@@ -344,7 +400,5 @@
     "yaml": ["yaml@2.9.1", "", { "bin": { "yaml": "bin.mjs" } }, "sha512-3NxN8+78OdzbT7C/WjGsyfPAtJaN3FNDsWxv7Y7mcDsT/oOmgW8BpyQQFFBnvZE3j9Y2Sdz1ULFLezL7Eb2yFw=="],
 
     "zod": ["zod@4.6.5", "", {}, "sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q=="],
-
-    "@goat/sdk/zod": ["zod@4.6.7", "", {}, "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg=="],
   }
 }

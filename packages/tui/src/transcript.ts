@@ -1,5 +1,5 @@
 import type { ScreenEvent } from "./event.ts";
-import type { AgentPart, MediaPart, Stop, TextPart, ToolResultPart } from "@goat/sdk/provider";
+import type { AgentPart, MediaPart, Stop, TextPart, ToolResultPart } from "@goat/provider";
 
 interface Base {
   readonly id: number;

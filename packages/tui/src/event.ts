@@ -5,7 +5,7 @@ import type {
   ToolMessage,
   ToolResultPart,
   UserMessage,
-} from "@goat/sdk/provider";
+} from "@goat/provider";
 
 export type ScreenEvent =
   | { readonly type: "user"; readonly message: UserMessage }
