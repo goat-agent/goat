@@ -15,34 +15,34 @@
       },
     },
     "apps/cli": {
-      "name": "@goat/code-cli",
+      "name": "@goat/cli",
       "dependencies": {
-        "@goat/code-terminal": "workspace:*",
-        "@goat/code-tui": "workspace:*",
+        "@goat/terminal": "workspace:*",
+        "@goat/tui": "workspace:*",
       },
     },
     "packages/terminal": {
-      "name": "@goat/code-terminal",
+      "name": "@goat/terminal",
     },
     "packages/tool": {
-      "name": "@goat/code-tool",
+      "name": "@goat/tool",
       "dependencies": {
         "@goat/sdk": "github:goat-agent/goat-sdk#main",
         "zod": "4.6.5",
       },
     },
     "packages/tool-shell": {
-      "name": "@goat/code-tool-shell",
+      "name": "@goat/tool-shell",
       "dependencies": {
-        "@goat/code-tool": "workspace:*",
+        "@goat/tool": "workspace:*",
         "zod": "4.6.5",
       },
     },
     "packages/tui": {
-      "name": "@goat/code-tui",
+      "name": "@goat/tui",
       "dependencies": {
-        "@goat/code-terminal": "workspace:*",
         "@goat/sdk": "github:goat-agent/goat-sdk#main",
+        "@goat/terminal": "workspace:*",
       },
     },
   },
@@ -53,17 +53,17 @@
 
     "@emnapi/wasi-threads": ["@emnapi/wasi-threads@1.2.2", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-c95qOXkHdydNKhscBTebqEC1CVAZpyqOfVfBzQ1qgzyl3gfeldUjIggDbIZgDKsHLgnsM+igH7TJ/eAasaVuMA=="],
 
-    "@goat/code-cli": ["@goat/code-cli@workspace:apps/cli"],
+    "@goat/cli": ["@goat/cli@workspace:apps/cli"],
 
-    "@goat/code-terminal": ["@goat/code-terminal@workspace:packages/terminal"],
+    "@goat/sdk": ["@goat/sdk@github:goat-agent/goat-sdk#fbab862", { "dependencies": { "zod": "4.6.7" } }, "goat-agent-goat-sdk-fbab862", "sha512-dTSnY7oWh8hQcSEKpeWNncxUJiuOhN36PxEsZwmPYZoLe468TUuXpQDkz8hax7Pvhw9jPMaqMuVIUWy4dNmWZg=="],
 
-    "@goat/code-tool": ["@goat/code-tool@workspace:packages/tool"],
+    "@goat/terminal": ["@goat/terminal@workspace:packages/terminal"],
 
-    "@goat/code-tool-shell": ["@goat/code-tool-shell@workspace:packages/tool-shell"],
+    "@goat/tool": ["@goat/tool@workspace:packages/tool"],
 
-    "@goat/code-tui": ["@goat/code-tui@workspace:packages/tui"],
+    "@goat/tool-shell": ["@goat/tool-shell@workspace:packages/tool-shell"],
 
-    "@goat/sdk": ["@goat/sdk@github:goat-agent/goat-sdk#a083a01", { "dependencies": { "zod": "4.6.5" } }, "goat-agent-goat-sdk-a083a01", "sha512-3id8A5QDI6axaedUnIOc+o0Dp7FfX1jOBdLASsoLgJYOb4LiRRTfNR3/9tTObD6ixmO3VkPWdgLLbUVpnRTUMQ=="],
+    "@goat/tui": ["@goat/tui@workspace:packages/tui"],
 
     "@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.2.4", "", { "dependencies": { "@tybys/wasm-util": "^0.10.3" }, "peerDependencies": { "@emnapi/core": "^1.7.1 || ^2.0.0-alpha.4", "@emnapi/runtime": "^1.7.1 || ^2.0.0-alpha.4" } }, "sha512-AJxoUD2/15ESHbvpcyjU274nsAPLuOtPHCk0vKJM5pj//Fg/B1FXNWjPnXTT9PymCYYiHo4zPj0ZomXBKhoy7g=="],
 
@@ -344,5 +344,7 @@
     "yaml": ["yaml@2.9.1", "", { "bin": { "yaml": "bin.mjs" } }, "sha512-3NxN8+78OdzbT7C/WjGsyfPAtJaN3FNDsWxv7Y7mcDsT/oOmgW8BpyQQFFBnvZE3j9Y2Sdz1ULFLezL7Eb2yFw=="],
 
     "zod": ["zod@4.6.5", "", {}, "sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q=="],
+
+    "@goat/sdk/zod": ["zod@4.6.7", "", {}, "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg=="],
   }
 }

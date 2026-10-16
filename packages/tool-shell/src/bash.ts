@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, openSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { defineTool, type Tool, type ToolOutput } from "@goat/code-tool";
+import { defineTool, type Tool, type ToolOutput } from "@goat/tool";
 import { z } from "zod";
 
 export interface BashOptions {

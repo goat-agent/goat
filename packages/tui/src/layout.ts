@@ -1,4 +1,4 @@
-import type { Frame, Size } from "@goat/code-terminal";
+import type { Frame, Size } from "@goat/terminal";
 import { type Composer, renderComposer } from "./composer.ts";
 import type { Line, Renderer } from "./render.ts";
 import type { Block } from "./transcript.ts";

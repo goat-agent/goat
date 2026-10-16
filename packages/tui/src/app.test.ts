@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ScreenEvent } from "./event.ts";
-import type { Frame, Key, Terminal, TerminalEvent } from "@goat/code-terminal";
+import type { Frame, Key, Terminal, TerminalEvent } from "@goat/terminal";
 import type { UserMessage } from "@goat/sdk/provider";
 import { type Engine, runTui } from "./app.ts";
 

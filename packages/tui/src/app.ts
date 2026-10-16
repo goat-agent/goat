@@ -1,5 +1,5 @@
 import type { ScreenEvent } from "./event.ts";
-import type { Key, Terminal, TerminalEvent } from "@goat/code-terminal";
+import type { Key, Terminal, TerminalEvent } from "@goat/terminal";
 import type { UserMessage } from "@goat/sdk/provider";
 import * as edit from "./composer.ts";
 import { type Command, commandFor } from "./keymap.ts";
