@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: goat
+      POSTGRES_PASSWORD: goat
+      POSTGRES_DB: goat
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U goat"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  postgres:
