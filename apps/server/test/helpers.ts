@@ -16,32 +16,25 @@ export function bearer(token: string) {
   return { headers: { authorization: `Bearer ${token}` } };
 }
 
-function postAuth(path: string, body: object, token?: string) {
-  const headers = new Headers({ "content-type": "application/json" });
-  if (token) headers.set("authorization", `Bearer ${token}`);
-  return app.request(`/api/auth${path}`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+export function codeFor(email: string): string {
+  const code = mailbox.get(email)?.match(/\d{6}/)?.[0];
+  if (!code) throw new Error(`no code was sent to ${email}`);
+  return code;
 }
 
 export async function signIn(email: string, name?: string): Promise<string> {
-  await postAuth("/email-otp/send-verification-otp", { email, type: "sign-in" });
-  const otp = mailbox.get(email)?.match(/\d{6}/)?.[0];
-  if (!otp) throw new Error(`no code was sent to ${email}`);
-
-  const response = await postAuth("/sign-in/email-otp", { email, otp });
-  const token = response.headers.get("set-auth-token");
-  if (!token) throw new Error(`sign-in failed with ${response.status}`);
+  await client.auth["email-code"].$post({ json: { email } });
+  const response = await client.auth["sign-in"].$post({ json: { email, code: codeFor(email) } });
+  if (!response.ok) throw new Error(`sign-in failed with ${response.status}`);
+  const { token } = await response.json();
 
   if (name) await setName(token, name);
   return token;
 }
 
 export async function setName(token: string, name: string): Promise<void> {
-  const response = await postAuth("/update-user", { name }, token);
-  if (!response.ok) throw new Error(`update-user failed with ${response.status}`);
+  const response = await client.me.$patch({ json: { name } }, bearer(token));
+  if (!response.ok) throw new Error(`update me failed with ${response.status}`);
 }
 
 export async function createAgent(token: string): Promise<string> {

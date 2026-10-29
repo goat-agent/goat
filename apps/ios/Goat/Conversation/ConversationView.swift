@@ -1,0 +1,115 @@
+import GoatAPI
+import SwiftUI
+
+struct ConversationView: View {
+  @State private var conversation: ConversationModel
+  @State private var position = ScrollPosition(edge: .bottom)
+  @State private var isAtBottom = true
+
+  init(agent: Components.Schemas.Agent, client: Client) {
+    _conversation = State(initialValue: ConversationModel(agent: agent, client: client))
+  }
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        LazyVStack(spacing: 6) {
+          ForEach(Array(conversation.messages.enumerated()), id: \.element.id) { index, message in
+            if let time = gapBefore(index) {
+              Text(time, format: .dateTime.month().day().hour().minute())
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 12)
+            }
+            MessageBubble(text: message.text, isMine: message.role.value1 == .user)
+          }
+          ForEach(conversation.outgoing) { message in
+            OutgoingBubble(message: message) {
+              Task { await conversation.retry(message.id) }
+            } discard: {
+              conversation.discard(message.id)
+            }
+          }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+      }
+      .scrollPosition($position)
+      .defaultScrollAnchor(.bottom)
+      .scrollDismissesKeyboard(.interactively)
+      .onScrollGeometryChange(for: Bool.self) { geometry in
+        geometry.visibleRect.maxY >= geometry.contentSize.height - 40
+      } action: { _, atBottom in
+        isAtBottom = atBottom
+      }
+      .onChange(of: conversation.messages.count) {
+        if isAtBottom { scrollToLatest() }
+        if conversation.messages.last?.role.value1 == .assistant {
+          AccessibilityNotification.Announcement("새 답이 왔어요").post()
+        }
+      }
+      .onChange(of: conversation.outgoing.count) { scrollToLatest() }
+      .overlay(alignment: .bottomTrailing) {
+        if !isAtBottom {
+          Button("최신으로", systemImage: "arrow.down", action: scrollToLatest)
+            .labelStyle(.iconOnly)
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .padding()
+            .transition(.scale.combined(with: .opacity))
+        }
+      }
+      .animation(.default, value: isAtBottom)
+      .safeAreaBar(edge: .bottom) { Composer(draft: $conversation.draft, send: send) }
+      .navigationTitle(conversation.agent.name)
+      .navigationSubtitle(conversation.isRunning ? "작업 중…" : "")
+      .navigationBarTitleDisplayMode(.inline)
+    }
+    .task { await conversation.listen() }
+  }
+
+  private func send() {
+    Task { await conversation.send() }
+  }
+
+  private func scrollToLatest() {
+    withAnimation { position.scrollTo(edge: .bottom) }
+  }
+
+  /// The time to show above a message that starts a new stretch of the conversation.
+  private func gapBefore(_ index: Int) -> Date? {
+    let message = conversation.messages[index]
+    guard index > 0 else { return message.createdAt }
+    let previous = conversation.messages[index - 1]
+    return message.createdAt.timeIntervalSince(previous.createdAt) > 60 * 60
+      ? message.createdAt : nil
+  }
+}
+
+private struct Composer: View {
+  @Binding var draft: String
+  let send: () -> Void
+
+  private var canSend: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+  var body: some View {
+    GlassEffectContainer {
+      HStack(alignment: .bottom, spacing: 8) {
+        TextField("메시지", text: $draft, axis: .vertical)
+          .lineLimit(1...5)
+          .padding(.horizontal, 16)
+          .padding(.vertical, 11)
+          .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
+        Button("보내기", systemImage: "arrow.up", action: send)
+          .labelStyle(.iconOnly)
+          .font(.body.weight(.semibold))
+          .buttonStyle(.glassProminent)
+          .buttonBorderShape(.circle)
+          .controlSize(.large)
+          .disabled(!canSend)
+      }
+    }
+    .padding(.horizontal)
+    .padding(.bottom, 8)
+  }
+}

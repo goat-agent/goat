@@ -1,20 +1,33 @@
-import { Hono } from "hono";
+import { OpenAPIHono } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import { client } from "./db";
 import { env } from "./env";
 import { startAgents, stopAgents } from "./lib/agent";
 import { auth } from "./lib/auth";
+import { document, invalidRequest } from "./lib/openapi";
 import agents from "./routes/agents";
+import authRoutes from "./routes/auth";
+import me from "./routes/me";
 
-export const app = new Hono()
-  .on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw))
-  .route("/agents", agents)
-  .notFound((c) => c.json({ error: "not found" }, 404))
-  .onError((error, c) => {
-    if (error instanceof HTTPException) return c.json({ error: error.message }, error.status);
-    console.error(error);
-    return c.json({ error: "internal error" }, 500);
-  });
+export const app = new OpenAPIHono({ defaultHook: invalidRequest })
+  .route("/auth", authRoutes)
+  .route("/me", me)
+  .route("/agents", agents);
+
+app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
+app.doc31("/openapi.json", document);
+
+app.openAPIRegistry.registerComponent("securitySchemes", "bearer", {
+  type: "http",
+  scheme: "bearer",
+});
+
+app.notFound((c) => c.json({ error: "not found" }, 404));
+app.onError((error, c) => {
+  if (error instanceof HTTPException) return c.json({ error: error.message }, error.status);
+  console.error(error);
+  return c.json({ error: "internal error" }, 500);
+});
 
 if (import.meta.main) {
   const server = Bun.serve({ port: env.PORT, fetch: app.fetch, idleTimeout: 60 });
