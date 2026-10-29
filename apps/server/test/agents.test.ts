@@ -170,8 +170,8 @@ describe("conversation", () => {
 describe("events", () => {
   test("streams messages after the last event id", async () => {
     const response = await client.agents[":id"].events.$get(
-      { param: { id: agentId } },
-      { headers: { authorization: `Bearer ${token}`, "Last-Event-ID": "0" } },
+      { param: { id: agentId }, header: { "last-event-id": "0" } },
+      bearer(token),
     );
     if (!response.body) throw new Error("no event stream");
     const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -189,7 +189,7 @@ describe("events", () => {
     const reply = Promise.withResolvers<string>();
     llm.reply = () => reply.promise;
     await send(token, agentId, "들려?");
-    await readUntil("data: running");
+    await readUntil('"status":"running"');
     reply.resolve("스트림 답");
     await readUntil("스트림 답");
     await reader.cancel();
