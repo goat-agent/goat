@@ -6,6 +6,8 @@
     "**/src/db/schema/auth.ts",
     "bun.lock",
     "apps/ios/GoatAPI/Sources/GoatAPI/openapi.json",
-    "apps/ios/GoatAPI/Package.resolved"
+    "apps/ios/GoatAPI/Package.resolved",
+    "**/*.xcassets/**",
+    "**/*.xcodeproj/**"
   ]
 }
