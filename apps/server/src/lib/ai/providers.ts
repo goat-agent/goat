@@ -13,6 +13,7 @@ export const model = registry.languageModel("anthropic:claude-opus-5-5");
 export const providerOptions = {
   anthropic: {
     effort: "medium",
+    thinking: { type: "adaptive", blockBinding: { prefixMismatchBehavior: "drop_block" } },
     fallbacks: "default",
     cacheControl: { type: "ephemeral" },
   } satisfies AnthropicLanguageModelOptions,
