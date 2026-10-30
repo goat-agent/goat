@@ -156,7 +156,7 @@ final class AppModel {
   }
 }
 
-struct UnexpectedStatus: Error {
+private struct UnexpectedStatus: Error {
   let code: Int
 }
 
