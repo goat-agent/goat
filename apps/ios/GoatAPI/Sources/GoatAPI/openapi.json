@@ -108,6 +108,13 @@
           "text": {
             "type": "string"
           },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/File"
+            },
+            "description": "Files the user sent with the message, in order"
+          },
           "connect": {
             "type": "array",
             "items": {
@@ -125,6 +132,27 @@
           "role",
           "text",
           "createdAt"
+        ]
+      },
+      "File": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "mediaType": {
+            "type": "string",
+            "description": "Pick how to show the file from this; any type may appear"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "mediaType"
         ]
       },
       "ConnectRequest": {
@@ -679,7 +707,7 @@
           }
         ],
         "requestBody": {
-          "description": "The user's message",
+          "description": "The user's message: text, files, or both",
           "required": true,
           "content": {
             "application/json": {
@@ -688,13 +716,20 @@
                 "properties": {
                   "text": {
                     "type": "string",
-                    "minLength": 1,
-                    "maxLength": 20000
+                    "maxLength": 20000,
+                    "default": ""
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "maxItems": 10,
+                    "default": [],
+                    "description": "Ids from uploadFile, in the order to show them"
                   }
-                },
-                "required": [
-                  "text"
-                ]
+                }
               }
             }
           }
@@ -704,7 +739,7 @@
             "description": "Queued; the reply arrives on the event stream"
           },
           "400": {
-            "description": "Invalid request",
+            "description": "Invalid request, or a file that is not an upload to this agent",
             "content": {
               "application/json": {
                 "schema": {
@@ -725,6 +760,175 @@
           },
           "404": {
             "description": "No such agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents/{id}/files": {
+      "post": {
+        "operationId": "uploadFile",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "The file and its name; the server tells its type from the bytes and the name",
+          "content": {
+            "multipart/form-data": {
+              "encoding": {
+                "file": {
+                  "contentType": "application/octet-stream"
+                }
+              },
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                },
+                "required": [
+                  "file"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Stored; send its id with a message within a day or it is deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "file": {
+                      "$ref": "#/components/schemas/File"
+                    }
+                  },
+                  "required": [
+                    "file"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, an unsupported type, or a file too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents/{id}/files/{fileId}": {
+      "get": {
+        "operationId": "downloadFile",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "fileId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file; its bytes never change, so cache it by id",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such agent or file",
             "content": {
               "application/json": {
                 "schema": {

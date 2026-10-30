@@ -5,6 +5,7 @@ import { client } from "./db";
 import { env } from "./env";
 import { startAgents, stopAgents } from "./lib/agent";
 import { auth } from "./lib/auth";
+import { startSweeping, stopSweeping } from "./lib/files";
 import { logger } from "./lib/logger";
 import { document, invalidRequest } from "./lib/openapi";
 import { requestLogger } from "./middlewares/request-logger";
@@ -42,10 +43,12 @@ app.onError((error, c) => {
 if (import.meta.main) {
   const server = Bun.serve({ port: env.PORT, fetch: app.fetch, idleTimeout: 60 });
   startAgents();
+  startSweeping();
   logger.info({ port: server.port }, "listening");
 
   const shutdown = async () => {
     await server.stop(true);
+    stopSweeping();
     await stopAgents();
     await client.end();
     logger.flush();

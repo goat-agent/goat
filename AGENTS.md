@@ -18,7 +18,7 @@ user reaches from the iPhone app (later macOS and web). The server runs the agen
 
 ```sh
 bun install
-docker compose up -d                 # local Postgres
+docker compose up -d                 # local Postgres and file storage (RustFS)
 bun run typecheck                    # tsc for every workspace
 bun run lint                         # oxlint, type-aware; warnings fail
 bun run format                       # oxfmt; format:check only checks

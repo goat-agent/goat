@@ -1,12 +1,14 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import type { AssistantModelMessage, ModelMessage } from "ai";
 import { and, asc, desc, eq, gt, lt } from "drizzle-orm";
+import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
 import { db } from "../db";
 import { agents, messages } from "../db/schema/agents";
 import { type Agent as AgentRow, createAgent, enqueue } from "../lib/agent";
 import { subscribe } from "../lib/events";
+import * as files from "../lib/files";
 import { matchIntegration } from "../lib/integrations/connections";
 import { integrations } from "../lib/integrations/index";
 import { body, error, invalidRequest, json, openEnum } from "../lib/openapi";
@@ -22,11 +24,20 @@ const ConnectRequest = z
   .object({ integrationId: z.string(), name: z.string() })
   .openapi("ConnectRequest");
 
+const File = z
+  .object({
+    id: z.uuid(),
+    name: z.string(),
+    mediaType: z.string().describe("Pick how to show the file from this; any type may appear"),
+  })
+  .openapi("File");
+
 const Message = z
   .object({
     id: z.int(),
     role: openEnum(["user", "assistant"]),
     text: z.string(),
+    files: z.array(File).optional().describe("Files the user sent with the message, in order"),
     connect: z
       .array(ConnectRequest)
       .optional()
@@ -47,6 +58,11 @@ const AgentEvent = z
 
 const AgentParams = z.object({ id: z.uuid() });
 
+const FileParams = z.object({ id: z.uuid(), fileId: z.uuid() });
+
+// Multipart framing adds a little on top of the file itself.
+const UPLOAD_BODY_LIMIT = files.maxUploadBytes + 64 * 1024;
+
 type MessageRow = { id: number; message: ModelMessage; hidden: boolean; createdAt: Date };
 
 function publicAgent(agent: AgentRow): z.infer<typeof Agent> {
@@ -64,13 +80,28 @@ function publicMessage({
   hidden,
   createdAt,
 }: MessageRow): z.infer<typeof Message> | undefined {
-  if (hidden || (message.role !== "user" && message.role !== "assistant")) return undefined;
-  const texts =
+  if (hidden) return undefined;
+  if (message.role === "user") {
+    const { content } = message;
+    // The server puts its own parts first, so the user's text, if any, is the last part.
+    const last = typeof content === "string" ? content : content.at(-1);
+    const text = typeof last === "string" ? last : last?.type === "text" ? last.text : "";
+    const attached = files.attachments(content);
+    if (!text && attached.length === 0) return undefined;
+    return {
+      id,
+      role: message.role,
+      text,
+      ...(attached.length > 0 ? { files: attached } : {}),
+      createdAt: createdAt.toISOString(),
+    };
+  }
+  if (message.role !== "assistant") return undefined;
+  const text =
     typeof message.content === "string"
-      ? [message.content]
-      : message.content.flatMap((part) => (part.type === "text" ? [part.text] : []));
-  const text = (message.role === "user" ? texts.at(-1) : texts.join("")) ?? "";
-  const connect = message.role === "assistant" ? connectRequests(message) : [];
+      ? message.content
+      : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+  const connect = connectRequests(message);
   if (!text && connect.length === 0) return undefined;
   return {
     id,
@@ -174,13 +205,72 @@ const sendMessage = createRoute({
   security: [{ bearer: [] }],
   request: {
     params: AgentParams,
-    body: body(z.object({ text: z.string().trim().min(1).max(20_000) }), "The user's message"),
+    body: body(
+      z
+        .object({
+          text: z.string().trim().max(20_000).default(""),
+          files: z
+            .array(z.uuid())
+            .max(10)
+            .default([])
+            .describe("Ids from uploadFile, in the order to show them"),
+        })
+        .refine(({ text, files: ids }) => text.length > 0 || ids.length > 0),
+      "The user's message: text, files, or both",
+    ),
   },
   responses: {
     202: { description: "Queued; the reply arrives on the event stream" },
-    400: error("Invalid request"),
+    400: error("Invalid request, or a file that is not an upload to this agent"),
     401: error("Not signed in"),
     404: error("No such agent"),
+  },
+});
+
+const uploadFile = createRoute({
+  operationId: "uploadFile",
+  method: "post",
+  path: "/{id}/files",
+  security: [{ bearer: [] }],
+  middleware: [bodyLimit({ maxSize: UPLOAD_BODY_LIMIT })],
+  request: {
+    params: AgentParams,
+    body: {
+      content: {
+        "multipart/form-data": {
+          schema: z.object({ file: z.file().openapi({ type: "string", format: "binary" }) }),
+          encoding: { file: { contentType: "application/octet-stream" } },
+        },
+      },
+      required: true,
+      description: "The file and its name; the server tells its type from the bytes and the name",
+    },
+  },
+  responses: {
+    201: json(
+      z.object({ file: File }),
+      "Stored; send its id with a message within a day or it is deleted",
+    ),
+    400: error("Invalid request, an unsupported type, or a file too large"),
+    401: error("Not signed in"),
+    404: error("No such agent"),
+    413: error("Body too large"),
+  },
+});
+
+const downloadFile = createRoute({
+  operationId: "downloadFile",
+  method: "get",
+  path: "/{id}/files/{fileId}",
+  security: [{ bearer: [] }],
+  request: { params: FileParams },
+  responses: {
+    200: {
+      content: { "*/*": { schema: z.string().openapi({ format: "binary" }) } },
+      description: "The file; its bytes never change, so cache it by id",
+    },
+    401: error("Not signed in"),
+    404: error("No such agent or file"),
   },
 });
 
@@ -238,8 +328,38 @@ export default app
   .openapi(sendMessage, async (c) => {
     const { id } = c.req.valid("param");
     await ownAgent(c.var.user.id, id);
-    await enqueue(id, c.req.valid("json").text, c.var.user.timeZone ?? undefined);
+    const { text, files: fileIds } = c.req.valid("json");
+    try {
+      await enqueue(id, { text, fileIds }, c.var.user.timeZone ?? undefined);
+    } catch (cause) {
+      if (cause instanceof files.FileNotFound) return c.json({ error: cause.message }, 400);
+      throw cause;
+    }
     return c.body(null, 202);
+  })
+  .openapi(uploadFile, async (c) => {
+    const { id } = c.req.valid("param");
+    await ownAgent(c.var.user.id, id);
+    let stored: files.StoredFile;
+    try {
+      stored = await files.upload(id, c.req.valid("form").file);
+    } catch (cause) {
+      if (cause instanceof files.FileRejected) return c.json({ error: cause.message }, 400);
+      throw cause;
+    }
+    const { name, mediaType } = stored;
+    return c.json({ file: { id: stored.id, name, mediaType } }, 201);
+  })
+  .openapi(downloadFile, async (c) => {
+    const { id, fileId } = c.req.valid("param");
+    await ownAgent(c.var.user.id, id);
+    const file = await files.find(id, fileId);
+    if (!file) return c.json({ error: "file not found" }, 404);
+    return c.body(files.open(file.id).stream(), 200, {
+      "content-type": file.mediaType,
+      "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+      "cache-control": "private, max-age=31536000, immutable",
+    });
   })
   .openapi(streamEvents, async (c) => {
     const { id } = c.req.valid("param");

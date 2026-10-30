@@ -15,5 +15,24 @@ services:
       timeout: 5s
       retries: 20
 
+  storage:
+    image: rustfs/rustfs:1.0.4
+    ports:
+      - "${S3_PORT:-9000}:9000"
+    volumes:
+      - storage:/data
+
+  # RustFS cannot create a bucket from its environment, so this creates "goat" once storage is up.
+  storage-bucket:
+    image: curlimages/curl:8.17.0
+    depends_on: [storage]
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        sign='--aws-sigv4 aws:amz:us-east-1:s3 --user rustfsadmin:rustfsadmin';
+        until curl -sf -o /dev/null $$sign -I http://storage:9000/goat; do
+        curl -s -o /dev/null $$sign -X PUT http://storage:9000/goat; sleep 1; done
+
 volumes:
   postgres:
+  storage:

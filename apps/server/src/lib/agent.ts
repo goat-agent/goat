@@ -5,7 +5,6 @@ import {
   type ModelMessage,
   NoSuchToolError,
   RetryError,
-  type TextPart,
   type ToolCallRepairFunction,
   type UserContent,
 } from "ai";
@@ -17,6 +16,7 @@ import { model, providerOptions } from "./ai/providers";
 import { tools } from "./ai/tools";
 import { dateIn } from "./dates";
 import { notify } from "./events";
+import * as files from "./files";
 import { type Catalog, openCatalog } from "./integrations/catalog";
 import { listConnections, NOTE_PREFIX, noteFor } from "./integrations/connections";
 import { logger } from "./logger";
@@ -65,22 +65,30 @@ export async function createAgent(
   });
 }
 
-export async function enqueue(agentId: string, text: string, timeZone = "UTC"): Promise<void> {
-  await queue(agentId, { text, timeZone });
+/** Throws `files.FileNotFound` unless every file id is an upload to this agent. */
+export async function enqueue(
+  agentId: string,
+  input: { text: string; fileIds: readonly string[] },
+  timeZone = "UTC",
+): Promise<void> {
+  await queue(agentId, { ...input, timeZone });
 }
 
 export async function resumeAfterConnect(agentId: string, timeZone = "UTC"): Promise<void> {
   await queue(agentId, { timeZone });
 }
 
-async function queue(agentId: string, input: { text?: string; timeZone: string }): Promise<void> {
+async function queue(
+  agentId: string,
+  input: { text?: string; fileIds?: readonly string[]; timeZone: string },
+): Promise<void> {
   const [agent] = await db
     .select({ userId: agents.userId, connectionsNote: agents.connectionsNote })
     .from(agents)
     .where(eq(agents.id, agentId));
   if (!agent) return;
 
-  const parts: TextPart[] = [];
+  const parts: Exclude<UserContent, string> = [];
   const today = dateIn(input.timeZone, new Date());
   const last = await lastUserMessageAt(agentId);
   if (!last || dateIn(input.timeZone, last) !== today) {
@@ -93,10 +101,12 @@ async function queue(agentId: string, input: { text?: string; timeZone: string }
   const hidden = input.text === undefined;
   if (hidden && !note) return;
   if (note && (hidden || note !== agent.connectionsNote)) parts.push({ type: "text", text: note });
-  if (input.text !== undefined) parts.push({ type: "text", text: input.text });
 
-  const content: UserContent = parts.length === 1 && input.text !== undefined ? input.text : parts;
   await db.transaction(async (tx) => {
+    const attached = await files.attach(tx, agentId, input.fileIds ?? []);
+    parts.push(...attached.map(files.reference));
+    if (input.text) parts.push({ type: "text", text: input.text });
+    const content: UserContent = parts.length === 1 && input.text ? input.text : parts;
     await tx.insert(queuedMessages).values({ agentId, hidden, message: { role: "user", content } });
     if (note !== undefined && note !== agent.connectionsNote) {
       await tx.update(agents).set({ connectionsNote: note }).where(eq(agents.id, agentId));
@@ -206,6 +216,7 @@ async function execute(agentId: string, owner: string): Promise<void> {
     signal.throwIfAborted();
     const { instructions, timeZone, userId } = await loadSetup(agentId);
     catalog = openCatalog(userId);
+    const fileCache = new Map<string, Uint8Array>();
     for (let step = 0; step < MAX_STEPS; step++) {
       signal.throwIfAborted();
       if (await lease.write((tx) => drainQueue(tx, agentId))) await catalog.reload();
@@ -221,9 +232,14 @@ async function execute(agentId: string, owner: string): Promise<void> {
       const result = await generateText({
         model,
         instructions,
-        messages: history,
+        messages: await files.forModel(history, fileCache),
         tools,
-        toolsContext: { time: { timeZone }, tool_search: catalog, tool_call: catalog },
+        toolsContext: {
+          time: { timeZone },
+          read_file: { agentId },
+          tool_search: catalog,
+          tool_call: catalog,
+        },
         repairToolCall: routeThroughToolCall,
         providerOptions,
         abortSignal: signal,
