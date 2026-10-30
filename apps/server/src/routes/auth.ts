@@ -2,6 +2,7 @@ import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { isAPIError } from "better-auth/api";
 import { auth } from "../lib/auth";
 import { body, error, invalidRequest, json } from "../lib/openapi";
+import { session, type SessionEnv } from "../middlewares/session";
 import { publicUser, User } from "./me";
 
 const Session = z.object({ token: z.string(), user: User }).openapi("Session");
@@ -31,7 +32,19 @@ const signIn = createRoute({
   },
 });
 
-export default new OpenAPIHono({ defaultHook: invalidRequest })
+const signOut = createRoute({
+  operationId: "signOut",
+  method: "post",
+  path: "/sign-out",
+  security: [{ bearer: [] }],
+  middleware: [session] as const,
+  responses: {
+    204: { description: "Signed out; the token no longer works" },
+    401: error("Not signed in"),
+  },
+});
+
+export default new OpenAPIHono<SessionEnv>({ defaultHook: invalidRequest })
   .openapi(sendCode, async (c) => {
     const { email } = c.req.valid("json");
     await auth.api.sendVerificationOTP({ body: { email, type: "sign-in" } });
@@ -46,4 +59,8 @@ export default new OpenAPIHono({ defaultHook: invalidRequest })
       if (isAPIError(cause)) return c.json({ error: "wrong or expired code" }, 401);
       throw cause;
     }
+  })
+  .openapi(signOut, async (c) => {
+    await auth.api.signOut({ headers: c.req.raw.headers });
+    return c.body(null, 204);
   });

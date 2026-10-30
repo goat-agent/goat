@@ -38,6 +38,12 @@ describe("auth", () => {
     expect(await response.json()).toMatchObject({ timeZone: "Asia/Seoul" });
   });
 
+  test("signing out ends the session so the token stops working", async () => {
+    const token = await signIn("minho@example.com");
+    expect(status(await client.auth["sign-out"].$post(undefined, bearer(token)))).toBe(204);
+    expect(status(await client.me.$get(undefined, bearer(token)))).toBe(401);
+  });
+
   test("keeps the agent funnel closed until the user has a name", async () => {
     const token = await signIn("minho@example.com");
     expect(status(await client.agents.$post({ json: {} }, bearer(token)))).toBe(409);
