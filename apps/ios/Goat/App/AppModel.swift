@@ -22,7 +22,6 @@ final class AppModel {
   private(set) var agents: [Components.Schemas.Agent] = []
   var agentPath: [Components.Schemas.Agent] = []
   var isCreatingAgent = false
-  /// Whether the setup flow starts by asking the user's name.
   private(set) var needsName = false
   private(set) var isWorking = false
   private(set) var errorMessage: String?

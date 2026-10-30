@@ -4,7 +4,6 @@ import Observation
 
 @Observable
 final class ConversationModel {
-  /// A message the user wrote that is not in the conversation yet.
   struct Outgoing: Identifiable {
     enum State {
       case sending
@@ -31,7 +30,6 @@ final class ConversationModel {
     self.client = client
   }
 
-  /// Keeps the event stream open until the task is cancelled, reconnecting from the last message.
   func listen() async {
     var delay = Duration.seconds(1)
     while !Task.isCancelled {
