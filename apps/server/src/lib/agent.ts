@@ -14,6 +14,8 @@ import { agents, messages, queuedMessages } from "../db/schema/agents";
 import { users } from "../db/schema/auth";
 import { model, providerOptions } from "./ai/providers";
 import { tools } from "./ai/tools";
+import { computerContext } from "./ai/tools/computer";
+import { compactScreens, type Computers, openComputers } from "./computers";
 import { dateIn } from "./dates";
 import { notify } from "./events";
 import * as files from "./files";
@@ -28,7 +30,7 @@ const SCAN_INTERVAL_MS = 30_000;
 const SCAN_BATCH = 20;
 const STEP_TIMEOUT_MS = 10 * 60_000;
 const TOOL_TIMEOUT_MS = 2 * 60_000;
-const MAX_STEPS = 32;
+const MAX_STEPS = 100;
 
 export type Agent = typeof agents.$inferSelect;
 
@@ -206,6 +208,7 @@ async function execute(agentId: string, owner: string): Promise<void> {
     const { instructions, timeZone, userId } = await loadSetup(agentId);
     catalog = openCatalog(userId);
     const fileCache = new Map<string, Uint8Array>();
+    let computers: Computers | undefined;
     for (let step = 0; step < MAX_STEPS; step++) {
       signal.throwIfAborted();
       if (await lease.write((tx) => drainQueue(tx, agentId))) await catalog.reload();
@@ -217,6 +220,7 @@ async function execute(agentId: string, owner: string): Promise<void> {
         continue;
       }
 
+      computers ??= openComputers(userId, history);
       const startedAt = performance.now();
       const result = await generateText({
         model,
@@ -228,6 +232,7 @@ async function execute(agentId: string, owner: string): Promise<void> {
           read_file: { agentId },
           tool_search: catalog,
           tool_call: catalog,
+          ...computerContext(computers),
         },
         repairToolCall: routeThroughToolCall,
         providerOptions,
@@ -344,6 +349,7 @@ function holdLease(agentId: string, owner: string, lost: AbortController) {
         .limit(1);
       if (pending) return false;
 
+      await compactScreens(tx, agentId);
       await tx.update(agents).set({ runOwner: null, runLeaseUntil: null }).where(mine);
       await notify(tx, agentId);
       return true;

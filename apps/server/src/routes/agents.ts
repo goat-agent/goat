@@ -8,6 +8,7 @@ import { db } from "../db";
 import { agents, messages } from "../db/schema/agents";
 import { type Agent as AgentRow, createAgent, enqueue } from "../lib/agent";
 import { type TranscriptionHints, transcribe } from "../lib/ai/providers";
+import { stepOf } from "../lib/ai/tools/computer";
 import { startCall } from "../lib/calls/index";
 import { recentLines, textOf } from "../lib/conversation";
 import { subscribe } from "../lib/events";
@@ -47,6 +48,10 @@ const Message = z
       .array(ConnectRequest)
       .optional()
       .describe("Services the agent asked the user to connect; show a button for each"),
+    steps: z
+      .array(z.string())
+      .optional()
+      .describe("What the agent did on the user's computers, one short line each, in order"),
     createdAt: z.iso.datetime(),
   })
   .openapi("Message");
@@ -111,12 +116,14 @@ function publicMessage({
   }
   if (message.role !== "assistant") return undefined;
   const connect = connectRequests(message);
-  if (!text && connect.length === 0) return undefined;
+  const steps = stepsOf(message);
+  if (!text && connect.length === 0 && steps.length === 0) return undefined;
   return {
     id,
     role: message.role,
     text,
     ...(connect.length > 0 ? { connect } : {}),
+    ...(steps.length > 0 ? { steps } : {}),
     createdAt: createdAt.toISOString(),
   };
 }
@@ -129,6 +136,14 @@ function connectRequests(message: AssistantModelMessage): z.infer<typeof Connect
     const integrationId = input.success ? matchIntegration(input.data.integration) : undefined;
     const integration = integrationId ? integrations[integrationId] : undefined;
     return integrationId && integration ? [{ integrationId, name: integration.name }] : [];
+  });
+}
+
+function stepsOf(message: AssistantModelMessage): string[] {
+  if (typeof message.content === "string") return [];
+  return message.content.flatMap((part) => {
+    const step = part.type === "tool-call" ? stepOf(part.toolName, part.input) : undefined;
+    return step ? [step] : [];
   });
 }
 

@@ -1,11 +1,22 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { isAPIError } from "better-auth/api";
 import { auth } from "../lib/auth";
-import { body, error, invalidRequest, json } from "../lib/openapi";
+import { attachSession, registerDevice } from "../lib/devices";
+import { body, error, invalidRequest, json, openEnum } from "../lib/openapi";
 import { session, type SessionEnv } from "../middlewares/session";
 import { publicUser, User } from "./me";
 
 const Session = z.object({ token: z.string(), user: User }).openapi("Session");
+
+const SigningInDevice = z
+  .object({
+    installationId: z
+      .uuid()
+      .describe("Made once per app install and kept on the device only, never backed up"),
+    name: z.string().trim().min(1).max(100),
+    platform: openEnum(["ios", "macos"]),
+  })
+  .openapi("SigningInDevice");
 
 const sendCode = createRoute({
   operationId: "sendCode",
@@ -21,8 +32,12 @@ const signIn = createRoute({
   path: "/sign-in",
   request: {
     body: body(
-      z.object({ email: z.email(), code: z.string().regex(/^\d{6}$/) }),
-      "The emailed code",
+      z.object({
+        email: z.email(),
+        code: z.string().regex(/^\d{6}$/),
+        device: SigningInDevice.optional(),
+      }),
+      "The emailed code, and the device signing in",
     ),
   },
   responses: {
@@ -54,14 +69,17 @@ export default new OpenAPIHono<SessionEnv>({ defaultHook: invalidRequest })
     return c.body(null, 204);
   })
   .openapi(signIn, async (c) => {
-    const { email, code } = c.req.valid("json");
+    const { email, code, device } = c.req.valid("json");
+    let signedIn: Awaited<ReturnType<typeof auth.api.signInEmailOTP>>;
     try {
-      const { token, user } = await auth.api.signInEmailOTP({ body: { email, otp: code } });
-      return c.json({ token, user: publicUser(user) }, 200);
+      signedIn = await auth.api.signInEmailOTP({ body: { email, otp: code } });
     } catch (cause) {
       if (isAPIError(cause)) return c.json({ error: "wrong or expired code" }, 401);
       throw cause;
     }
+    const { token, user } = signedIn;
+    if (device) await attachSession(token, await registerDevice(user.id, device));
+    return c.json({ token, user: publicUser(user) }, 200);
   })
   .openapi(signOut, async (c) => {
     await auth.api.signOut({ headers: c.req.raw.headers });
