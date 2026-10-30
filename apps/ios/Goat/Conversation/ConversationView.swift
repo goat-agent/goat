@@ -9,14 +9,17 @@ struct ConversationView: View {
   @State private var isAtBottom = true
   @Environment(\.webAuthenticationSession) private var webAuthenticationSession
 
-  init(agent: Components.Schemas.Agent, client: Client) {
-    _conversation = State(initialValue: ConversationModel(agent: agent, client: client))
+  init(agent: Components.Schemas.Agent, userName: String, client: Client) {
+    _conversation = State(
+      initialValue: ConversationModel(agent: agent, userName: userName, client: client)
+    )
     _integrations = State(initialValue: IntegrationsModel(client: client))
   }
 
   var body: some View {
     ScrollView {
       LazyVStack(spacing: 6) {
+        MessageBubble(text: conversation.greeting, isMine: false)
         ForEach(Array(conversation.messages.enumerated()), id: \.element.id) { index, message in
           if let time = gapBefore(index) {
             Text(time, format: .dateTime.month().day().hour().minute())

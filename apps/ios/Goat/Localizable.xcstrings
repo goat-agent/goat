@@ -224,6 +224,16 @@
         }
       }
     },
+    "Hi, %@! I’m %@. How can I help?" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "안녕하세요, %1$@님! %2$@입니다. 무엇을 도와드릴까요?"
+          }
+        }
+      }
+    },
     "Instructions" : {
       "localizations" : {
         "ko" : {

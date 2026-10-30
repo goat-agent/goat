@@ -69,8 +69,7 @@ These invariants keep a conversation consistent across server instances and cras
 - Every write a run makes goes through `lease.write`, which re-checks ownership in the same
   transaction. A runner that lost its lease must not write.
 - Only the runner writes to `messages`. User input goes to `queued_messages` and moves into
-  `messages` at a step boundary. The greeting written when an agent is created is the one
-  exception.
+  `messages` at a step boundary.
 - Release the lease only in `finish`: lock the row first, then check the queue.
 - Never hold a database transaction open across an LLM or tool call.
 - Stored messages are sent back to the model exactly as saved. Do not edit, reorder, or

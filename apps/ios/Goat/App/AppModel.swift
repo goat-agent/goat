@@ -22,6 +22,7 @@ final class AppModel {
   private(set) var agents: [Components.Schemas.Agent] = []
   var agentPath: [Components.Schemas.Agent] = []
   var isCreatingAgent = false
+  private(set) var userName = ""
   private(set) var needsName = false
   private(set) var isWorking = false
   private(set) var errorMessage: String?
@@ -74,6 +75,7 @@ final class AppModel {
     await perform {
       switch try await self.client.updateMe(body: .json(.init(name: name))) {
       case .ok:
+        self.userName = name
         self.setupPath = [.agent]
       case .badRequest:
         self.errorMessage = String(localized: "Check your name.")
@@ -123,6 +125,7 @@ final class AppModel {
 
   private func clearSession() {
     tokens.clear()
+    userName = ""
     UserDefaults.standard.removeObject(forKey: Self.lastAgentKey)
     signInPath = []
     setupPath = []
@@ -138,6 +141,7 @@ final class AppModel {
     switch try await client.getMe() {
     case .ok(let response):
       let me = try response.body.json
+      userName = me.name
       if me.timeZone == nil { await fillTimeZone() }
       if me.name.isEmpty {
         needsName = true

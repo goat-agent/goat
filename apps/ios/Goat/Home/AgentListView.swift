@@ -18,7 +18,7 @@ struct AgentListView: View {
         }
       }
       .navigationDestination(for: Components.Schemas.Agent.self) { agent in
-        ConversationView(agent: agent, client: model.client)
+        ConversationView(agent: agent, userName: model.userName, client: model.client)
           .onAppear { model.open(agent) }
       }
     }
