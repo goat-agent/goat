@@ -79,7 +79,7 @@ final class AppModel {
       case .badRequest:
         self.errorMessage = "이름을 확인해 주세요."
       case .unauthorized:
-        self.signOut()
+        self.clearSession()
       case .undocumented(let status, _):
         throw UnexpectedStatus(code: status)
       }
@@ -104,7 +104,7 @@ final class AppModel {
         self.needsName = true
         self.setupPath = []
       case .unauthorized:
-        self.signOut()
+        self.clearSession()
       case .undocumented(let status, _):
         throw UnexpectedStatus(code: status)
       }
@@ -117,7 +117,12 @@ final class AppModel {
 
   private static let lastAgentKey = "lastAgentID"
 
-  private func signOut() {
+  func signOut() async {
+    _ = try? await client.signOut()
+    clearSession()
+  }
+
+  private func clearSession() {
     tokens.clear()
     UserDefaults.standard.removeObject(forKey: Self.lastAgentKey)
     signInPath = []
@@ -129,7 +134,7 @@ final class AppModel {
   }
 
   private func route() async throws {
-    guard tokens.load() != nil else { return signOut() }
+    guard tokens.load() != nil else { return clearSession() }
 
     switch try await client.getMe() {
     case .ok(let response):
@@ -142,7 +147,7 @@ final class AppModel {
         return
       }
     case .unauthorized:
-      return signOut()
+      return clearSession()
     case .undocumented(let status, _):
       throw UnexpectedStatus(code: status)
     }
@@ -160,7 +165,7 @@ final class AppModel {
         screen = .setup
       }
     case .unauthorized:
-      signOut()
+      clearSession()
     case .undocumented(let status, _):
       throw UnexpectedStatus(code: status)
     }
