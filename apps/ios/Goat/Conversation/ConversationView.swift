@@ -47,7 +47,12 @@ struct ConversationView: View {
             conversation.discard(message.id)
           }
         }
+        if conversation.isRunning {
+          TypingIndicator()
+            .transition(.opacity)
+        }
       }
+      .animation(.default, value: conversation.isRunning)
       .padding(.horizontal)
       .padding(.vertical, 8)
     }
@@ -66,6 +71,9 @@ struct ConversationView: View {
       }
     }
     .onChange(of: conversation.outgoing.count) { scrollToLatest() }
+    .onChange(of: conversation.isRunning) {
+      if isAtBottom { scrollToLatest() }
+    }
     .overlay(alignment: .bottomTrailing) {
       if !isAtBottom {
         Button("최신으로", systemImage: "arrow.down", action: scrollToLatest)
@@ -79,7 +87,6 @@ struct ConversationView: View {
     .animation(.default, value: isAtBottom)
     .safeAreaBar(edge: .bottom) { Composer(draft: $conversation.draft, send: send) }
     .navigationTitle(conversation.agent.name)
-    .navigationSubtitle(conversation.isRunning ? "작업 중…" : "")
     .navigationBarTitleDisplayMode(.inline)
     .task { await integrations.load() }
     .task { await conversation.listen() }
