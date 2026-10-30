@@ -9,6 +9,7 @@ export const googleScopes = {
   documents: "https://www.googleapis.com/auth/documents",
   spreadsheets: "https://www.googleapis.com/auth/spreadsheets",
   presentations: "https://www.googleapis.com/auth/presentations",
+  youtube: "https://www.googleapis.com/auth/youtube",
 } as const;
 
 export const GoogleConnection = z.object({ fetch: z.custom<Fetch>() });
