@@ -38,6 +38,9 @@ struct ConversationView: View {
           ForEach(message.files ?? [], id: \.id) { file in
             SentFile(file: file, load: conversation.localURL(for:), open: preview)
           }
+          if let steps = message.steps, !steps.isEmpty {
+            StepList(steps: steps)
+          }
           if !message.text.isEmpty {
             MessageBubble(text: message.text, isMine: message.role.value1 == .user)
           }

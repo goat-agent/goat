@@ -31,9 +31,15 @@ final class AppModel {
   private(set) var signIns = 0
 
   let client: Client
+  let serverURL: URL
   private let tokens: TokenStore
 
+  /// The session token, for connections the generated client does not make, such as the device
+  /// socket.
+  var sessionToken: String? { tokens.load() }
+
   init(serverURL: URL = .goatServer, tokens: TokenStore = TokenStore()) {
+    self.serverURL = serverURL
     self.tokens = tokens
     client = .goat(serverURL: serverURL, token: { tokens.load() })
   }
@@ -57,7 +63,10 @@ final class AppModel {
 
   func signIn(email: String, code: String) async {
     await perform {
-      switch try await self.client.signIn(body: .json(.init(email: email, code: code))) {
+      let body = Operations.SignIn.Input.Body.json(
+        .init(email: email, code: code, device: CurrentDevice.signingIn)
+      )
+      switch try await self.client.signIn(body: body) {
       case .ok(let response):
         self.tokens.save(try response.body.json.token)
         self.signIns += 1
