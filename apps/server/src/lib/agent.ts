@@ -4,13 +4,15 @@ import {
   type LanguageModelUsage,
   type ModelMessage,
   RetryError,
+  type UserContent,
 } from "ai";
-import { and, asc, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { db, type Transaction } from "../db";
 import { agents, messages, queuedMessages } from "../db/schema/agents";
 import { users } from "../db/schema/auth";
 import { model, providerOptions } from "./ai/providers";
 import { webTools } from "./ai/tools/web";
+import { dateIn } from "./dates";
 import { notify } from "./events";
 import { logger } from "./logger";
 
@@ -58,9 +60,36 @@ export async function createAgent(
   });
 }
 
-export async function enqueue(agentId: string, text: string): Promise<void> {
-  await db.insert(queuedMessages).values({ agentId, message: { role: "user", content: text } });
+export async function enqueue(agentId: string, text: string, timeZone = "UTC"): Promise<void> {
+  const today = dateIn(timeZone, new Date());
+  const last = await lastUserMessageAt(agentId);
+  const content: UserContent =
+    last && dateIn(timeZone, last) === today
+      ? text
+      : [
+          { type: "text", text: `Today's date is ${today}.` },
+          { type: "text", text },
+        ];
+  await db.insert(queuedMessages).values({ agentId, message: { role: "user", content } });
   launch(agentId, { onlyIfQueued: true });
+}
+
+async function lastUserMessageAt(agentId: string): Promise<Date | undefined> {
+  const [queued] = await db
+    .select({ createdAt: queuedMessages.createdAt })
+    .from(queuedMessages)
+    .where(eq(queuedMessages.agentId, agentId))
+    .orderBy(desc(queuedMessages.id))
+    .limit(1);
+  if (queued) return queued.createdAt;
+
+  const [sent] = await db
+    .select({ createdAt: messages.createdAt })
+    .from(messages)
+    .where(and(eq(messages.agentId, agentId), sql`${messages.message}->>'role' = 'user'`))
+    .orderBy(desc(messages.id))
+    .limit(1);
+  return sent?.createdAt;
 }
 
 export function startAgents(): void {

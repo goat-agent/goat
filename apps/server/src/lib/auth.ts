@@ -13,6 +13,7 @@ export const auth = betterAuth({
   secret: env.BETTER_AUTH_SECRET,
   database: drizzleAdapter(db, { provider: "pg", usePlural: true }),
   session: { expiresIn: 90 * DAY, updateAge: DAY },
+  user: { additionalFields: { timeZone: { type: "string", required: false } } },
   plugins: [
     bearer(),
     emailOTP({
