@@ -21,7 +21,7 @@ struct MessageBubble: View {
       in: .rect(cornerRadius: 20)
     )
     .contextMenu {
-      Button("복사", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }
+      Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }
     }
     .frame(maxWidth: .infinity, alignment: isMine ? .trailing : .leading)
     .padding(isMine ? .leading : .trailing, 48)

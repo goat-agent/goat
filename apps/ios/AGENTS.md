@@ -39,6 +39,14 @@ Debug builds talk to `GOAT_SERVER_URL` (`http://localhost:3000`); run the server
   connect their account to the sender. Tokens never reach the app. Settings and the
   conversation's connect cards both go through `Connector`.
 
+## Localization
+
+- Write UI text in English in code; `Localizable.xcstrings` holds the other languages. Text
+  built outside a view, such as error messages in a model, goes through `String(localized:)`.
+- Building in Xcode adds new keys to the catalog; `xcodebuild` does not. From the command line,
+  build, then pass the build's `.stringsdata` files to `xcrun xcstringstool sync`. A key left
+  untranslated still builds, so fill in every language before finishing.
+
 ## API values
 
 - Enum-like fields decode as `value1` (a case this build knows) or `value2` (any string). Handle

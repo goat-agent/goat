@@ -12,7 +12,7 @@ struct ConnectCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
       if isConnected {
-        row { Label("연결됨", systemImage: "checkmark").foregroundStyle(.secondary) }
+        row { Label("Connected", systemImage: "checkmark").foregroundStyle(.secondary) }
       } else {
         Button(action: connect) {
           row {
@@ -25,10 +25,10 @@ struct ConnectCard: View {
         }
         .buttonStyle(.plain)
         .disabled(isConnecting || !isEnabled)
-        .accessibilityLabel("\(name) 연결")
+        .accessibilityLabel("Connect \(name)")
       }
       if didFail && !isConnected {
-        Label("연결하지 못했어요. 다시 시도해 주세요.", systemImage: "exclamationmark.circle.fill")
+        Label("Couldn’t connect. Try again.", systemImage: "exclamationmark.circle.fill")
           .font(.footnote)
           .foregroundStyle(.red)
       }
