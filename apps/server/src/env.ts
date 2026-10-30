@@ -10,5 +10,8 @@ export const env = z
     EMAIL_FROM: z.string().min(1),
     ANTHROPIC_API_KEY: z.string().min(1),
     OPENAI_API_KEY: z.string().min(1),
+    LOG_LEVEL: z
+      .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
+      .default("info"),
   })
   .parse(process.env);
