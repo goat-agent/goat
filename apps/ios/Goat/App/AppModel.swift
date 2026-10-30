@@ -19,7 +19,6 @@ final class AppModel {
   /// The email whose code screen is pushed onto the sign-in flow.
   var signInPath: [String] = []
   var setupPath: [SetupStep] = []
-  /// Whether the setup flow starts by asking the user's name.
   private(set) var needsName = false
   private(set) var isWorking = false
   private(set) var errorMessage: String?

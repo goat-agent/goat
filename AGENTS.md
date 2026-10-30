@@ -46,6 +46,7 @@ Before finishing, run the checks for every app you touched.
 - Users never see model or provider names.
 - Never log message text, fetched page content, tokens, or sign-in codes.
 - Comments explain what the code cannot: invariants, reasons, constraints from outside. They do
-  not narrate the code.
+  not narrate the code. Doc comments (`///`, `/** */`) follow the same rule. If deleting a comment
+  would cost the reader nothing, do not write it.
 - Commit messages are `type: description`, lowercase, one line (`feat`, `fix`, `chore`,
   `refactor`, `docs`, `test`, `perf`).
