@@ -11,7 +11,7 @@ import { db, type Transaction } from "../db";
 import { agents, messages, queuedMessages } from "../db/schema/agents";
 import { users } from "../db/schema/auth";
 import { model, providerOptions } from "./ai/providers";
-import { webTools } from "./ai/tools/web";
+import { tools } from "./ai/tools";
 import { dateIn } from "./dates";
 import { notify } from "./events";
 import { logger } from "./logger";
@@ -172,7 +172,7 @@ async function execute(agentId: string, owner: string): Promise<void> {
   const lease = holdLease(agentId, owner, lost);
   try {
     signal.throwIfAborted();
-    const instructions = await loadInstructions(agentId);
+    const { instructions, timeZone } = await loadSetup(agentId);
     for (let step = 0; step < MAX_STEPS; step++) {
       signal.throwIfAborted();
       await lease.write((tx) => drainQueue(tx, agentId));
@@ -189,7 +189,8 @@ async function execute(agentId: string, owner: string): Promise<void> {
         model,
         instructions,
         messages: history,
-        tools: webTools,
+        tools,
+        toolsContext: { time: { timeZone } },
         providerOptions,
         abortSignal: signal,
         timeout: { stepMs: STEP_TIMEOUT_MS, toolMs: TOOL_TIMEOUT_MS },
@@ -362,9 +363,14 @@ async function loadHistory(agentId: string): Promise<ModelMessage[]> {
   return first === -1 ? [] : history.slice(first);
 }
 
-async function loadInstructions(agentId: string): Promise<string> {
+async function loadSetup(agentId: string): Promise<{ instructions: string; timeZone: string }> {
   const [row] = await db
-    .select({ name: agents.name, instructions: agents.instructions, userName: users.name })
+    .select({
+      name: agents.name,
+      instructions: agents.instructions,
+      userName: users.name,
+      timeZone: users.timeZone,
+    })
     .from(agents)
     .innerJoin(users, eq(users.id, agents.userId))
     .where(eq(agents.id, agentId));
@@ -375,7 +381,7 @@ async function loadInstructions(agentId: string): Promise<string> {
     "When an answer relies on the web, cite the pages you used.",
   ];
   if (row.instructions) parts.push(`${row.userName}'s instructions:\n${row.instructions}`);
-  return parts.join("\n\n");
+  return { instructions: parts.join("\n\n"), timeZone: row.timeZone ?? "UTC" };
 }
 
 // Retried by the scanner; anything else is dropped so a request that can never succeed does not loop.
