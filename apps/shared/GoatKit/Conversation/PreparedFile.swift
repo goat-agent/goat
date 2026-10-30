@@ -1,5 +1,5 @@
 import Foundation
-import UIKit
+import ImageIO
 import UniformTypeIdentifiers
 
 /// A file ready to upload: photos become JPEGs no larger than the agent can see.
@@ -30,21 +30,19 @@ nonisolated struct PreparedFile: Sendable {
   }
 
   private static func jpeg(from data: Data, named name: String) -> PreparedFile? {
-    guard let image = UIImage(data: data) else { return nil }
-    let size = image.size
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+      let size = ImageScaling.size(of: source)
+    else { return nil }
     let scale = min(
       1,
       maxLongEdge / max(size.width, size.height),
       (maxPixels / (size.width * size.height)).squareRoot()
     )
-    let target = CGSize(
-      width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
-    let format = UIGraphicsImageRendererFormat()
-    format.scale = 1
-    let resized = UIGraphicsImageRenderer(size: target, format: format).image { _ in
-      image.draw(in: CGRect(origin: .zero, size: target))
-    }
-    guard let jpeg = resized.jpegData(compressionQuality: 0.85) else { return nil }
+    guard
+      let image = ImageScaling.thumbnail(
+        of: source, longEdge: max(size.width, size.height) * scale),
+      let jpeg = ImageScaling.jpeg(image, quality: 0.85)
+    else { return nil }
     return PreparedFile(name: "\(name).jpg", data: jpeg)
   }
 }

@@ -1,5 +1,5 @@
+import ImageIO
 import SwiftUI
-import UIKit
 
 /// An image file on this device, decoded at the size it is shown rather than at full size.
 struct LocalImage: View {
@@ -7,12 +7,12 @@ struct LocalImage: View {
   var contentMode: ContentMode = .fit
   var maxPixels: CGFloat = 800
 
-  @State private var image: UIImage?
+  @State private var image: CGImage?
 
   var body: some View {
     Group {
       if let image {
-        Image(uiImage: image)
+        Image(decorative: image, scale: 1)
           .resizable()
           .aspectRatio(contentMode: contentMode)
       } else {
@@ -23,12 +23,8 @@ struct LocalImage: View {
       }
     }
     .task(id: url) {
-      guard let url, let full = UIImage(contentsOfFile: url.path(percentEncoded: false)) else {
-        return
-      }
-      let scale = min(1, maxPixels / max(full.size.width, full.size.height))
-      let size = CGSize(width: full.size.width * scale, height: full.size.height * scale)
-      image = await full.byPreparingThumbnail(ofSize: size) ?? full
+      guard let url else { return }
+      image = await ImageScaling.thumbnail(at: url, maxPixels: maxPixels)
     }
   }
 }

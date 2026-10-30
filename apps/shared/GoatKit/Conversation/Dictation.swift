@@ -54,9 +54,11 @@ final class Dictation {
     let url = FileManager.default.temporaryDirectory
       .appending(path: "dictation-\(UUID().uuidString).m4a")
     do {
-      let session = AVAudioSession.sharedInstance()
-      try session.setCategory(.record, mode: .default)
-      try session.setActive(true)
+      #if os(iOS)
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.record, mode: .default)
+        try session.setActive(true)
+      #endif
       let recorder = try AVAudioRecorder(
         url: url,
         settings: [
@@ -87,7 +89,9 @@ final class Dictation {
     metering?.cancel()
     recorder?.stop()
     recorder = nil
-    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    #if os(iOS)
+      try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    #endif
     await transcribe()
   }
 

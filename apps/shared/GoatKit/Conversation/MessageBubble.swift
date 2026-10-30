@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 struct MessageBubble: View {
   let text: String
@@ -21,7 +20,7 @@ struct MessageBubble: View {
       in: .rect(cornerRadius: 20)
     )
     .contextMenu {
-      Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }
+      Button("Copy", systemImage: "doc.on.doc") { Pasteboard.copy(text) }
     }
     .frame(maxWidth: .infinity, alignment: isMine ? .trailing : .leading)
     .padding(isMine ? .leading : .trailing, 48)
