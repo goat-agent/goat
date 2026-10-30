@@ -116,7 +116,9 @@ final class AppModel {
 
     switch try await client.getMe() {
     case .ok(let response):
-      if try response.body.json.name.isEmpty {
+      let me = try response.body.json
+      if me.timeZone == nil { await fillTimeZone() }
+      if me.name.isEmpty {
         needsName = true
         setupPath = []
         screen = .setup
@@ -142,6 +144,10 @@ final class AppModel {
     case .undocumented(let status, _):
       throw UnexpectedStatus(code: status)
     }
+  }
+
+  private func fillTimeZone() async {
+    _ = try? await client.updateMe(body: .json(.init(timeZone: TimeZone.current.identifier)))
   }
 
   private func perform(_ work: () async throws -> Void) async {
