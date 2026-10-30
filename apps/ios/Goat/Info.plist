@@ -4,6 +4,10 @@
 <dict>
 	<key>GoatServerURL</key>
 	<string>$(GOAT_SERVER_URL)</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

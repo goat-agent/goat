@@ -9,6 +9,10 @@ Read [docs/style/swift.md](../../docs/style/swift.md) before writing Swift.
   list and `Connector`, which runs the sign-in sheet), `Components/` (shared views),
   `Assets.xcassets`. The project uses folder-synchronized groups, so new files in these folders
   join the target without editing the project file.
+- `Conversation/` holds the voice features too. `Dictation` records with the system recorder and
+  sends the recording to the server, which turns it into text for the composer. `Call` speaks
+  plain WebRTC (the `stasel/WebRTC` package; Apple ships no public WebRTC) and only ever talks
+  to goat's `startCall`, so the voice service can change without an app update.
 - `GoatAPI/` — Swift package. `openapi.json` is exported by the server (`bun run openapi` in
   `apps/server`); never edit it by hand. Swift OpenAPI Generator turns it into `Client` and the
   `Components`/`Operations` types at build time; generated code is not committed.
@@ -28,7 +32,9 @@ Debug builds talk to `GOAT_SERVER_URL` (`http://localhost:3000`); run the server
 
 - Apple-native: system colors, system navigation, and system components. Do not draw custom
   chrome where a system component exists.
-- The violet accent marks only the screen's primary action and the user's own messages.
+- Keep the interface neutral. Color goes only where it carries meaning: the violet accent on the
+  user's own messages and a screen's primary action, red for errors and for ending a call. The
+  composer's main button is neutral, since its filled shape already marks it.
 - Each screen has at most one primary action: `PrimaryButton` in `.safeAreaBar(edge: .bottom)`,
   so it sits above the keyboard. Show errors inline with `FormFooter`, not in alerts.
 - Navigation lives in `AppModel` (`signInPath`, `setupPath`, `agentPath`), so network results

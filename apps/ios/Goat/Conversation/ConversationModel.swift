@@ -50,18 +50,33 @@ final class ConversationModel {
 
   var canAttach: Bool { attachments.count < Self.maxAttachments }
 
+  /// Nothing typed and nothing attached, so the composer offers a call instead of sending.
+  var isEmpty: Bool {
+    draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty
+  }
+
   var canSend: Bool {
-    let hasContent =
-      !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
-    return hasContent && attachments.allSatisfy { $0.file != nil }
+    !isEmpty && attachments.allSatisfy { $0.file != nil }
   }
 
   let client: Client
+  let dictation: Dictation
 
   init(agent: Components.Schemas.Agent, userName: String, client: Client) {
     self.agent = agent
     greeting = String(localized: "Hi, \(userName)! I’m \(agent.name). How can I help?")
     self.client = client
+    dictation = Dictation(agentID: agent.id, client: client)
+    dictation.onText = { [weak self] text in self?.insert(text) }
+  }
+
+  /// Spoken text goes after what is already typed, so typing and speaking can mix.
+  private func insert(_ text: String) {
+    if draft.isEmpty || draft.last?.isWhitespace == true {
+      draft += text
+    } else {
+      draft += " " + text
+    }
   }
 
   func listen() async {

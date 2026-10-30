@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A1000000000000000000000B /* GoatAPI in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000000D /* GoatAPI */; };
+		A10000000000000000000020 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000022 /* WebRTC */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -42,6 +43,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000000000000000000000B /* GoatAPI in Frameworks */,
+				A10000000000000000000020 /* WebRTC in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -86,6 +88,7 @@
 			name = Goat;
 			packageProductDependencies = (
 				A1000000000000000000000D /* GoatAPI */,
+				A10000000000000000000022 /* WebRTC */,
 			);
 			productName = Goat;
 			productReference = A10000000000000000000004 /* Goat.app */;
@@ -118,6 +121,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A1000000000000000000000C /* XCLocalSwiftPackageReference "GoatAPI" */,
+				A10000000000000000000021 /* XCRemoteSwiftPackageReference "WebRTC" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A10000000000000000000003 /* Products */;
@@ -198,6 +202,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Goat/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Goat;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Used when you speak a message or call your agent.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -227,6 +232,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Goat/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Goat;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Used when you speak a message or call your agent.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -277,10 +283,26 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		A10000000000000000000021 /* XCRemoteSwiftPackageReference "WebRTC" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stasel/WebRTC";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 156.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		A1000000000000000000000D /* GoatAPI */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = GoatAPI;
+		};
+		A10000000000000000000022 /* WebRTC */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000021 /* XCRemoteSwiftPackageReference "WebRTC" */;
+			productName = WebRTC;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

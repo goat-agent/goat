@@ -14,6 +14,7 @@ struct ConversationView: View {
   @State private var isPickingFiles = false
   @State private var pickedPhotos: [PhotosPickerItem] = []
   @State private var previewURL: URL?
+  @State private var call: Call?
   @Environment(\.webAuthenticationSession) private var webAuthenticationSession
 
   init(agent: Components.Schemas.Agent, userName: String, client: Client) {
@@ -102,15 +103,38 @@ struct ConversationView: View {
       Composer(
         draft: $conversation.draft,
         attachments: conversation.attachments,
+        dictation: conversation.dictation,
         canAttach: conversation.canAttach,
         canSend: conversation.canSend,
+        isEmpty: conversation.isEmpty,
         pickPhotos: { isPickingPhotos = true },
         pickFiles: { isPickingFiles = true },
         open: { preview($0.localURL) },
         retry: { id in Task { await conversation.retryUpload(id) } },
         remove: conversation.removeAttachment,
-        send: send
+        send: send,
+        call: { call = Call(agentID: conversation.agent.id, client: conversation.client) }
       )
+    }
+    .fullScreenCover(item: $call) { call in
+      CallView(
+        call: call,
+        agentName: conversation.agent.name,
+        isWorking: conversation.isRunning
+      ) {
+        if let request = pendingConnect {
+          ConnectCard(
+            name: request.name,
+            iconURL: integrations.iconURL(of: request.integrationId),
+            isConnected: false,
+            isConnecting: integrations.connectingID == request.integrationId,
+            isEnabled: integrations.connectingID == nil,
+            didFail: integrations.failedIntegrationID == request.integrationId
+          ) {
+            connect(request.integrationId)
+          }
+        }
+      }
     }
     .photosPicker(
       isPresented: $isPickingPhotos,
@@ -130,6 +154,12 @@ struct ConversationView: View {
     .navigationBarTitleDisplayMode(.inline)
     .task { await integrations.load() }
     .task { await conversation.listen() }
+  }
+
+  /// A service the agent's latest reply asks to connect and that is not connected yet.
+  private var pendingConnect: Components.Schemas.ConnectRequest? {
+    conversation.messages.last { $0.role.value1 == .assistant }?.connect?
+      .first { !integrations.isConnected($0.integrationId) }
   }
 
   private func send() {
@@ -182,77 +212,5 @@ struct ConversationView: View {
     let previous = conversation.messages[index - 1]
     return message.createdAt.timeIntervalSince(previous.createdAt) > 60 * 60
       ? message.createdAt : nil
-  }
-}
-
-private struct Composer: View {
-  @Binding var draft: String
-  let attachments: [ConversationModel.Attachment]
-  let canAttach: Bool
-  let canSend: Bool
-  let pickPhotos: () -> Void
-  let pickFiles: () -> Void
-  let open: (ConversationModel.Attachment) -> Void
-  let retry: (ConversationModel.Attachment.ID) -> Void
-  let remove: (ConversationModel.Attachment.ID) -> Void
-  let send: () -> Void
-
-  var body: some View {
-    GlassEffectContainer {
-      VStack(alignment: .leading, spacing: 8) {
-        if !attachments.isEmpty {
-          ScrollView(.horizontal) {
-            HStack(spacing: 10) {
-              ForEach(attachments) { attachment in
-                AttachmentChip(attachment: attachment) {
-                  open(attachment)
-                } retry: {
-                  retry(attachment.id)
-                } remove: {
-                  remove(attachment.id)
-                }
-              }
-            }
-            .padding(.top, 8)
-            .padding(.trailing, 8)
-          }
-          .scrollIndicators(.hidden)
-        }
-        HStack(alignment: .bottom, spacing: 8) {
-          Menu {
-            Button("Photos", systemImage: "photo.on.rectangle", action: pickPhotos)
-            Button("Files", systemImage: "doc", action: pickFiles)
-          } label: {
-            Label("Attach", systemImage: "plus")
-          }
-          .labelStyle(.iconOnly)
-          .font(.body.weight(.semibold))
-          .buttonStyle(.glass)
-          .buttonBorderShape(.circle)
-          .controlSize(.large)
-          .disabled(!canAttach)
-          messageField
-        }
-      }
-    }
-    .padding(.horizontal)
-    .padding(.bottom, 8)
-  }
-
-  private var messageField: some View {
-    HStack(alignment: .bottom, spacing: 8) {
-      TextField("Message", text: $draft, axis: .vertical)
-        .lineLimit(1...5)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 11)
-        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
-      Button("Send", systemImage: "arrow.up", action: send)
-        .labelStyle(.iconOnly)
-        .font(.body.weight(.semibold))
-        .buttonStyle(.glassProminent)
-        .buttonBorderShape(.circle)
-        .controlSize(.large)
-        .disabled(!canSend)
-    }
   }
 }
