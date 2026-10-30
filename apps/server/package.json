@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.90",
+    "@ai-sdk/mcp": "2.0.86",
     "@ai-sdk/openai": "4.0.104",
     "@hono/zod-openapi": "1.6.3",
     "ai": "7.0.155",
