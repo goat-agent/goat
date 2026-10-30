@@ -7,12 +7,13 @@ import { googleDriveTools } from "../ai/tools/google-drive";
 import { googleSheetsTools } from "../ai/tools/google-sheets";
 import { googleSlidesTools } from "../ai/tools/google-slides";
 import { googleTasksTools } from "../ai/tools/google-tasks";
+import { youtubeTools } from "../ai/tools/youtube";
 import type { Integration } from "./integration";
 
 export const google = {
   name: "Google Workspace",
   description:
-    "Gmail email, Google Calendar events, Google Tasks to-dos, Google Drive files, Docs, Sheets, and Slides.",
+    "Gmail email, Google Calendar events, Google Tasks to-dos, Google Drive files, Docs, Sheets, Slides, and YouTube.",
   auth: {
     type: "oauth",
     issuer: "https://accounts.google.com",
@@ -35,5 +36,6 @@ export const google = {
     ...googleDocsTools,
     ...googleSheetsTools,
     ...googleSlidesTools,
+    ...youtubeTools,
   },
 } satisfies Integration;
