@@ -1,5 +1,5 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import type { ModelMessage } from "ai";
+import type { AssistantModelMessage, ModelMessage } from "ai";
 import { and, asc, desc, eq, gt, lt } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
@@ -7,6 +7,8 @@ import { db } from "../db";
 import { agents, messages } from "../db/schema/agents";
 import { type Agent as AgentRow, createAgent, enqueue } from "../lib/agent";
 import { subscribe } from "../lib/events";
+import { matchIntegration } from "../lib/integrations/connections";
+import { integrations } from "../lib/integrations/index";
 import { body, error, invalidRequest, json, openEnum } from "../lib/openapi";
 import { session, type SessionEnv } from "../middlewares/session";
 
@@ -16,14 +18,24 @@ const Agent = z
   .object({ id: z.uuid(), name: z.string(), instructions: z.string(), createdAt: z.iso.datetime() })
   .openapi("Agent");
 
+const ConnectRequest = z
+  .object({ integrationId: z.string(), name: z.string() })
+  .openapi("ConnectRequest");
+
 const Message = z
   .object({
     id: z.int(),
     role: openEnum(["user", "assistant"]),
     text: z.string(),
+    connect: z
+      .array(ConnectRequest)
+      .optional()
+      .describe("Services the agent asked the user to connect; show a button for each"),
     createdAt: z.iso.datetime(),
   })
   .openapi("Message");
+
+const ConnectInput = z.object({ integration: z.string() });
 
 const AgentEvent = z
   .object({
@@ -35,7 +47,7 @@ const AgentEvent = z
 
 const AgentParams = z.object({ id: z.uuid() });
 
-type MessageRow = { id: number; message: ModelMessage; createdAt: Date };
+type MessageRow = { id: number; message: ModelMessage; hidden: boolean; createdAt: Date };
 
 function publicAgent(agent: AgentRow): z.infer<typeof Agent> {
   return {
@@ -49,15 +61,35 @@ function publicAgent(agent: AgentRow): z.infer<typeof Agent> {
 function publicMessage({
   id,
   message,
+  hidden,
   createdAt,
 }: MessageRow): z.infer<typeof Message> | undefined {
-  if (message.role !== "user" && message.role !== "assistant") return undefined;
+  if (hidden || (message.role !== "user" && message.role !== "assistant")) return undefined;
   const texts =
     typeof message.content === "string"
       ? [message.content]
       : message.content.flatMap((part) => (part.type === "text" ? [part.text] : []));
-  const text = message.role === "user" ? texts.at(-1) : texts.join("");
-  return text ? { id, role: message.role, text, createdAt: createdAt.toISOString() } : undefined;
+  const text = (message.role === "user" ? texts.at(-1) : texts.join("")) ?? "";
+  const connect = message.role === "assistant" ? connectRequests(message) : [];
+  if (!text && connect.length === 0) return undefined;
+  return {
+    id,
+    role: message.role,
+    text,
+    ...(connect.length > 0 ? { connect } : {}),
+    createdAt: createdAt.toISOString(),
+  };
+}
+
+function connectRequests(message: AssistantModelMessage): z.infer<typeof ConnectRequest>[] {
+  if (typeof message.content === "string") return [];
+  return message.content.flatMap((part) => {
+    if (part.type !== "tool-call" || part.toolName !== "connect") return [];
+    const input = ConnectInput.safeParse(part.input);
+    const integrationId = input.success ? matchIntegration(input.data.integration) : undefined;
+    const integration = integrationId ? integrations[integrationId] : undefined;
+    return integrationId && integration ? [{ integrationId, name: integration.name }] : [];
+  });
 }
 
 async function ownAgent(userId: string, agentId: string): Promise<void> {
@@ -76,7 +108,12 @@ async function statusOf(agentId: string): Promise<"running" | "idle"> {
   return agent?.runOwner ? "running" : "idle";
 }
 
-const columns = { id: messages.id, message: messages.message, createdAt: messages.createdAt };
+const columns = {
+  id: messages.id,
+  message: messages.message,
+  hidden: messages.hidden,
+  createdAt: messages.createdAt,
+};
 
 const listAgents = createRoute({
   operationId: "listAgents",

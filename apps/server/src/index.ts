@@ -10,12 +10,19 @@ import { document, invalidRequest } from "./lib/openapi";
 import { requestLogger } from "./middlewares/request-logger";
 import agents from "./routes/agents";
 import authRoutes from "./routes/auth";
+import connections from "./routes/connections";
+import integrations from "./routes/integrations";
 import me from "./routes/me";
 
 const base = new OpenAPIHono({ defaultHook: invalidRequest });
 base.use(requestId(), requestLogger);
 
-export const app = base.route("/auth", authRoutes).route("/me", me).route("/agents", agents);
+export const app = base
+  .route("/auth", authRoutes)
+  .route("/me", me)
+  .route("/agents", agents)
+  .route("/integrations", integrations)
+  .route("/connections", connections);
 
 app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
 app.doc31("/openapi.json", document);

@@ -1,5 +1,6 @@
 import { asSchema, type JSONSchema7, tool, type ToolSet } from "ai";
 import { z } from "zod";
+import type { Catalog } from "../../integrations/catalog";
 
 const LIMIT = 5;
 const K1 = 1.2;
@@ -12,7 +13,8 @@ type Entry = {
   terms: string[];
 };
 
-const Reachable = z.object({ tools: z.custom<ToolSet>() });
+const Searchable = z.object({ search: z.custom<Catalog["search"]>() });
+const Callable = z.object({ resolve: z.custom<Catalog["resolve"]>() });
 
 export const searchTools = {
   tool_search: tool({
@@ -21,10 +23,10 @@ export const searchTools = {
     inputSchema: z.object({
       query: z.string().min(1).max(500).describe("What the tool should do, in English keywords"),
     }),
-    contextSchema: Reachable,
+    contextSchema: Searchable,
     execute: async ({ query }, { context }) => {
       const catalog = await Promise.all(
-        Object.entries(context.tools).map(([name, target]) => describe(name, target)),
+        Object.entries(await context.search()).map(([name, target]) => describe(name, target)),
       );
       return {
         tools: rank(catalog, query).map(({ name, description, inputSchema }) => ({
@@ -36,12 +38,20 @@ export const searchTools = {
     },
   }),
   tool_call: tool({
-    description: "Run a tool found with tool_search.",
-    inputSchema: z.object({ name: z.string(), input: z.record(z.string(), z.unknown()) }),
-    contextSchema: Reachable,
-    execute: async ({ name, input }, options) => {
-      const target = options.context.tools[name];
-      if (!target?.execute) throw new Error(`No tool named ${name}; find it with tool_search.`);
+    description:
+      "Run a tool found with tool_search. Tools found with tool_search cannot be called directly by name; always call them through tool_call.",
+    inputSchema: z.object({
+      name: z.string(),
+      account: z
+        .string()
+        .optional()
+        .describe("Which connected account to use, when the service has more than one"),
+      input: z.record(z.string(), z.unknown()),
+    }),
+    contextSchema: Callable,
+    execute: async ({ name, account, input }, options) => {
+      const target = await options.context.resolve(name, account);
+      if (!target.execute) throw new Error(`No tool named ${name}; find it with tool_search.`);
 
       const checked = await asSchema(target.inputSchema).validate?.(input);
       if (checked?.success === false) throw new Error(`Invalid input: ${checked.error.message}`);

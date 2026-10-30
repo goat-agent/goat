@@ -11,6 +11,17 @@ export const env = z
     ANTHROPIC_API_KEY: z.string().min(1),
     OPENAI_API_KEY: z.string().min(1),
     FIRECRAWL_API_KEY: z.string().min(1),
+    CREDENTIALS_KEY: z.base64().refine((key) => Buffer.from(key, "base64").length === 32, {
+      message: "CREDENTIALS_KEY must be 32 bytes, base64-encoded",
+    }),
+    GITHUB_CLIENT_ID: z.string().min(1).optional(),
+    GITHUB_CLIENT_SECRET: z.string().min(1).optional(),
+    LINEAR_CLIENT_ID: z.string().min(1).optional(),
+    NOTION_CLIENT_ID: z.string().min(1).optional(),
+    SLACK_CLIENT_ID: z.string().min(1).optional(),
+    SLACK_CLIENT_SECRET: z.string().min(1).optional(),
+    GOOGLE_CLIENT_ID: z.string().min(1).optional(),
+    GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     LOG_LEVEL: z
       .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
       .default("info"),

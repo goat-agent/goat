@@ -1,6 +1,6 @@
 import type { LanguageModelUsage, ModelMessage, UserModelMessage } from "ai";
 import { sql } from "drizzle-orm";
-import { bigint, index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { users } from "./auth";
 
 export const agents = pgTable(
@@ -14,6 +14,7 @@ export const agents = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     name: text().notNull(),
     instructions: text().notNull().default(""),
+    connectionsNote: text(),
     runOwner: uuid(),
     runLeaseUntil: timestamp({ withTimezone: true }),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -34,6 +35,7 @@ export const messages = pgTable(
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
     message: jsonb().$type<ModelMessage>().notNull(),
+    hidden: boolean().notNull().default(false),
     model: text(),
     usage: jsonb().$type<LanguageModelUsage>(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -49,6 +51,7 @@ export const queuedMessages = pgTable(
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
     message: jsonb().$type<UserModelMessage>().notNull(),
+    hidden: boolean().notNull().default(false),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index().on(table.agentId)],
