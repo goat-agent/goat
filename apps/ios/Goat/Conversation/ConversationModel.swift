@@ -24,7 +24,7 @@ final class ConversationModel {
   private(set) var isRunning = false
   var draft = ""
 
-  private let client: Client
+  let client: Client
 
   init(agent: Components.Schemas.Agent, client: Client) {
     self.agent = agent

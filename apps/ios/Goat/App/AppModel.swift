@@ -8,7 +8,7 @@ final class AppModel {
     case loading
     case signIn
     case setup
-    case conversation(Components.Schemas.Agent)
+    case home
   }
 
   enum SetupStep: Hashable {
@@ -19,6 +19,9 @@ final class AppModel {
   /// The email whose code screen is pushed onto the sign-in flow.
   var signInPath: [String] = []
   var setupPath: [SetupStep] = []
+  private(set) var agents: [Components.Schemas.Agent] = []
+  var agentPath: [Components.Schemas.Agent] = []
+  var isCreatingAgent = false
   /// Whether the setup flow starts by asking the user's name.
   private(set) var needsName = false
   private(set) var isWorking = false
@@ -90,7 +93,11 @@ final class AppModel {
       )
       switch try await self.client.createAgent(body: body) {
       case .created(let response):
-        self.screen = .conversation(try response.body.json.agent)
+        let agent = try response.body.json.agent
+        self.agents.append(agent)
+        self.agentPath = [agent]
+        self.isCreatingAgent = false
+        self.screen = .home
       case .badRequest:
         self.errorMessage = "입력한 내용을 확인해 주세요."
       case .conflict:
@@ -104,10 +111,20 @@ final class AppModel {
     }
   }
 
+  func open(_ agent: Components.Schemas.Agent) {
+    UserDefaults.standard.set(agent.id, forKey: Self.lastAgentKey)
+  }
+
+  private static let lastAgentKey = "lastAgentID"
+
   private func signOut() {
     tokens.clear()
+    UserDefaults.standard.removeObject(forKey: Self.lastAgentKey)
     signInPath = []
     setupPath = []
+    agents = []
+    agentPath = []
+    isCreatingAgent = false
     screen = .signIn
   }
 
@@ -132,8 +149,11 @@ final class AppModel {
 
     switch try await client.listAgents() {
     case .ok(let response):
-      if let agent = try response.body.json.agents.first {
-        screen = .conversation(agent)
+      agents = try response.body.json.agents
+      let lastID = UserDefaults.standard.string(forKey: Self.lastAgentKey)
+      if let agent = agents.first(where: { $0.id == lastID }) ?? agents.first {
+        agentPath = [agent]
+        screen = .home
       } else {
         needsName = false
         setupPath = []
