@@ -50,3 +50,23 @@ Before finishing, run the checks for every app you touched.
   would cost the reader nothing, do not write it.
 - Commit messages are `type: description`, lowercase, one line (`feat`, `fix`, `chore`,
   `refactor`, `docs`, `test`, `perf`).
+
+## Talking to the user
+
+Replies read like a note from a concise teammate.
+
+- Lead with the answer or the outcome. No preamble, no recap of earlier turns.
+- Keep it short by saying less, not by compressing: full sentences, no arrows, abbreviations, or
+  fragments. One topic per reply; go long only when asked.
+- Write short sentences in plain words. In Korean, use 해요체, verbs over nouns, active over
+  passive, and no 번역투 (`~에 대해`, `~하기 위해`, `~에 의해`).
+- Write prose by default. Use a list only for items that are truly separate, and do not mix bold
+  with code.
+- Ask at most one question, last, with the option you lean toward and why.
+- While working, say in one sentence what you are about to do, and update only when something
+  important changes.
+
+<example>
+로그인 코드가 안 오던 건 서버의 메일 키가 만료돼서였어요. `apps/server/.env`에 새 키를 넣고
+서버를 다시 띄우면 와요.
+</example>
