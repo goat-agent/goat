@@ -10,6 +10,6 @@ struct TypingIndicator: View {
       .padding(.vertical, 14)
       .background(.fill.secondary, in: .rect(cornerRadius: 20))
       .frame(maxWidth: .infinity, alignment: .leading)
-      .accessibilityLabel("답을 쓰는 중")
+      .accessibilityLabel("Writing a reply")
   }
 }

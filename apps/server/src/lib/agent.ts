@@ -43,26 +43,15 @@ const tasks = new Set<Promise<void>>();
 let scanTimer: Timer | undefined;
 
 export async function createAgent(
-  user: { id: string; name: string },
+  userId: string,
   input: { name: string; instructions: string },
 ): Promise<Agent> {
-  return db.transaction(async (tx) => {
-    const [agent] = await tx
-      .insert(agents)
-      .values({ userId: user.id, ...input })
-      .returning();
-    if (!agent) throw new Error("agent insert returned no row");
-
-    // The one write to messages outside a run: the agent is new, so no run can exist yet.
-    await tx.insert(messages).values({
-      agentId: agent.id,
-      message: {
-        role: "assistant",
-        content: `안녕하세요, ${user.name}님! ${agent.name}입니다. 무엇을 도와드릴까요?`,
-      },
-    });
-    return agent;
-  });
+  const [agent] = await db
+    .insert(agents)
+    .values({ userId, ...input })
+    .returning();
+  if (!agent) throw new Error("agent insert returned no row");
+  return agent;
 }
 
 export async function enqueue(agentId: string, text: string, timeZone = "UTC"): Promise<void> {
@@ -419,10 +408,7 @@ async function loadHistory(agentId: string): Promise<ModelMessage[]> {
     .where(eq(messages.agentId, agentId))
     .orderBy(asc(messages.id));
 
-  // Claude requires a conversation to open with a user message, so the template greeting stays display-only.
-  const history = rows.map((row) => row.message);
-  const first = history.findIndex((message) => message.role !== "assistant");
-  return first === -1 ? [] : history.slice(first);
+  return rows.map((row) => row.message);
 }
 
 async function loadSetup(

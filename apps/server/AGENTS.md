@@ -8,7 +8,8 @@ Read [docs/style/typescript.md](../../docs/style/typescript.md) before writing T
 - `src/env.ts` — environment, validated with Zod at startup.
 - `src/lib/` — modules several places use: `auth.ts` (Better Auth), `agent.ts` (agent runs),
   `events.ts` (LISTEN/NOTIFY), `openapi.ts` (route helpers), `logger.ts` (pino), `dates.ts`,
-  `ai/providers.ts` (model choice), `ai/tools/` (the tools agents call).
+  `i18n.ts` (supported languages), `ai/providers.ts` (model choice), `ai/tools/` (the tools
+  agents call).
 - `src/lib/ai/tools/index.ts` — `tools` go to the model on every request. Integration tools are
   deferred: they stay on the server, and the model reaches them through `tool_search` and
   `tool_call`, so the tool list the model sees never changes. Name deferred tools
@@ -68,8 +69,7 @@ These invariants keep a conversation consistent across server instances and cras
 - Every write a run makes goes through `lease.write`, which re-checks ownership in the same
   transaction. A runner that lost its lease must not write.
 - Only the runner writes to `messages`. User input goes to `queued_messages` and moves into
-  `messages` at a step boundary. The greeting written when an agent is created is the one
-  exception.
+  `messages` at a step boundary.
 - Release the lease only in `finish`: lock the row first, then check the queue.
 - Never hold a database transaction open across an LLM or tool call.
 - Stored messages are sent back to the model exactly as saved. Do not edit, reorder, or

@@ -11,19 +11,19 @@ struct OutgoingBubble: View {
         .opacity(message.state == .failed ? 1 : 0.55)
       switch message.state {
       case .sending:
-        Text("보내는 중…")
+        Text("Sending…")
           .font(.caption2)
           .foregroundStyle(.secondary)
       case .queued:
-        Text("대기 중")
+        Text("Waiting")
           .font(.caption2)
           .foregroundStyle(.secondary)
       case .failed:
         Menu {
-          Button("다시 보내기", systemImage: "arrow.clockwise", action: retry)
-          Button("삭제", systemImage: "trash", role: .destructive, action: discard)
+          Button("Send Again", systemImage: "arrow.clockwise", action: retry)
+          Button("Delete", systemImage: "trash", role: .destructive, action: discard)
         } label: {
-          Label("보내지 못했어요", systemImage: "exclamationmark.circle.fill")
+          Label("Not Sent", systemImage: "exclamationmark.circle.fill")
             .font(.caption)
             .foregroundStyle(.red)
         }

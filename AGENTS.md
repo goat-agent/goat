@@ -44,6 +44,10 @@ Before finishing, run the checks for every app you touched.
 - Enum-like fields in the API accept any string as well (`openEnum`), so app builds already in
   users' hands keep decoding values added later.
 - Users never see model or provider names.
+- Users see the language their device is set to; there is no language setting inside the apps.
+  The server answers in the language of the request's `Accept-Language` (`lib/i18n.ts`), and
+  English is the fallback everywhere. Do not store text in a user's language: one account is
+  read from devices set to different languages.
 - Never log message text, fetched page content, tokens, or sign-in codes.
 - Comments explain what the code cannot: invariants, reasons, constraints from outside. They do
   not narrate the code. Doc comments (`///`, `/** */`) follow the same rule. If deleting a comment

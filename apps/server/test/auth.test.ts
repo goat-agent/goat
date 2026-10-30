@@ -1,7 +1,15 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { mailbox } from "./fakes";
 import { bearer, client, codeFor, resetDatabase, setName, signIn, status } from "./helpers";
 
 beforeEach(resetDatabase);
+
+function sendCode(email: string, acceptLanguage?: string) {
+  return client.auth["email-code"].$post(
+    { json: { email } },
+    { headers: acceptLanguage ? { "accept-language": acceptLanguage } : {} },
+  );
+}
 
 describe("auth", () => {
   test("rejects requests without a session", async () => {
@@ -14,6 +22,16 @@ describe("auth", () => {
     const response = await client.me.$get(undefined, bearer(token));
     if (!response.ok) throw new Error(`get me failed with ${response.status}`);
     expect(await response.json()).toMatchObject({ email: "minho@example.com", name: "" });
+  });
+
+  test("writes the code email in the language the device asks for", async () => {
+    await sendCode("ko@example.com", "ko-KR, en;q=0.8");
+    await sendCode("en@example.com", "fr-FR, ko;q=0, en;q=0.5");
+    await sendCode("default@example.com");
+
+    expect(mailbox.get("ko@example.com")).toStartWith("로그인 코드는");
+    expect(mailbox.get("en@example.com")).toStartWith("Your sign-in code");
+    expect(mailbox.get("default@example.com")).toStartWith("Your sign-in code");
   });
 
   test("rejects a wrong code", async () => {

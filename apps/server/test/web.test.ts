@@ -47,9 +47,6 @@ describe("web tools", () => {
     expect(secondPrompt).toMatch(/<web-content id=\\"\w+\\">/);
 
     const shown = (await listMessages(token, agentId)).map(({ role, text }) => `${role}: ${text}`);
-    expect(shown.slice(1)).toEqual([
-      "user: 내일 부산 날씨 어때?",
-      "assistant: 내일 부산은 맑아요.",
-    ]);
+    expect(shown).toEqual(["user: 내일 부산 날씨 어때?", "assistant: 내일 부산은 맑아요."]);
   });
 });
