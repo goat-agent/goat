@@ -11,7 +11,7 @@ struct EmailView: View {
   var body: some View {
     Form {
       Section {
-        TextField("이메일", text: $email, prompt: Text("you@example.com"))
+        TextField("Email", text: $email, prompt: Text(verbatim: "you@example.com"))
           .textContentType(.emailAddress)
           .keyboardType(.emailAddress)
           .textInputAutocapitalization(.never)
@@ -20,15 +20,15 @@ struct EmailView: View {
           .focused($isFocused)
           .onSubmit(submit)
       } footer: {
-        FormFooter(hint: "이 주소로 로그인 코드를 보내 드릴게요.", error: model.errorMessage)
+        FormFooter(hint: "We’ll send a sign-in code to this address.", error: model.errorMessage)
       }
     }
-    .navigationTitle("Goat 시작하기")
+    .navigationTitle("Get Started with Goat")
     .scrollDismissesKeyboard(.interactively)
     .safeAreaBar(edge: .bottom) {
       PrimaryButton(
-        title: "코드 받기",
-        workingTitle: "보내는 중…",
+        title: "Send Code",
+        workingTitle: "Sending…",
         isWorking: model.isWorking,
         isEnabled: canSubmit,
         action: submit

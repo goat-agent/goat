@@ -107,9 +107,10 @@
 				};
 			};
 			buildConfigurationList = A1000000000000000000000E /* Build configuration list for PBXProject "Goat" */;
-			developmentRegion = ko;
+			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
+				en,
 				ko,
 				Base,
 			);

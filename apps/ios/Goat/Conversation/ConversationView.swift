@@ -16,14 +16,17 @@ struct ConversationView: View {
   @State private var previewURL: URL?
   @Environment(\.webAuthenticationSession) private var webAuthenticationSession
 
-  init(agent: Components.Schemas.Agent, client: Client) {
-    _conversation = State(initialValue: ConversationModel(agent: agent, client: client))
+  init(agent: Components.Schemas.Agent, userName: String, client: Client) {
+    _conversation = State(
+      initialValue: ConversationModel(agent: agent, userName: userName, client: client)
+    )
     _integrations = State(initialValue: IntegrationsModel(client: client))
   }
 
   var body: some View {
     ScrollView {
       LazyVStack(spacing: 6) {
+        MessageBubble(text: conversation.greeting, isMine: false)
         ForEach(Array(conversation.messages.enumerated()), id: \.element.id) { index, message in
           if let time = gapBefore(index) {
             Text(time, format: .dateTime.month().day().hour().minute())
@@ -77,7 +80,7 @@ struct ConversationView: View {
     .onChange(of: conversation.messages.count) {
       if isAtBottom { scrollToLatest() }
       if conversation.messages.last?.role.value1 == .assistant {
-        AccessibilityNotification.Announcement("새 답이 왔어요").post()
+        AccessibilityNotification.Announcement(String(localized: "New reply")).post()
       }
     }
     .onChange(of: conversation.outgoing.count) { scrollToLatest() }
@@ -86,7 +89,7 @@ struct ConversationView: View {
     }
     .overlay(alignment: .bottomTrailing) {
       if !isAtBottom {
-        Button("최신으로", systemImage: "arrow.down", action: scrollToLatest)
+        Button("Jump to Latest", systemImage: "arrow.down", action: scrollToLatest)
           .labelStyle(.iconOnly)
           .buttonStyle(.glass)
           .buttonBorderShape(.circle)
@@ -217,10 +220,10 @@ private struct Composer: View {
         }
         HStack(alignment: .bottom, spacing: 8) {
           Menu {
-            Button("사진", systemImage: "photo.on.rectangle", action: pickPhotos)
-            Button("파일", systemImage: "doc", action: pickFiles)
+            Button("Photos", systemImage: "photo.on.rectangle", action: pickPhotos)
+            Button("Files", systemImage: "doc", action: pickFiles)
           } label: {
-            Label("첨부", systemImage: "plus")
+            Label("Attach", systemImage: "plus")
           }
           .labelStyle(.iconOnly)
           .font(.body.weight(.semibold))
@@ -238,12 +241,12 @@ private struct Composer: View {
 
   private var messageField: some View {
     HStack(alignment: .bottom, spacing: 8) {
-      TextField("메시지", text: $draft, axis: .vertical)
+      TextField("Message", text: $draft, axis: .vertical)
         .lineLimit(1...5)
         .padding(.horizontal, 16)
         .padding(.vertical, 11)
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
-      Button("보내기", systemImage: "arrow.up", action: send)
+      Button("Send", systemImage: "arrow.up", action: send)
         .labelStyle(.iconOnly)
         .font(.body.weight(.semibold))
         .buttonStyle(.glassProminent)

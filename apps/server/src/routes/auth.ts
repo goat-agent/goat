@@ -47,7 +47,10 @@ const signOut = createRoute({
 export default new OpenAPIHono<SessionEnv>({ defaultHook: invalidRequest })
   .openapi(sendCode, async (c) => {
     const { email } = c.req.valid("json");
-    await auth.api.sendVerificationOTP({ body: { email, type: "sign-in" } });
+    await auth.api.sendVerificationOTP({
+      body: { email, type: "sign-in" },
+      headers: c.req.raw.headers,
+    });
     return c.body(null, 204);
   })
   .openapi(signIn, async (c) => {

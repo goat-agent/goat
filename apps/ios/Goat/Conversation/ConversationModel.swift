@@ -40,6 +40,8 @@ final class ConversationModel {
   static let maxAttachments = 10
 
   let agent: Components.Schemas.Agent
+  /// Drawn by the app rather than stored, so each device shows it in its own language.
+  let greeting: String
   private(set) var messages: [Components.Schemas.Message] = []
   private(set) var outgoing: [Outgoing] = []
   private(set) var attachments: [Attachment] = []
@@ -56,8 +58,9 @@ final class ConversationModel {
 
   let client: Client
 
-  init(agent: Components.Schemas.Agent, client: Client) {
+  init(agent: Components.Schemas.Agent, userName: String, client: Client) {
     self.agent = agent
+    greeting = String(localized: "Hi, \(userName)! I’m \(agent.name). How can I help?")
     self.client = client
   }
 

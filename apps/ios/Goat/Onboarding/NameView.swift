@@ -10,20 +10,20 @@ struct NameView: View {
   var body: some View {
     Form {
       Section {
-        TextField("이름", text: $name, prompt: Text("예: 민호"))
+        TextField("Name", text: $name, prompt: Text("e.g. Alex"))
           .textContentType(.givenName)
           .submitLabel(.continue)
           .focused($isFocused)
           .onSubmit(submit)
       } footer: {
-        FormFooter(hint: "에이전트가 이 이름으로 불러요.", error: model.errorMessage)
+        FormFooter(hint: "Your agent will call you by this name.", error: model.errorMessage)
       }
     }
-    .navigationTitle("이름")
+    .navigationTitle("Name")
     .safeAreaBar(edge: .bottom) {
       PrimaryButton(
-        title: "다음",
-        workingTitle: "저장 중…",
+        title: "Next",
+        workingTitle: "Saving…",
         isWorking: model.isWorking,
         isEnabled: !trimmed.isEmpty,
         action: submit

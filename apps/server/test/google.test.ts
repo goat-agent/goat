@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { gmailTools } from "../src/lib/ai/tools/gmail";
 import { googleCalendarTools } from "../src/lib/ai/tools/google-calendar";
+import { googleScopes } from "../src/lib/ai/tools/google";
 import { googleDriveTools } from "../src/lib/ai/tools/google-drive";
+import { youtubeTools } from "../src/lib/ai/tools/youtube";
+import { google as workspace } from "../src/lib/integrations/google";
 import type { Fetch } from "../src/lib/integrations/integration";
 
 type Call = { method: string; url: URL; body: unknown };
@@ -119,5 +122,115 @@ describe("calendar", () => {
     );
     expect(google.calls[0]?.method).toBe("DELETE");
     expect(google.calls[0]?.url.searchParams.get("sendUpdates")).toBe("all");
+  });
+});
+
+describe("youtube", () => {
+  const video = {
+    id: "v1",
+    snippet: { title: "Bun 소개", channelTitle: "Bun", channelId: "c1", description: "설명" },
+    contentDetails: { duration: "PT4M13S" },
+    statistics: { viewCount: "1200", likeCount: "80" },
+  };
+
+  test("searches videos with a small page and marks titles as someone else's words", async () => {
+    const google = fakeGoogle(() => ({
+      items: [
+        { id: { videoId: "v1" }, snippet: { title: "Bun 소개", channelTitle: "Bun" } },
+        { id: {}, snippet: { title: "id 없음" } },
+      ],
+      nextPageToken: "next",
+    }));
+    const found = await youtubeTools.youtube_search.execute(
+      { query: "bun runtime", type: "video", maxResults: 5 },
+      google.options,
+    );
+
+    const params = google.calls[0]?.url.searchParams;
+    expect(google.calls[0]?.url.pathname).toEndWith("/youtube/v3/search");
+    expect(params?.get("q")).toBe("bun runtime");
+    expect(params?.get("type")).toBe("video");
+    expect(params?.get("maxResults")).toBe("5");
+    expect(params?.get("part")).toBe("snippet");
+    expect(found).toMatchObject({ results: [{ type: "video", id: "v1" }], nextPageToken: "next" });
+    expect(JSON.stringify(found)).toMatch(/<google-content id=\\"\w+\\">\\nBun 소개\\n/);
+  });
+
+  test("lists liked videos with their counts", async () => {
+    const google = fakeGoogle(() => ({ items: [video], nextPageToken: "next" }));
+    const liked = await youtubeTools.youtube_list_liked_videos.execute(
+      { maxResults: 25 },
+      google.options,
+    );
+
+    expect(google.calls[0]?.url.searchParams.get("myRating")).toBe("like");
+    expect(liked).toMatchObject({
+      videos: [{ id: "v1", duration: "PT4M13S", views: 1200, likes: 80 }],
+      nextPageToken: "next",
+    });
+    expect(JSON.stringify(liked)).not.toContain("description");
+  });
+
+  test("cuts a long description and says so", async () => {
+    const long = { ...video, snippet: { ...video.snippet, description: "가".repeat(3_000) } };
+    const google = fakeGoogle(() => ({ items: [long] }));
+    const found = await youtubeTools.youtube_get_videos.execute(
+      { videoIds: ["v1", "v2"] },
+      google.options,
+    );
+
+    expect(google.calls[0]?.url.searchParams.get("id")).toBe("v1,v2");
+    expect(found).toMatchObject({ videos: [{ descriptionTruncated: true }] });
+  });
+
+  test("adds a video to a playlist", async () => {
+    const google = fakeGoogle(() => ({ id: "item1" }));
+    const added = await youtubeTools.youtube_add_to_playlist.execute(
+      { playlistId: "pl1", videoId: "v1" },
+      google.options,
+    );
+
+    expect(google.calls[0]?.method).toBe("POST");
+    expect(google.calls[0]?.url.pathname).toEndWith("/playlistItems");
+    expect(google.calls[0]?.body).toEqual({
+      snippet: { playlistId: "pl1", resourceId: { kind: "youtube#video", videoId: "v1" } },
+    });
+    expect(added).toEqual({ itemId: "item1", playlistId: "pl1", videoId: "v1" });
+  });
+
+  test("creates a private playlist by default", async () => {
+    const google = fakeGoogle(() => ({
+      id: "pl1",
+      snippet: { title: "나중에 볼 것" },
+      status: { privacyStatus: "private" },
+    }));
+    await youtubeTools.youtube_create_playlist.execute(
+      { title: "나중에 볼 것", privacy: "private" },
+      google.options,
+    );
+
+    expect(google.calls[0]?.body).toEqual({
+      snippet: { title: "나중에 볼 것" },
+      status: { privacyStatus: "private" },
+    });
+  });
+
+  test("rates a video", async () => {
+    const google = fakeGoogle(() => ({}));
+    await youtubeTools.youtube_rate_video.execute(
+      { videoId: "v1", rating: "like" },
+      google.options,
+    );
+
+    expect(google.calls[0]?.method).toBe("POST");
+    expect(google.calls[0]?.url.pathname).toEndWith("/videos/rate");
+    expect(google.calls[0]?.url.searchParams.get("rating")).toBe("like");
+  });
+
+  test("every tool needs the one youtube scope, which Google asks for at connect", () => {
+    for (const found of Object.values(youtubeTools)) {
+      expect(found.metadata).toEqual({ scope: googleScopes.youtube });
+    }
+    expect(workspace.auth.scopes).toContain(googleScopes.youtube);
   });
 });

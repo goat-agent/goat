@@ -26,7 +26,7 @@ struct IntegrationsView: View {
               connect(integration.id)
             }
             .swipeActions {
-              Button("연결 끊기", role: .destructive) {
+              Button("Disconnect", role: .destructive) {
                 Task { await model.disconnect(connection, of: integration.id) }
               }
             }
@@ -34,11 +34,14 @@ struct IntegrationsView: View {
         }
       } footer: {
         if let failed = model.integrations.first(where: { $0.id == model.failedIntegrationID }) {
-          FormFooter(hint: "", error: "\(failed.name) 연결에 실패했어요. 잠시 후 다시 시도해 주세요.")
+          FormFooter(
+            hint: "",
+            error: String(localized: "Couldn’t connect \(failed.name). Try again in a moment.")
+          )
         }
       }
     }
-    .navigationTitle("연동")
+    .navigationTitle("Integrations")
     .task { await model.load() }
   }
 
@@ -71,7 +74,8 @@ private struct IntegrationRow: View {
     .tint(.primary)
     .disabled(isConnecting || !canConnect)
     .accessibilityLabel(
-      integration.connections.isEmpty ? "\(integration.name) 연결" : "\(integration.name) 계정 추가"
+      integration.connections.isEmpty
+        ? "Connect \(integration.name)" : "Add \(integration.name) Account"
     )
   }
 }
@@ -85,7 +89,7 @@ private struct AccountRow: View {
     if connection.needsReconnect {
       Button(action: reconnect) {
         LabeledContent {
-          Label("다시 연결", systemImage: "arrow.clockwise")
+          Label("Reconnect", systemImage: "arrow.clockwise")
             .foregroundStyle(.secondary)
         } label: {
           name
@@ -95,7 +99,7 @@ private struct AccountRow: View {
       .disabled(!canReconnect)
     } else {
       LabeledContent {
-        Text("연결됨")
+        Text("Connected")
       } label: {
         name
       }

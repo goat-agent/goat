@@ -172,7 +172,7 @@ const createAgentRoute = createRoute({
     ),
   },
   responses: {
-    201: json(z.object({ agent: Agent }), "The new agent; its greeting is already in its messages"),
+    201: json(z.object({ agent: Agent }), "The new agent, with no messages yet"),
     400: error("Invalid request"),
     401: error("Not signed in"),
     409: error("The user has no name yet"),
@@ -308,7 +308,7 @@ export default app
   .openapi(createAgentRoute, async (c) => {
     const user = c.var.user;
     if (!user.name.trim()) return c.json({ error: "user name is required" }, 409);
-    const agent = await createAgent(user, c.req.valid("json"));
+    const agent = await createAgent(user.id, c.req.valid("json"));
     return c.json({ agent: publicAgent(agent) }, 201);
   })
   .openapi(listMessages, async (c) => {

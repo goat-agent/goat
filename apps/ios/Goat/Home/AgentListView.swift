@@ -10,15 +10,15 @@ struct AgentListView: View {
       List(model.agents, id: \.id) { agent in
         NavigationLink(agent.name, value: agent)
       }
-      .navigationTitle("에이전트")
+      .navigationTitle("Agents")
       .toolbar {
         ToolbarItemGroup(placement: .topBarTrailing) {
-          Button("설정", systemImage: "gearshape") { isShowingSettings = true }
-          Button("새 에이전트", systemImage: "plus") { model.isCreatingAgent = true }
+          Button("Settings", systemImage: "gearshape") { isShowingSettings = true }
+          Button("New Agent", systemImage: "plus") { model.isCreatingAgent = true }
         }
       }
       .navigationDestination(for: Components.Schemas.Agent.self) { agent in
-        ConversationView(agent: agent, client: model.client)
+        ConversationView(agent: agent, userName: model.userName, client: model.client)
           .onAppear { model.open(agent) }
       }
     }

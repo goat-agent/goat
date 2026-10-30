@@ -9,30 +9,30 @@ struct AgentSetupView: View {
 
   var body: some View {
     Form {
-      Section("이름") {
-        TextField("에이전트 이름", text: $name)
+      Section("Name") {
+        TextField("Agent Name", text: $name)
           .submitLabel(.done)
       }
       Section {
         TextField(
-          "바라는 점",
+          "Instructions",
           text: $instructions,
-          prompt: Text("예: 답은 짧게 해 줘. 일정은 오전 위주로 잡아 줘."),
+          prompt: Text("e.g. Keep answers short. Plan my days around the mornings."),
           axis: .vertical
         )
         .lineLimit(3...8)
       } header: {
-        Text("바라는 점")
+        Text("Instructions")
       } footer: {
-        FormFooter(hint: "비워 두셔도 돼요.", error: model.errorMessage)
+        FormFooter(hint: "You can leave this blank.", error: model.errorMessage)
       }
     }
-    .navigationTitle("에이전트 만들기")
+    .navigationTitle("Create Agent")
     .scrollDismissesKeyboard(.interactively)
     .safeAreaBar(edge: .bottom) {
       PrimaryButton(
-        title: "시작하기",
-        workingTitle: "만드는 중…",
+        title: "Get Started",
+        workingTitle: "Creating…",
         isWorking: model.isWorking,
         isEnabled: !trimmedName.isEmpty,
         action: submit

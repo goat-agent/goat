@@ -27,6 +27,14 @@ export const env = z
     SLACK_CLIENT_SECRET: z.string().min(1).optional(),
     GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
+    TODOIST_CLIENT_ID: z.string().min(1).optional(),
+    GRANOLA_CLIENT_ID: z.string().min(1).optional(),
+    READWISE_CLIENT_ID: z.string().min(1).optional(),
+    DROPBOX_CLIENT_ID: z.string().min(1).optional(),
+    DROPBOX_CLIENT_SECRET: z.string().min(1).optional(),
+    CANVA_CLIENT_ID: z.string().min(1).optional(),
+    MICROSOFT_CLIENT_ID: z.string().min(1).optional(),
+    MICROSOFT_CLIENT_SECRET: z.string().min(1).optional(),
     LOG_LEVEL: z
       .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
       .default("info"),

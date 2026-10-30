@@ -34,7 +34,7 @@ struct SentFile: View {
       }
     }
     .buttonStyle(.plain)
-    .accessibilityLabel(isImage ? "사진" : file.name)
+    .accessibilityLabel(isImage ? Text("Photo") : Text(file.name))
     .frame(maxWidth: .infinity, alignment: .trailing)
     .padding(.leading, 48)
     .task(id: file.id) {

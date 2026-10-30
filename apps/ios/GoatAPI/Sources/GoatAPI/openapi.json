@@ -555,7 +555,7 @@
         },
         "responses": {
           "201": {
-            "description": "The new agent; its greeting is already in its messages",
+            "description": "The new agent, with no messages yet",
             "content": {
               "application/json": {
                 "schema": {

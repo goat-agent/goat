@@ -8,7 +8,8 @@ Read [docs/style/typescript.md](../../docs/style/typescript.md) before writing T
 - `src/env.ts` — environment, validated with Zod at startup.
 - `src/lib/` — modules several places use: `auth.ts` (Better Auth), `agent.ts` (agent runs),
   `events.ts` (LISTEN/NOTIFY), `openapi.ts` (route helpers), `logger.ts` (pino), `dates.ts`,
-  `ai/providers.ts` (model choice), `ai/tools/` (the tools agents call).
+  `i18n.ts` (supported languages), `ai/providers.ts` (model choice), `ai/tools/` (the tools
+  agents call).
 - `src/lib/ai/tools/index.ts` — `tools` go to the model on every request. Integration tools are
   deferred: they stay on the server, and the model reaches them through `tool_search` and
   `tool_call`, so the tool list the model sees never changes. Name deferred tools
@@ -21,9 +22,10 @@ Read [docs/style/typescript.md](../../docs/style/typescript.md) before writing T
   `index.ts` lists them; one without a client id in the environment is not offered. How auth
   works lives once in `oauth.ts` (discovery, PKCE, refresh, revocation), `authorize.ts` (the
   connect flow), and `connections.ts` (stored accounts, encrypted with `credentials.ts`).
-  `catalog.ts` builds a run's deferred tools from the user's connections, lazily. goat's own
-  tools name the OAuth scope they need in `metadata.scope`; consent screens let users turn single
-  permissions off, so a tool whose scope was not granted is left out. Content other people wrote,
+  `catalog.ts` builds a run's deferred tools from the user's connections, lazily. Where a
+  consent screen lets users turn single permissions off (Google), goat's own tools name the OAuth
+  scope they need in `metadata.scope`, and a tool whose scope was not granted is left out.
+  Microsoft's consent is all or nothing, so its tools carry no scope. Content other people wrote,
   such as mail and shared files, reaches the model wrapped as data, like web pages.
 - `src/lib/web/` — `search` and `fetch` in `index.ts`; each backend gets its own file there
   (`firecrawl.ts`), and only `index.ts` decides which backend serves a call.
@@ -73,8 +75,7 @@ These invariants keep a conversation consistent across server instances and cras
 - Every write a run makes goes through `lease.write`, which re-checks ownership in the same
   transaction. A runner that lost its lease must not write.
 - Only the runner writes to `messages`. User input goes to `queued_messages` and moves into
-  `messages` at a step boundary. The greeting written when an agent is created is the one
-  exception.
+  `messages` at a step boundary.
 - Release the lease only in `finish`: lock the row first, then check the queue.
 - Never hold a database transaction open across an LLM or tool call.
 - Stored messages are sent back to the model exactly as saved. Do not edit, reorder, or

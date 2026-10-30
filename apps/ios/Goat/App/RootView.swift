@@ -11,7 +11,7 @@ struct RootView: View {
           ContentUnavailableView {
             Label(message, systemImage: "wifi.exclamationmark")
           } actions: {
-            Button("다시 시도") { Task { await model.start() } }
+            Button("Try Again") { Task { await model.start() } }
               .buttonStyle(.glassProminent)
           }
         } else {

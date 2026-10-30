@@ -111,7 +111,7 @@ describe("messages with files", () => {
     expect(status(await send({ text: "이거 봐 줘", files: [id] }))).toBe(202);
     await waitForIdle(agentId);
 
-    const [, sent] = await listMessages(token, agentId);
+    const [sent] = await listMessages(token, agentId);
     expect(sent?.text).toBe("이거 봐 줘");
     expect(sent?.files).toEqual([{ id, name: "screen.png", mediaType: "image/png" }]);
     expect(seen(0, -1)?.slice(-2)).toEqual([
@@ -126,7 +126,7 @@ describe("messages with files", () => {
     expect(status(await send({ files: [id] }))).toBe(202);
     await waitForIdle(agentId);
 
-    const [, sent] = await listMessages(token, agentId);
+    const [sent] = await listMessages(token, agentId);
     expect(sent?.text).toBe("");
     expect(sent?.files?.map((file) => file.name)).toEqual(["notes.txt"]);
     expect(seen(0, -1)?.at(-1)).toBe('File "notes.txt":\n\n회의록');

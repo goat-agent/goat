@@ -22,6 +22,7 @@ final class AppModel {
   private(set) var agents: [Components.Schemas.Agent] = []
   var agentPath: [Components.Schemas.Agent] = []
   var isCreatingAgent = false
+  private(set) var userName = ""
   private(set) var needsName = false
   private(set) var isWorking = false
   private(set) var errorMessage: String?
@@ -47,7 +48,7 @@ final class AppModel {
       case .noContent:
         if self.signInPath.last != email { self.signInPath = [email] }
       case .badRequest:
-        self.errorMessage = "이메일 주소를 확인해 주세요."
+        self.errorMessage = String(localized: "Check your email address.")
       case .undocumented(let status, _):
         throw UnexpectedStatus(code: status)
       }
@@ -63,7 +64,7 @@ final class AppModel {
         try await self.route()
       case .badRequest, .unauthorized:
         self.failedAttempts += 1
-        self.errorMessage = "코드가 맞지 않거나 만료됐어요."
+        self.errorMessage = String(localized: "That code is wrong or has expired.")
       case .undocumented(let status, _):
         throw UnexpectedStatus(code: status)
       }
@@ -74,9 +75,10 @@ final class AppModel {
     await perform {
       switch try await self.client.updateMe(body: .json(.init(name: name))) {
       case .ok:
+        self.userName = name
         self.setupPath = [.agent]
       case .badRequest:
-        self.errorMessage = "이름을 확인해 주세요."
+        self.errorMessage = String(localized: "Check your name.")
       case .unauthorized:
         self.clearSession()
       case .undocumented(let status, _):
@@ -98,7 +100,7 @@ final class AppModel {
         self.isCreatingAgent = false
         self.screen = .home
       case .badRequest:
-        self.errorMessage = "입력한 내용을 확인해 주세요."
+        self.errorMessage = String(localized: "Check what you entered.")
       case .conflict:
         self.needsName = true
         self.setupPath = []
@@ -123,6 +125,7 @@ final class AppModel {
 
   private func clearSession() {
     tokens.clear()
+    userName = ""
     UserDefaults.standard.removeObject(forKey: Self.lastAgentKey)
     signInPath = []
     setupPath = []
@@ -138,6 +141,7 @@ final class AppModel {
     switch try await client.getMe() {
     case .ok(let response):
       let me = try response.body.json
+      userName = me.name
       if me.timeZone == nil { await fillTimeZone() }
       if me.name.isEmpty {
         needsName = true
@@ -181,7 +185,7 @@ final class AppModel {
     do {
       try await work()
     } catch {
-      errorMessage = "서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요."
+      errorMessage = String(localized: "Couldn’t reach the server. Try again in a moment.")
     }
   }
 }

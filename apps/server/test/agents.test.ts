@@ -42,15 +42,13 @@ function lastUserTexts() {
 }
 
 describe("agents", () => {
-  test("creates an agent named Goat that greets the user first", async () => {
+  test("creates an agent named Goat with an empty conversation", async () => {
     const response = await client.agents.$get(undefined, bearer(token));
     if (!response.ok) throw new Error(`list agents failed with ${response.status}`);
     const body = await response.json();
     expect(body.agents.map((agent) => agent.name)).toEqual(["Goat"]);
 
-    expect(await conversation()).toEqual([
-      "assistant: 안녕하세요, 민호님! Goat입니다. 무엇을 도와드릴까요?",
-    ]);
+    expect(await conversation()).toEqual([]);
   });
 
   test("hides another user's agent", async () => {
@@ -64,12 +62,12 @@ describe("agents", () => {
 });
 
 describe("conversation", () => {
-  test("replies and never sends the greeting to the model", async () => {
+  test("replies to a message", async () => {
     llm.reply = () => Promise.resolve("반가워요");
     expect((await send(token, agentId, "안녕")).status).toBe(202);
     await waitForIdle(agentId);
 
-    expect((await conversation()).slice(1)).toEqual(["user: 안녕", "assistant: 반가워요"]);
+    expect(await conversation()).toEqual(["user: 안녕", "assistant: 반가워요"]);
     expect(llm.prompts[0]?.map((message) => message.role)).toEqual(["system", "user"]);
   });
 
@@ -111,7 +109,7 @@ describe("conversation", () => {
     first.resolve("찾는 중이에요");
     await waitForIdle(agentId);
 
-    expect((await conversation()).slice(1)).toEqual([
+    expect(await conversation()).toEqual([
       "user: 기차 찾아 줘",
       "assistant: 찾는 중이에요",
       "user: KTX만",
@@ -198,12 +196,16 @@ describe("conversation", () => {
     await scan();
     await waitForIdle(agentId);
 
-    expect((await conversation()).slice(1)).toEqual(["user: 살아 있어?", "assistant: 네"]);
+    expect(await conversation()).toEqual(["user: 살아 있어?", "assistant: 네"]);
   });
 });
 
 describe("events", () => {
   test("streams messages after the last event id", async () => {
+    llm.reply = () => Promise.resolve("지난 답");
+    await send(token, agentId, "지난 질문");
+    await waitForIdle(agentId);
+
     const response = await client.agents[":id"].events.$get(
       { param: { id: agentId }, header: { "last-event-id": "0" } },
       bearer(token),
@@ -220,7 +222,7 @@ describe("events", () => {
       }
     };
 
-    await readUntil("Goat입니다");
+    await readUntil("지난 답");
     const reply = Promise.withResolvers<string>();
     llm.reply = () => reply.promise;
     await send(token, agentId, "들려?");

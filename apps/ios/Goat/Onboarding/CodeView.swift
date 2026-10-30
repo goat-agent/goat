@@ -10,7 +10,7 @@ struct CodeView: View {
   var body: some View {
     Form {
       Section {
-        TextField("6자리 코드", text: $code, prompt: Text("000000"))
+        TextField("6-Digit Code", text: $code, prompt: Text(verbatim: "000000"))
           .textContentType(.oneTimeCode)
           .keyboardType(.numberPad)
           .font(.title2.monospacedDigit())
@@ -21,13 +21,13 @@ struct CodeView: View {
             if digits.count == 6 { submitSoon() }
           }
       } footer: {
-        FormFooter(hint: "\(email) 주소로 보냈어요.", error: model.errorMessage)
+        FormFooter(hint: "Sent to \(email).", error: model.errorMessage)
       }
 
       Section {
         TimelineView(.periodic(from: .now, by: 1)) { context in
           let remaining = max(0, Int(resendAt.timeIntervalSince(context.date).rounded(.up)))
-          Button(remaining > 0 ? "\(remaining)초 뒤에 다시 받을 수 있어요" : "코드 다시 받기") {
+          Button(remaining > 0 ? "Resend Code in \(remaining)s" : "Resend Code") {
             resendAt = .now.addingTimeInterval(30)
             Task { await model.sendCode(to: email) }
           }
@@ -36,11 +36,11 @@ struct CodeView: View {
         }
       }
     }
-    .navigationTitle("코드 입력")
+    .navigationTitle("Enter Code")
     .safeAreaBar(edge: .bottom) {
       PrimaryButton(
-        title: "로그인",
-        workingTitle: "확인 중…",
+        title: "Sign In",
+        workingTitle: "Checking…",
         isWorking: model.isWorking,
         isEnabled: code.count == 6,
         action: submit

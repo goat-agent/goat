@@ -51,9 +51,11 @@ struct AttachmentChip: View {
       .clipShape(.rect(cornerRadius: 12))
     }
     .buttonStyle(.plain)
-    .accessibilityLabel(didFail ? "\(attachment.name), 올리지 못했어요. 다시 올리기" : attachment.name)
+    .accessibilityLabel(
+      didFail ? Text("\(attachment.name), Not Uploaded. Upload Again") : Text(attachment.name)
+    )
     .overlay(alignment: .topTrailing) {
-      Button("빼기", systemImage: "xmark.circle.fill", action: remove)
+      Button("Remove", systemImage: "xmark.circle.fill", action: remove)
         .labelStyle(.iconOnly)
         .symbolRenderingMode(.palette)
         .foregroundStyle(.white, .black.opacity(0.6))
