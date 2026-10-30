@@ -8,8 +8,9 @@ Read [docs/style/typescript.md](../../docs/style/typescript.md) before writing T
 - `src/env.ts` — environment, validated with Zod at startup.
 - `src/lib/` — modules several places use: `auth.ts` (Better Auth), `agent.ts` (agent runs),
   `events.ts` (LISTEN/NOTIFY), `openapi.ts` (route helpers), `logger.ts` (pino), `dates.ts`,
-  `i18n.ts` (supported languages), `ai/providers.ts` (model choice), `ai/tools/` (the tools
-  agents call).
+  `i18n.ts` (supported languages), `conversation.ts` (the text people see in messages),
+  `ai/providers.ts` (model choice, for replies and for transcribing recordings), `ai/tools/` (the
+  tools agents call).
 - `src/lib/ai/tools/index.ts` — `tools` go to the model on every request. Integration tools are
   deferred: they stay on the server, and the model reaches them through `tool_search` and
   `tool_call`, so the tool list the model sees never changes. Name deferred tools

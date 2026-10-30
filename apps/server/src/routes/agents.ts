@@ -1,5 +1,5 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import type { AssistantModelMessage, ModelMessage } from "ai";
+import { APICallError, type AssistantModelMessage, type ModelMessage } from "ai";
 import { and, asc, desc, eq, gt, lt } from "drizzle-orm";
 import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
@@ -7,10 +7,13 @@ import { streamSSE } from "hono/streaming";
 import { db } from "../db";
 import { agents, messages } from "../db/schema/agents";
 import { type Agent as AgentRow, createAgent, enqueue } from "../lib/agent";
+import { type TranscriptionHints, transcribe } from "../lib/ai/providers";
+import { recentLines, textOf } from "../lib/conversation";
 import { subscribe } from "../lib/events";
 import * as files from "../lib/files";
-import { matchIntegration } from "../lib/integrations/connections";
+import { listConnections, matchIntegration } from "../lib/integrations/connections";
 import { integrations } from "../lib/integrations/index";
+import { logger } from "../lib/logger";
 import { body, error, invalidRequest, json, openEnum } from "../lib/openapi";
 import { session, type SessionEnv } from "../middlewares/session";
 
@@ -63,6 +66,15 @@ const FileParams = z.object({ id: z.uuid(), fileId: z.uuid() });
 // Multipart framing adds a little on top of the file itself.
 const UPLOAD_BODY_LIMIT = files.maxUploadBytes + 64 * 1024;
 
+// OpenAI's limit for one transcription request.
+const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+const AUDIO_BODY_LIMIT = MAX_AUDIO_BYTES + 64 * 1024;
+
+const RECENT_MESSAGES = 6;
+const MAX_CONTEXT_CHARS = 1_000;
+
+const log = logger.child({ module: "agents" });
+
 type MessageRow = { id: number; message: ModelMessage; hidden: boolean; createdAt: Date };
 
 function publicAgent(agent: AgentRow): z.infer<typeof Agent> {
@@ -81,12 +93,9 @@ function publicMessage({
   createdAt,
 }: MessageRow): z.infer<typeof Message> | undefined {
   if (hidden) return undefined;
+  const text = textOf(message);
   if (message.role === "user") {
-    const { content } = message;
-    // The server puts its own parts first, so the user's text, if any, is the last part.
-    const last = typeof content === "string" ? content : content.at(-1);
-    const text = typeof last === "string" ? last : last?.type === "text" ? last.text : "";
-    const attached = files.attachments(content);
+    const attached = files.attachments(message.content);
     if (!text && attached.length === 0) return undefined;
     return {
       id,
@@ -97,10 +106,6 @@ function publicMessage({
     };
   }
   if (message.role !== "assistant") return undefined;
-  const text =
-    typeof message.content === "string"
-      ? message.content
-      : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
   const connect = connectRequests(message);
   if (!text && connect.length === 0) return undefined;
   return {
@@ -129,6 +134,37 @@ async function ownAgent(userId: string, agentId: string): Promise<void> {
     .from(agents)
     .where(and(eq(agents.id, agentId), eq(agents.userId, userId)));
   if (!agent) throw new HTTPException(404, { message: "agent not found" });
+}
+
+/** Recordings from Apple's recorder (MP4/M4A) and from browsers (WebM). */
+function isRecording(bytes: Uint8Array): boolean {
+  const isMp4 = new TextDecoder().decode(bytes.subarray(4, 8)) === "ftyp";
+  const isWebm = [0x1a, 0x45, 0xdf, 0xa3].every((byte, index) => bytes[index] === byte);
+  return isMp4 || isWebm;
+}
+
+async function transcriptionHints(
+  user: { id: string; name: string },
+  agentId: string,
+): Promise<TranscriptionHints> {
+  const [[agent], recent, connected] = await Promise.all([
+    db.select({ name: agents.name }).from(agents).where(eq(agents.id, agentId)),
+    recentLines(agentId, RECENT_MESSAGES),
+    listConnections(user.id),
+  ]);
+  const context = recent
+    .map(({ text }) => text)
+    .join("\n")
+    .slice(-MAX_CONTEXT_CHARS);
+  const names = connected.flatMap((connection) => {
+    const integration = integrations[connection.integrationId];
+    return integration ? [integration.name, connection.accountName] : [];
+  });
+  // The API refuses the whole request over one keyword with these characters.
+  const keywords = [user.name, agent?.name ?? "", ...names]
+    .map((keyword) => keyword.trim())
+    .filter((keyword) => keyword && !/[<>\r\n]/.test(keyword));
+  return { context, keywords: [...new Set(keywords)] };
 }
 
 async function statusOf(agentId: string): Promise<"running" | "idle"> {
@@ -274,6 +310,35 @@ const downloadFile = createRoute({
   },
 });
 
+const transcribeAudioRoute = createRoute({
+  operationId: "transcribeAudio",
+  method: "post",
+  path: "/{id}/transcriptions",
+  security: [{ bearer: [] }],
+  middleware: [bodyLimit({ maxSize: AUDIO_BODY_LIMIT })],
+  request: {
+    params: AgentParams,
+    body: {
+      content: {
+        "multipart/form-data": {
+          schema: z.object({ audio: z.file().openapi({ type: "string", format: "binary" }) }),
+          encoding: { audio: { contentType: "application/octet-stream" } },
+        },
+      },
+      required: true,
+      description: "A recording, M4A or WebM, up to 25 MB; the server keeps none of it",
+    },
+  },
+  responses: {
+    200: json(z.object({ text: z.string() }), "What was said; empty when nothing was"),
+    400: error("Invalid request, or not an M4A or WebM recording"),
+    401: error("Not signed in"),
+    404: error("No such agent"),
+    413: error("Body too large"),
+    502: error("The recording could not be transcribed"),
+  },
+});
+
 const streamEvents = createRoute({
   operationId: "streamEvents",
   method: "get",
@@ -360,6 +425,26 @@ export default app
       "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`,
       "cache-control": "private, max-age=31536000, immutable",
     });
+  })
+  .openapi(transcribeAudioRoute, async (c) => {
+    const { id } = c.req.valid("param");
+    await ownAgent(c.var.user.id, id);
+    const { audio } = c.req.valid("form");
+    if (audio.size > MAX_AUDIO_BYTES) return c.json({ error: "recording too large" }, 400);
+    const bytes = new Uint8Array(await audio.arrayBuffer());
+    if (!isRecording(bytes)) return c.json({ error: "not an M4A or WebM recording" }, 400);
+
+    const hints = await transcriptionHints(c.var.user, id);
+    let text: string;
+    try {
+      text = await transcribe(bytes, hints);
+    } catch (cause) {
+      if (!APICallError.isInstance(cause)) throw cause;
+      // The error carries the request, whose prompt holds message text, so log only the status.
+      log.warn({ agentId: id, status: cause.statusCode }, "transcription failed");
+      return c.json({ error: "transcription failed" }, 502);
+    }
+    return c.json({ text }, 200);
   })
   .openapi(streamEvents, async (c) => {
     const { id } = c.req.valid("param");

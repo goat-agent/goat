@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { z } from "zod";
+import type { TranscriptionHints } from "../src/lib/ai/providers";
 import type { Fetch, Integration } from "../src/lib/integrations/integration";
 import type { Scraped } from "../src/lib/web/firecrawl";
 import type { SearchResult } from "../src/lib/web/index";
@@ -23,6 +24,20 @@ export const llm = {
     this.reply = defaultReply;
   },
 };
+
+export const transcriber = {
+  hints: [] as TranscriptionHints[],
+  text: "",
+  reset() {
+    this.hints = [];
+    this.text = "";
+  },
+};
+
+export function fakeTranscribe(_audio: Uint8Array, hints: TranscriptionHints): Promise<string> {
+  transcriber.hints.push(hints);
+  return Promise.resolve(transcriber.text);
+}
 
 const usage = {
   inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
