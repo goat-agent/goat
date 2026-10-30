@@ -1,6 +1,6 @@
 # Swift style
 
-swift-format (`apps/ios/.swift-format`, strict) and the Swift 6 compiler already enforce
+swift-format (`.swift-format` at the repository root, strict) and the Swift 6 compiler already enforce
 formatting, naming case, no force unwraps or `try!`, import order, and data-race safety. This
 guide covers what no tool checks. Naming follows Apple's
 [API Design Guidelines](https://www.swift.org/documentation/api-design-guidelines/); the rest

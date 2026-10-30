@@ -4,6 +4,7 @@ import { env } from "../env";
 import * as agentsSchema from "./schema/agents";
 import * as authSchema from "./schema/auth";
 import * as connectionsSchema from "./schema/connections";
+import * as devicesSchema from "./schema/devices";
 import * as filesSchema from "./schema/files";
 
 export const client = postgres(env.DATABASE_URL, {
@@ -13,7 +14,13 @@ export const client = postgres(env.DATABASE_URL, {
 
 export const db = drizzle({
   client,
-  schema: { ...authSchema, ...agentsSchema, ...connectionsSchema, ...filesSchema },
+  schema: {
+    ...authSchema,
+    ...agentsSchema,
+    ...connectionsSchema,
+    ...devicesSchema,
+    ...filesSchema,
+  },
   casing: "snake_case",
 });
 

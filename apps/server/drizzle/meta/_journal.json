@@ -36,6 +36,13 @@
       "when": 1793356890700,
       "tag": "0004_files",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793368805767,
+      "tag": "0005_devices",
+      "breakpoints": true
     }
   ]
 }

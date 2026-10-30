@@ -1,18 +1,22 @@
 # Goat
 
 Goat is a personal AI agent. Each account has agents; each agent has one conversation that the
-user reaches from the iPhone app (later macOS and web). The server runs the agent and its tools.
+user reaches from the iPhone and Mac apps (later web). The server runs the agent and its tools,
+and the agent can use a signed-in Mac through computer use.
 
 ## Map
 
 - `apps/server` — Bun, Hono, Drizzle on Postgres, Better Auth, Vercel AI SDK. See
   [apps/server/AGENTS.md](apps/server/AGENTS.md).
-- `apps/ios` — SwiftUI app for iOS 26+, and the `GoatAPI` Swift package generated from the
-  server's OpenAPI document. See [apps/ios/AGENTS.md](apps/ios/AGENTS.md).
+- `apps/ios` — SwiftUI app for iOS 26+. See [apps/ios/AGENTS.md](apps/ios/AGENTS.md).
+- `apps/macos` — SwiftUI app for macOS 26+, distributed outside the App Store, and `Computer`,
+  the package that runs computer use. See [apps/macos/AGENTS.md](apps/macos/AGENTS.md).
+- `apps/shared` — Swift both Apple apps build from: `GoatKit` (screens and models, compiled into
+  each app) and `GoatAPI` (the client generated from the server's OpenAPI document).
 - `docs/style` — style guides. Read [typescript.md](docs/style/typescript.md) before writing
   TypeScript and [swift.md](docs/style/swift.md) before writing Swift.
-- `apps/*` holds what is deployed; `packages/*` is for code two apps share and is created only
-  when that happens.
+- `apps/*` holds what is deployed, plus `apps/shared` for the Swift the Apple apps share;
+  `packages/*` is for TypeScript two apps share and is created only when that happens.
 
 ## Commands
 

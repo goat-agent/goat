@@ -4,24 +4,30 @@ Read [docs/style/swift.md](../../docs/style/swift.md) before writing Swift.
 
 ## Map
 
-- `Goat/` — the app target. `App/` (state and root), `Onboarding/`, `Home/` (the agent list,
-  the first screen after sign-in), `Conversation/`, `Settings/`, `Integrations/` (the account
-  list and `Connector`, which runs the sign-in sheet), `Components/` (shared views),
-  `Assets.xcassets`. The project uses folder-synchronized groups, so new files in these folders
-  join the target without editing the project file.
+- `Goat/` — the iPhone's screens: `GoatApp`, `App/RootView`, `Onboarding/`, `Home/` (the agent
+  list, the first screen after sign-in), `Conversation/` (the conversation screen, its composer,
+  and calls), `Settings/`, `Components/PrimaryButton`, `Info.plist`, and `Assets.xcassets`.
+- `../shared/GoatKit/` — what the Mac shares, compiled into this target as a second
+  folder-synchronized group: `App/` (`AppModel`, `TokenStore`, `CurrentDevice`), `Conversation/`
+  (`ConversationModel`, `Dictation`, and the bubbles and cards both apps draw), `Integrations/`
+  (the account list and `Connector`, which runs the sign-in sheet), `Components/`, and the one
+  `Localizable.xcstrings` both apps use. Screens that should look different on each device are
+  written once per app; only models and the pieces both draw live here. New
+  files in either folder join the target without editing the project file.
 - `Conversation/` holds the voice features too. `Dictation` records with the system recorder and
   sends the recording to the server, which turns it into text for the composer. `Call` speaks
   plain WebRTC (the `stasel/WebRTC` package; Apple ships no public WebRTC) and only ever talks
   to goat's `startCall`, so the voice service can change without an app update.
-- `GoatAPI/` — Swift package. `openapi.json` is exported by the server (`bun run openapi` in
-  `apps/server`); never edit it by hand. Swift OpenAPI Generator turns it into `Client` and the
-  `Components`/`Operations` types at build time; generated code is not committed.
+- `../shared/GoatAPI/` — Swift package. `openapi.json` is exported by the server
+  (`bun run openapi` in `apps/server`); never edit it by hand. Swift OpenAPI Generator turns it
+  into `Client` and the `Components`/`Operations` types at build time; generated code is not
+  committed.
 
 ## Commands
 
 ```sh
-swift format lint --strict --recursive Goat GoatAPI/Sources GoatAPI/Package.swift
-swift format format --in-place --recursive Goat GoatAPI/Sources GoatAPI/Package.swift
+swift format lint --strict --recursive Goat ../shared/GoatKit ../shared/GoatAPI/Sources
+swift format format --in-place --recursive Goat ../shared/GoatKit ../shared/GoatAPI/Sources
 xcodebuild -project Goat.xcodeproj -scheme Goat \
   -destination 'generic/platform=iOS Simulator' -skipPackagePluginValidation build
 ```
@@ -47,10 +53,11 @@ Debug builds talk to `GOAT_SERVER_URL` (`http://localhost:3000`); run the server
 
 ## Localization
 
-- Write UI text in English in code; `Localizable.xcstrings` holds the other languages. Text
+- Write UI text in English in code; `../shared/GoatKit/Localizable.xcstrings` holds the other
+  languages for both apps. Text
   built outside a view, such as error messages in a model, goes through `String(localized:)`.
 - Building in Xcode adds new keys to the catalog; `xcodebuild` does not. From the command line,
-  build, then pass the build's `.stringsdata` files to `xcrun xcstringstool sync`. A key left
+  build both apps, then pass both builds' `.stringsdata` files to `xcrun xcstringstool sync`. A key left
   untranslated still builds, so fill in every language before finishing.
 
 ## API values

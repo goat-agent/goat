@@ -18,7 +18,11 @@ export const auth = betterAuth({
   baseURL: env.BETTER_AUTH_URL,
   secret: env.BETTER_AUTH_SECRET,
   database: drizzleAdapter(db, { provider: "pg", usePlural: true }),
-  session: { expiresIn: 90 * DAY, updateAge: DAY },
+  session: {
+    expiresIn: 90 * DAY,
+    updateAge: DAY,
+    additionalFields: { deviceId: { type: "string", required: false, input: false } },
+  },
   user: { additionalFields: { timeZone: { type: "string", required: false } } },
   plugins: [
     bearer(),
