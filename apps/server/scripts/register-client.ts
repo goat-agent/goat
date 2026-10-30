@@ -1,25 +1,35 @@
 // Registers goat with a server that supports dynamic client registration (RFC 7591).
 import { z } from "zod";
+import { canva } from "../src/lib/integrations/canva";
+import { granola } from "../src/lib/integrations/granola";
+import type { Integration } from "../src/lib/integrations/integration";
 import { linear } from "../src/lib/integrations/linear";
 import { notion } from "../src/lib/integrations/notion";
-import { redirectUri } from "../src/lib/integrations/oauth";
+import { discover, redirectUri } from "../src/lib/integrations/oauth";
+import { readwise } from "../src/lib/integrations/readwise";
+import { todoist } from "../src/lib/integrations/todoist";
 
-const registrable = { linear, notion };
+const registrable: Record<string, Integration> = {
+  linear,
+  notion,
+  todoist,
+  granola,
+  readwise,
+  canva,
+};
 
-const Metadata = z.object({ registration_endpoint: z.url() });
 const Registered = z.object({ client_id: z.string() });
 
 const id = process.argv[2];
-if (id !== "linear" && id !== "notion") {
+const integration = id ? registrable[id] : undefined;
+if (!id || !integration) {
   throw new Error(`usage: bun run register-client <${Object.keys(registrable).join("|")}>`);
 }
 
-const metadata = Metadata.parse(
-  await (
-    await fetch(new URL("/.well-known/oauth-authorization-server", registrable[id].auth.issuer))
-  ).json(),
-);
-const response = await fetch(metadata.registration_endpoint, {
+const { registration_endpoint: registrationEndpoint } = await discover(integration.auth.issuer);
+if (!registrationEndpoint) throw new Error(`${id} does not advertise client registration`);
+
+const response = await fetch(registrationEndpoint, {
   method: "POST",
   headers: { "content-type": "application/json" },
   body: JSON.stringify({

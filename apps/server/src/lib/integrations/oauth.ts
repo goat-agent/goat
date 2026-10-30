@@ -9,6 +9,7 @@ const Metadata = z.object({
   authorization_endpoint: z.url(),
   token_endpoint: z.url(),
   revocation_endpoint: z.url().optional(),
+  registration_endpoint: z.url().optional(),
   token_endpoint_auth_methods_supported: z.array(z.string()).optional(),
 });
 
@@ -191,7 +192,7 @@ function claimsOf(idToken: string): Identity["claims"] {
   return Claims.parse(JSON.parse(Buffer.from(payload, "base64url").toString("utf8")));
 }
 
-function discover(issuer: string): Promise<Metadata> {
+export function discover(issuer: string): Promise<Metadata> {
   const cached = discovered.get(issuer);
   if (cached) return cached;
   const pending = fetchMetadata(issuer).catch((error: unknown) => {
@@ -223,3 +224,4 @@ async function fetchMetadata(issuer: string): Promise<Metadata> {
   }
   throw new Error(`no authorization server metadata for ${issuer}`);
 }
+
