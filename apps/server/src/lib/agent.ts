@@ -11,7 +11,7 @@ import { db, type Transaction } from "../db";
 import { agents, messages, queuedMessages } from "../db/schema/agents";
 import { users } from "../db/schema/auth";
 import { model, providerOptions } from "./ai/providers";
-import { tools } from "./ai/tools";
+import { deferredTools, tools } from "./ai/tools";
 import { dateIn } from "./dates";
 import { notify } from "./events";
 import { logger } from "./logger";
@@ -190,7 +190,11 @@ async function execute(agentId: string, owner: string): Promise<void> {
         instructions,
         messages: history,
         tools,
-        toolsContext: { time: { timeZone } },
+        toolsContext: {
+          time: { timeZone },
+          tool_search: { tools: deferredTools },
+          tool_call: { tools: deferredTools },
+        },
         providerOptions,
         abortSignal: signal,
         timeout: { stepMs: STEP_TIMEOUT_MS, toolMs: TOOL_TIMEOUT_MS },

@@ -12,6 +12,8 @@ Read [docs/style/typescript.md](../../docs/style/typescript.md) before writing T
 - `src/lib/ai/tools/index.ts` — `tools` go to the model on every request; `deferredTools` stay on
   the server, and the model reaches them through `tool_search` and `tool_call`, so the tool list
   the model sees never changes. Name deferred tools `service_action` (`github_create_issue`).
+  Each tool file exports one object keyed by tool name (`webTools`). Values that change from run to
+  run, such as the time zone or the tools a user can reach, arrive through `toolsContext`.
 - `src/lib/web/` — `search` and `fetch` in `index.ts`; each backend gets its own file there
   (`firecrawl.ts`), and only `index.ts` decides which backend serves a call.
 - `src/middlewares/`, `src/routes/` — Hono. Route files default-export their `OpenAPIHono` app.

@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { generateText, isStepCount, tool } from "ai";
+import { generateText, isStepCount, tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { searchTools } from "../src/lib/ai/tools/search";
 import { fakeModel, llm } from "./fakes";
 import { bearer, client, createAgent, resetDatabase, send, signIn, waitForIdle } from "./helpers";
 
 const sent: string[] = [];
-const tools = searchTools({
+const reachable: ToolSet = {
   slack_send_message: tool({
     description: "Send a Slack message to a channel or person.",
     inputSchema: z.object({ channel: z.string(), text: z.string() }),
@@ -23,14 +23,20 @@ const tools = searchTools({
     description: "Create an event on the user's calendar.",
     inputSchema: z.object({ title: z.string(), start: z.string().describe("Start date and time") }),
   }),
-});
+};
 
 type Call = { toolName: string; input: object };
 
 async function resultOf(call: Call) {
   llm.reset();
   llm.reply = () => Promise.resolve(llm.prompts.length === 1 ? call : "done");
-  await generateText({ model: fakeModel, prompt: "hi", tools, stopWhen: isStepCount(2) });
+  await generateText({
+    model: fakeModel,
+    prompt: "hi",
+    tools: searchTools,
+    toolsContext: { tool_search: { tools: reachable }, tool_call: { tools: reachable } },
+    stopWhen: isStepCount(2),
+  });
   const message = llm.prompts[1]?.at(-1);
   const part = message?.role === "tool" ? message.content[0] : undefined;
   return part?.type === "tool-result" ? part.output : undefined;

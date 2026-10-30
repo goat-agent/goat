@@ -12,45 +12,45 @@ type Entry = {
   terms: string[];
 };
 
-export function searchTools(deferred: ToolSet) {
-  const catalog = Promise.all(
-    Object.entries(deferred).map(([name, target]) => describe(name, target)),
-  );
+const Reachable = z.object({ tools: z.custom<ToolSet>() });
 
-  return {
-    tool_search: tool({
-      description:
-        "Find more tools by what they do, such as email, calendar, or code hosting. Returns up to five tools with their input schemas; run one with tool_call.",
-      inputSchema: z.object({
-        query: z.string().min(1).max(500).describe("What the tool should do, in English keywords"),
-      }),
-      execute: async ({ query }) => {
-        const found = rank(await catalog, query);
-        return {
-          tools: found.map(({ name, description, inputSchema }) => ({
-            name,
-            description,
-            inputSchema,
-          })),
-        };
-      },
+export const searchTools = {
+  tool_search: tool({
+    description:
+      "Find more tools by what they do, such as email, calendar, or code hosting. Returns up to five tools with their input schemas; run one with tool_call.",
+    inputSchema: z.object({
+      query: z.string().min(1).max(500).describe("What the tool should do, in English keywords"),
     }),
-    tool_call: tool({
-      description: "Run a tool found with tool_search.",
-      inputSchema: z.object({ name: z.string(), input: z.record(z.string(), z.unknown()) }),
-      execute: async ({ name, input }, options) => {
-        const target = deferred[name];
-        if (!target?.execute) throw new Error(`No tool named ${name}; find it with tool_search.`);
+    contextSchema: Reachable,
+    execute: async ({ query }, { context }) => {
+      const catalog = await Promise.all(
+        Object.entries(context.tools).map(([name, target]) => describe(name, target)),
+      );
+      return {
+        tools: rank(catalog, query).map(({ name, description, inputSchema }) => ({
+          name,
+          description,
+          inputSchema,
+        })),
+      };
+    },
+  }),
+  tool_call: tool({
+    description: "Run a tool found with tool_search.",
+    inputSchema: z.object({ name: z.string(), input: z.record(z.string(), z.unknown()) }),
+    contextSchema: Reachable,
+    execute: async ({ name, input }, options) => {
+      const target = options.context.tools[name];
+      if (!target?.execute) throw new Error(`No tool named ${name}; find it with tool_search.`);
 
-        const checked = await asSchema(target.inputSchema).validate?.(input);
-        if (checked?.success === false) throw new Error(`Invalid input: ${checked.error.message}`);
+      const checked = await asSchema(target.inputSchema).validate?.(input);
+      if (checked?.success === false) throw new Error(`Invalid input: ${checked.error.message}`);
 
-        const output: unknown = await target.execute(checked ? checked.value : input, options);
-        return output;
-      },
-    }),
-  };
-}
+      const output: unknown = await target.execute(checked ? checked.value : input, options);
+      return output;
+    },
+  }),
+};
 
 async function describe(name: string, target: ToolSet[string]): Promise<Entry> {
   const description = typeof target.description === "string" ? target.description : undefined;
