@@ -9,6 +9,7 @@ import {
   fakeModel,
   fakeStorage,
   fakeTranscribe,
+  fakeVoice,
 } from "./fakes";
 
 const url = new URL(process.env.DATABASE_URL ?? "");
@@ -33,6 +34,7 @@ await mock.module("../src/lib/ai/providers", () => ({
   providerOptions: {},
   transcribe: fakeTranscribe,
 }));
+await mock.module("../src/lib/calls/openai", () => fakeVoice);
 await mock.module("resend", () => ({ Resend: FakeResend }));
 await mock.module("../src/lib/web/firecrawl", () => fakeFirecrawl);
 await mock.module("../src/lib/files/s3", () => fakeStorage);

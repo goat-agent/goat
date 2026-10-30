@@ -11,6 +11,12 @@ Read [docs/style/typescript.md](../../docs/style/typescript.md) before writing T
   `i18n.ts` (supported languages), `conversation.ts` (the text people see in messages),
   `ai/providers.ts` (model choice, for replies and for transcribing recordings), `ai/tools/` (the
   tools agents call).
+- `src/lib/calls/` — voice calls. The device sends audio straight to the voice service over
+  WebRTC; the server only answers the offer and joins the session beside the device. When the
+  voice model hands a request over, `index.ts` queues what the user said as a normal message and
+  reports the agent's replies back, so calls and typing share one conversation. Everything
+  specific to the voice service stays in its file (`openai.ts`). A call lives on the instance
+  that started it.
 - `src/lib/ai/tools/index.ts` — `tools` go to the model on every request. Integration tools are
   deferred: they stay on the server, and the model reaches them through `tool_search` and
   `tool_call`, so the tool list the model sees never changes. Name deferred tools

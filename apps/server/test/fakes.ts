@@ -2,6 +2,7 @@ import { tool } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { z } from "zod";
 import type { TranscriptionHints } from "../src/lib/ai/providers";
+import type { Handlers, Session, Setup } from "../src/lib/calls/openai";
 import type { Fetch, Integration } from "../src/lib/integrations/integration";
 import type { Scraped } from "../src/lib/web/firecrawl";
 import type { SearchResult } from "../src/lib/web/index";
@@ -38,6 +39,35 @@ export function fakeTranscribe(_audio: Uint8Array, hints: TranscriptionHints): P
   transcriber.hints.push(hints);
   return Promise.resolve(transcriber.text);
 }
+
+export const voiceService = {
+  setups: [] as Setup[],
+  handlers: undefined as Handlers | undefined,
+  reports: [] as { taskId: string; text: string }[],
+  reset() {
+    this.setups = [];
+    this.handlers = undefined;
+    this.reports = [];
+  },
+};
+
+export const fakeVoice = {
+  start: (offer: string, setup: Setup): Promise<{ id: string; answer: string }> => {
+    voiceService.setups.push(setup);
+    return Promise.resolve({ id: "live_test", answer: `answer to ${offer}` });
+  },
+  attach: (_id: string, handlers: Handlers): Session => {
+    voiceService.handlers = handlers;
+    return {
+      report: (taskId, text) => {
+        voiceService.reports.push({ taskId, text });
+      },
+      close: () => {
+        handlers.onClosed();
+      },
+    };
+  },
+};
 
 const usage = {
   inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },

@@ -8,9 +8,11 @@ import { db } from "../db";
 import { agents, messages } from "../db/schema/agents";
 import { type Agent as AgentRow, createAgent, enqueue } from "../lib/agent";
 import { type TranscriptionHints, transcribe } from "../lib/ai/providers";
+import { startCall } from "../lib/calls/index";
 import { recentLines, textOf } from "../lib/conversation";
 import { subscribe } from "../lib/events";
 import * as files from "../lib/files";
+import { localeOf } from "../lib/i18n";
 import { listConnections, matchIntegration } from "../lib/integrations/connections";
 import { integrations } from "../lib/integrations/index";
 import { logger } from "../lib/logger";
@@ -69,6 +71,8 @@ const UPLOAD_BODY_LIMIT = files.maxUploadBytes + 64 * 1024;
 // OpenAI's limit for one transcription request.
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const AUDIO_BODY_LIMIT = MAX_AUDIO_BYTES + 64 * 1024;
+
+const MAX_SDP_CHARS = 20_000;
 
 const RECENT_MESSAGES = 6;
 const MAX_CONTEXT_CHARS = 1_000;
@@ -339,6 +343,30 @@ const transcribeAudioRoute = createRoute({
   },
 });
 
+const startCallRoute = createRoute({
+  operationId: "startCall",
+  method: "post",
+  path: "/{id}/calls",
+  security: [{ bearer: [] }],
+  request: {
+    params: AgentParams,
+    body: body(
+      z.object({ sdp: z.string().min(1).max(MAX_SDP_CHARS).describe("The device's WebRTC offer") }),
+      "A voice call with the agent; requests and replies land in the conversation",
+    ),
+  },
+  responses: {
+    201: json(
+      z.object({ sdp: z.string().describe("The WebRTC answer") }),
+      "The call is ready; audio flows once the answer is set. Close the connection to hang up",
+    ),
+    400: error("Invalid request"),
+    401: error("Not signed in"),
+    404: error("No such agent"),
+    502: error("The call could not be started"),
+  },
+});
+
 const streamEvents = createRoute({
   operationId: "streamEvents",
   method: "get",
@@ -445,6 +473,24 @@ export default app
       return c.json({ error: "transcription failed" }, 502);
     }
     return c.json({ text }, 200);
+  })
+  .openapi(startCallRoute, async (c) => {
+    const { id } = c.req.valid("param");
+    const [agent] = await db
+      .select({ id: agents.id, name: agents.name, instructions: agents.instructions })
+      .from(agents)
+      .where(and(eq(agents.id, id), eq(agents.userId, c.var.user.id)));
+    if (!agent) return c.json({ error: "agent not found" }, 404);
+
+    const { sdp } = c.req.valid("json");
+    const locale = localeOf(c.req.raw.headers);
+    try {
+      const { answer } = await startCall(c.var.user, agent, sdp, locale);
+      return c.json({ sdp: answer }, 201);
+    } catch (cause) {
+      log.warn({ err: cause, agentId: id }, "call failed to start");
+      return c.json({ error: "call failed to start" }, 502);
+    }
   })
   .openapi(streamEvents, async (c) => {
     const { id } = c.req.valid("param");
