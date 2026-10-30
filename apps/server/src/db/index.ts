@@ -4,6 +4,7 @@ import { env } from "../env";
 import * as agentsSchema from "./schema/agents";
 import * as authSchema from "./schema/auth";
 import * as connectionsSchema from "./schema/connections";
+import * as filesSchema from "./schema/files";
 
 export const client = postgres(env.DATABASE_URL, {
   // A process paused inside a transaction would otherwise hold its row locks forever.
@@ -12,7 +13,7 @@ export const client = postgres(env.DATABASE_URL, {
 
 export const db = drizzle({
   client,
-  schema: { ...authSchema, ...agentsSchema, ...connectionsSchema },
+  schema: { ...authSchema, ...agentsSchema, ...connectionsSchema, ...filesSchema },
   casing: "snake_case",
 });
 

@@ -1,14 +1,24 @@
+import GoatAPI
 import SwiftUI
 
 struct OutgoingBubble: View {
   let message: ConversationModel.Outgoing
+  let load: (Components.Schemas.File) async -> URL?
+  let open: (URL) -> Void
   let retry: () -> Void
   let discard: () -> Void
 
   var body: some View {
     VStack(alignment: .trailing, spacing: 4) {
-      MessageBubble(text: message.text, isMine: true)
-        .opacity(message.state == .failed ? 1 : 0.55)
+      Group {
+        ForEach(message.files, id: \.id) { file in
+          SentFile(file: file, load: load, open: open)
+        }
+        if !message.text.isEmpty {
+          MessageBubble(text: message.text, isMine: true)
+        }
+      }
+      .opacity(message.state == .failed ? 1 : 0.55)
       switch message.state {
       case .sending:
         Text("Sending…")

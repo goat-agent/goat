@@ -4,6 +4,16 @@
     "" : {
       "shouldTranslate" : false
     },
+    "%@, Not Uploaded. Upload Again" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, 올리지 못했어요. 다시 올리기"
+          }
+        }
+      }
+    },
     "6-Digit Code" : {
       "localizations" : {
         "ko" : {
@@ -40,6 +50,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "에이전트"
+          }
+        }
+      }
+    },
+    "Attach" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "첨부"
           }
         }
       }
@@ -204,6 +224,16 @@
         }
       }
     },
+    "Files" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "파일"
+          }
+        }
+      }
+    },
     "Get Started" : {
       "localizations" : {
         "ko" : {
@@ -324,12 +354,42 @@
         }
       }
     },
+    "Photo" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "사진"
+          }
+        }
+      }
+    },
+    "Photos" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "사진"
+          }
+        }
+      }
+    },
     "Reconnect" : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "다시 연결"
+          }
+        }
+      }
+    },
+    "Remove" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "빼기"
           }
         }
       }

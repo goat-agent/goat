@@ -84,6 +84,28 @@ export const fakeFirecrawl = {
   scrape: (url: string): Promise<Scraped> => Promise.resolve({ ...webBackend.page, url }),
 };
 
+export const storedObjects = new Map<string, { data: Uint8Array; mediaType: string }>();
+
+export const fakeStorage = {
+  put: (key: string, data: Uint8Array, mediaType: string): Promise<void> => {
+    storedObjects.set(key, { data, mediaType });
+    return Promise.resolve();
+  },
+  get: (key: string): Promise<Uint8Array> => {
+    const stored = storedObjects.get(key);
+    return stored ? Promise.resolve(stored.data) : Promise.reject(new Error(`no object ${key}`));
+  },
+  remove: (key: string): Promise<void> => {
+    storedObjects.delete(key);
+    return Promise.resolve();
+  },
+  open: (key: string): Blob => {
+    const stored = storedObjects.get(key);
+    if (!stored) throw new Error(`no object ${key}`);
+    return new Blob([stored.data], { type: stored.mediaType });
+  },
+};
+
 export const mailbox = new Map<string, string>();
 
 export class FakeResend {
