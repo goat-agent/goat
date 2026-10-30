@@ -2,7 +2,7 @@ import { mock } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
-import { FakeResend, fakeModel } from "./fakes";
+import { FakeResend, fakeFirecrawl, fakeModel } from "./fakes";
 
 const url = new URL(process.env.DATABASE_URL ?? "");
 const database = url.pathname.slice(1);
@@ -23,6 +23,7 @@ await client.end();
 
 await mock.module("../src/lib/ai/providers", () => ({ model: fakeModel, providerOptions: {} }));
 await mock.module("resend", () => ({ Resend: FakeResend }));
+await mock.module("../src/lib/web/firecrawl", () => fakeFirecrawl);
 
 function parse(target: URL) {
   return {

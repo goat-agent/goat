@@ -25,6 +25,19 @@ describe("auth", () => {
     expect(status(response)).toBe(401);
   });
 
+  test("keeps a time zone the server knows and rejects any other", async () => {
+    const token = await signIn("minho@example.com");
+    const set = (timeZone: string) => client.me.$patch({ json: { timeZone } }, bearer(token));
+
+    expect(status(await set("GMT+0900"))).toBe(400);
+    expect(status(await client.me.$patch({ json: {} }, bearer(token)))).toBe(400);
+    expect(status(await set("Asia/Seoul"))).toBe(200);
+
+    const response = await client.me.$get(undefined, bearer(token));
+    if (!response.ok) throw new Error(`get me failed with ${response.status}`);
+    expect(await response.json()).toMatchObject({ timeZone: "Asia/Seoul" });
+  });
+
   test("keeps the agent funnel closed until the user has a name", async () => {
     const token = await signIn("minho@example.com");
     expect(status(await client.agents.$post({ json: {} }, bearer(token)))).toBe(409);

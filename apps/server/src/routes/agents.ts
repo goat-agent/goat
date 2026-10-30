@@ -52,10 +52,11 @@ function publicMessage({
   createdAt,
 }: MessageRow): z.infer<typeof Message> | undefined {
   if (message.role !== "user" && message.role !== "assistant") return undefined;
-  const text =
+  const texts =
     typeof message.content === "string"
-      ? message.content
-      : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+      ? [message.content]
+      : message.content.flatMap((part) => (part.type === "text" ? [part.text] : []));
+  const text = message.role === "user" ? texts.at(-1) : texts.join("");
   return text ? { id, role: message.role, text, createdAt: createdAt.toISOString() } : undefined;
 }
 
@@ -200,7 +201,7 @@ export default app
   .openapi(sendMessage, async (c) => {
     const { id } = c.req.valid("param");
     await ownAgent(c.var.user.id, id);
-    await enqueue(id, c.req.valid("json").text);
+    await enqueue(id, c.req.valid("json").text, c.var.user.timeZone ?? undefined);
     return c.body(null, 202);
   })
   .openapi(streamEvents, async (c) => {

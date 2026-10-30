@@ -46,7 +46,7 @@ struct MarkdownText: View {
   }
 }
 
-struct MarkdownBlock: Identifiable {
+private struct MarkdownBlock: Identifiable {
   enum Kind: Equatable {
     case paragraph
     case heading(level: Int)

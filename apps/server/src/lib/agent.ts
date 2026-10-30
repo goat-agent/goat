@@ -4,13 +4,17 @@ import {
   type LanguageModelUsage,
   type ModelMessage,
   RetryError,
+  type UserContent,
 } from "ai";
-import { and, asc, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { db, type Transaction } from "../db";
 import { agents, messages, queuedMessages } from "../db/schema/agents";
 import { users } from "../db/schema/auth";
 import { model, providerOptions } from "./ai/providers";
+import { deferredTools, tools } from "./ai/tools";
+import { dateIn } from "./dates";
 import { notify } from "./events";
+import { logger } from "./logger";
 
 const LEASE = sql`interval '60 seconds'`;
 const LEASE_DEADLINE_MS = 45_000;
@@ -18,9 +22,12 @@ const RENEW_INTERVAL_MS = 20_000;
 const SCAN_INTERVAL_MS = 30_000;
 const SCAN_BATCH = 20;
 const STEP_TIMEOUT_MS = 10 * 60_000;
+const TOOL_TIMEOUT_MS = 2 * 60_000;
 const MAX_STEPS = 32;
 
 export type Agent = typeof agents.$inferSelect;
+
+const log = logger.child({ module: "agent" });
 
 class LeaseLost extends Error {}
 class ShuttingDown extends Error {}
@@ -53,9 +60,36 @@ export async function createAgent(
   });
 }
 
-export async function enqueue(agentId: string, text: string): Promise<void> {
-  await db.insert(queuedMessages).values({ agentId, message: { role: "user", content: text } });
+export async function enqueue(agentId: string, text: string, timeZone = "UTC"): Promise<void> {
+  const today = dateIn(timeZone, new Date());
+  const last = await lastUserMessageAt(agentId);
+  const content: UserContent =
+    last && dateIn(timeZone, last) === today
+      ? text
+      : [
+          { type: "text", text: `Today's date is ${today}.` },
+          { type: "text", text },
+        ];
+  await db.insert(queuedMessages).values({ agentId, message: { role: "user", content } });
   launch(agentId, { onlyIfQueued: true });
+}
+
+async function lastUserMessageAt(agentId: string): Promise<Date | undefined> {
+  const [queued] = await db
+    .select({ createdAt: queuedMessages.createdAt })
+    .from(queuedMessages)
+    .where(eq(queuedMessages.agentId, agentId))
+    .orderBy(desc(queuedMessages.id))
+    .limit(1);
+  if (queued) return queued.createdAt;
+
+  const [sent] = await db
+    .select({ createdAt: messages.createdAt })
+    .from(messages)
+    .where(and(eq(messages.agentId, agentId), sql`${messages.message}->>'role' = 'user'`))
+    .orderBy(desc(messages.id))
+    .limit(1);
+  return sent?.createdAt;
 }
 
 export function startAgents(): void {
@@ -63,7 +97,9 @@ export function startAgents(): void {
     if (shutdown.signal.aborted) return;
     const jittered = SCAN_INTERVAL_MS * (0.5 + Math.random());
     scanTimer = setTimeout(() => {
-      scan().catch(logError).finally(schedule);
+      scan()
+        .catch((error: unknown) => log.error({ err: error }, "scan failed"))
+        .finally(schedule);
     }, jittered);
   };
   schedule();
@@ -105,7 +141,7 @@ async function start(agentId: string, options: { onlyIfQueued: boolean }): Promi
     const owner = await claim(agentId, options.onlyIfQueued);
     if (owner) await execute(agentId, owner);
   } catch (error) {
-    logError(error);
+    log.error({ err: error, agentId }, "run failed to start or finish");
   } finally {
     running.delete(agentId);
   }
@@ -136,7 +172,7 @@ async function execute(agentId: string, owner: string): Promise<void> {
   const lease = holdLease(agentId, owner, lost);
   try {
     signal.throwIfAborted();
-    const instructions = await loadInstructions(agentId);
+    const { instructions, timeZone } = await loadSetup(agentId);
     for (let step = 0; step < MAX_STEPS; step++) {
       signal.throwIfAborted();
       await lease.write((tx) => drainQueue(tx, agentId));
@@ -148,14 +184,33 @@ async function execute(agentId: string, owner: string): Promise<void> {
         continue;
       }
 
+      const startedAt = performance.now();
       const result = await generateText({
         model,
         instructions,
         messages: history,
+        tools,
+        toolsContext: {
+          time: { timeZone },
+          tool_search: { tools: deferredTools },
+          tool_call: { tools: deferredTools },
+        },
         providerOptions,
         abortSignal: signal,
-        timeout: { stepMs: STEP_TIMEOUT_MS },
+        timeout: { stepMs: STEP_TIMEOUT_MS, toolMs: TOOL_TIMEOUT_MS },
       });
+      log.info(
+        {
+          agentId,
+          model: result.response.modelId,
+          finishReason: result.finishReason,
+          tools: result.toolCalls.map((call) => call.toolName),
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          ms: Math.round(performance.now() - startedAt),
+        },
+        "step",
+      );
       await lease.write((tx) =>
         saveResponse(tx, agentId, {
           messages: result.response.messages,
@@ -169,8 +224,10 @@ async function execute(agentId: string, owner: string): Promise<void> {
     if (signal.reason instanceof ShuttingDown) {
       await lease.stop();
       await lease.expire();
-    } else if (!(error instanceof LeaseLost) && !signal.aborted) {
-      logError(error);
+    } else if (error instanceof LeaseLost || signal.reason instanceof LeaseLost) {
+      log.warn({ agentId }, "lease lost");
+    } else if (!signal.aborted) {
+      log.error({ err: error, agentId }, "run failed");
       if (isRetryable(error)) {
         await lease.stop();
         await lease.expire();
@@ -310,17 +367,25 @@ async function loadHistory(agentId: string): Promise<ModelMessage[]> {
   return first === -1 ? [] : history.slice(first);
 }
 
-async function loadInstructions(agentId: string): Promise<string> {
+async function loadSetup(agentId: string): Promise<{ instructions: string; timeZone: string }> {
   const [row] = await db
-    .select({ name: agents.name, instructions: agents.instructions, userName: users.name })
+    .select({
+      name: agents.name,
+      instructions: agents.instructions,
+      userName: users.name,
+      timeZone: users.timeZone,
+    })
     .from(agents)
     .innerJoin(users, eq(users.id, agents.userId))
     .where(eq(agents.id, agentId));
   if (!row) throw new LeaseLost();
 
-  const parts = [`You are ${row.name}, a personal agent for ${row.userName}.`];
+  const parts = [
+    `You are ${row.name}, a personal agent for ${row.userName}.`,
+    "When an answer relies on the web, cite the pages you used.",
+  ];
   if (row.instructions) parts.push(`${row.userName}'s instructions:\n${row.instructions}`);
-  return parts.join("\n\n");
+  return { instructions: parts.join("\n\n"), timeZone: row.timeZone ?? "UTC" };
 }
 
 // Retried by the scanner; anything else is dropped so a request that can never succeed does not loop.
@@ -328,8 +393,4 @@ function isRetryable(error: unknown): boolean {
   if (RetryError.isInstance(error)) return error.reason === "maxRetriesExceeded";
   if (APICallError.isInstance(error)) return error.isRetryable;
   return error instanceof Error && error.name === "TimeoutError";
-}
-
-function logError(error: unknown): void {
-  console.error("[agent]", error);
 }

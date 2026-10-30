@@ -49,6 +49,9 @@
           },
           "name": {
             "type": "string"
+          },
+          "timeZone": {
+            "type": "string"
           }
         },
         "required": [
@@ -301,7 +304,7 @@
           }
         ],
         "requestBody": {
-          "description": "Profile fields to change",
+          "description": "Profile fields to change; the time zone is an IANA name",
           "required": true,
           "content": {
             "application/json": {
@@ -312,11 +315,11 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 100
+                  },
+                  "timeZone": {
+                    "type": "string"
                   }
-                },
-                "required": [
-                  "name"
-                ]
+                }
               }
             }
           }

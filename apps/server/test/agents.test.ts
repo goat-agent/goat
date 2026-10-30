@@ -4,6 +4,7 @@ import { eq, sql } from "drizzle-orm";
 import { db } from "../src/db";
 import { agents, messages } from "../src/db/schema/agents";
 import { scan } from "../src/lib/agent";
+import { dateIn } from "../src/lib/dates";
 import { llm } from "./fakes";
 import {
   bearer,
@@ -31,6 +32,13 @@ beforeEach(async () => {
 async function conversation() {
   const list = await listMessages(token, agentId);
   return list.map(({ role, text }) => `${role}: ${text}`);
+}
+
+function lastUserTexts() {
+  return llm.prompts
+    .at(-1)
+    ?.findLast((message) => message.role === "user")
+    ?.content.map((part) => (part.type === "text" ? part.text : ""));
 }
 
 describe("agents", () => {
@@ -63,6 +71,33 @@ describe("conversation", () => {
 
     expect((await conversation()).slice(1)).toEqual(["user: 안녕", "assistant: 반가워요"]);
     expect(llm.prompts[0]?.map((message) => message.role)).toEqual(["system", "user"]);
+  });
+
+  test("tells the model the date on the first message of each day in the user's time zone", async () => {
+    await client.me.$patch({ json: { timeZone: "Asia/Seoul" } }, bearer(token));
+    const today = `Today's date is ${dateIn("Asia/Seoul", new Date())}.`;
+
+    await send(token, agentId, "안녕");
+    await waitForIdle(agentId);
+    expect(lastUserTexts()).toEqual([today, "안녕"]);
+
+    await send(token, agentId, "또 왔어");
+    await waitForIdle(agentId);
+    expect(lastUserTexts()).toEqual(["또 왔어"]);
+
+    await db
+      .update(messages)
+      .set({ createdAt: sql`${messages.createdAt} - interval '1 day'` })
+      .where(eq(messages.agentId, agentId));
+    await send(token, agentId, "다음 날이야");
+    await waitForIdle(agentId);
+    expect(lastUserTexts()).toEqual([today, "다음 날이야"]);
+
+    expect((await conversation()).filter((line) => line.startsWith("user:"))).toEqual([
+      "user: 안녕",
+      "user: 또 왔어",
+      "user: 다음 날이야",
+    ]);
   });
 
   test("steers a message sent while a reply is in progress", async () => {

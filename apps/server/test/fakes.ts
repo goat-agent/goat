@@ -1,7 +1,10 @@
 import { MockLanguageModelV4 } from "ai/test";
+import type { Scraped } from "../src/lib/web/firecrawl";
+import type { SearchResult } from "../src/lib/web/index";
 
 type Prompt = Parameters<MockLanguageModelV4["doGenerate"]>[0]["prompt"];
-type Reply = (prompt: Prompt) => Promise<string>;
+type ToolCall = { toolName: string; input: object };
+type Reply = (prompt: Prompt) => Promise<string | ToolCall>;
 
 const defaultReply: Reply = () => Promise.resolve("ok");
 
@@ -18,20 +21,37 @@ export const llm = {
   },
 };
 
+const usage = {
+  inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+  outputTokens: { total: 1, text: 1, reasoning: undefined },
+};
+
 export const fakeModel = new MockLanguageModelV4({
   doGenerate: async ({ prompt }) => {
     llm.prompts.push(prompt);
     llm.active += 1;
     llm.maxActive = Math.max(llm.maxActive, llm.active);
     try {
-      const text = await llm.reply(prompt);
+      const reply = await llm.reply(prompt);
+      if (typeof reply === "string") {
+        return {
+          content: [{ type: "text", text: reply }],
+          finishReason: { unified: "stop", raw: undefined },
+          usage,
+          warnings: [],
+        };
+      }
       return {
-        content: [{ type: "text", text }],
-        finishReason: { unified: "stop", raw: undefined },
-        usage: {
-          inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
-          outputTokens: { total: 1, text: 1, reasoning: undefined },
-        },
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: `call-${llm.prompts.length}`,
+            toolName: reply.toolName,
+            input: JSON.stringify(reply.input),
+          },
+        ],
+        finishReason: { unified: "tool-calls", raw: undefined },
+        usage,
         warnings: [],
       };
     } finally {
@@ -39,6 +59,27 @@ export const fakeModel = new MockLanguageModelV4({
     }
   },
 });
+
+const blankPage: Scraped = { title: "", url: "", markdown: "" };
+
+export const webBackend = {
+  queries: [] as string[],
+  results: [] as SearchResult[],
+  page: blankPage,
+  reset() {
+    this.queries = [];
+    this.results = [];
+    this.page = blankPage;
+  },
+};
+
+export const fakeFirecrawl = {
+  search: (query: string): Promise<SearchResult[]> => {
+    webBackend.queries.push(query);
+    return Promise.resolve(webBackend.results);
+  },
+  scrape: (url: string): Promise<Scraped> => Promise.resolve({ ...webBackend.page, url }),
+};
 
 export const mailbox = new Map<string, string>();
 

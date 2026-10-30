@@ -1,15 +1,23 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { auth } from "../lib/auth";
+import { isTimeZone } from "../lib/dates";
 import { body, error, invalidRequest, json } from "../lib/openapi";
 import { session, type SessionEnv } from "../middlewares/session";
 
 export const User = z
-  .object({ id: z.string(), email: z.string(), name: z.string() })
+  .object({ id: z.string(), email: z.string(), name: z.string(), timeZone: z.string().optional() })
   .openapi("User");
 
-export function publicUser(user: z.infer<typeof User>): z.infer<typeof User> {
-  return { id: user.id, email: user.email, name: user.name };
+export function publicUser(user: typeof auth.$Infer.Session.user): z.infer<typeof User> {
+  return { id: user.id, email: user.email, name: user.name, timeZone: user.timeZone ?? undefined };
 }
+
+const ProfileChanges = z
+  .object({
+    name: z.string().trim().min(1).max(100).optional(),
+    timeZone: z.string().refine(isTimeZone).optional(),
+  })
+  .refine((changes) => Object.keys(changes).length > 0);
 
 const getMe = createRoute({
   operationId: "getMe",
@@ -25,7 +33,7 @@ const updateMe = createRoute({
   path: "/",
   security: [{ bearer: [] }],
   request: {
-    body: body(z.object({ name: z.string().trim().min(1).max(100) }), "Profile fields to change"),
+    body: body(ProfileChanges, "Profile fields to change; the time zone is an IANA name"),
   },
   responses: {
     200: json(User, "The updated user"),
@@ -40,7 +48,7 @@ app.use(session);
 export default app
   .openapi(getMe, (c) => c.json(publicUser(c.var.user), 200))
   .openapi(updateMe, async (c) => {
-    const { name } = c.req.valid("json");
-    await auth.api.updateUser({ headers: c.req.raw.headers, body: { name } });
-    return c.json(publicUser({ ...c.var.user, name }), 200);
+    const changes = c.req.valid("json");
+    await auth.api.updateUser({ headers: c.req.raw.headers, body: changes });
+    return c.json(publicUser({ ...c.var.user, ...changes }), 200);
   });
