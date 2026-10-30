@@ -1,17 +1,24 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { APICallError, type AssistantModelMessage, type ModelMessage } from "ai";
-import { and, asc, desc, eq, gt, lt } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, sql } from "drizzle-orm";
 import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
-import { streamSSE } from "hono/streaming";
+import { type SSEStreamingApi, streamSSE } from "hono/streaming";
 import { db } from "../db";
 import { agents, messages } from "../db/schema/agents";
-import { type Agent as AgentRow, createAgent, enqueue } from "../lib/agent";
+import {
+  type Agent as AgentRow,
+  createAgent,
+  deleteAgent,
+  enqueue,
+  updateAgent,
+} from "../lib/agent";
 import { type TranscriptionHints, transcribe } from "../lib/ai/providers";
 import { stepOf } from "../lib/ai/tools/computer";
+import * as avatars from "../lib/avatars";
 import { startCall } from "../lib/calls/index";
 import { recentLines, textOf } from "../lib/conversation";
-import { subscribe } from "../lib/events";
+import { subscribe, subscribeAll } from "../lib/events";
 import * as files from "../lib/files";
 import { localeOf } from "../lib/i18n";
 import { listConnections, matchIntegration } from "../lib/integrations/connections";
@@ -21,10 +28,6 @@ import { body, error, invalidRequest, json, openEnum } from "../lib/openapi";
 import { session, type SessionEnv } from "../middlewares/session";
 
 const KEEPALIVE_MS = 20_000;
-
-const Agent = z
-  .object({ id: z.uuid(), name: z.string(), instructions: z.string(), createdAt: z.iso.datetime() })
-  .openapi("Agent");
 
 const ConnectRequest = z
   .object({ integrationId: z.string(), name: z.string() })
@@ -56,19 +59,49 @@ const Message = z
   })
   .openapi("Message");
 
+const Status = openEnum(["running", "idle"]);
+
+const Agent = z
+  .object({
+    id: z.uuid(),
+    name: z.string(),
+    instructions: z.string(),
+    avatarId: z
+      .uuid()
+      .optional()
+      .describe("Load the picture with getAgentAvatar; the id changes when the picture does"),
+    status: Status,
+    lastMessage: Message.optional().describe("The newest message people can see"),
+    createdAt: z.iso.datetime(),
+  })
+  .openapi("Agent");
+
+const AgentChanges = z
+  .object({
+    name: z.string().trim().min(1).max(100).optional(),
+    instructions: z.string().trim().max(10_000).optional(),
+  })
+  .refine((changes) => Object.keys(changes).length > 0);
+
 const ConnectInput = z.object({ integration: z.string() });
 
 const AgentEvent = z
   .object({
     type: openEnum(["message", "status"]),
     message: Message.optional(),
-    status: openEnum(["running", "idle"]).optional(),
+    status: Status.optional(),
   })
   .openapi("AgentEvent");
+
+const AgentsEvent = z
+  .object({ type: openEnum(["agents"]), agents: z.array(Agent).optional() })
+  .openapi("AgentsEvent");
 
 const AgentParams = z.object({ id: z.uuid() });
 
 const FileParams = z.object({ id: z.uuid(), fileId: z.uuid() });
+
+const AvatarParams = z.object({ id: z.uuid(), avatarId: z.uuid() });
 
 // Multipart framing adds a little on top of the file itself.
 const UPLOAD_BODY_LIMIT = files.maxUploadBytes + 64 * 1024;
@@ -77,20 +110,32 @@ const UPLOAD_BODY_LIMIT = files.maxUploadBytes + 64 * 1024;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const AUDIO_BODY_LIMIT = MAX_AUDIO_BYTES + 64 * 1024;
 
+const AVATAR_BODY_LIMIT = avatars.maxAvatarBytes + 64 * 1024;
+
 const MAX_SDP_CHARS = 20_000;
 
 const RECENT_MESSAGES = 6;
 const MAX_CONTEXT_CHARS = 1_000;
 
+// A run ends in a visible reply after at most this many tool calls, so the newest visible message
+// is always among this many user and assistant rows.
+const LAST_MESSAGE_SCAN = 40;
+
 const log = logger.child({ module: "agents" });
 
 type MessageRow = { id: number; message: ModelMessage; hidden: boolean; createdAt: Date };
 
-function publicAgent(agent: AgentRow): z.infer<typeof Agent> {
+function publicAgent(
+  agent: AgentRow,
+  lastMessage?: z.infer<typeof Message>,
+): z.infer<typeof Agent> {
   return {
     id: agent.id,
     name: agent.name,
     instructions: agent.instructions,
+    ...(agent.avatarId ? { avatarId: agent.avatarId } : {}),
+    status: agent.runOwner ? "running" : "idle",
+    ...(lastMessage ? { lastMessage } : {}),
     createdAt: agent.createdAt.toISOString(),
   };
 }
@@ -186,6 +231,75 @@ async function transcriptionHints(
   return { context, keywords: [...new Set(keywords)] };
 }
 
+async function lastMessageOf(agentId: string): Promise<z.infer<typeof Message> | undefined> {
+  const rows = await db
+    .select(columns)
+    .from(messages)
+    .where(
+      and(
+        eq(messages.agentId, agentId),
+        eq(messages.hidden, false),
+        sql`${messages.message}->>'role' in ('user', 'assistant')`,
+      ),
+    )
+    .orderBy(desc(messages.id))
+    .limit(LAST_MESSAGE_SCAN);
+  for (const row of rows) {
+    const message = publicMessage(row);
+    if (message) return message;
+  }
+  return undefined;
+}
+
+async function agentList(userId: string): Promise<z.infer<typeof Agent>[]> {
+  const rows = await db.select().from(agents).where(eq(agents.userId, userId));
+  const listed = await Promise.all(
+    rows.map(async (agent) => publicAgent(agent, await lastMessageOf(agent.id))),
+  );
+  const activity = (agent: z.infer<typeof Agent>) =>
+    Date.parse(agent.lastMessage?.createdAt ?? agent.createdAt);
+  return listed.toSorted((a, b) => activity(b) - activity(a));
+}
+
+/** Calls `flush` whenever `listen` reports a change, and writes keepalives while nothing does. */
+async function relay(
+  stream: SSEStreamingApi,
+  listen: (wake: () => void) => Promise<() => void>,
+  flush: () => Promise<void>,
+): Promise<void> {
+  let changed = true;
+  let wake: (() => void) | undefined;
+
+  const unsubscribe = await listen(() => {
+    changed = true;
+    wake?.();
+  });
+  stream.onAbort(() => wake?.());
+
+  const waitForChange = () =>
+    new Promise<boolean>((resolve) => {
+      if (changed) return resolve(true);
+      const timer = setTimeout(() => resolve(false), KEEPALIVE_MS);
+      wake = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+    });
+
+  try {
+    while (!stream.aborted) {
+      if (await waitForChange()) {
+        changed = false;
+        await flush();
+      } else {
+        await stream.write(": keepalive\n\n");
+      }
+    }
+  } finally {
+    unsubscribe();
+  }
+}
+
 async function statusOf(agentId: string): Promise<"running" | "idle"> {
   const [agent] = await db
     .select({ runOwner: agents.runOwner })
@@ -207,7 +321,10 @@ const listAgents = createRoute({
   path: "/",
   security: [{ bearer: [] }],
   responses: {
-    200: json(z.object({ agents: z.array(Agent) }), "The user's agents, oldest first"),
+    200: json(
+      z.object({ agents: z.array(Agent) }),
+      "The user's agents, the one with the newest message first",
+    ),
     401: error("Not signed in"),
   },
 });
@@ -230,7 +347,104 @@ const createAgentRoute = createRoute({
     201: json(z.object({ agent: Agent }), "The new agent, with no messages yet"),
     400: error("Invalid request"),
     401: error("Not signed in"),
-    409: error("The user has no name yet"),
+  },
+});
+
+const updateAgentRoute = createRoute({
+  operationId: "updateAgent",
+  method: "patch",
+  path: "/{id}",
+  security: [{ bearer: [] }],
+  request: { params: AgentParams, body: body(AgentChanges, "The fields to change, at least one") },
+  responses: {
+    200: json(z.object({ agent: Agent }), "The agent as it is now"),
+    400: error("Invalid request"),
+    401: error("Not signed in"),
+    404: error("No such agent"),
+  },
+});
+
+const deleteAgentRoute = createRoute({
+  operationId: "deleteAgent",
+  method: "delete",
+  path: "/{id}",
+  security: [{ bearer: [] }],
+  request: { params: AgentParams },
+  responses: {
+    204: { description: "Deleted, with its conversation and files" },
+    401: error("Not signed in"),
+    404: error("No such agent"),
+  },
+});
+
+const setAgentAvatar = createRoute({
+  operationId: "setAgentAvatar",
+  method: "put",
+  path: "/{id}/avatar",
+  security: [{ bearer: [] }],
+  middleware: [bodyLimit({ maxSize: AVATAR_BODY_LIMIT })],
+  request: {
+    params: AgentParams,
+    body: {
+      content: {
+        "multipart/form-data": {
+          schema: z.object({ image: z.file().openapi({ type: "string", format: "binary" }) }),
+          encoding: { image: { contentType: "application/octet-stream" } },
+        },
+      },
+      required: true,
+      description: "A square JPEG or PNG, up to 1 MB",
+    },
+  },
+  responses: {
+    200: json(z.object({ agent: Agent }), "The agent with its new picture"),
+    400: error("Invalid request, not a JPEG or PNG, or too large"),
+    401: error("Not signed in"),
+    404: error("No such agent"),
+    413: error("Body too large"),
+  },
+});
+
+const removeAgentAvatar = createRoute({
+  operationId: "removeAgentAvatar",
+  method: "delete",
+  path: "/{id}/avatar",
+  security: [{ bearer: [] }],
+  request: { params: AgentParams },
+  responses: {
+    200: json(z.object({ agent: Agent }), "The agent without a picture"),
+    401: error("Not signed in"),
+    404: error("No such agent"),
+  },
+});
+
+const getAgentAvatar = createRoute({
+  operationId: "getAgentAvatar",
+  method: "get",
+  path: "/{id}/avatars/{avatarId}",
+  security: [{ bearer: [] }],
+  request: { params: AvatarParams },
+  responses: {
+    200: {
+      content: { "image/*": { schema: z.string().openapi({ format: "binary" }) } },
+      description: "The picture; its bytes never change, so cache it by id",
+    },
+    401: error("Not signed in"),
+    404: error("No such agent, or not its current picture"),
+  },
+});
+
+const streamAgents = createRoute({
+  operationId: "streamAgents",
+  method: "get",
+  path: "/events",
+  security: [{ bearer: [] }],
+  responses: {
+    200: {
+      content: { "text/event-stream": { schema: AgentsEvent } },
+      description: "The whole agent list, as listAgents returns it, now and after every change",
+    },
+    401: error("Not signed in"),
   },
 });
 
@@ -406,18 +620,92 @@ app.use(session);
 
 export default app
   .openapi(listAgents, async (c) => {
-    const rows = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.userId, c.var.user.id))
-      .orderBy(asc(agents.createdAt));
-    return c.json({ agents: rows.map(publicAgent) }, 200);
+    return c.json({ agents: await agentList(c.var.user.id) }, 200);
+  })
+  .openapi(streamAgents, (c) => {
+    const userId = c.var.user.id;
+    return streamSSE(c, async (stream) => {
+      // Notifications carry only an agent id, so remember the ids that belong to someone else.
+      const others = new Set<string>();
+      const heard = new Set<string>();
+      let sent: string | undefined;
+
+      await relay(
+        stream,
+        (wake) =>
+          subscribeAll((agentId) => {
+            if (agentId !== undefined && others.has(agentId)) return;
+            if (agentId !== undefined) heard.add(agentId);
+            wake();
+          }),
+        async () => {
+          const list = await agentList(userId);
+          const mine = new Set(list.map(({ id }) => id));
+          for (const agentId of heard) if (!mine.has(agentId)) others.add(agentId);
+          heard.clear();
+
+          const data = JSON.stringify({ type: "agents", agents: list });
+          if (data === sent) return;
+          sent = data;
+          await stream.writeSSE({ event: "agents", data });
+        },
+      );
+    });
   })
   .openapi(createAgentRoute, async (c) => {
-    const user = c.var.user;
-    if (!user.name.trim()) return c.json({ error: "user name is required" }, 409);
-    const agent = await createAgent(user.id, c.req.valid("json"));
+    const agent = await createAgent(c.var.user.id, c.req.valid("json"));
     return c.json({ agent: publicAgent(agent) }, 201);
+  })
+  .openapi(updateAgentRoute, async (c) => {
+    const { id } = c.req.valid("param");
+    const updated = await updateAgent(c.var.user.id, id, c.req.valid("json"));
+    if (!updated) return c.json({ error: "agent not found" }, 404);
+    return c.json({ agent: publicAgent(updated.after, await lastMessageOf(id)) }, 200);
+  })
+  .openapi(deleteAgentRoute, async (c) => {
+    const { id } = c.req.valid("param");
+    const deleted = await deleteAgent(c.var.user.id, id);
+    if (!deleted) return c.json({ error: "agent not found" }, 404);
+    if (deleted.avatarId) await avatars.discard(deleted.avatarId);
+    return c.body(null, 204);
+  })
+  .openapi(setAgentAvatar, async (c) => {
+    const { id } = c.req.valid("param");
+    await ownAgent(c.var.user.id, id);
+    let avatarId: string;
+    try {
+      avatarId = await avatars.store(c.req.valid("form").image);
+    } catch (cause) {
+      if (cause instanceof avatars.AvatarRejected) return c.json({ error: cause.message }, 400);
+      throw cause;
+    }
+    const updated = await updateAgent(c.var.user.id, id, { avatarId });
+    if (!updated) {
+      await avatars.discard(avatarId);
+      return c.json({ error: "agent not found" }, 404);
+    }
+    if (updated.before.avatarId) await avatars.discard(updated.before.avatarId);
+    return c.json({ agent: publicAgent(updated.after, await lastMessageOf(id)) }, 200);
+  })
+  .openapi(removeAgentAvatar, async (c) => {
+    const { id } = c.req.valid("param");
+    const updated = await updateAgent(c.var.user.id, id, { avatarId: null });
+    if (!updated) return c.json({ error: "agent not found" }, 404);
+    if (updated.before.avatarId) await avatars.discard(updated.before.avatarId);
+    return c.json({ agent: publicAgent(updated.after, await lastMessageOf(id)) }, 200);
+  })
+  .openapi(getAgentAvatar, async (c) => {
+    const { id, avatarId } = c.req.valid("param");
+    const [agent] = await db
+      .select({ avatarId: agents.avatarId })
+      .from(agents)
+      .where(and(eq(agents.id, id), eq(agents.userId, c.var.user.id)));
+    if (agent?.avatarId !== avatarId) return c.json({ error: "avatar not found" }, 404);
+    const { bytes, mediaType } = await avatars.read(avatarId);
+    return c.body(bytes, 200, {
+      "content-type": mediaType,
+      "cache-control": "private, max-age=31536000, immutable",
+    });
   })
   .openapi(listMessages, async (c) => {
     const { id } = c.req.valid("param");
@@ -515,24 +803,6 @@ export default app
     return streamSSE(c, async (stream) => {
       let cursor = Number.isSafeInteger(lastEventId) && lastEventId > 0 ? lastEventId : 0;
       let status: string | undefined;
-      let changed = true;
-      let wake: (() => void) | undefined;
-
-      const unsubscribe = await subscribe(id, () => {
-        changed = true;
-        wake?.();
-      });
-      stream.onAbort(() => wake?.());
-
-      const waitForChange = () =>
-        new Promise<boolean>((resolve) => {
-          if (changed) return resolve(true);
-          const timer = setTimeout(() => resolve(false), KEEPALIVE_MS);
-          wake = () => {
-            clearTimeout(timer);
-            resolve(true);
-          };
-        });
 
       const send = (event: z.infer<typeof AgentEvent>, eventId?: number) =>
         stream.writeSSE({
@@ -541,33 +811,27 @@ export default app
           ...(eventId === undefined ? {} : { id: String(eventId) }),
         });
 
-      const flush = async () => {
-        changed = false;
-        const rows = await db
-          .select(columns)
-          .from(messages)
-          .where(and(eq(messages.agentId, id), gt(messages.id, cursor)))
-          .orderBy(asc(messages.id));
-        for (const row of rows) {
-          cursor = row.id;
-          const message = publicMessage(row);
-          if (message) await send({ type: "message", message }, row.id);
-        }
+      await relay(
+        stream,
+        (wake) => subscribe(id, wake),
+        async () => {
+          const rows = await db
+            .select(columns)
+            .from(messages)
+            .where(and(eq(messages.agentId, id), gt(messages.id, cursor)))
+            .orderBy(asc(messages.id));
+          for (const row of rows) {
+            cursor = row.id;
+            const message = publicMessage(row);
+            if (message) await send({ type: "message", message }, row.id);
+          }
 
-        const current = await statusOf(id);
-        if (current !== status) {
-          status = current;
-          await send({ type: "status", status: current });
-        }
-      };
-
-      try {
-        while (!stream.aborted) {
-          if (await waitForChange()) await flush();
-          else await stream.write(": keepalive\n\n");
-        }
-      } finally {
-        unsubscribe();
-      }
+          const current = await statusOf(id);
+          if (current !== status) {
+            status = current;
+            await send({ type: "status", status: current });
+          }
+        },
+      );
     });
   });

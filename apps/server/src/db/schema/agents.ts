@@ -14,6 +14,7 @@ export const agents = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     name: text().notNull(),
     instructions: text().notNull().default(""),
+    avatarId: uuid(),
     connectionsNote: text(),
     runOwner: uuid(),
     runLeaseUntil: timestamp({ withTimezone: true }),

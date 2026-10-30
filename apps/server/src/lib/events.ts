@@ -4,16 +4,23 @@ import { client, type Transaction } from "../db";
 const CHANNEL = "agent_events";
 
 type Listener = () => void;
+/** `undefined` means any agent may have changed. */
+type AnyListener = (agentId: string | undefined) => void;
 
 const listeners = new Map<string, Set<Listener>>();
+const anyListeners = new Set<AnyListener>();
 let listening: Promise<unknown> | undefined;
 
 function wake(agentId: string): void {
   for (const listener of listeners.get(agentId) ?? []) listener();
+  for (const listener of anyListeners) listener(agentId);
 }
 
 function wakeAll(): void {
-  for (const agentId of listeners.keys()) wake(agentId);
+  for (const agentId of listeners.keys()) {
+    for (const listener of listeners.get(agentId) ?? []) listener();
+  }
+  for (const listener of anyListeners) listener(undefined);
 }
 
 function listen(): Promise<unknown> {
@@ -39,5 +46,16 @@ export async function subscribe(agentId: string, listener: Listener): Promise<()
   return () => {
     set.delete(listener);
     if (set.size === 0) listeners.delete(agentId);
+  };
+}
+
+/** Hears every agent's changes; the listener filters out agents that are not its user's. */
+export async function subscribeAll(listener: AnyListener): Promise<() => void> {
+  listening ??= listen();
+  await listening;
+
+  anyListeners.add(listener);
+  return () => {
+    anyListeners.delete(listener);
   };
 }

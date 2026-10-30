@@ -43,6 +43,13 @@
       "when": 1793368805767,
       "tag": "0005_devices",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793386323660,
+      "tag": "0006_agent-avatars",
+      "breakpoints": true
     }
   ]
 }
