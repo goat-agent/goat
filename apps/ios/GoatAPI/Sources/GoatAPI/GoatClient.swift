@@ -50,3 +50,20 @@ extension HTTPBody {
     .compactMap(\.data)
   }
 }
+
+extension Operations.UploadFile.Input.Body {
+  /// The server tells the type from the bytes and the name, so the name should keep its extension.
+  public static func file(_ data: Data, named name: String) -> Self {
+    .multipartForm([.file(.init(payload: .init(body: HTTPBody(data)), filename: name))])
+  }
+}
+
+extension Client {
+  /// The server keeps files to 32 MB; the cap only stops a runaway body.
+  private static let maxFileBytes = 64 * 1024 * 1024
+
+  public func fileData(agentID: String, fileID: String) async throws -> Data {
+    let output = try await downloadFile(path: .init(id: agentID, fileId: fileID))
+    return try await Data(collecting: output.ok.body.any, upTo: Self.maxFileBytes)
+  }
+}

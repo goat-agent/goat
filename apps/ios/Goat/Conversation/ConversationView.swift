@@ -1,12 +1,19 @@
 import AuthenticationServices
 import GoatAPI
+import PhotosUI
+import QuickLook
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ConversationView: View {
   @State private var conversation: ConversationModel
   @State private var integrations: IntegrationsModel
   @State private var position = ScrollPosition(edge: .bottom)
   @State private var isAtBottom = true
+  @State private var isPickingPhotos = false
+  @State private var isPickingFiles = false
+  @State private var pickedPhotos: [PhotosPickerItem] = []
+  @State private var previewURL: URL?
   @Environment(\.webAuthenticationSession) private var webAuthenticationSession
 
   init(agent: Components.Schemas.Agent, client: Client) {
@@ -23,6 +30,9 @@ struct ConversationView: View {
               .font(.caption)
               .foregroundStyle(.secondary)
               .padding(.top, 12)
+          }
+          ForEach(message.files ?? [], id: \.id) { file in
+            SentFile(file: file, load: conversation.localURL(for:), open: preview)
           }
           if !message.text.isEmpty {
             MessageBubble(text: message.text, isMine: message.role.value1 == .user)
@@ -41,7 +51,7 @@ struct ConversationView: View {
           }
         }
         ForEach(conversation.outgoing) { message in
-          OutgoingBubble(message: message) {
+          OutgoingBubble(message: message, load: conversation.localURL(for:), open: preview) {
             Task { await conversation.retry(message.id) }
           } discard: {
             conversation.discard(message.id)
@@ -85,7 +95,34 @@ struct ConversationView: View {
       }
     }
     .animation(.default, value: isAtBottom)
-    .safeAreaBar(edge: .bottom) { Composer(draft: $conversation.draft, send: send) }
+    .safeAreaBar(edge: .bottom) {
+      Composer(
+        draft: $conversation.draft,
+        attachments: conversation.attachments,
+        canAttach: conversation.canAttach,
+        canSend: conversation.canSend,
+        pickPhotos: { isPickingPhotos = true },
+        pickFiles: { isPickingFiles = true },
+        open: { preview($0.localURL) },
+        retry: { id in Task { await conversation.retryUpload(id) } },
+        remove: conversation.removeAttachment,
+        send: send
+      )
+    }
+    .photosPicker(
+      isPresented: $isPickingPhotos,
+      selection: $pickedPhotos,
+      maxSelectionCount: max(1, ConversationModel.maxAttachments - conversation.attachments.count),
+      matching: .images
+    )
+    .onChange(of: pickedPhotos) { attachPhotos() }
+    .fileImporter(
+      isPresented: $isPickingFiles,
+      allowedContentTypes: [.image, .pdf, .plainText, .commaSeparatedText],
+      allowsMultipleSelection: true,
+      onCompletion: attachFiles
+    )
+    .quickLookPreview($previewURL)
     .navigationTitle(conversation.agent.name)
     .navigationBarTitleDisplayMode(.inline)
     .task { await integrations.load() }
@@ -94,6 +131,34 @@ struct ConversationView: View {
 
   private func send() {
     Task { await conversation.send() }
+  }
+
+  private func preview(_ url: URL) {
+    previewURL = url
+  }
+
+  private func attachPhotos() {
+    let items = pickedPhotos
+    guard !items.isEmpty else { return }
+    pickedPhotos = []
+    for item in items {
+      Task {
+        guard let data = try? await item.loadTransferable(type: Data.self),
+          let photo = await PreparedFile.photo(data)
+        else { return }
+        await conversation.attach(photo)
+      }
+    }
+  }
+
+  private func attachFiles(_ result: Result<[URL], any Error>) {
+    guard case .success(let urls) = result else { return }
+    for url in urls {
+      Task {
+        guard let file = try? await PreparedFile.file(at: url) else { return }
+        await conversation.attach(file)
+      }
+    }
   }
 
   private func connect(_ integrationID: String) {
@@ -119,28 +184,72 @@ struct ConversationView: View {
 
 private struct Composer: View {
   @Binding var draft: String
+  let attachments: [ConversationModel.Attachment]
+  let canAttach: Bool
+  let canSend: Bool
+  let pickPhotos: () -> Void
+  let pickFiles: () -> Void
+  let open: (ConversationModel.Attachment) -> Void
+  let retry: (ConversationModel.Attachment.ID) -> Void
+  let remove: (ConversationModel.Attachment.ID) -> Void
   let send: () -> Void
-
-  private var canSend: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
   var body: some View {
     GlassEffectContainer {
-      HStack(alignment: .bottom, spacing: 8) {
-        TextField("메시지", text: $draft, axis: .vertical)
-          .lineLimit(1...5)
-          .padding(.horizontal, 16)
-          .padding(.vertical, 11)
-          .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
-        Button("보내기", systemImage: "arrow.up", action: send)
+      VStack(alignment: .leading, spacing: 8) {
+        if !attachments.isEmpty {
+          ScrollView(.horizontal) {
+            HStack(spacing: 10) {
+              ForEach(attachments) { attachment in
+                AttachmentChip(attachment: attachment) {
+                  open(attachment)
+                } retry: {
+                  retry(attachment.id)
+                } remove: {
+                  remove(attachment.id)
+                }
+              }
+            }
+            .padding(.top, 8)
+            .padding(.trailing, 8)
+          }
+          .scrollIndicators(.hidden)
+        }
+        HStack(alignment: .bottom, spacing: 8) {
+          Menu {
+            Button("사진", systemImage: "photo.on.rectangle", action: pickPhotos)
+            Button("파일", systemImage: "doc", action: pickFiles)
+          } label: {
+            Label("첨부", systemImage: "plus")
+          }
           .labelStyle(.iconOnly)
           .font(.body.weight(.semibold))
-          .buttonStyle(.glassProminent)
+          .buttonStyle(.glass)
           .buttonBorderShape(.circle)
           .controlSize(.large)
-          .disabled(!canSend)
+          .disabled(!canAttach)
+          messageField
+        }
       }
     }
     .padding(.horizontal)
     .padding(.bottom, 8)
+  }
+
+  private var messageField: some View {
+    HStack(alignment: .bottom, spacing: 8) {
+      TextField("메시지", text: $draft, axis: .vertical)
+        .lineLimit(1...5)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
+      Button("보내기", systemImage: "arrow.up", action: send)
+        .labelStyle(.iconOnly)
+        .font(.body.weight(.semibold))
+        .buttonStyle(.glassProminent)
+        .buttonBorderShape(.circle)
+        .controlSize(.large)
+        .disabled(!canSend)
+    }
   }
 }
