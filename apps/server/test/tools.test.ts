@@ -27,6 +27,15 @@ const reachable: ToolSet = {
 
 type Call = { toolName: string; input: object };
 
+const catalog = {
+  search: () => Promise.resolve(reachable),
+  resolve: (name: string) => {
+    const target = reachable[name];
+    if (!target) throw new Error(`No tool named ${name}; find it with tool_search.`);
+    return Promise.resolve(target);
+  },
+};
+
 async function resultOf(call: Call) {
   llm.reset();
   llm.reply = () => Promise.resolve(llm.prompts.length === 1 ? call : "done");
@@ -34,7 +43,7 @@ async function resultOf(call: Call) {
     model: fakeModel,
     prompt: "hi",
     tools: searchTools,
-    toolsContext: { tool_search: { tools: reachable }, tool_call: { tools: reachable } },
+    toolsContext: { tool_search: catalog, tool_call: catalog },
     stopWhen: isStepCount(2),
   });
   const message = llm.prompts[1]?.at(-1);

@@ -8,7 +8,7 @@ final class AppModel {
     case loading
     case signIn
     case setup
-    case conversation(Components.Schemas.Agent)
+    case home
   }
 
   enum SetupStep: Hashable {
@@ -19,6 +19,9 @@ final class AppModel {
   /// The email whose code screen is pushed onto the sign-in flow.
   var signInPath: [String] = []
   var setupPath: [SetupStep] = []
+  private(set) var agents: [Components.Schemas.Agent] = []
+  var agentPath: [Components.Schemas.Agent] = []
+  var isCreatingAgent = false
   private(set) var needsName = false
   private(set) var isWorking = false
   private(set) var errorMessage: String?
@@ -75,7 +78,7 @@ final class AppModel {
       case .badRequest:
         self.errorMessage = "이름을 확인해 주세요."
       case .unauthorized:
-        self.signOut()
+        self.clearSession()
       case .undocumented(let status, _):
         throw UnexpectedStatus(code: status)
       }
@@ -89,29 +92,48 @@ final class AppModel {
       )
       switch try await self.client.createAgent(body: body) {
       case .created(let response):
-        self.screen = .conversation(try response.body.json.agent)
+        let agent = try response.body.json.agent
+        self.agents.append(agent)
+        self.agentPath = [agent]
+        self.isCreatingAgent = false
+        self.screen = .home
       case .badRequest:
         self.errorMessage = "입력한 내용을 확인해 주세요."
       case .conflict:
         self.needsName = true
         self.setupPath = []
       case .unauthorized:
-        self.signOut()
+        self.clearSession()
       case .undocumented(let status, _):
         throw UnexpectedStatus(code: status)
       }
     }
   }
 
-  private func signOut() {
+  func open(_ agent: Components.Schemas.Agent) {
+    UserDefaults.standard.set(agent.id, forKey: Self.lastAgentKey)
+  }
+
+  private static let lastAgentKey = "lastAgentID"
+
+  func signOut() async {
+    _ = try? await client.signOut()
+    clearSession()
+  }
+
+  private func clearSession() {
     tokens.clear()
+    UserDefaults.standard.removeObject(forKey: Self.lastAgentKey)
     signInPath = []
     setupPath = []
+    agents = []
+    agentPath = []
+    isCreatingAgent = false
     screen = .signIn
   }
 
   private func route() async throws {
-    guard tokens.load() != nil else { return signOut() }
+    guard tokens.load() != nil else { return clearSession() }
 
     switch try await client.getMe() {
     case .ok(let response):
@@ -124,22 +146,25 @@ final class AppModel {
         return
       }
     case .unauthorized:
-      return signOut()
+      return clearSession()
     case .undocumented(let status, _):
       throw UnexpectedStatus(code: status)
     }
 
     switch try await client.listAgents() {
     case .ok(let response):
-      if let agent = try response.body.json.agents.first {
-        screen = .conversation(agent)
+      agents = try response.body.json.agents
+      let lastID = UserDefaults.standard.string(forKey: Self.lastAgentKey)
+      if let agent = agents.first(where: { $0.id == lastID }) ?? agents.first {
+        agentPath = [agent]
+        screen = .home
       } else {
         needsName = false
         setupPath = []
         screen = .setup
       }
     case .unauthorized:
-      signOut()
+      clearSession()
     case .undocumented(let status, _):
       throw UnexpectedStatus(code: status)
     }

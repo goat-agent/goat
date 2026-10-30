@@ -21,8 +21,8 @@ struct RootView: View {
         SignInFlow(model: model)
       case .setup:
         SetupFlow(model: model)
-      case .conversation(let agent):
-        ConversationView(agent: agent, client: model.client)
+      case .home:
+        AgentListView(model: model)
       }
     }
     .animation(.default, value: model.screen)

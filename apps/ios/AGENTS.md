@@ -4,9 +4,11 @@ Read [docs/style/swift.md](../../docs/style/swift.md) before writing Swift.
 
 ## Map
 
-- `Goat/` — the app target. `App/` (state and root), `Onboarding/`, `Conversation/`,
-  `Components/` (shared views), `Assets.xcassets`. The project uses folder-synchronized groups,
-  so new files in these folders join the target without editing the project file.
+- `Goat/` — the app target. `App/` (state and root), `Onboarding/`, `Home/` (the agent list,
+  the first screen after sign-in), `Conversation/`, `Settings/`, `Integrations/` (the account
+  list and `Connector`, which runs the sign-in sheet), `Components/` (shared views),
+  `Assets.xcassets`. The project uses folder-synchronized groups, so new files in these folders
+  join the target without editing the project file.
 - `GoatAPI/` — Swift package. `openapi.json` is exported by the server (`bun run openapi` in
   `apps/server`); never edit it by hand. Swift OpenAPI Generator turns it into `Client` and the
   `Components`/`Operations` types at build time; generated code is not committed.
@@ -29,7 +31,13 @@ Debug builds talk to `GOAT_SERVER_URL` (`http://localhost:3000`); run the server
 - The violet accent marks only the screen's primary action and the user's own messages.
 - Each screen has at most one primary action: `PrimaryButton` in `.safeAreaBar(edge: .bottom)`,
   so it sits above the keyboard. Show errors inline with `FormFooter`, not in alerts.
-- Navigation lives in `AppModel` (`signInPath`, `setupPath`), so network results drive it.
+- Navigation lives in `AppModel` (`signInPath`, `setupPath`, `agentPath`), so network results
+  drive it. Launch reopens the last conversation on top of the agent list.
+- Connecting an account opens the server's sign-in URL in the system web authentication
+  session, which ends at `goat://connected` with a state and code. The app sends those back
+  with its own session (`createConnection`), so a sign-in page forwarded to someone else cannot
+  connect their account to the sender. Tokens never reach the app. Settings and the
+  conversation's connect cards both go through `Connector`.
 
 ## API values
 

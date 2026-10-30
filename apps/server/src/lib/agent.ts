@@ -3,7 +3,10 @@ import {
   generateText,
   type LanguageModelUsage,
   type ModelMessage,
+  NoSuchToolError,
   RetryError,
+  type TextPart,
+  type ToolCallRepairFunction,
   type UserContent,
 } from "ai";
 import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
@@ -11,9 +14,11 @@ import { db, type Transaction } from "../db";
 import { agents, messages, queuedMessages } from "../db/schema/agents";
 import { users } from "../db/schema/auth";
 import { model, providerOptions } from "./ai/providers";
-import { deferredTools, tools } from "./ai/tools";
+import { tools } from "./ai/tools";
 import { dateIn } from "./dates";
 import { notify } from "./events";
+import { type Catalog, openCatalog } from "./integrations/catalog";
+import { listConnections, NOTE_PREFIX, noteFor } from "./integrations/connections";
 import { logger } from "./logger";
 
 const LEASE = sql`interval '60 seconds'`;
@@ -61,16 +66,42 @@ export async function createAgent(
 }
 
 export async function enqueue(agentId: string, text: string, timeZone = "UTC"): Promise<void> {
-  const today = dateIn(timeZone, new Date());
+  await queue(agentId, { text, timeZone });
+}
+
+export async function resumeAfterConnect(agentId: string, timeZone = "UTC"): Promise<void> {
+  await queue(agentId, { timeZone });
+}
+
+async function queue(agentId: string, input: { text?: string; timeZone: string }): Promise<void> {
+  const [agent] = await db
+    .select({ userId: agents.userId, connectionsNote: agents.connectionsNote })
+    .from(agents)
+    .where(eq(agents.id, agentId));
+  if (!agent) return;
+
+  const parts: TextPart[] = [];
+  const today = dateIn(input.timeZone, new Date());
   const last = await lastUserMessageAt(agentId);
-  const content: UserContent =
-    last && dateIn(timeZone, last) === today
-      ? text
-      : [
-          { type: "text", text: `Today's date is ${today}.` },
-          { type: "text", text },
-        ];
-  await db.insert(queuedMessages).values({ agentId, message: { role: "user", content } });
+  if (!last || dateIn(input.timeZone, last) !== today) {
+    parts.push({ type: "text", text: `Today's date is ${today}.` });
+  }
+
+  const connections = await listConnections(agent.userId);
+  const note =
+    connections.length > 0 || agent.connectionsNote !== null ? noteFor(connections) : undefined;
+  const hidden = input.text === undefined;
+  if (hidden && !note) return;
+  if (note && (hidden || note !== agent.connectionsNote)) parts.push({ type: "text", text: note });
+  if (input.text !== undefined) parts.push({ type: "text", text: input.text });
+
+  const content: UserContent = parts.length === 1 && input.text !== undefined ? input.text : parts;
+  await db.transaction(async (tx) => {
+    await tx.insert(queuedMessages).values({ agentId, hidden, message: { role: "user", content } });
+    if (note !== undefined && note !== agent.connectionsNote) {
+      await tx.update(agents).set({ connectionsNote: note }).where(eq(agents.id, agentId));
+    }
+  });
   launch(agentId, { onlyIfQueued: true });
 }
 
@@ -170,12 +201,14 @@ async function execute(agentId: string, owner: string): Promise<void> {
   // A run claimed during shutdown starts aborted and hands its lease straight back to the scanner.
   const signal = AbortSignal.any([shutdown.signal, lost.signal]);
   const lease = holdLease(agentId, owner, lost);
+  let catalog: Catalog | undefined;
   try {
     signal.throwIfAborted();
-    const { instructions, timeZone } = await loadSetup(agentId);
+    const { instructions, timeZone, userId } = await loadSetup(agentId);
+    catalog = openCatalog(userId);
     for (let step = 0; step < MAX_STEPS; step++) {
       signal.throwIfAborted();
-      await lease.write((tx) => drainQueue(tx, agentId));
+      if (await lease.write((tx) => drainQueue(tx, agentId))) await catalog.reload();
 
       const history = await loadHistory(agentId);
       const last = history.at(-1);
@@ -190,11 +223,8 @@ async function execute(agentId: string, owner: string): Promise<void> {
         instructions,
         messages: history,
         tools,
-        toolsContext: {
-          time: { timeZone },
-          tool_search: { tools: deferredTools },
-          tool_call: { tools: deferredTools },
-        },
+        toolsContext: { time: { timeZone }, tool_search: catalog, tool_call: catalog },
+        repairToolCall: routeThroughToolCall,
         providerOptions,
         abortSignal: signal,
         timeout: { stepMs: STEP_TIMEOUT_MS, toolMs: TOOL_TIMEOUT_MS },
@@ -236,9 +266,26 @@ async function execute(agentId: string, owner: string): Promise<void> {
       }
     }
   } finally {
+    await catalog?.close();
     await lease.stop();
   }
 }
+
+// Claude learned to call a tool it found by name; such a call runs through tool_call instead.
+const routeThroughToolCall: ToolCallRepairFunction<typeof tools> = ({ toolCall, error }) => {
+  if (!NoSuchToolError.isInstance(error)) return Promise.resolve(null);
+  let input: unknown;
+  try {
+    input = JSON.parse(toolCall.input || "{}");
+  } catch {
+    return Promise.resolve(null);
+  }
+  return Promise.resolve({
+    ...toolCall,
+    toolName: "tool_call",
+    input: JSON.stringify({ name: toolCall.toolName, input }),
+  });
+};
 
 function holdLease(agentId: string, owner: string, lost: AbortController) {
   const mine = and(eq(agents.id, agentId), eq(agents.runOwner, owner));
@@ -322,18 +369,29 @@ function holdLease(agentId: string, owner: string, lost: AbortController) {
   return { write, finish, release, expire, stop };
 }
 
-async function drainQueue(tx: Transaction, agentId: string): Promise<void> {
+/** True when the moved messages say the user's connections changed. */
+async function drainQueue(tx: Transaction, agentId: string): Promise<boolean> {
   const queued = await tx
     .delete(queuedMessages)
     .where(eq(queuedMessages.agentId, agentId))
     .returning();
-  if (queued.length === 0) return;
+  if (queued.length === 0) return false;
 
   queued.sort((a, b) => a.id - b.id);
   await tx
     .insert(messages)
-    .values(queued.map(({ message, createdAt }) => ({ agentId, message, createdAt })));
+    .values(
+      queued.map(({ message, hidden, createdAt }) => ({ agentId, message, hidden, createdAt })),
+    );
   await notify(tx, agentId);
+  return queued.some(({ message }) => carriesNote(message));
+}
+
+function carriesNote(message: ModelMessage): boolean {
+  return (
+    typeof message.content !== "string" &&
+    message.content.some((part) => part.type === "text" && part.text.startsWith(NOTE_PREFIX))
+  );
 }
 
 async function saveResponse(
@@ -367,9 +425,12 @@ async function loadHistory(agentId: string): Promise<ModelMessage[]> {
   return first === -1 ? [] : history.slice(first);
 }
 
-async function loadSetup(agentId: string): Promise<{ instructions: string; timeZone: string }> {
+async function loadSetup(
+  agentId: string,
+): Promise<{ instructions: string; timeZone: string; userId: string }> {
   const [row] = await db
     .select({
+      userId: agents.userId,
       name: agents.name,
       instructions: agents.instructions,
       userName: users.name,
@@ -385,7 +446,11 @@ async function loadSetup(agentId: string): Promise<{ instructions: string; timeZ
     "When an answer relies on the web, cite the pages you used.",
   ];
   if (row.instructions) parts.push(`${row.userName}'s instructions:\n${row.instructions}`);
-  return { instructions: parts.join("\n\n"), timeZone: row.timeZone ?? "UTC" };
+  return {
+    instructions: parts.join("\n\n"),
+    timeZone: row.timeZone ?? "UTC",
+    userId: row.userId,
+  };
 }
 
 // Retried by the scanner; anything else is dropped so a request that can never succeed does not loop.
