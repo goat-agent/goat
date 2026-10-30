@@ -21,9 +21,10 @@ Read [docs/style/typescript.md](../../docs/style/typescript.md) before writing T
   `index.ts` lists them; one without a client id in the environment is not offered. How auth
   works lives once in `oauth.ts` (discovery, PKCE, refresh, revocation), `authorize.ts` (the
   connect flow), and `connections.ts` (stored accounts, encrypted with `credentials.ts`).
-  `catalog.ts` builds a run's deferred tools from the user's connections, lazily. goat's own
-  tools name the OAuth scope they need in `metadata.scope`; consent screens let users turn single
-  permissions off, so a tool whose scope was not granted is left out. Content other people wrote,
+  `catalog.ts` builds a run's deferred tools from the user's connections, lazily. Where a
+  consent screen lets users turn single permissions off (Google), goat's own tools name the OAuth
+  scope they need in `metadata.scope`, and a tool whose scope was not granted is left out.
+  Microsoft's consent is all or nothing, so its tools carry no scope. Content other people wrote,
   such as mail and shared files, reaches the model wrapped as data, like web pages.
 - `src/lib/web/` — `search` and `fetch` in `index.ts`; each backend gets its own file there
   (`firecrawl.ts`), and only `index.ts` decides which backend serves a call.

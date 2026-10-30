@@ -5,6 +5,7 @@ import { google } from "./google";
 import { granola } from "./granola";
 import type { Integration } from "./integration";
 import { linear } from "./linear";
+import { microsoft } from "./microsoft";
 import { notion } from "./notion";
 import { readwise } from "./readwise";
 import { slack } from "./slack";
@@ -16,6 +17,7 @@ const defined: Record<string, Integration> = {
   notion,
   slack,
   google,
+  microsoft,
   todoist,
   granola,
   readwise,

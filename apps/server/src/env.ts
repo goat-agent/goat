@@ -28,6 +28,8 @@ export const env = z
     DROPBOX_CLIENT_ID: z.string().min(1).optional(),
     DROPBOX_CLIENT_SECRET: z.string().min(1).optional(),
     CANVA_CLIENT_ID: z.string().min(1).optional(),
+    MICROSOFT_CLIENT_ID: z.string().min(1).optional(),
+    MICROSOFT_CLIENT_SECRET: z.string().min(1).optional(),
     LOG_LEVEL: z
       .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
       .default("info"),

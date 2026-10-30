@@ -218,10 +218,19 @@ async function fetchMetadata(issuer: string): Promise<Metadata> {
     });
     if (!response.ok) continue;
     const metadata = Metadata.parse(await response.json());
-    if (metadata.issuer !== issuer)
+    if (!namesIssuer(metadata.issuer, issuer))
       throw new Error(`metadata for ${issuer} names ${metadata.issuer}`);
     return metadata;
   }
   throw new Error(`no authorization server metadata for ${issuer}`);
 }
 
+// Microsoft's multi-tenant metadata (`/common/v2.0`) names its issuer with a `{tenantid}`
+// placeholder, which stands for the tenant segment the configured issuer already carries.
+function namesIssuer(named: string, issuer: string): boolean {
+  if (named === issuer) return true;
+  const [before, after, ...rest] = named.split("{tenantid}");
+  if (before === undefined || after === undefined || rest.length > 0) return false;
+  const tenant = issuer.slice(before.length, issuer.length - after.length);
+  return issuer.startsWith(before) && issuer.endsWith(after) && /^[^/]+$/.test(tenant);
+}
