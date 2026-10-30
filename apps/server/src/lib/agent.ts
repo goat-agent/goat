@@ -10,6 +10,7 @@ import { db, type Transaction } from "../db";
 import { agents, messages, queuedMessages } from "../db/schema/agents";
 import { users } from "../db/schema/auth";
 import { model, providerOptions } from "./ai/providers";
+import { webTools } from "./ai/tools/web";
 import { notify } from "./events";
 import { logger } from "./logger";
 
@@ -19,6 +20,7 @@ const RENEW_INTERVAL_MS = 20_000;
 const SCAN_INTERVAL_MS = 30_000;
 const SCAN_BATCH = 20;
 const STEP_TIMEOUT_MS = 10 * 60_000;
+const TOOL_TIMEOUT_MS = 2 * 60_000;
 const MAX_STEPS = 32;
 
 export type Agent = typeof agents.$inferSelect;
@@ -158,9 +160,10 @@ async function execute(agentId: string, owner: string): Promise<void> {
         model,
         instructions,
         messages: history,
+        tools: webTools,
         providerOptions,
         abortSignal: signal,
-        timeout: { stepMs: STEP_TIMEOUT_MS },
+        timeout: { stepMs: STEP_TIMEOUT_MS, toolMs: TOOL_TIMEOUT_MS },
       });
       log.info(
         {
@@ -338,7 +341,10 @@ async function loadInstructions(agentId: string): Promise<string> {
     .where(eq(agents.id, agentId));
   if (!row) throw new LeaseLost();
 
-  const parts = [`You are ${row.name}, a personal agent for ${row.userName}.`];
+  const parts = [
+    `You are ${row.name}, a personal agent for ${row.userName}.`,
+    "When an answer relies on the web, cite the pages you used.",
+  ];
   if (row.instructions) parts.push(`${row.userName}'s instructions:\n${row.instructions}`);
   return parts.join("\n\n");
 }
