@@ -1,0 +1,27 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "CFBundleDisplayName" : {
+      "shouldTranslate" : false
+    },
+    "NSMicrophoneUsageDescription" : {
+      "comment" : "Privacy - Microphone Usage Description",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Used when you speak a message or call your agent."
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "말로 메시지를 입력하거나 에이전트와 통화할 때 써요."
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.1"
+}

@@ -58,6 +58,12 @@ extension Operations.UploadFile.Input.Body {
   }
 }
 
+extension Operations.TranscribeAudio.Input.Body {
+  public static func recording(_ data: Data) -> Self {
+    .multipartForm([.audio(.init(payload: .init(body: HTTPBody(data)), filename: "recording.m4a"))])
+  }
+}
+
 extension Client {
   /// The server keeps files to 32 MB; the cap only stops a runaway body.
   private static let maxFileBytes = 64 * 1024 * 1024
