@@ -7,23 +7,22 @@ final class AppModel {
   enum Screen: Equatable {
     case loading
     case signIn
+    /// Signed in with no agent yet: the first agent is the last step of signing up.
     case setup
     case home
-  }
-
-  enum SetupStep: Hashable {
-    case agent
   }
 
   private(set) var screen = Screen.loading
   /// The email whose code screen is pushed onto the sign-in flow.
   var signInPath: [String] = []
-  var setupPath: [SetupStep] = []
+  /// Newest activity first, as the server orders them.
   private(set) var agents: [Components.Schemas.Agent] = []
-  var agentPath: [Components.Schemas.Agent] = []
+  /// Agent ids, so a pushed conversation always shows the agent as it is now.
+  var agentPath: [String] = []
   var isCreatingAgent = false
-  private(set) var userName = ""
-  private(set) var needsName = false
+  private(set) var me: Components.Schemas.User?
+  /// False while the live agent list is reconnecting.
+  private(set) var isOnline = true
   private(set) var isWorking = false
   private(set) var errorMessage: String?
   /// Bumped on every rejected code and every sign-in, to drive haptics.
@@ -42,6 +41,12 @@ final class AppModel {
     self.serverURL = serverURL
     self.tokens = tokens
     client = .goat(serverURL: serverURL, token: { tokens.load() })
+  }
+
+  var userName: String { me?.name ?? "" }
+
+  func agent(_ id: String) -> Components.Schemas.Agent? {
+    agents.first { $0.id == id }
   }
 
   func start() async {
@@ -80,39 +85,29 @@ final class AppModel {
     }
   }
 
-  func setName(_ name: String) async {
-    await perform {
-      switch try await self.client.updateMe(body: .json(.init(name: name))) {
-      case .ok:
-        self.userName = name
-        self.setupPath = [.agent]
-      case .badRequest:
-        self.errorMessage = String(localized: "Check your name.")
-      case .unauthorized:
-        self.clearSession()
-      case .undocumented(let status, _):
-        throw UnexpectedStatus(code: status)
-      }
-    }
+  func rename(to name: String) async {
+    guard case .ok(let response) = try? await client.updateMe(body: .json(.init(name: name))),
+      let user = try? response.body.json
+    else { return }
+    me = user
   }
 
-  func createAgent(name: String, instructions: String) async {
+  /// Opens the new agent's conversation, so creating one always lands where it is used.
+  func createAgent(name: String, instructions: String, photo: Data?) async {
     await perform {
       let body = Operations.CreateAgent.Input.Body.json(
         .init(name: name, instructions: instructions)
       )
       switch try await self.client.createAgent(body: body) {
       case .created(let response):
-        let agent = try response.body.json.agent
-        self.agents.append(agent)
-        self.agentPath = [agent]
+        var agent = try response.body.json.agent
+        if let photo, let withPhoto = await self.upload(photo, for: agent.id) { agent = withPhoto }
+        self.replace(agent)
+        self.agentPath = [agent.id]
         self.isCreatingAgent = false
         self.screen = .home
       case .badRequest:
         self.errorMessage = String(localized: "Check what you entered.")
-      case .conflict:
-        self.needsName = true
-        self.setupPath = []
       case .unauthorized:
         self.clearSession()
       case .undocumented(let status, _):
@@ -121,8 +116,58 @@ final class AppModel {
     }
   }
 
-  func open(_ agent: Components.Schemas.Agent) {
-    UserDefaults.standard.set(agent.id, forKey: Self.lastAgentKey)
+  func update(_ agentID: String, name: String? = nil, instructions: String? = nil) async {
+    let body = Operations.UpdateAgent.Input.Body.json(.init(name: name, instructions: instructions))
+    guard
+      case .ok(let response) = try? await client.updateAgent(path: .init(id: agentID), body: body),
+      let agent = try? response.body.json.agent
+    else { return }
+    replace(agent)
+  }
+
+  func setPhoto(_ photo: Data, of agentID: String) async {
+    if let agent = await upload(photo, for: agentID) { replace(agent) }
+  }
+
+  func removePhoto(of agentID: String) async {
+    guard case .ok(let response) = try? await client.removeAgentAvatar(path: .init(id: agentID)),
+      let agent = try? response.body.json.agent
+    else { return }
+    replace(agent)
+  }
+
+  func delete(_ agentID: String) async {
+    guard case .noContent = try? await client.deleteAgent(path: .init(id: agentID)) else { return }
+    agentPath.removeAll { $0 == agentID }
+    agents.removeAll { $0.id == agentID }
+    if UserDefaults.standard.string(forKey: Self.lastAgentKey) == agentID {
+      UserDefaults.standard.removeObject(forKey: Self.lastAgentKey)
+    }
+  }
+
+  /// Keeps `agents` current until the task is cancelled, reconnecting with backoff.
+  func listenToAgents() async {
+    var delay = Duration.seconds(1)
+    while !Task.isCancelled {
+      do {
+        let output = try await client.streamAgents()
+        for try await event in try output.ok.body.textEventStream.agentListEvents() {
+          isOnline = true
+          delay = .seconds(1)
+          if event._type.value1 == .agents, let list = event.agents { agents = list }
+        }
+      } catch is CancellationError {
+        return
+      } catch {
+        isOnline = false
+        delay = min(delay * 2, .seconds(30))
+      }
+      try? await Task.sleep(for: delay)
+    }
+  }
+
+  func open(_ agentID: String) {
+    UserDefaults.standard.set(agentID, forKey: Self.lastAgentKey)
   }
 
   private static let lastAgentKey = "lastAgentID"
@@ -132,12 +177,25 @@ final class AppModel {
     clearSession()
   }
 
+  private func upload(_ photo: Data, for agentID: String) async -> Components.Schemas.Agent? {
+    let output = try? await client.setAgentAvatar(path: .init(id: agentID), body: .jpeg(photo))
+    guard case .ok(let response) = output else { return nil }
+    return try? response.body.json.agent
+  }
+
+  private func replace(_ agent: Components.Schemas.Agent) {
+    if let index = agents.firstIndex(where: { $0.id == agent.id }) {
+      agents[index] = agent
+    } else {
+      agents.insert(agent, at: 0)
+    }
+  }
+
   private func clearSession() {
     tokens.clear()
-    userName = ""
+    me = nil
     UserDefaults.standard.removeObject(forKey: Self.lastAgentKey)
     signInPath = []
-    setupPath = []
     agents = []
     agentPath = []
     isCreatingAgent = false
@@ -149,15 +207,8 @@ final class AppModel {
 
     switch try await client.getMe() {
     case .ok(let response):
-      let me = try response.body.json
-      userName = me.name
-      if me.timeZone == nil { await fillTimeZone() }
-      if me.name.isEmpty {
-        needsName = true
-        setupPath = []
-        screen = .setup
-        return
-      }
+      me = try response.body.json
+      if me?.timeZone == nil { await fillTimeZone() }
     case .unauthorized:
       return clearSession()
     case .undocumented(let status, _):
@@ -169,11 +220,9 @@ final class AppModel {
       agents = try response.body.json.agents
       let lastID = UserDefaults.standard.string(forKey: Self.lastAgentKey)
       if let agent = agents.first(where: { $0.id == lastID }) ?? agents.first {
-        agentPath = [agent]
+        agentPath = [agent.id]
         screen = .home
       } else {
-        needsName = false
-        setupPath = []
         screen = .setup
       }
     case .unauthorized:

@@ -37,17 +37,25 @@ struct BearerToken: ClientMiddleware {
 }
 
 extension HTTPBody {
-  /// The agent events in this stream. Their JSON is decoded outside `Client`, so the date format is set again here.
+  /// The agent events in this stream.
   public func agentEvents() -> some AsyncSequence<Components.Schemas.AgentEvent, any Error> {
+    events(of: Components.Schemas.AgentEvent.self)
+  }
+
+  /// The agent lists in this stream, each one whole.
+  public func agentListEvents() -> some AsyncSequence<Components.Schemas.AgentsEvent, any Error> {
+    events(of: Components.Schemas.AgentsEvent.self)
+  }
+
+  /// Event JSON is decoded outside `Client`, so the date format is set again here.
+  private func events<Event: Decodable & Hashable & Sendable>(
+    of type: Event.Type
+  ) -> some AsyncSequence<Event, any Error> {
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .custom { decoder in
       try dateTranscoder.decode(decoder.singleValueContainer().decode(String.self))
     }
-    return asDecodedServerSentEventsWithJSONData(
-      of: Components.Schemas.AgentEvent.self,
-      decoder: decoder
-    )
-    .compactMap(\.data)
+    return asDecodedServerSentEventsWithJSONData(of: type, decoder: decoder).compactMap(\.data)
   }
 }
 
@@ -55,6 +63,12 @@ extension Operations.UploadFile.Input.Body {
   /// The server tells the type from the bytes and the name, so the name should keep its extension.
   public static func file(_ data: Data, named name: String) -> Self {
     .multipartForm([.file(.init(payload: .init(body: HTTPBody(data)), filename: name))])
+  }
+}
+
+extension Operations.SetAgentAvatar.Input.Body {
+  public static func jpeg(_ data: Data) -> Self {
+    .multipartForm([.image(.init(payload: .init(body: HTTPBody(data)), filename: "avatar.jpg"))])
   }
 }
 
@@ -71,5 +85,13 @@ extension Client {
   public func fileData(agentID: String, fileID: String) async throws -> Data {
     let output = try await downloadFile(path: .init(id: agentID, fileId: fileID))
     return try await Data(collecting: output.ok.body.any, upTo: Self.maxFileBytes)
+  }
+
+  /// The server keeps pictures to 1 MB.
+  private static let maxAvatarBytes = 2 * 1024 * 1024
+
+  public func avatarData(agentID: String, avatarID: String) async throws -> Data {
+    let output = try await getAgentAvatar(path: .init(id: agentID, avatarId: avatarID))
+    return try await Data(collecting: output.ok.body.image_Ast_, upTo: Self.maxAvatarBytes)
   }
 }

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { mailbox } from "./fakes";
-import { bearer, client, codeFor, resetDatabase, setName, signIn, status } from "./helpers";
+import { bearer, client, codeFor, resetDatabase, signIn, status } from "./helpers";
 
 beforeEach(resetDatabase);
 
@@ -62,11 +62,8 @@ describe("auth", () => {
     expect(status(await client.me.$get(undefined, bearer(token)))).toBe(401);
   });
 
-  test("keeps the agent funnel closed until the user has a name", async () => {
+  test("lets a user without a name create an agent", async () => {
     const token = await signIn("minho@example.com");
-    expect(status(await client.agents.$post({ json: {} }, bearer(token)))).toBe(409);
-
-    await setName(token, "민호");
     expect(status(await client.agents.$post({ json: {} }, bearer(token)))).toBe(201);
   });
 });

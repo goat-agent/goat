@@ -1,9 +1,8 @@
 import SwiftUI
 
-/// Naming a new agent: the last step of getting started, and the New Agent sheet.
+/// Naming the first agent: the last step of getting started.
 struct AgentStep: View {
   let model: AppModel
-  var cancel: (() -> Void)?
   @State private var name = "Goat"
   @State private var instructions = ""
   @FocusState private var isFocused: Bool
@@ -12,10 +11,9 @@ struct AgentStep: View {
 
   var body: some View {
     OnboardingCard(
-      title: "Meet your agent",
-      message: Text("Give it a name. Instructions are optional."),
-      action: "Create Agent",
-      workingAction: "Creating…",
+      title: "Your Agent",
+      action: "Start",
+      workingAction: "Starting…",
       isWorking: model.isWorking,
       canSubmit: !trimmedName.isEmpty,
       error: model.errorMessage,
@@ -27,16 +25,10 @@ struct AgentStep: View {
       TextField(
         "Instructions",
         text: $instructions,
-        prompt: Text("e.g. Keep answers short. Plan my days around the mornings."),
         axis: .vertical
       )
       .labelsHidden()
       .lineLimit(3...6)
-    } links: {
-      if let cancel {
-        Button("Cancel", action: cancel)
-          .keyboardShortcut(.cancelAction)
-      }
     }
     .onAppear { isFocused = true }
   }
@@ -44,6 +36,6 @@ struct AgentStep: View {
   private func submit() {
     guard !trimmedName.isEmpty, !model.isWorking else { return }
     let wishes = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
-    Task { await model.createAgent(name: trimmedName, instructions: wishes) }
+    Task { await model.createAgent(name: trimmedName, instructions: wishes, photo: nil) }
   }
 }

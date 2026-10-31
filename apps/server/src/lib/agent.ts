@@ -48,12 +48,52 @@ export async function createAgent(
   userId: string,
   input: { name: string; instructions: string },
 ): Promise<Agent> {
-  const [agent] = await db
-    .insert(agents)
-    .values({ userId, ...input })
-    .returning();
-  if (!agent) throw new Error("agent insert returned no row");
-  return agent;
+  return db.transaction(async (tx) => {
+    const [agent] = await tx
+      .insert(agents)
+      .values({ userId, ...input })
+      .returning();
+    if (!agent) throw new Error("agent insert returned no row");
+    await notify(tx, agent.id);
+    return agent;
+  });
+}
+
+type AgentChanges = Partial<Pick<Agent, "name" | "instructions" | "avatarId">>;
+
+/** Returns the agent before and after the change, or `undefined` when the user has no such agent. */
+export async function updateAgent(
+  userId: string,
+  agentId: string,
+  changes: AgentChanges,
+): Promise<{ before: Agent; after: Agent } | undefined> {
+  return db.transaction(async (tx) => {
+    const [before] = await tx
+      .select()
+      .from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.userId, userId)))
+      .for("update");
+    if (!before) return undefined;
+    const [after] = await tx.update(agents).set(changes).where(eq(agents.id, agentId)).returning();
+    if (!after) throw new Error("agent update returned no row");
+    await notify(tx, agentId);
+    return { before, after };
+  });
+}
+
+/**
+ * Deletes the agent with its conversation. A run in progress loses its lease and stops; the
+ * agent's files are unlinked for the sweeper.
+ */
+export async function deleteAgent(userId: string, agentId: string): Promise<Agent | undefined> {
+  return db.transaction(async (tx) => {
+    const [deleted] = await tx
+      .delete(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.userId, userId)))
+      .returning();
+    if (deleted) await notify(tx, agentId);
+    return deleted;
+  });
 }
 
 /** Throws `files.FileNotFound` unless every file id is an upload to this agent. */

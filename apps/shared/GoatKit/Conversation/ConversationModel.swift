@@ -39,13 +39,13 @@ final class ConversationModel {
   /// The server takes this many files in one message.
   static let maxAttachments = 10
 
-  let agent: Components.Schemas.Agent
-  /// Drawn by the app rather than stored, so each device shows it in its own language.
-  let greeting: String
+  let agentID: String
   private(set) var messages: [Components.Schemas.Message] = []
   private(set) var outgoing: [Outgoing] = []
   private(set) var attachments: [Attachment] = []
   private(set) var isRunning = false
+  /// The first page has arrived, or failed to; until then there is nothing to lay out.
+  private(set) var isLoaded = false
   var draft = ""
 
   var canAttach: Bool { attachments.count < Self.maxAttachments }
@@ -62,11 +62,10 @@ final class ConversationModel {
   let client: Client
   let dictation: Dictation
 
-  init(agent: Components.Schemas.Agent, userName: String, client: Client) {
-    self.agent = agent
-    greeting = String(localized: "Hi, \(userName)! I’m \(agent.name). How can I help?")
+  init(agentID: String, client: Client) {
+    self.agentID = agentID
     self.client = client
-    dictation = Dictation(agentID: agent.id, client: client)
+    dictation = Dictation(agentID: agentID, client: client)
     dictation.onText = { [weak self] text in self?.insert(text) }
   }
 
@@ -80,6 +79,7 @@ final class ConversationModel {
   }
 
   func listen() async {
+    await loadLatest()
     var delay = Duration.seconds(1)
     while !Task.isCancelled {
       do {
@@ -125,7 +125,7 @@ final class ConversationModel {
   /// The file on this device, downloaded first if it is not here yet.
   func localURL(for file: Components.Schemas.File) async -> URL? {
     if let cached = FileCache.existing(id: file.id, name: file.name) { return cached }
-    guard let data = try? await client.fileData(agentID: agent.id, fileID: file.id) else {
+    guard let data = try? await client.fileData(agentID: agentID, fileID: file.id) else {
       return nil
     }
     return try? await FileCache.store(data, id: file.id, name: file.name)
@@ -141,7 +141,7 @@ final class ConversationModel {
     do {
       let data = try await FileCache.read(staged)
       let output = try await client.uploadFile(
-        path: .init(id: agent.id),
+        path: .init(id: agentID),
         body: .file(data, named: name)
       )
       let file = try output.created.body.json.file
@@ -175,7 +175,7 @@ final class ConversationModel {
     let accepted: Bool
     do {
       let output = try await client.sendMessage(
-        path: .init(id: agent.id),
+        path: .init(id: agentID),
         body: .json(.init(text: text.isEmpty ? nil : text, files: fileIDs.isEmpty ? nil : fileIDs))
       )
       if case .accepted = output { accepted = true } else { accepted = false }
@@ -187,9 +187,20 @@ final class ConversationModel {
     }
   }
 
+  /// The newest page in one piece, so the conversation opens laid out at its end instead of
+  /// growing one streamed message at a time.
+  private func loadLatest() async {
+    defer { isLoaded = true }
+    guard messages.isEmpty,
+      case .ok(let response) = try? await client.listMessages(path: .init(id: agentID)),
+      let page = try? response.body.json.messages
+    else { return }
+    messages = page
+  }
+
   private func streamEvents() async throws {
     let output = try await client.streamEvents(
-      path: .init(id: agent.id),
+      path: .init(id: agentID),
       headers: .init(lastEventId: messages.last.map { String($0.id) })
     )
     for try await event in try output.ok.body.textEventStream.agentEvents() {

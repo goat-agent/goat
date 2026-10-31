@@ -28,9 +28,6 @@ struct MarkdownText: View {
         case .code:
           Text(block.content)
             .font(.callout.monospaced())
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.fill.tertiary, in: .rect(cornerRadius: 10))
         case .quote:
           Text(block.content)
             .foregroundStyle(.secondary)
@@ -43,6 +40,9 @@ struct MarkdownText: View {
         }
       }
     }
+    // Links keep the text color and are marked by their underline: the accent color means the
+    // user's own words, and it is too faint on the reply bubble in dark mode.
+    .tint(.primary)
   }
 }
 
@@ -68,8 +68,18 @@ private struct MarkdownBlock: Identifiable {
       return [MarkdownBlock(id: 0, kind: .paragraph, content: AttributedString(source))]
     }
     return document.runs[\.presentationIntent].enumerated().map { index, run in
-      MarkdownBlock(id: index, kind: kind(of: run.0), content: AttributedString(document[run.1]))
+      MarkdownBlock(
+        id: index, kind: kind(of: run.0),
+        content: underliningLinks(AttributedString(document[run.1])))
     }
+  }
+
+  private static func underliningLinks(_ content: AttributedString) -> AttributedString {
+    var content = content
+    for run in content.runs where run.link != nil {
+      content[run.range].underlineStyle = .single
+    }
+    return content
   }
 
   /// Components run from the innermost block outward, so the first list item found is this block's own.

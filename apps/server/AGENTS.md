@@ -9,6 +9,7 @@ Read [docs/style/typescript.md](../../docs/style/typescript.md) before writing T
 - `src/lib/` — modules several places use: `auth.ts` (Better Auth), `agent.ts` (agent runs),
   `events.ts` (LISTEN/NOTIFY), `openapi.ts` (route helpers), `logger.ts` (pino), `dates.ts`,
   `i18n.ts` (supported languages), `conversation.ts` (the text people see in messages),
+  `avatars.ts` (agent pictures, stored beside files under `avatars/`),
   `ai/providers.ts` (model choice, for replies and for transcribing recordings), `ai/tools/` (the
   tools agents call).
 - `src/lib/calls/` — voice calls. The device sends audio straight to the voice service over

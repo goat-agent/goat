@@ -7,13 +7,12 @@ struct OnboardingView: View {
   private enum Step: Hashable {
     case email
     case code(String)
-    case name
     case agent
   }
 
   private var step: Step {
     switch model.screen {
-    case .setup: model.needsName && model.setupPath.isEmpty ? .name : .agent
+    case .setup: .agent
     default: model.signInPath.last.map(Step.code) ?? .email
     }
   }
@@ -23,7 +22,6 @@ struct OnboardingView: View {
       switch step {
       case .email: EmailStep(model: model)
       case .code(let email): CodeStep(model: model, email: email)
-      case .name: NameStep(model: model)
       case .agent: AgentStep(model: model)
       }
     }
@@ -45,8 +43,7 @@ private struct EmailStep: View {
 
   var body: some View {
     OnboardingCard(
-      title: "Welcome to Goat",
-      message: Text("Enter your email to sign in. We’ll send you a code."),
+      title: "Welcome",
       action: "Continue",
       workingAction: "Sending…",
       isWorking: model.isWorking,
@@ -117,38 +114,5 @@ private struct CodeStep: View {
   private func submit() {
     guard code.count == 6, !model.isWorking else { return }
     Task { await model.signIn(email: email, code: code) }
-  }
-}
-
-private struct NameStep: View {
-  let model: AppModel
-  @State private var name = ""
-  @FocusState private var isFocused: Bool
-
-  private var trimmed: String { name.trimmingCharacters(in: .whitespaces) }
-
-  var body: some View {
-    OnboardingCard(
-      title: "What should your agent call you?",
-      message: Text("Your agent will use this name."),
-      action: "Continue",
-      workingAction: "Saving…",
-      isWorking: model.isWorking,
-      canSubmit: !trimmed.isEmpty,
-      error: model.errorMessage,
-      submit: submit
-    ) {
-      TextField("Name", text: $name, prompt: Text("e.g. Alex"))
-        .labelsHidden()
-        .textContentType(.givenName)
-        .focused($isFocused)
-        .onSubmit(submit)
-    }
-    .onAppear { isFocused = true }
-  }
-
-  private func submit() {
-    guard !trimmed.isEmpty, !model.isWorking else { return }
-    Task { await model.setName(trimmed) }
   }
 }

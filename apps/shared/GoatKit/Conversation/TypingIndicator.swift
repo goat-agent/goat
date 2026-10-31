@@ -7,8 +7,8 @@ struct TypingIndicator: View {
       .foregroundStyle(.secondary)
       .symbolEffect(.variableColor.iterative.dimInactiveLayers)
       .padding(.horizontal, 16)
-      .padding(.vertical, 14)
-      .background(.fill.secondary, in: .rect(cornerRadius: 20))
+      .frame(minHeight: 44)
+      .background(.fill.secondary, in: .rect(cornerRadius: 22))
       .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityLabel("Writing a reply")
   }

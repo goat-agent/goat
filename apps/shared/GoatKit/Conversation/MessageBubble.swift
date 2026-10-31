@@ -13,16 +13,16 @@ struct MessageBubble: View {
       }
     }
     .padding(.horizontal, 14)
-    .padding(.vertical, 10)
+    .padding(.vertical, 11)
     .foregroundStyle(isMine ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
     .background(
       isMine ? AnyShapeStyle(.tint) : AnyShapeStyle(.fill.secondary),
-      in: .rect(cornerRadius: 20)
+      in: .rect(cornerRadius: 22)
     )
     .contextMenu {
       Button("Copy", systemImage: "doc.on.doc") { Pasteboard.copy(text) }
     }
     .frame(maxWidth: .infinity, alignment: isMine ? .trailing : .leading)
-    .padding(isMine ? .leading : .trailing, 48)
+    .padding(isMine ? .leading : .trailing, 64)
   }
 }

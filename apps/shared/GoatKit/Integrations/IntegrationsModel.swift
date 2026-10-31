@@ -4,7 +4,21 @@ import Observation
 
 @Observable
 final class IntegrationsModel {
+  /// One connected account, with the service it belongs to.
+  struct Account: Identifiable {
+    let integration: Components.Schemas.Integration
+    let connection: Components.Schemas.Connection
+
+    var id: String { connection.id }
+  }
+
   private(set) var integrations: [Components.Schemas.Integration] = []
+
+  var accounts: [Account] {
+    integrations.flatMap { integration in
+      integration.connections.map { Account(integration: integration, connection: $0) }
+    }
+  }
   private(set) var failedIntegrationID: String?
   private(set) var connectingID: String?
 

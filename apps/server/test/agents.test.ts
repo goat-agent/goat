@@ -5,7 +5,7 @@ import { db } from "../src/db";
 import { agents, messages } from "../src/db/schema/agents";
 import { scan } from "../src/lib/agent";
 import { dateIn } from "../src/lib/dates";
-import { llm } from "./fakes";
+import { llm, storedObjects } from "./fakes";
 import {
   bearer,
   client,
@@ -232,5 +232,139 @@ describe("events", () => {
     await reader.cancel();
 
     expect(received.indexOf("들려?")).toBeLessThan(received.indexOf("스트림 답"));
+  });
+});
+
+describe("agent list", () => {
+  test("puts the agent with the newest message first and shows that message", async () => {
+    await client.agents.$post({ json: { name: "일정" } }, bearer(token));
+    llm.reply = () => Promise.resolve("반가워요");
+    await send(token, agentId, "안녕");
+    await waitForIdle(agentId);
+
+    const response = await client.agents.$get(undefined, bearer(token));
+    if (!response.ok) throw new Error(`list agents failed with ${response.status}`);
+    const { agents: list } = await response.json();
+    expect(list.map(({ name }) => name)).toEqual(["Goat", "일정"]);
+    expect(list[0]).toMatchObject({
+      status: "idle",
+      lastMessage: { role: "assistant", text: "반가워요" },
+    });
+    expect(list[1]?.lastMessage).toBeUndefined();
+  });
+
+  test("streams the whole list again when an agent changes", async () => {
+    const response = await client.agents.events.$get(undefined, bearer(token));
+    if (!response.body) throw new Error("no event stream");
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+
+    let received = "";
+    const readUntil = async (needle: string) => {
+      while (!received.includes(needle)) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error(`stream ended before ${needle}`);
+        received += value;
+      }
+    };
+
+    await readUntil('"name":"Goat"');
+    await client.agents[":id"].$patch(
+      { param: { id: agentId }, json: { name: "비서" } },
+      bearer(token),
+    );
+    await readUntil('"name":"비서"');
+    await reader.cancel();
+  });
+});
+
+describe("agent settings", () => {
+  test("renames an agent and gives it new instructions for its next reply", async () => {
+    const response = await client.agents[":id"].$patch(
+      { param: { id: agentId }, json: { name: "비서", instructions: "짧게 답해" } },
+      bearer(token),
+    );
+    if (!response.ok) throw new Error(`update agent failed with ${response.status}`);
+    expect((await response.json()).agent).toMatchObject({
+      name: "비서",
+      instructions: "짧게 답해",
+    });
+
+    await send(token, agentId, "안녕");
+    await waitForIdle(agentId);
+    const system = JSON.stringify(llm.prompts.at(-1)?.find(({ role }) => role === "system"));
+    expect(system).toContain("비서");
+    expect(system).toContain("짧게 답해");
+  });
+
+  test("refuses an empty change and another user's agent", async () => {
+    const empty = await client.agents[":id"].$patch(
+      { param: { id: agentId }, json: {} },
+      bearer(token),
+    );
+    expect(status(empty)).toBe(400);
+
+    const other = await signIn("other@example.com");
+    const foreign = await client.agents[":id"].$patch(
+      { param: { id: agentId }, json: { name: "남의 것" } },
+      bearer(other),
+    );
+    expect(status(foreign)).toBe(404);
+  });
+
+  test("deletes an agent with its conversation", async () => {
+    llm.reply = () => Promise.resolve("반가워요");
+    await send(token, agentId, "안녕");
+    await waitForIdle(agentId);
+
+    const response = await client.agents[":id"].$delete({ param: { id: agentId } }, bearer(token));
+    expect(status(response)).toBe(204);
+
+    expect(await db.select().from(messages).where(eq(messages.agentId, agentId))).toEqual([]);
+    const list = await client.agents.$get(undefined, bearer(token));
+    if (!list.ok) throw new Error(`list agents failed with ${list.status}`);
+    expect((await list.json()).agents).toEqual([]);
+  });
+});
+
+function setAvatar(bytes: Uint8Array<ArrayBuffer>, name: string) {
+  return client.agents[":id"].avatar.$put(
+    { param: { id: agentId }, form: { image: new File([bytes], name) } },
+    bearer(token),
+  );
+}
+
+describe("avatars", () => {
+  const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+  const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 4, 5, 6]);
+
+  test("stores a picture, replaces it, and removes it", async () => {
+    const first = await setAvatar(png, "a.png");
+    if (!first.ok) throw new Error(`set avatar failed with ${first.status}`);
+    const firstId = (await first.json()).agent.avatarId ?? "";
+
+    const picture = await client.agents[":id"].avatars[":avatarId"].$get(
+      { param: { id: agentId, avatarId: firstId } },
+      bearer(token),
+    );
+    expect(picture.headers.get("content-type")).toBe("image/png");
+    expect(new Uint8Array(await picture.arrayBuffer())).toEqual(png);
+
+    const second = await setAvatar(jpeg, "b.jpg");
+    if (!second.ok) throw new Error(`set avatar failed with ${second.status}`);
+    expect((await second.json()).agent.avatarId).not.toBe(firstId);
+    expect(storedObjects.has(`avatars/${firstId}`)).toBe(false);
+
+    const removed = await client.agents[":id"].avatar.$delete(
+      { param: { id: agentId } },
+      bearer(token),
+    );
+    if (!removed.ok) throw new Error(`remove avatar failed with ${removed.status}`);
+    expect((await removed.json()).agent.avatarId).toBeUndefined();
+    expect([...storedObjects.keys()].some((key) => key.startsWith("avatars/"))).toBe(false);
+  });
+
+  test("refuses a file that is not a JPEG or PNG", async () => {
+    const response = await setAvatar(new TextEncoder().encode("hello"), "a.png");
+    expect(status(response)).toBe(400);
   });
 });

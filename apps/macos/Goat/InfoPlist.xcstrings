@@ -11,13 +11,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Used when you speak a message."
+            "value" : "Used when you speak a message or call your agent."
           }
         },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "말로 메시지를 입력할 때 써요."
+            "value" : "말로 메시지를 입력하거나 에이전트와 통화할 때 써요."
           }
         }
       }

@@ -89,10 +89,19 @@ final class Dictation {
     metering?.cancel()
     recorder?.stop()
     recorder = nil
-    #if os(iOS)
-      try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-    #endif
+    deactivateAudio()
     await transcribe()
+  }
+
+  /// Throws the recording away instead of turning it into text.
+  func cancel() {
+    guard state == .recording else { return }
+    metering?.cancel()
+    recorder?.stop()
+    recorder = nil
+    deactivateAudio()
+    discardRecording()
+    state = .idle
   }
 
   func retry() async {
@@ -144,6 +153,12 @@ final class Dictation {
       levels.append(level)
       try? await Task.sleep(for: .milliseconds(50))
     }
+  }
+
+  private func deactivateAudio() {
+    #if os(iOS)
+      try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    #endif
   }
 
   private func discardRecording() {
