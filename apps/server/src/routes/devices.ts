@@ -9,7 +9,7 @@ const Device = z
   .object({
     id: z.uuid(),
     name: z.string(),
-    platform: openEnum(["ios", "macos"]),
+    platform: openEnum(["ios", "macos", "web"]),
     isCurrent: z.boolean().describe("True for the device that made this request"),
     createdAt: z.iso.datetime(),
   })

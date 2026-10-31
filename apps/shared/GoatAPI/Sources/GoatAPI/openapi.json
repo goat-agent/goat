@@ -625,7 +625,8 @@
                 "type": "string",
                 "enum": [
                   "ios",
-                  "macos"
+                  "macos",
+                  "web"
                 ]
               },
               {
@@ -910,7 +911,8 @@
                 "type": "string",
                 "enum": [
                   "ios",
-                  "macos"
+                  "macos",
+                  "web"
                 ]
               },
               {
@@ -1012,7 +1014,7 @@
         },
         "responses": {
           "200": {
-            "description": "Signed in; use the token as a bearer token",
+            "description": "Signed in. Apps use the token as a bearer token; browsers also get a session cookie and should ignore the token",
             "content": {
               "application/json": {
                 "schema": {
