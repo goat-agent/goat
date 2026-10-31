@@ -8,6 +8,11 @@
     "apps/shared/GoatAPI/Sources/GoatAPI/openapi.json",
     "**/Package.resolved",
     "**/*.xcassets/**",
-    "**/*.xcodeproj/**"
+    "**/*.xcodeproj/**",
+    "apps/web/src/routeTree.gen.ts",
+    "apps/web/src/shared/i18n/paraglide/**",
+    "apps/web/src/shared/api/schema.gen.ts",
+    "apps/web/public/mockServiceWorker.js",
+    "apps/web/dist/**"
   ]
 }

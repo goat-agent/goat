@@ -1,7 +1,7 @@
 # Goat
 
 Goat is a personal AI agent. Each account has agents; each agent has one conversation that the
-user reaches from the iPhone and Mac apps (later web). The server runs the agent and its tools,
+user reaches from the iPhone, Mac, and web apps. The server runs the agent and its tools,
 and the agent can use a signed-in Mac through computer use.
 
 ## Map
@@ -11,6 +11,8 @@ and the agent can use a signed-in Mac through computer use.
 - `apps/ios` — SwiftUI app for iOS 26+. See [apps/ios/AGENTS.md](apps/ios/AGENTS.md).
 - `apps/macos` — SwiftUI app for macOS 26+, distributed outside the App Store, and `Computer`,
   the package that runs computer use. See [apps/macos/AGENTS.md](apps/macos/AGENTS.md).
+- `apps/web` — Vite, React, TanStack Router and Query, shadcn/ui; the browser client and the
+  design reference for the Apple apps. See [apps/web/AGENTS.md](apps/web/AGENTS.md).
 - `apps/shared` — Swift both Apple apps build from: `GoatKit` (screens and models, compiled into
   each app) and `GoatAPI` (the client generated from the server's OpenAPI document).
 - `docs/style` — style guides. Read [typescript.md](docs/style/typescript.md) before writing

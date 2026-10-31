@@ -49,12 +49,35 @@
     "typescript/switch-exhaustiveness-check": "error",
     "typescript/use-unknown-in-catch-callback-variable": "error"
   },
-  "ignorePatterns": ["**/drizzle/**", "**/src/db/schema/auth.ts"],
+  "ignorePatterns": [
+    "**/drizzle/**",
+    "**/src/db/schema/auth.ts",
+    "apps/web/src/routeTree.gen.ts",
+    "apps/web/src/shared/i18n/paraglide/**",
+    "apps/web/src/shared/api/schema.gen.ts",
+    "apps/web/public/mockServiceWorker.js",
+    "apps/web/dist/**"
+  ],
   "overrides": [
     {
       "files": ["apps/server/src/routes/*.ts", "**/*.config.ts"],
       "rules": {
         "import/no-default-export": "off"
+      }
+    },
+    {
+      "files": ["apps/web/**/*.tsx", "apps/web/**/*.ts"],
+      "plugins": ["typescript", "unicorn", "import", "promise", "oxc", "react", "jsx-a11y"],
+      "rules": {
+        "react/rules-of-hooks": "error",
+        "react/exhaustive-deps": "error",
+        "react/jsx-key": "error",
+        "import/no-unassigned-import": [
+          "error",
+          {
+            "allow": ["**/*.css", "react"]
+          }
+        ]
       }
     }
   ]

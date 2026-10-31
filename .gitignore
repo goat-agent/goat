@@ -8,3 +8,6 @@ node_modules/
 .build/
 DerivedData/
 xcuserdata/
+apps/web/dist/
+apps/web/src/routeTree.gen.ts
+apps/web/src/shared/api/schema.gen.ts
