@@ -1,5 +1,6 @@
 import { and, eq, gt, lt, sql } from "drizzle-orm";
 import { db } from "../../db";
+import { env } from "../../env";
 import { connectionAttempts } from "../../db/schema/connections";
 import { logger } from "../logger";
 import { type Connection, bearerFetch, saveConnection } from "./connections";
@@ -21,6 +22,7 @@ export async function startConnecting(
   userId: string,
   integrationId: string,
   agentId: string | undefined,
+  returnsToWeb: boolean,
 ): Promise<string | undefined> {
   const integration = integrations[integrationId];
   const client = integration?.auth.client;
@@ -33,7 +35,7 @@ export async function startConnecting(
   const verifier = createVerifier();
   await db
     .insert(connectionAttempts)
-    .values({ state, userId, integrationId, agentId, codeVerifier: verifier });
+    .values({ state, userId, integrationId, agentId, codeVerifier: verifier, returnsToWeb });
   return authorizationUrl(integration.auth, client, {
     integrationId,
     state,
@@ -42,13 +44,22 @@ export async function startConnecting(
   });
 }
 
-// The browser has no goat session to show whose attempt this is, so the code goes back to the
-// app that signed in, which finishes with its own session.
-export async function returnToApp(
+// The browser that lands here may hold no goat session (apps sign in through a separate one), so
+// the code goes back to the client that started the attempt, which finishes with its own session.
+// Without a known attempt there is no way to tell which client that was; apps are the default.
+export async function returnToClient(
   integrationId: string,
   response: { state?: string; code?: string; error?: string; iss?: string },
 ): Promise<URL> {
-  const back = new URL("goat://connected");
+  const [attempt] = response.state
+    ? await db
+        .select({ returnsToWeb: connectionAttempts.returnsToWeb })
+        .from(connectionAttempts)
+        .where(current(response.state, integrationId))
+    : [];
+  const back = attempt?.returnsToWeb
+    ? new URL("/connected", env.WEB_URL)
+    : new URL("goat://connected");
   back.searchParams.set("integration", integrationId);
   const fail = (reason: "denied" | "expired" | "failed") => {
     back.searchParams.set("error", reason);
@@ -56,10 +67,6 @@ export async function returnToApp(
   };
 
   if (!response.state) return fail("failed");
-  const [attempt] = await db
-    .select({ state: connectionAttempts.state })
-    .from(connectionAttempts)
-    .where(current(response.state, integrationId));
   if (!attempt) return fail("expired");
   if (response.error === "access_denied") return fail("denied");
 

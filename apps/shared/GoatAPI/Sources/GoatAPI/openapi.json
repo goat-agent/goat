@@ -2411,7 +2411,7 @@
         },
         "responses": {
           "200": {
-            "description": "Open this in a web authentication session; it ends at goat://connected with state and code for createConnection",
+            "description": "Open this in a web authentication session (apps) or the same tab (web). It ends at goat://connected, or at /connected on the web app when a browser started it, with state and code for createConnection",
             "content": {
               "application/json": {
                 "schema": {
@@ -2614,7 +2614,7 @@
         ],
         "responses": {
           "302": {
-            "description": "Back to the app at goat://connected?integration=<id>&state=…&code=…, or with error=denied|expired|failed"
+            "description": "Back to the client that started it at goat://connected (apps) or <web app>/connected (browsers), with ?integration=<id>&state=…&code=…, or with error=denied|expired|failed"
           }
         }
       }
