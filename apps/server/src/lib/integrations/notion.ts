@@ -29,15 +29,15 @@ export const notion = {
   },
   mcp: {
     url: "https://mcp.notion.com/mcp",
-    tools: [
-      "notion-search",
-      "notion-fetch",
-      "notion-create-pages",
-      "notion-update-page",
-      "notion-get-comments",
-      "notion-create-comment",
-      "notion-get-users",
-      "notion-query-data-sources",
-    ],
+    tools: {
+      "notion-search": "read",
+      "notion-fetch": "read",
+      "notion-create-pages": "write",
+      "notion-update-page": "write",
+      "notion-get-comments": "read",
+      "notion-create-comment": "write",
+      "notion-get-users": "read",
+      "notion-query-data-sources": "read",
+    },
   },
 } satisfies Integration;

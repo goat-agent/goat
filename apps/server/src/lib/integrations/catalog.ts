@@ -28,10 +28,11 @@ const CLOSE_TIMEOUT_MS = 5_000;
 
 const log = logger.child({ module: "catalog" });
 
-export function openCatalog(userId: string): Catalog {
+/** With `readOnly`, only tools that change nothing are reachable and nothing offers to connect. */
+export function openCatalog(userId: string, { readOnly = false } = {}): Catalog {
   const sessions: McpSession[] = [];
   let loading: Promise<Loaded> | undefined;
-  const load = () => (loading ??= loadFor(userId, sessions));
+  const load = () => (loading ??= loadFor(userId, sessions, readOnly));
 
   const search = async (): Promise<ToolSet> => {
     const { byName, unconnected } = await load();
@@ -92,7 +93,7 @@ export function openCatalog(userId: string): Catalog {
   return { search, resolve, reload, close };
 }
 
-async function loadFor(userId: string, sessions: McpSession[]): Promise<Loaded> {
+async function loadFor(userId: string, sessions: McpSession[], readOnly: boolean): Promise<Loaded> {
   const rows = await listConnections(userId);
   const working = rows.filter((row) => !row.needsReconnect && integrations[row.integrationId]);
   const byName = new Map<string, Entry[]>();
@@ -103,7 +104,7 @@ async function loadFor(userId: string, sessions: McpSession[]): Promise<Loaded> 
       const integration = integrations[connection.integrationId];
       if (!integration) return;
       try {
-        const tools = await toolsOf(connection, integration, sessions);
+        const tools = await toolsOf(connection, integration, sessions, readOnly);
         for (const [name, found] of Object.entries(tools)) {
           const entry = { integrationId: connection.integrationId, connection, tool: found };
           byName.set(name, [...(byName.get(name) ?? []), entry]);
@@ -116,7 +117,9 @@ async function loadFor(userId: string, sessions: McpSession[]): Promise<Loaded> 
   );
 
   const connected = new Set(working.map((row) => row.integrationId));
-  const unconnected = new Set(Object.keys(integrations).filter((id) => !connected.has(id)));
+  const unconnected = new Set(
+    readOnly ? [] : Object.keys(integrations).filter((id) => !connected.has(id)),
+  );
   return { byName, unconnected, unreachable };
 }
 
@@ -124,13 +127,17 @@ async function toolsOf(
   connection: Connection,
   integration: Integration,
   sessions: McpSession[],
+  readOnly: boolean,
 ): Promise<ToolSet> {
   const fetch = authorizedFetch(connection);
   const found: ToolSet = {};
-  if (integration.mcp) {
+  const allowed = Object.entries(integration.mcp?.tools ?? {}).flatMap(([name, effect]) =>
+    readOnly && effect !== "read" ? [] : [name],
+  );
+  if (integration.mcp && allowed.length > 0) {
     const session = await openSession(integration.mcp.url, fetch);
     sessions.push(session);
-    const tools = await session.tools(integration.mcp.tools);
+    const tools = await session.tools(allowed);
     for (const [name, mcpTool] of Object.entries(tools)) {
       found[exposedName(connection.integrationId, name)] = mcpTool;
     }
@@ -139,6 +146,7 @@ async function toolsOf(
   // granted stays out of reach.
   const granted = open(connection.credentials).scope?.split(" ");
   for (const [name, own] of Object.entries(integration.tools ?? {})) {
+    if (readOnly && own.metadata?.effect !== "read") continue;
     const scope = own.metadata?.scope;
     if (granted && typeof scope === "string" && !granted.includes(scope)) continue;
     found[name] = withFetch(own, fetch);

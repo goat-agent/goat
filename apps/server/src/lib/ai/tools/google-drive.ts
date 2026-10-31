@@ -12,6 +12,7 @@ import {
 const API = "https://www.googleapis.com/drive/v3/files";
 const FIELDS = "id,name,mimeType,modifiedTime,webViewLink";
 const metadata = { scope: googleScopes.drive };
+const readMetadata = { ...metadata, effect: "read" };
 
 // Docs, Sheets, and Slides have no file of their own; Drive exports them as text.
 const exports: Record<string, string> = {
@@ -39,7 +40,7 @@ export const googleDriveTools = {
       maxResults: z.int().min(1).max(50).default(20),
     }),
     contextSchema: GoogleConnection,
-    metadata,
+    metadata: readMetadata,
     execute: async ({ query, maxResults }, { context, abortSignal }) => {
       const quoted = query.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
       const url = new URL(API);
@@ -56,7 +57,7 @@ export const googleDriveTools = {
     description: `Google Drive: read a file as text; Docs and Slides come as plain text, Sheets as CSV of the first sheet. Long files arrive in parts: when truncated is true, call again with offset set to nextOffset. ${UNTRUSTED_NOTE}`,
     inputSchema: z.object({ fileId: z.string(), offset: z.int().min(0).optional() }),
     contextSchema: GoogleConnection,
-    metadata,
+    metadata: readMetadata,
     execute: async ({ fileId, offset }, { context, abortSignal }) => {
       const base = `${API}/${encodeURIComponent(fileId)}`;
       const file = File.parse(

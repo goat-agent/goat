@@ -12,6 +12,7 @@ import {
 
 const API = "https://gmail.googleapis.com/gmail/v1/users/me";
 const metadata = { scope: googleScopes.gmail };
+const readMetadata = { ...metadata, effect: "read" };
 
 const Header = z.object({ name: z.string(), value: z.string() });
 
@@ -71,7 +72,7 @@ export const gmailTools = {
       maxResults: z.int().min(1).max(25).default(10),
     }),
     contextSchema: GoogleConnection,
-    metadata,
+    metadata: readMetadata,
     execute: async ({ query, maxResults }, { context, abortSignal }) => {
       const url = new URL(`${API}/messages`);
       url.search = new URLSearchParams({ q: query, maxResults: String(maxResults) }).toString();
@@ -95,7 +96,7 @@ export const gmailTools = {
       offset: z.int().min(0).optional(),
     }),
     contextSchema: GoogleConnection,
-    metadata,
+    metadata: readMetadata,
     execute: async ({ messageId, offset }, { context, abortSignal }) => {
       const message = Message.parse(
         await callGoogle(context.fetch, `${API}/messages/${encodeURIComponent(messageId)}`, {
@@ -143,7 +144,7 @@ export const gmailTools = {
     description: "Gmail: list the user's labels and their ids.",
     inputSchema: z.object({}),
     contextSchema: GoogleConnection,
-    metadata,
+    metadata: readMetadata,
     execute: async (_, { context, abortSignal }) =>
       Labels.parse(await callGoogle(context.fetch, `${API}/labels`, { signal: abortSignal })),
   }),

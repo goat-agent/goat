@@ -21,11 +21,14 @@ const Lists = z.object({
 const listId = z.string().describe("A list id from microsoft_todo_list_lists");
 const due = z.iso.date().optional().describe("Due date, YYYY-MM-DD");
 
+const readMetadata = { effect: "read" };
+
 export const microsoftTodoTools = {
   microsoft_todo_list_lists: tool({
     description: "Microsoft To Do: list the user's task lists.",
     inputSchema: z.object({}),
     contextSchema: MicrosoftConnection,
+    metadata: readMetadata,
     execute: async (_, { context, abortSignal }) =>
       Lists.parse(await callGraph(context.fetch, API, { signal: abortSignal })),
   }),
@@ -33,6 +36,7 @@ export const microsoftTodoTools = {
     description: "Microsoft To Do: list the tasks in a task list.",
     inputSchema: z.object({ listId, showCompleted: z.boolean().default(false) }),
     contextSchema: MicrosoftConnection,
+    metadata: readMetadata,
     execute: async ({ listId: list, showCompleted }, { context, abortSignal }) => {
       const url = new URL(`${API}/${encodeURIComponent(list)}/tasks`);
       url.searchParams.set("$top", String(PAGE));

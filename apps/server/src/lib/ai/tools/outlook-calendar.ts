@@ -41,6 +41,8 @@ type Changes = {
   attendees?: string[] | undefined;
 };
 
+const readMetadata = { effect: "read" };
+
 export const outlookCalendarTools = {
   outlook_calendar_list_events: tool({
     description: `Outlook Calendar: list events on the user's default calendar in a time range, with times in the given time zone. ${UNTRUSTED_NOTE}`,
@@ -50,6 +52,7 @@ export const outlookCalendarTools = {
       timeZone,
     }),
     contextSchema: MicrosoftConnection,
+    metadata: readMetadata,
     execute: async ({ start, end, timeZone: zone }, { context, abortSignal }) => {
       const url = new URL(`${API}/calendarView`);
       url.search = new URLSearchParams({
