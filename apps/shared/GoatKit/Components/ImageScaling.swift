@@ -11,6 +11,11 @@ nonisolated enum ImageScaling {
     return thumbnail(of: source, longEdge: maxPixels)
   }
 
+  static func thumbnail(of data: Data, longEdge: CGFloat) -> CGImage? {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+    return thumbnail(of: source, longEdge: longEdge)
+  }
+
   static func thumbnail(of source: CGImageSource, longEdge: CGFloat) -> CGImage? {
     let options: [CFString: Any] = [
       kCGImageSourceCreateThumbnailFromImageAlways: true,

@@ -20,14 +20,14 @@ struct EmailView: View {
           .focused($isFocused)
           .onSubmit(submit)
       } footer: {
-        FormFooter(hint: "We’ll send a sign-in code to this address.", error: model.errorMessage)
+        FormFooter(hint: "", error: model.errorMessage)
       }
     }
-    .navigationTitle("Get Started with Goat")
+    .navigationTitle("Welcome")
     .scrollDismissesKeyboard(.interactively)
     .safeAreaBar(edge: .bottom) {
       PrimaryButton(
-        title: "Send Code",
+        title: "Continue",
         workingTitle: "Sending…",
         isWorking: model.isWorking,
         isEnabled: canSubmit,

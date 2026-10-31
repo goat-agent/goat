@@ -4,7 +4,7 @@ import SwiftUI
 /// title and a line of explanation, the fields, and one button that the Return key presses.
 struct OnboardingCard<Fields: View, Links: View>: View {
   let title: LocalizedStringKey
-  let message: Text
+  var message: Text?
   let action: LocalizedStringKey
   let workingAction: LocalizedStringKey
   let isWorking: Bool
@@ -20,11 +20,13 @@ struct OnboardingCard<Fields: View, Links: View>: View {
       Text(title)
         .font(.title2.weight(.semibold))
         .padding(.top, 18)
-      message
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
-        .fixedSize(horizontal: false, vertical: true)
-        .padding(.top, 6)
+      if let message {
+        message
+          .foregroundStyle(.secondary)
+          .multilineTextAlignment(.center)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.top, 6)
+      }
 
       VStack(alignment: .leading, spacing: 8) {
         fields
@@ -63,7 +65,7 @@ struct OnboardingCard<Fields: View, Links: View>: View {
 
 extension OnboardingCard where Links == EmptyView {
   init(
-    title: LocalizedStringKey, message: Text, action: LocalizedStringKey,
+    title: LocalizedStringKey, message: Text? = nil, action: LocalizedStringKey,
     workingAction: LocalizedStringKey, isWorking: Bool, canSubmit: Bool, error: String?,
     submit: @escaping () -> Void, @ViewBuilder fields: () -> Fields
   ) {

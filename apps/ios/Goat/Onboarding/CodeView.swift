@@ -15,6 +15,7 @@ struct CodeView: View {
           .keyboardType(.numberPad)
           .font(.title2.monospacedDigit())
           .focused($isFocused)
+          .disabled(model.isWorking)
           .onChange(of: code) { _, newValue in
             let digits = String(newValue.filter(\.isNumber).prefix(6))
             if digits != newValue { code = digits }
@@ -37,15 +38,6 @@ struct CodeView: View {
       }
     }
     .navigationTitle("Enter Code")
-    .safeAreaBar(edge: .bottom) {
-      PrimaryButton(
-        title: "Sign In",
-        workingTitle: "Checking…",
-        isWorking: model.isWorking,
-        isEnabled: code.count == 6,
-        action: submit
-      )
-    }
     .sensoryFeedback(.error, trigger: model.failedAttempts)
     .onChange(of: model.failedAttempts) { code = "" }
     .onAppear { isFocused = true }

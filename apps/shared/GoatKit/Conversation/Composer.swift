@@ -3,60 +3,57 @@ import SwiftUI
 /// Everything for writing a message sits in one shape: attachments, the text, dictation, and
 /// one main button whose job follows the state (send, call, stop recording).
 struct Composer: View {
-  @Binding var draft: String
-  let attachments: [ConversationModel.Attachment]
-  let dictation: Dictation
-  let canAttach: Bool
-  let canSend: Bool
-  let isEmpty: Bool
+  @Bindable var conversation: ConversationModel
   let pickPhotos: () -> Void
   let pickFiles: () -> Void
-  let open: (ConversationModel.Attachment) -> Void
-  let retry: (ConversationModel.Attachment.ID) -> Void
-  let remove: (ConversationModel.Attachment.ID) -> Void
-  let send: () -> Void
+  let open: (URL) -> Void
   let call: () -> Void
 
   @Environment(\.openURL) private var openURL
 
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      VStack(alignment: .leading, spacing: 4) {
-        if !attachments.isEmpty {
-          attachmentList
-        }
-        HStack(alignment: .bottom, spacing: 2) {
-          switch dictation.state {
-          case .recording:
-            Waveform(levels: dictation.levels)
-              .padding(.leading, 12)
-          case .transcribing:
-            // The recording stays where it was, dimmed, until its text replaces it.
-            Waveform(levels: dictation.levels)
-              .opacity(0.3)
-              .padding(.leading, 12)
-              .accessibilityLabel("Transcribing…")
-          case .idle:
-            attachMenu
-            TextField("Message", text: $draft, axis: .vertical)
-              .lineLimit(1...5)
-              .padding(.vertical, 8)
-            ToolButton(title: "Dictate", systemImage: "mic") {
-              Task { await dictation.start() }
-            }
-          }
-          mainButton
-        }
-      }
-      .padding(4)
-      .glassEffect(.regular, in: .rect(cornerRadius: 22))
+  private var dictation: Dictation { conversation.dictation }
 
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
       if let problem = dictation.problem {
-        problemFooter(problem)
+        problemRow(problem)
+        Divider()
+      }
+      if !conversation.attachments.isEmpty {
+        attachmentList
+      }
+      HStack(alignment: .bottom, spacing: 2) {
+        switch dictation.state {
+        case .recording:
+          ToolButton(title: "Discard Recording", systemImage: "xmark") { dictation.cancel() }
+          Waveform(levels: dictation.levels)
+        case .transcribing:
+          // The recording stays where it was, dimmed, until its text replaces it.
+          ToolButton(title: "Discard Recording", systemImage: "xmark") {}
+            .disabled(true)
+          Waveform(levels: dictation.levels)
+            .opacity(0.3)
+            .accessibilityLabel("Transcribing…")
+        case .idle:
+          attachMenu
+          TextField("Message", text: $conversation.draft, axis: .vertical)
+            .textFieldStyle(.plain)
+            .lineLimit(1...5)
+            #if os(macOS)
+              // Return sends on the Mac, as in Messages; Option-Return starts a new line.
+              .onSubmit(send)
+            #endif
+            .padding(.vertical, 8)
+          ToolButton(title: "Dictate", systemImage: "mic") {
+            Task { await dictation.start() }
+          }
+          .foregroundStyle(.secondary)
+        }
+        mainButton
       }
     }
-    .padding(.horizontal)
-    .padding(.bottom, 8)
+    .padding(4)
+    .glassEffect(.regular, in: .rect(cornerRadius: 22))
     .sensoryFeedback(.impact(weight: .light), trigger: dictation.state) { old, new in
       new == .recording || old == .recording
     }
@@ -67,13 +64,13 @@ struct Composer: View {
   private var attachmentList: some View {
     ScrollView(.horizontal) {
       HStack(spacing: 10) {
-        ForEach(attachments) { attachment in
+        ForEach(conversation.attachments) { attachment in
           AttachmentChip(attachment: attachment) {
-            open(attachment)
+            open(attachment.localURL)
           } retry: {
-            retry(attachment.id)
+            Task { await conversation.retryUpload(attachment.id) }
           } remove: {
-            remove(attachment.id)
+            conversation.removeAttachment(attachment.id)
           }
         }
       }
@@ -89,8 +86,11 @@ struct Composer: View {
     } label: {
       ToolButton.label(title: "Attach", systemImage: "plus")
     }
+    .menuStyle(.button)
+    .buttonStyle(.plain)
+    .menuIndicator(.hidden)
     .tint(.primary)
-    .disabled(!canAttach)
+    .disabled(!conversation.canAttach)
   }
 
   @ViewBuilder private var mainButton: some View {
@@ -101,32 +101,44 @@ struct Composer: View {
       }
     case .transcribing:
       MainButton(title: "Transcribing…", systemImage: "", isWorking: true) {}
-    case .idle where isEmpty:
-      MainButton(title: "Call", systemImage: "phone.fill", action: call)
+    case .idle where conversation.isEmpty:
+      MainButton(title: "Call", systemImage: "waveform", action: call)
     case .idle:
-      MainButton(title: "Send", systemImage: "arrow.up", isEnabled: canSend, action: send)
+      MainButton(
+        title: "Send", systemImage: "arrow.up", isEnabled: conversation.canSend, action: send)
     }
   }
 
-  @ViewBuilder private func problemFooter(_ problem: Dictation.Problem) -> some View {
+  private func send() {
+    guard conversation.canSend else { return }
+    Task { await conversation.send() }
+  }
+
+  /// A problem with writing stays inside the composer, next to what it is about.
+  @ViewBuilder private func problemRow(_ problem: Dictation.Problem) -> some View {
     HStack {
       switch problem {
       case .microphoneDenied:
-        FormFooter(hint: "", error: String(localized: "Allow microphone access in Settings."))
+        Text("Microphone is off.")
+          .foregroundStyle(.red)
         Spacer()
-        Button("Open Settings") {
-          if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+        Button("Settings") {
+          if let url = MicrophoneSettings.url { openURL(url) }
         }
       case .transcriptionFailed:
-        FormFooter(hint: "", error: String(localized: "Couldn’t transcribe your recording."))
+        Text("Couldn’t transcribe.")
+          .foregroundStyle(.red)
         Spacer()
         Button("Try Again") {
           Task { await dictation.retry() }
         }
       }
     }
-    .font(.footnote)
+    .font(.subheadline)
+    .fontWeight(.medium)
+    .tint(.primary)
     .padding(.horizontal, 12)
+    .frame(minHeight: 36)
   }
 }
 
@@ -139,7 +151,6 @@ private struct ToolButton: View {
     Label(title, systemImage: systemImage)
       .labelStyle(.iconOnly)
       .font(.title3)
-      .foregroundStyle(.primary)
       .frame(width: 36, height: 36)
       .contentShape(.circle)
   }
@@ -164,7 +175,7 @@ private struct MainButton: View {
       ZStack {
         if isWorking {
           ProgressView()
-            .tint(Color(.systemBackground))
+            .tint(.white)
         } else {
           Image(systemName: systemImage)
             .font(.body.weight(.semibold))
@@ -172,8 +183,8 @@ private struct MainButton: View {
       }
       .frame(width: 36, height: 36)
       // Fixed colors, because the glass around it would turn hierarchical styles translucent.
-      .foregroundStyle(Color(.systemBackground))
-      .background(Color(.label), in: .circle)
+      .foregroundStyle(.white)
+      .background(Color.accentColor, in: .circle)
     }
     .buttonStyle(.plain)
     .opacity(isEnabled ? 1 : 0.3)

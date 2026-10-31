@@ -1,122 +1,75 @@
-import AuthenticationServices
 import GoatAPI
 import QuickLook
 import SwiftUI
-import UniformTypeIdentifiers
 
-/// The conversation as the Mac shows it: a quiet title row, messages in a column no wider than
-/// reading is comfortable, and the composer floating at the bottom of the card.
+/// One agent's conversation in the Mac's card: the agent's title at the top, lines no wider than
+/// reading is comfortable, the composer at the bottom, and a call in the card's place.
 struct ConversationView: View {
+  let model: AppModel
+  /// The agent as it is now, so a rename or a new picture shows at once.
+  let agent: Components.Schemas.Agent
+  let toggleAgent: () -> Void
+
   @State private var conversation: ConversationModel
   @State private var integrations: IntegrationsModel
+  @State private var isPickingPhotos = false
   @State private var isPickingFiles = false
   @State private var previewURL: URL?
-  @Environment(\.webAuthenticationSession) private var webAuthenticationSession
+  @State private var call: Call?
 
-  private static let columnWidth: CGFloat = 720
+  private static let columnWidth: CGFloat = 640
 
-  init(agent: Components.Schemas.Agent, userName: String, client: Client) {
-    _conversation = State(
-      initialValue: ConversationModel(agent: agent, userName: userName, client: client))
-    _integrations = State(initialValue: IntegrationsModel(client: client))
+  init(model: AppModel, agent: Components.Schemas.Agent, toggleAgent: @escaping () -> Void) {
+    self.model = model
+    self.agent = agent
+    self.toggleAgent = toggleAgent
+    _conversation = State(initialValue: ConversationModel(agentID: agent.id, client: model.client))
+    _integrations = State(initialValue: IntegrationsModel(client: model.client))
   }
 
   var body: some View {
-    VStack(spacing: 0) {
-      header
-      messages
+    Group {
+      if let call {
+        CallView(
+          call: call, agent: agent, conversation: conversation, integrations: integrations
+        ) {
+          self.call = nil
+        }
+      } else {
+        conversationCard
+      }
     }
-    .safeAreaBar(edge: .bottom) {
-      Composer(conversation: conversation) { isPickingFiles = true }
-        .frame(maxWidth: Self.columnWidth)
-        .padding(.horizontal, 24)
-        .padding(.bottom, 16)
-    }
-    .fileImporter(
-      isPresented: $isPickingFiles,
-      allowedContentTypes: [.image, .pdf, .plainText, .commaSeparatedText],
-      allowsMultipleSelection: true,
-      onCompletion: attach
-    )
-    .quickLookPreview($previewURL)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
     .task { await integrations.load() }
     .task { await conversation.listen() }
   }
 
-  private var header: some View {
-    HStack(spacing: 8) {
-      AgentAvatar(agentID: conversation.agent.id, size: 22)
-      Text(conversation.agent.name)
-        .font(.headline)
+  private var conversationCard: some View {
+    ConversationMessages(
+      conversation: conversation, integrations: integrations, agent: agent,
+      userName: model.userName, open: { previewURL = $0 }, maxWidth: Self.columnWidth
+    )
+    .safeAreaBar(edge: .top) {
+      AgentTitle(agent: agent, action: toggleAgent)
+        .padding(.top, 8)
     }
-    .frame(maxWidth: .infinity)
-    .frame(height: 44)
-  }
-
-  private var messages: some View {
-    ScrollView {
-      LazyVStack(spacing: 8) {
-        MessageBubble(text: conversation.greeting, isMine: false)
-        ForEach(conversation.messages, id: \.id) { message in
-          ForEach(message.files ?? [], id: \.id) { file in
-            SentFile(file: file, load: conversation.localURL(for:)) { previewURL = $0 }
-          }
-          if let steps = message.steps, !steps.isEmpty {
-            StepList(steps: steps)
-          }
-          if !message.text.isEmpty {
-            MessageBubble(text: message.text, isMine: message.role.value1 == .user)
-          }
-          ForEach(Array((message.connect ?? []).enumerated()), id: \.offset) { _, request in
-            ConnectCard(
-              name: request.name,
-              iconURL: integrations.iconURL(of: request.integrationId),
-              isConnected: integrations.isConnected(request.integrationId),
-              isConnecting: integrations.connectingID == request.integrationId,
-              isEnabled: integrations.connectingID == nil,
-              didFail: integrations.failedIntegrationID == request.integrationId
-            ) {
-              connect(request.integrationId)
-            }
-          }
-        }
-        ForEach(conversation.outgoing) { message in
-          OutgoingBubble(message: message, load: conversation.localURL(for:)) {
-            previewURL = $0
-          } retry: {
-            Task { await conversation.retry(message.id) }
-          } discard: {
-            conversation.discard(message.id)
-          }
-        }
-        if conversation.isRunning {
-          TypingIndicator()
-            .transition(.opacity)
-        }
+    .safeAreaBar(edge: .bottom) {
+      Composer(conversation: conversation) {
+        isPickingPhotos = true
+      } pickFiles: {
+        isPickingFiles = true
+      } open: {
+        previewURL = $0
+      } call: {
+        call = Call(agentID: agent.id, client: model.client)
       }
-      .animation(.default, value: conversation.isRunning)
       .frame(maxWidth: Self.columnWidth)
       .padding(.horizontal, 24)
-      .padding(.vertical, 12)
-      .frame(maxWidth: .infinity)
+      .padding(.bottom, 16)
     }
-    .defaultScrollAnchor(.bottom)
-  }
-
-  private func attach(_ result: Result<[URL], any Error>) {
-    guard case .success(let urls) = result else { return }
-    for url in urls {
-      Task {
-        guard let file = try? await PreparedFile.file(at: url) else { return }
-        await conversation.attach(file)
-      }
-    }
-  }
-
-  private func connect(_ integrationID: String) {
-    let connector = Connector(client: conversation.client, session: webAuthenticationSession)
-    Task {
-      await integrations.connect(integrationID, agentID: conversation.agent.id, with: connector)
-    }
+    .attachmentPickers(
+      for: conversation, isPickingPhotos: $isPickingPhotos, isPickingFiles: $isPickingFiles
+    )
+    .quickLookPreview($previewURL)
   }
 }

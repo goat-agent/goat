@@ -28,15 +28,15 @@ struct SentFile: View {
           if isOpening { ProgressView().tint(.white) } else { Image(systemName: "doc.text") }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 11)
         .foregroundStyle(.white)
-        .background(.tint, in: .rect(cornerRadius: 20))
+        .background(.tint, in: .rect(cornerRadius: 22))
       }
     }
     .buttonStyle(.plain)
     .accessibilityLabel(isImage ? Text("Photo") : Text(file.name))
     .frame(maxWidth: .infinity, alignment: .trailing)
-    .padding(.leading, 48)
+    .padding(.leading, 64)
     .task(id: file.id) {
       if isImage { url = await load(file) }
     }

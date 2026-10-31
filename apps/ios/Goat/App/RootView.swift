@@ -20,11 +20,12 @@ struct RootView: View {
       case .signIn:
         SignInFlow(model: model)
       case .setup:
-        SetupFlow(model: model)
+        FirstAgentView(model: model)
       case .home:
         AgentListView(model: model)
       }
     }
+    .environment(model)
     .animation(.default, value: model.screen)
     .sensoryFeedback(.success, trigger: model.signIns)
     .task { await model.start() }

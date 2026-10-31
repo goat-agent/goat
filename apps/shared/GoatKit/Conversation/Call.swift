@@ -22,6 +22,8 @@ final class Call: Identifiable {
 
   private(set) var state = State.connecting
   private(set) var isMuted = false
+  /// Calls start on the speaker, as `configureAudio` sets; headphones take over when connected.
+  private(set) var isOnSpeaker = true
 
   private let agentID: String
   private let client: Client
@@ -66,12 +68,28 @@ final class Call: Identifiable {
     microphone?.isEnabled = !isMuted
   }
 
+  #if os(iOS)
+    func toggleSpeaker() {
+      let session = RTCAudioSession.sharedInstance()
+      session.lockForConfiguration()
+      defer { session.unlockForConfiguration() }
+      do {
+        try session.overrideOutputAudioPort(isOnSpeaker ? .none : .speaker)
+        isOnSpeaker.toggle()
+      } catch {
+        // The route stays as it was, and so does the button.
+      }
+    }
+  #endif
+
   func end() {
     connection?.close()
     connection = nil
     microphone = nil
     observer = nil
-    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    #if os(iOS)
+      try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    #endif
     if case .failed = state { return }
     state = .ended
   }
@@ -81,12 +99,15 @@ final class Call: Identifiable {
     optionalConstraints: nil
   )
 
+  /// The Mac has no audio session; WebRTC uses the system's input and output there.
   private func configureAudio() throws {
-    let configuration = RTCAudioSessionConfiguration.webRTC()
-    configuration.category = AVAudioSession.Category.playAndRecord.rawValue
-    configuration.mode = AVAudioSession.Mode.voiceChat.rawValue
-    configuration.categoryOptions = [.defaultToSpeaker, .allowBluetoothHFP]
-    RTCAudioSessionConfiguration.setWebRTC(configuration)
+    #if os(iOS)
+      let configuration = RTCAudioSessionConfiguration.webRTC()
+      configuration.category = AVAudioSession.Category.playAndRecord.rawValue
+      configuration.mode = AVAudioSession.Mode.voiceChat.rawValue
+      configuration.categoryOptions = [.defaultToSpeaker, .allowBluetoothHFP]
+      RTCAudioSessionConfiguration.setWebRTC(configuration)
+    #endif
   }
 
   private func makeConnection() throws -> RTCPeerConnection {

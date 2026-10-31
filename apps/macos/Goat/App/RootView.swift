@@ -26,9 +26,9 @@ struct RootView: View {
         OnboardingView(model: model)
       case .home:
         HomeView(model: model)
-          .frame(minWidth: 720, idealWidth: 960, minHeight: 480, idealHeight: 640)
       }
     }
+    .environment(model)
     .animation(.default, value: model.screen)
     .task { await model.start() }
     .onChange(of: model.screen, initial: true) { _, screen in

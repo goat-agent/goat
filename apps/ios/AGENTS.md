@@ -5,13 +5,16 @@ Read [docs/style/swift.md](../../docs/style/swift.md) before writing Swift.
 ## Map
 
 - `Goat/` — the iPhone's screens: `GoatApp`, `App/RootView`, `Onboarding/`, `Home/` (the agent
-  list, the first screen after sign-in), `Conversation/` (the conversation screen, its composer,
-  and calls), `Settings/`, `Components/PrimaryButton`, `Info.plist`, and `Assets.xcassets`.
+  list, the first screen after sign-in), `Agents/` (an agent's settings sheet), `Conversation/`
+  (the conversation screen), `Settings/`, `Components/PrimaryButton`, `Info.plist`, and
+  `Assets.xcassets`.
 - `../shared/GoatKit/` — what the Mac shares, compiled into this target as a second
-  folder-synchronized group: `App/` (`AppModel`, `TokenStore`, `CurrentDevice`), `Conversation/`
-  (`ConversationModel`, `Dictation`, and the bubbles and cards both apps draw), `Integrations/`
-  (the account list and `Connector`, which runs the sign-in sheet), `Components/`, and the one
-  `Localizable.xcstrings` both apps use. Screens that should look different on each device are
+  folder-synchronized group: `App/` (`AppModel`, `TokenStore`, `CurrentDevice`,
+  `AccountSection`), `Agents/` (`AvatarView`, `AgentRow`, `AgentTitle`, `AgentForm` with the
+  new-agent sheet and the settings form), `Conversation/` (`ConversationModel`, `Dictation`,
+  `ConversationMessages`, `Composer`, `Call` and `CallView`, and the bubbles and cards),
+  `Integrations/` (`IntegrationsSection`, the catalog, and `Connector`, which runs the sign-in
+  sheet), `Components/`, and the one `Localizable.xcstrings` both apps use. Screens that should look different on each device are
   written once per app; only models and the pieces both draw live here. New
   files in either folder join the target without editing the project file.
 - `Conversation/` holds the voice features too. `Dictation` records with the system recorder and
@@ -38,13 +41,20 @@ Debug builds talk to `GOAT_SERVER_URL` (`http://localhost:3000`); run the server
 
 - Apple-native: system colors, system navigation, and system components. Do not draw custom
   chrome where a system component exists.
-- Keep the interface neutral. Color goes only where it carries meaning: the violet accent on the
-  user's own messages and a screen's primary action, red for errors and for ending a call. The
-  composer's main button is neutral, since its filled shape already marks it.
+- Keep the interface neutral. Color and character belong to the content: agent pictures and the
+  user's own messages. Controls stay monochrome glass. Violet means "you": your messages and the
+  one next action you take (the composer's main button, a screen's primary action). Red is for
+  errors and for ending a call. Links in replies keep the text color and are underlined.
+- One task is one shape. Everything for writing a message, including attaching, dictating,
+  calling, and its errors, lives inside the composer's glass.
+- An agent always shows an avatar: its picture, or its initial. Making an agent and editing one
+  use the same `AgentForm`; edits save as they are made.
 - Each screen has at most one primary action: `PrimaryButton` in `.safeAreaBar(edge: .bottom)`,
   so it sits above the keyboard. Show errors inline with `FormFooter`, not in alerts.
-- Navigation lives in `AppModel` (`signInPath`, `setupPath`, `agentPath`), so network results
-  drive it. Launch reopens the last conversation on top of the agent list.
+- Navigation lives in `AppModel` (`signInPath`, and `agentPath` of agent ids), so network
+  results drive it. Launch reopens the last conversation on top of the agent list. Signing up
+  ends with the first agent; the user's name is optional and set in Settings. `AppModel` keeps
+  the agent list live from `streamAgents`.
 - Connecting an account opens the server's sign-in URL in the system web authentication
   session, which ends at `goat://connected` with a state and code. The app sends those back
   with its own session (`createConnection`), so a sign-in page forwarded to someone else cannot
@@ -64,8 +74,8 @@ Debug builds talk to `GOAT_SERVER_URL` (`http://localhost:3000`); run the server
 
 - Enum-like fields decode as `value1` (a case this build knows) or `value2` (any string). Handle
   `value1 == nil` by ignoring the value or showing a neutral fallback; never crash on it.
-- Read the agent event stream with `HTTPBody.agentEvents()`. It applies the API's date format,
-  which the default JSON decoder does not.
+- Read event streams with `HTTPBody.agentEvents()` and `agentListEvents()`. They apply the
+  API's date format, which the default JSON decoder does not.
 
 ## Concurrency
 

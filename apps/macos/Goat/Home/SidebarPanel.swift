@@ -34,8 +34,8 @@ struct SidebarPanel: View {
       ScrollView {
         VStack(spacing: 2) {
           ForEach(agents, id: \.id) { agent in
-            AgentRow(
-              agent: agent, isSelected: agent.id == model.agentPath.first?.id, isRail: isRail
+            SidebarRow(
+              agent: agent, isSelected: agent.id == model.agentPath.last, isRail: isRail
             ) { open(agent) }
           }
         }
@@ -106,7 +106,7 @@ struct SidebarPanel: View {
   }
 
   private var newAgentButton: some View {
-    SidebarButton(title: "New Agent", systemImage: "square.and.pencil") {
+    SidebarButton(title: "New Agent", systemImage: "plus") {
       model.isCreatingAgent = true
     }
     .keyboardShortcut("n")
@@ -119,10 +119,7 @@ struct SidebarPanel: View {
       Divider()
       Button("Sign Out…") { isConfirmingSignOut = true }
     } label: {
-      Image(systemName: "person.crop.circle.fill")
-        .resizable()
-        .frame(width: 28, height: 28)
-        .foregroundStyle(.secondary)
+      AvatarCircle(name: accountName, image: nil, size: 28)
     }
     .menuStyle(.button)
     .buttonStyle(.plain)
@@ -131,9 +128,15 @@ struct SidebarPanel: View {
     .accessibilityLabel("Account")
   }
 
+  /// The user's name, or their email while they have not given one.
+  private var accountName: String {
+    let name = model.userName.trimmingCharacters(in: .whitespaces)
+    return name.isEmpty ? model.me?.email ?? "" : name
+  }
+
   private func open(_ agent: Components.Schemas.Agent) {
-    model.agentPath = [agent]
-    model.open(agent)
+    model.agentPath = [agent.id]
+    model.open(agent.id)
   }
 
   private func endSearch() {
@@ -142,7 +145,9 @@ struct SidebarPanel: View {
   }
 }
 
-private struct AgentRow: View {
+/// An agent in the sidebar: the full row when there is room, its face with the working dots on
+/// its corner in the rail.
+private struct SidebarRow: View {
   let agent: Components.Schemas.Agent
   let isSelected: Bool
   let isRail: Bool
@@ -152,17 +157,19 @@ private struct AgentRow: View {
 
   var body: some View {
     Button(action: select) {
-      HStack(spacing: 10) {
-        AgentAvatar(agentID: agent.id, size: isRail ? 34 : 26)
-        if !isRail {
-          Text(agent.name)
-            .font(.body.weight(isSelected ? .semibold : .regular))
-            .lineLimit(1)
-          Spacer(minLength: 0)
+      Group {
+        if isRail {
+          AvatarView(agent: agent, size: 36)
+            .overlay(alignment: .bottomTrailing) {
+              if agent.status.value1 == .running { WorkingBadge() }
+            }
+        } else {
+          AgentRow(agent: agent, avatarSize: 36)
         }
       }
       .padding(.horizontal, isRail ? 0 : 8)
-      .frame(maxWidth: .infinity, minHeight: isRail ? 46 : 34)
+      .padding(.vertical, 6)
+      .frame(maxWidth: .infinity, minHeight: 46)
       .background(highlight, in: .rect(cornerRadius: 8))
       .contentShape(.rect)
     }
@@ -176,6 +183,20 @@ private struct AgentRow: View {
   private var highlight: AnyShapeStyle {
     if isSelected { return AnyShapeStyle(.fill.secondary) }
     return isHovered ? AnyShapeStyle(.fill.quaternary) : AnyShapeStyle(.clear)
+  }
+}
+
+/// Three dots on a face's corner while the agent works.
+private struct WorkingBadge: View {
+  var body: some View {
+    Image(systemName: "ellipsis")
+      .font(.caption2.weight(.bold))
+      .symbolEffect(.variableColor.iterative.dimInactiveLayers)
+      .padding(.horizontal, 4)
+      .padding(.vertical, 3)
+      .background(.regularMaterial, in: .capsule)
+      .offset(x: 4, y: 2)
+      .accessibilityLabel("Working")
   }
 }
 

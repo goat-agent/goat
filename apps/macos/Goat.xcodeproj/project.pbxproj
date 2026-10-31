@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		B1000000000000000000000B /* GoatAPI in Frameworks */ = {isa = PBXBuildFile; productRef = B1000000000000000000000D /* GoatAPI */; };
 		B10000000000000000000020 /* Computer in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000022 /* Computer */; };
+		B10000000000000000000040 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000042 /* WebRTC */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -52,6 +53,7 @@
 			files = (
 				B1000000000000000000000B /* GoatAPI in Frameworks */,
 				B10000000000000000000020 /* Computer in Frameworks */,
+				B10000000000000000000040 /* WebRTC in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -100,6 +102,7 @@
 			packageProductDependencies = (
 				B1000000000000000000000D /* GoatAPI */,
 				B10000000000000000000022 /* Computer */,
+				B10000000000000000000042 /* WebRTC */,
 			);
 			productName = Goat;
 			productReference = B10000000000000000000004 /* Goat.app */;
@@ -133,6 +136,7 @@
 			packageReferences = (
 				B1000000000000000000000C /* XCLocalSwiftPackageReference "GoatAPI" */,
 				B10000000000000000000021 /* XCLocalSwiftPackageReference "Computer" */,
+				B10000000000000000000041 /* XCRemoteSwiftPackageReference "WebRTC" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B10000000000000000000003 /* Products */;
@@ -218,7 +222,7 @@
 				INFOPLIST_FILE = Goat/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Goat;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Used when you speak a message.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Used when you speak a message or call your agent.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -249,7 +253,7 @@
 				INFOPLIST_FILE = Goat/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Goat;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Used when you speak a message.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Used when you speak a message or call your agent.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -299,6 +303,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		B10000000000000000000041 /* XCRemoteSwiftPackageReference "WebRTC" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stasel/WebRTC";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 156.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		B1000000000000000000000D /* GoatAPI */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -307,6 +322,11 @@
 		B10000000000000000000022 /* Computer */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = Computer;
+		};
+		B10000000000000000000042 /* WebRTC */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10000000000000000000041 /* XCRemoteSwiftPackageReference "WebRTC" */;
+			productName = WebRTC;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
