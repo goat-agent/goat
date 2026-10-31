@@ -2251,6 +2251,17 @@
           },
           {
             "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "description": "The newest message id the client already has. Browsers cannot send Last-Event-ID on the first connection; when both arrive, the newer one wins"
+            },
+            "required": false,
+            "description": "The newest message id the client already has. Browsers cannot send Last-Event-ID on the first connection; when both arrive, the newer one wins",
+            "name": "after",
+            "in": "query"
+          },
+          {
+            "schema": {
               "type": "string"
             },
             "required": false,
@@ -2260,7 +2271,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Messages after Last-Event-ID, then new messages and status changes",
+            "description": "Messages after Last-Event-ID or after, then new messages and status changes",
             "content": {
               "text/event-stream": {
                 "schema": {
