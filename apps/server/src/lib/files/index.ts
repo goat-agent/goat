@@ -2,6 +2,7 @@ import type { ModelMessage, TextPart, ToolContent, UserContent } from "ai";
 import { and, asc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { db, type Transaction } from "../../db";
 import { files } from "../../db/schema/files";
+import { isFinalReply } from "../conversation";
 import { logger } from "../logger";
 import * as storage from "./s3";
 
@@ -164,7 +165,7 @@ export function reference(file: FileRef): {
   };
 }
 
-function referenced(part: {
+export function referenced(part: {
   type: string;
   data?: unknown;
   mediaType?: string;
@@ -239,14 +240,6 @@ export async function forModel(
       }
       return message;
     }),
-  );
-}
-
-function isFinalReply(message: ModelMessage): boolean {
-  return (
-    message.role === "assistant" &&
-    (typeof message.content === "string" ||
-      message.content.every((part) => part.type !== "tool-call"))
   );
 }
 

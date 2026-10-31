@@ -5,23 +5,33 @@ import {
   type ModelMessage,
   NoSuchToolError,
   RetryError,
+  type TextPart,
   type ToolCallRepairFunction,
   type UserContent,
 } from "ai";
-import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { db, type Transaction } from "../db";
 import { agents, messages, queuedMessages } from "../db/schema/agents";
 import { users } from "../db/schema/auth";
+import { jobRuns, jobs } from "../db/schema/jobs";
+import { instructionsFor } from "./ai/instructions";
 import { model, providerOptions } from "./ai/providers";
 import { tools } from "./ai/tools";
 import { computerContext } from "./ai/tools/computer";
+import { hasReadOutside } from "./ai/trust";
 import { compactScreens, type Computers, openComputers } from "./computers";
+import * as compaction from "./compaction";
+import { bubblesOf } from "./conversation";
 import { dateIn } from "./dates";
 import { notify } from "./events";
 import * as files from "./files";
 import { type Catalog, openCatalog } from "./integrations/catalog";
 import { listConnections, NOTE_PREFIX, noteFor } from "./integrations/connections";
+import { scheduleNoteChange } from "./jobs/schedules";
 import { logger } from "./logger";
+import * as memory from "./memory";
+import * as push from "./push";
+import * as search from "./search";
 
 const LEASE = sql`interval '60 seconds'`;
 const LEASE_DEADLINE_MS = 45_000;
@@ -114,17 +124,19 @@ async function queue(
   input: { text?: string; fileIds?: readonly string[]; timeZone: string },
 ): Promise<void> {
   const [agent] = await db
-    .select({ userId: agents.userId, connectionsNote: agents.connectionsNote })
+    .select({
+      userId: agents.userId,
+      connectionsNote: agents.connectionsNote,
+      schedulesNote: agents.schedulesNote,
+      memoryNote: agents.memoryNote,
+    })
     .from(agents)
     .where(eq(agents.id, agentId));
   if (!agent) return;
 
   const parts: Exclude<UserContent, string> = [];
-  const today = dateIn(input.timeZone, new Date());
-  const last = await lastUserMessageAt(agentId);
-  if (!last || dateIn(input.timeZone, last) !== today) {
-    parts.push({ type: "text", text: `Today's date is ${today}.` });
-  }
+  const date = await datePart(db, agentId, input.timeZone);
+  if (date) parts.push(date);
 
   const connections = await listConnections(agent.userId);
   const note =
@@ -134,6 +146,15 @@ async function queue(
   if (note && (hidden || note !== agent.connectionsNote)) parts.push({ type: "text", text: note });
 
   await db.transaction(async (tx) => {
+    const schedules = await scheduleNoteChange(tx, agentId, agent.schedulesNote);
+    if (schedules) parts.push({ type: "text", text: schedules });
+    const remembered = await memory.noteChange(
+      tx,
+      agentId,
+      { userId: agent.userId, timeZone: input.timeZone },
+      agent.memoryNote,
+    );
+    if (remembered) parts.push({ type: "text", text: remembered });
     const attached = await files.attach(tx, agentId, input.fileIds ?? []);
     parts.push(...attached.map(files.reference));
     if (input.text) parts.push({ type: "text", text: input.text });
@@ -146,8 +167,22 @@ async function queue(
   launch(agentId, { onlyIfQueued: true });
 }
 
-async function lastUserMessageAt(agentId: string): Promise<Date | undefined> {
-  const [queued] = await db
+async function datePart(
+  executor: Transaction | typeof db,
+  agentId: string,
+  timeZone: string,
+): Promise<TextPart | undefined> {
+  const today = dateIn(timeZone, new Date());
+  const last = await lastUserMessageAt(executor, agentId);
+  if (last && dateIn(timeZone, last) === today) return undefined;
+  return { type: "text", text: `Today's date is ${today}.` };
+}
+
+async function lastUserMessageAt(
+  executor: Transaction | typeof db,
+  agentId: string,
+): Promise<Date | undefined> {
+  const [queued] = await executor
     .select({ createdAt: queuedMessages.createdAt })
     .from(queuedMessages)
     .where(eq(queuedMessages.agentId, agentId))
@@ -155,13 +190,18 @@ async function lastUserMessageAt(agentId: string): Promise<Date | undefined> {
     .limit(1);
   if (queued) return queued.createdAt;
 
-  const [sent] = await db
+  const [sent] = await executor
     .select({ createdAt: messages.createdAt })
     .from(messages)
     .where(and(eq(messages.agentId, agentId), sql`${messages.message}->>'role' = 'user'`))
     .orderBy(desc(messages.id))
     .limit(1);
   return sent?.createdAt;
+}
+
+/** Starts a run if the agent is free, such as to deliver a finished job's report. */
+export function wake(agentId: string): void {
+  launch(agentId, { onlyIfQueued: false });
 }
 
 export function startAgents(): void {
@@ -184,7 +224,7 @@ export async function stopAgents(): Promise<void> {
 }
 
 export async function scan(): Promise<void> {
-  const [expired, waiting] = await Promise.all([
+  const [expired, waiting, reporting] = await Promise.all([
     db
       .select({ id: agents.id })
       .from(agents)
@@ -196,9 +236,17 @@ export async function scan(): Promise<void> {
       .innerJoin(agents, eq(agents.id, queuedMessages.agentId))
       .where(isNull(agents.runOwner))
       .limit(SCAN_BATCH),
+    db
+      .selectDistinct({ id: jobs.agentId })
+      .from(jobRuns)
+      .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
+      .innerJoin(agents, eq(agents.id, jobs.agentId))
+      .where(and(isNotNull(jobRuns.outcome), isNull(jobRuns.messageId), isNull(agents.runOwner)))
+      .limit(SCAN_BATCH),
   ]);
   for (const { id } of expired) launch(id, { onlyIfQueued: false });
   for (const { id } of waiting) launch(id, { onlyIfQueued: true });
+  for (const { id } of reporting) launch(id, { onlyIfQueued: false });
 }
 
 function launch(agentId: string, options: { onlyIfQueued: boolean }): void {
@@ -245,7 +293,18 @@ async function execute(agentId: string, owner: string): Promise<void> {
   let catalog: Catalog | undefined;
   try {
     signal.throwIfAborted();
-    const { instructions, timeZone, userId } = await loadSetup(agentId);
+    const { name, instructions, timeZone, userId, userName } = await loadSetup(agentId);
+    if (await isAtRest(agentId)) {
+      const reports = await lease.write((tx) => deliverReports(tx, agentId, timeZone));
+      for (const report of reports) {
+        void push.send(userId, {
+          title: name,
+          body: report.preview,
+          agentId,
+          collapseId: report.id,
+        });
+      }
+    }
     catalog = openCatalog(userId);
     const fileCache = new Map<string, Uint8Array>();
     let computers: Computers | undefined;
@@ -253,14 +312,37 @@ async function execute(agentId: string, owner: string): Promise<void> {
       signal.throwIfAborted();
       if (await lease.write((tx) => drainQueue(tx, agentId))) await catalog.reload();
 
-      const history = await loadHistory(agentId);
+      let conversation = await compaction.load(agentId);
+      const redacted = await compaction.applyRedactions({
+        agentId,
+        userId,
+        userName,
+        timeZone,
+        conversation,
+        write: lease.write,
+        signal,
+      });
+      if (redacted) conversation = await compaction.load(agentId);
+      const compacted = await compaction.maybeCompact({
+        agentId,
+        userId,
+        userName,
+        timeZone,
+        conversation,
+        write: lease.write,
+        signal,
+      });
+      if (compacted) conversation = await compaction.load(agentId);
+      const history = conversation.messages;
       const last = history.at(-1);
       if (!last || last.role === "assistant") {
         if (await lease.finish()) return;
         continue;
       }
 
-      computers ??= openComputers(userId, history);
+      computers ??= openComputers(userId, compaction.computerFloor(conversation));
+      const isTainted = await hasReadOutside(agentId);
+      const memoryWriter = { userId, agentId, timeZone, isTainted };
       const startedAt = performance.now();
       const result = await generateText({
         model,
@@ -269,7 +351,19 @@ async function execute(agentId: string, owner: string): Promise<void> {
         tools,
         toolsContext: {
           time: { timeZone },
+          schedule_create: { agentId, timeZone, isTainted },
+          schedule_update: { agentId, timeZone, isTainted },
+          schedule_cancel: { agentId, timeZone },
           read_file: { agentId },
+          memory_read: { userId, timeZone },
+          conversation_search: {
+            agentId,
+            timeZone,
+            cutId: conversation.summary?.uptoMessageId ?? 0,
+          },
+          memory_save: memoryWriter,
+          memory_forget: memoryWriter,
+          memory_rename: memoryWriter,
           tool_search: catalog,
           tool_call: catalog,
           ...computerContext(computers),
@@ -429,11 +523,22 @@ async function drainQueue(tx: Transaction, agentId: string): Promise<boolean> {
   if (queued.length === 0) return false;
 
   queued.sort((a, b) => a.id - b.id);
-  await tx
+  const inserted = await tx
     .insert(messages)
     .values(
       queued.map(({ message, hidden, createdAt }) => ({ agentId, message, hidden, createdAt })),
-    );
+    )
+    .returning({
+      id: messages.id,
+      message: messages.message,
+      hidden: messages.hidden,
+      createdAt: messages.createdAt,
+    });
+  await search.recordUserMessages(
+    tx,
+    agentId,
+    inserted.toSorted((a, b) => a.id - b.id),
+  );
   await notify(tx, agentId);
   return queued.some(({ message }) => carriesNote(message));
 }
@@ -451,7 +556,7 @@ async function saveResponse(
   response: { messages: ModelMessage[]; model: string; usage: LanguageModelUsage },
 ): Promise<void> {
   const { model: responseModel, usage } = response;
-  await tx
+  const inserted = await tx
     .insert(messages)
     .values(
       response.messages.map((message) =>
@@ -459,23 +564,87 @@ async function saveResponse(
           ? { agentId, message, model: responseModel, usage }
           : { agentId, message },
       ),
-    );
+    )
+    .returning({ id: messages.id });
+  await search.recordReply(
+    tx,
+    agentId,
+    inserted.map(({ id }) => id),
+    response.messages,
+  );
   await notify(tx, agentId);
 }
 
-async function loadHistory(agentId: string): Promise<ModelMessage[]> {
-  const rows = await db
-    .select({ message: messages.message })
+/** True when the conversation ends with the agent's reply, so a report can follow it. */
+async function isAtRest(agentId: string): Promise<boolean> {
+  const [last] = await db
+    .select({ role: sql<string>`${messages.message}->>'role'` })
     .from(messages)
     .where(eq(messages.agentId, agentId))
-    .orderBy(asc(messages.id));
-
-  return rows.map((row) => row.message);
+    .orderBy(desc(messages.id))
+    .limit(1);
+  return !last || last.role === "assistant";
 }
 
-async function loadSetup(
+/**
+ * Writes finished jobs' reports as the agent's own turns: a hidden user marker saying which
+ * schedule ran, then the report. A one-time schedule is done once its report is delivered.
+ */
+async function deliverReports(
+  tx: Transaction,
   agentId: string,
-): Promise<{ instructions: string; timeZone: string; userId: string }> {
+  timeZone: string,
+): Promise<{ id: string; preview: string }[]> {
+  const pending = await tx
+    .select({ runId: jobRuns.id, outcome: jobRuns.outcome, job: jobs })
+    .from(jobRuns)
+    .innerJoin(jobs, eq(jobs.id, jobRuns.jobId))
+    .where(and(eq(jobs.agentId, agentId), isNotNull(jobRuns.outcome), isNull(jobRuns.messageId)))
+    .orderBy(asc(jobRuns.id))
+    .for("update", { of: jobRuns });
+
+  const delivered: { id: string; preview: string }[] = [];
+  for (const { runId, outcome, job } of pending) {
+    if (!outcome) continue;
+    const date = await datePart(tx, agentId, timeZone);
+    const marker: ModelMessage = {
+      role: "user",
+      content: [...(date ? [date] : []), { type: "text", text: `Scheduled run: ${job.title}` }],
+    };
+    const report: ModelMessage = { role: "assistant", content: [{ type: "text", text: outcome }] };
+    const [markerRow, reply] = await tx
+      .insert(messages)
+      .values([
+        { agentId, message: marker, hidden: true },
+        { agentId, message: report },
+      ])
+      .returning({ id: messages.id, createdAt: messages.createdAt });
+    if (!markerRow || !reply) throw new Error("report insert returned no row");
+    await search.recordReport(tx, agentId, {
+      markerId: markerRow.id,
+      replyId: reply.id,
+      title: job.title,
+      text: outcome,
+      at: reply.createdAt,
+    });
+    if (job.rrule) {
+      await tx.update(jobRuns).set({ messageId: reply.id }).where(eq(jobRuns.id, runId));
+    } else {
+      await tx.delete(jobs).where(eq(jobs.id, job.id));
+    }
+    delivered.push({ id: String(runId), preview: bubblesOf(report)[0] ?? outcome });
+  }
+  if (delivered.length > 0) await notify(tx, agentId);
+  return delivered;
+}
+
+async function loadSetup(agentId: string): Promise<{
+  name: string;
+  instructions: string;
+  timeZone: string;
+  userId: string;
+  userName: string;
+}> {
   const [row] = await db
     .select({
       userId: agents.userId,
@@ -489,15 +658,12 @@ async function loadSetup(
     .where(eq(agents.id, agentId));
   if (!row) throw new LeaseLost();
 
-  const parts = [
-    `You are ${row.name}, a personal agent for ${row.userName}.`,
-    "When an answer relies on the web, cite the pages you used.",
-  ];
-  if (row.instructions) parts.push(`${row.userName}'s instructions:\n${row.instructions}`);
   return {
-    instructions: parts.join("\n\n"),
+    name: row.name,
+    instructions: instructionsFor(row, row.userName),
     timeZone: row.timeZone ?? "UTC",
     userId: row.userId,
+    userName: row.userName,
   };
 }
 

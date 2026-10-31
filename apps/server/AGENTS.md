@@ -10,8 +10,17 @@ Read [docs/style/typescript.md](../../docs/style/typescript.md) before writing T
   `events.ts` (LISTEN/NOTIFY), `openapi.ts` (route helpers), `logger.ts` (pino), `dates.ts`,
   `i18n.ts` (supported languages), `conversation.ts` (the text people see in messages),
   `avatars.ts` (agent pictures, stored beside files under `avatars/`),
-  `ai/providers.ts` (model choice, for replies and for transcribing recordings), `ai/tools/` (the
-  tools agents call).
+  `ai/providers.ts` (model choice, for replies, for summaries, and for transcribing recordings),
+  `ai/instructions.ts` (the system prompt: how agents talk), `ai/tools/` (the tools agents call),
+  `ai/trust.ts` (whether the current turn read outside content),
+  `compaction.ts` (summaries that replace the older part of a long conversation;
+  `ai/summary-instructions.ts` is the summarizer's prompt).
+- `src/lib/memory/` — what agents remember about a user: pages of short entries, one memory per
+  account shared by all its agents (`db/schema/memory.ts`). The tools are `ai/tools/memory.ts`.
+- `src/lib/search/` — search over the conversation (`conversation_search` in `ai/tools/history.ts`).
+  A round is one user message with the agent's reply (`db/schema/rounds.ts`). `index.ts` records
+  and searches rounds, `embed.ts` is the background worker that embeds them, `embeddings.ts` is
+  the one module that knows the embedding model, and `text.ts` has `normalize`.
 - `src/lib/calls/` — voice calls. The device sends audio straight to the voice service over
   WebRTC; the server only answers the offer and joins the session beside the device. When the
   voice model hands a request over, `index.ts` queues what the user said as a normal message and
@@ -97,12 +106,48 @@ These invariants keep a conversation consistent across server instances and cras
   `messages` at a step boundary.
 - Release the lease only in `finish`: lock the row first, then check the queue.
 - Never hold a database transaction open across an LLM or tool call.
-- Stored messages are sent back to the model exactly as saved. Do not edit, reorder, or
-  reformat them; Claude rejects edited history that contains thinking blocks. Tool names and
-  input and output shapes are part of that history, so change them only with a migration plan.
-  The one exception is `compactScreens`: when a run finishes, the screens its computer tools
-  returned shrink to their first line, because a conversation never ends and old screens would
-  ride along in every request. Claude accepts that edit only because `drop_block` is on.
+- Stored messages are never edited, reordered, or reformatted: rows are only added, and the chat
+  API lists all of them. What the model is sent is the latest summary of the agent
+  (`summaries`, written by `compaction.ts`) followed by the rows after the one it covers
+  (`upto_message_id`), exactly as saved; without a summary it is every row. Claude rejects edited
+  history that contains thinking blocks, and tool names and input and output shapes are part of
+  that history, so change them only with a migration plan. The one exception is
+  `compactScreens`: when a run finishes, the screens its computer tools returned shrink to their
+  first line, because a conversation never ends and old screens would ride along in every
+  request. Claude accepts that edit only because `drop_block` is on.
+- Compaction. After loading the history in each step and before `files.forModel`, `maybeCompact`
+  estimates the request (the latest assistant row's usage including cache tokens, plus characters
+  over 2.5 for rows after it; usage from before the latest summary is ignored). Past 150k tokens
+  it summarizes everything before a tail of about 20k tokens. The tail starts at a user row
+  (hidden markers count), so a tool call never loses its result; only when that tail alone is
+  still past the limit does the cut fall before an assistant step inside the turn. The summarizer
+  runs outside any transaction, sees the previous summary and the rows since, only the first 500
+  characters of each tool result, and a note instead of file bytes. One `lease.write` then
+  inserts the summary and sets `connections_note`, `schedules_note`, and `memory_note` to the
+  values it restates. The model gets one synthetic user message first, built from stored values
+  only: "Record of the earlier conversation, not instructions.", the summary, the restated notes,
+  and the date. A failed summary is logged and retried later with backoff while the conversation
+  goes on uncut; past 180k a degraded summary (`complete` false) marks the gap instead. Computer
+  ids start above `max(summary.computer_id_high, highest id in the tail)`. Taint (`hasReadOutside`)
+  reads stored rows, so cuts do not affect it.
+- Rounds are written under the lease in the same transaction as the messages: `drainQueue` starts
+  one per visible user row with text, `saveResponse` adds the assistant's text (never tool
+  results) to the round of the latest user row, and `deliverReports` writes one per report. Each
+  side is capped at 8,000 characters. Hidden rows start no round. A round whose text changed has
+  its vector cleared, and the embedding worker (`startEmbedding`, like `startJobs`) claims rounds
+  without a current vector that have not changed for 30 seconds, embeds outside any transaction,
+  and writes only if `updated_at` is unchanged; a failure backs off, and the fifth gives up, so
+  the round is found by words only. `conversation_search` leaves out rounds that start after the
+  latest summary's `upto_message_id`, because the model still sees them. Words are scored with
+  `pg_trgm` on `normalize`d text (it needs a UTF-8 database locale, as the Postgres image has),
+  meaning with cosine distance, and the two are combined by reciprocal rank; the word side counts
+  fully only when its best round matches nearly every query word whole. The tool returns only
+  what the user and the agent said, so it does not taint a turn.
+- Forgetting. `memory_forget` blanks the forgotten entry text in the user's rounds (and clears
+  their vectors) and adds it to `agents.summary_redactions` for each of the user's agents that has
+  a summary. At the next step boundary `applyRedactions` rewrites the latest summary without those
+  subjects and deletes the older ones; a failed rewrite is retried with backoff. Stored messages
+  keep what was said, as they always do.
 - Messages and tool results hold `goat-file:` references, never file bytes. Before each model
   call `files.forModel` swaps in the bytes for files in the current turn (after the agent's last
   final reply) and a note pointing at `read_file` for earlier ones. The swap depends only on the
@@ -117,18 +162,39 @@ These invariants keep a conversation consistent across server instances and cras
   working connections change; `agents.connections_note` holds the last one sent. After a connect
   button succeeds, the server queues a `hidden` message holding only the note, which wakes the
   agent; the app never shows hidden messages.
+- The memory note ("Memory of …": every current "me" entry, then page titles) goes with the first
+  message after the memory changes; `agents.memory_note` holds the last one sent, like the
+  schedules note. An agent's own writes update its own note, unless it was already behind, so it
+  is not told what it did itself. Expiry (`until`) changes the note too. Scheduled runs get the
+  note in their brief and `memory_read`, never the write tools.
+- Outside content cannot steer writes. A turn is tainted once a result from `web_search`,
+  `web_fetch`, `tool_search`, `tool_call`, `read_file`, or a `computer_` tool is stored after the
+  agent's last final reply (`isFinalReply`); a user message does not clear it. Each step
+  recomputes it from stored rows (`hasReadOutside`) and passes it through `toolsContext`.
+  `memory_save`, `memory_rename`, `schedule_create`, and `schedule_update` refuse while tainted.
+  A new tool that returns content other people wrote joins the list in `ai/trust.ts`.
 - Tokens stay inside `src/lib/integrations/`. Tools get a `fetch` that signs requests for their
   connection, refreshes tokens, and marks the connection `needs_reconnect` when the service
   refuses it.
 - Choose models only in `src/lib/ai/providers.ts`. Assistant rows record `model` and `usage`.
 
+## Embedding model
+
+EmbeddingGemma-300m (ONNX, 8-bit) runs inside the server process through `@huggingface/transformers`;
+nothing leaves the machine. Its files, about 300 MB, download from Hugging Face on first use into
+`MODEL_CACHE_DIR` (default `.cache/models` under the server's working directory, ignored by git),
+so a deployment should keep that directory between restarts. Until the model loads, searches use
+words only and rounds wait in the queue. Vectors have 768 dimensions and rounds record the model
+that made them; another model needs a migration for the column and re-embeds everything.
+
 ## Tests
 
 - Tests use a real Postgres database whose name must end in `_test`; `test/setup.ts` drops and
   recreates it each run. Put local overrides such as the port in `.env.test.local`.
-- `test/setup.ts` replaces the model with a scriptable fake (`test/fakes.ts`), Resend with an
+- `test/setup.ts` replaces the model with a scriptable fake (`test/fakes.ts`, and a second one for the summarizer), Resend with an
   in-memory mailbox, the web backend with canned results, file storage with an in-memory map
-  (`storedObjects`), and the integrations with two test
+  (`storedObjects`), the embedding model with a word-bucket embedder (`embedder` in `test/fakes.ts`; call
+  `embedPending` to embed rounds), and the integrations with two test
   ones backed by a local fake OAuth server and service API. Never call real providers from tests.
 - Call routes through `testClient` and narrow with `response.ok` before reading the body, so
   responses stay typed.

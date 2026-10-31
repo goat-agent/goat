@@ -57,6 +57,20 @@
       "when": 1793447806177,
       "tag": "0007_web-connections",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793456913152,
+      "tag": "0008_extensions",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793456913429,
+      "tag": "0009_schedules-memory-search",
+      "breakpoints": true
     }
   ]
 }
