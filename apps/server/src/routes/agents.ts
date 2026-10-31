@@ -604,11 +604,21 @@ const streamEvents = createRoute({
   request: {
     params: AgentParams,
     headers: z.object({ "last-event-id": z.string().optional() }),
+    query: z.object({
+      after: z.coerce
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "The newest message id the client already has. Browsers cannot send Last-Event-ID on the first connection; when both arrive, the newer one wins",
+        ),
+    }),
   },
   responses: {
     200: {
       content: { "text/event-stream": { schema: AgentEvent } },
-      description: "Messages after Last-Event-ID, then new messages and status changes",
+      description: "Messages after Last-Event-ID or after, then new messages and status changes",
     },
     401: error("Not signed in"),
     404: error("No such agent"),
@@ -799,9 +809,13 @@ export default app
     const { id } = c.req.valid("param");
     await ownAgent(c.var.user.id, id);
     const lastEventId = Number(c.req.valid("header")["last-event-id"]);
+    const after = c.req.valid("query").after ?? 0;
 
     return streamSSE(c, async (stream) => {
-      let cursor = Number.isSafeInteger(lastEventId) && lastEventId > 0 ? lastEventId : 0;
+      let cursor = Math.max(
+        Number.isSafeInteger(lastEventId) && lastEventId > 0 ? lastEventId : 0,
+        after,
+      );
       let status: string | undefined;
 
       const send = (event: z.infer<typeof AgentEvent>, eventId?: number) =>

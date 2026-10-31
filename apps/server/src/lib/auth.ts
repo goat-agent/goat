@@ -3,7 +3,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer, emailOTP } from "better-auth/plugins";
 import { Resend } from "resend";
 import { db } from "../db";
-import { env } from "../env";
+import { env, webOrigin } from "../env";
 import { localeOf, type Locale } from "./i18n";
 
 const DAY = 60 * 60 * 24;
@@ -17,6 +17,7 @@ const codeEmail: Record<Locale, (otp: string) => { subject: string; text: string
 export const auth = betterAuth({
   baseURL: env.BETTER_AUTH_URL,
   secret: env.BETTER_AUTH_SECRET,
+  trustedOrigins: [webOrigin],
   database: drizzleAdapter(db, { provider: "pg", usePlural: true }),
   session: {
     expiresIn: 90 * DAY,

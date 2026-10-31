@@ -1,8 +1,9 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { requestId } from "hono/request-id";
 import { client } from "./db";
-import { env } from "./env";
+import { env, webOrigin } from "./env";
 import { startAgents, stopAgents } from "./lib/agent";
 import { auth } from "./lib/auth";
 import * as computerProtocol from "./lib/computers/protocol";
@@ -20,7 +21,7 @@ import integrations from "./routes/integrations";
 import me from "./routes/me";
 
 const base = new OpenAPIHono({ defaultHook: invalidRequest });
-base.use(requestId(), requestLogger);
+base.use(requestId(), requestLogger, cors({ origin: webOrigin, credentials: true }));
 
 export const app = base
   .route("/auth", authRoutes)

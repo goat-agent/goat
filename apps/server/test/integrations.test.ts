@@ -9,6 +9,7 @@ import { llm, oauth, oauthIssuer } from "./fakes";
 import {
   bearer,
   client,
+  codeFor,
   createAgent,
   listMessages,
   resetDatabase,
@@ -123,6 +124,36 @@ describe("connecting", () => {
 
     const missing = await client.integrations[":id"].icon.$get({ param: { id: "testhub" } });
     expect(status(missing)).toBe(404);
+  });
+
+  test("sends a browser that started connecting back to the web app", async () => {
+    await client.auth["email-code"].$post({ json: { email: "minho@example.com" } });
+    const signedIn = await client.auth["sign-in"].$post({
+      json: {
+        email: "minho@example.com",
+        code: codeFor("minho@example.com"),
+        device: { installationId: crypto.randomUUID(), name: "Chrome · Mac", platform: "web" },
+      },
+    });
+    if (!signedIn.ok) throw new Error(`sign-in failed with ${signedIn.status}`);
+    const browser = (await signedIn.json()).token;
+
+    const started = await client.integrations[":id"].connect.$post(
+      { param: { id: "testhub" }, json: {} },
+      bearer(browser),
+    );
+    if (!started.ok) throw new Error(`connect failed with ${started.status}`);
+    const authorize = new URL((await started.json()).url);
+    const back = await callback("testhub", { code: "code", state: param(authorize, "state") });
+
+    expect(`${back.origin}${back.pathname}`).toBe(new URL("/connected", env.WEB_URL).href);
+    expect(param(back, "integration")).toBe("testhub");
+  });
+
+  test("sends an app that started connecting back through goat://", async () => {
+    const authorize = await startConnecting();
+    const back = await callback("testhub", { code: "code", state: param(authorize, "state") });
+    expect(`${back.protocol}//${back.host}`).toBe("goat://connected");
   });
 
   test("signs in with PKCE and an account choice, then keeps the account encrypted", async () => {

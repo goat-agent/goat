@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { webOrigin } from "../src/env";
+import { app } from "../src/index";
 import { mailbox } from "./fakes";
 import { bearer, client, codeFor, resetDatabase, signIn, status } from "./helpers";
 
@@ -62,8 +64,54 @@ describe("auth", () => {
     expect(status(await client.me.$get(undefined, bearer(token)))).toBe(401);
   });
 
+  test("gives a browser a session cookie that works without the token", async () => {
+    await client.auth["email-code"].$post({ json: { email: "minho@example.com" } });
+    const signedIn = await client.auth["sign-in"].$post({
+      json: {
+        email: "minho@example.com",
+        code: codeFor("minho@example.com"),
+        device: { installationId: crypto.randomUUID(), name: "Chrome · Mac", platform: "web" },
+      },
+    });
+    expect(status(signedIn)).toBe(200);
+    const cookie = sessionCookie(signedIn.headers);
+    expect(signedIn.headers.getSetCookie().join()).toContain("HttpOnly");
+
+    const me = await client.me.$get(undefined, { headers: { cookie } });
+    expect(status(me)).toBe(200);
+    const listed = await client.devices.$get(undefined, { headers: { cookie } });
+    if (!listed.ok) throw new Error(`list devices failed with ${listed.status}`);
+    expect((await listed.json()).devices).toMatchObject([{ platform: "web", isCurrent: true }]);
+
+    const signedOut = await client.auth["sign-out"].$post(undefined, { headers: { cookie } });
+    expect(status(signedOut)).toBe(204);
+    expect(signedOut.headers.getSetCookie().join()).toContain("Max-Age=0");
+    expect(status(await client.me.$get(undefined, { headers: { cookie } }))).toBe(401);
+  });
+
+  test("lets only the web app call with credentials from another origin", async () => {
+    const preflight = await app.request("/me", {
+      method: "OPTIONS",
+      headers: {
+        origin: webOrigin,
+        "access-control-request-method": "GET",
+      },
+    });
+    expect(preflight.headers.get("access-control-allow-origin")).toBe(webOrigin);
+    expect(preflight.headers.get("access-control-allow-credentials")).toBe("true");
+  });
+
   test("lets a user without a name create an agent", async () => {
     const token = await signIn("minho@example.com");
     expect(status(await client.agents.$post({ json: {} }, bearer(token)))).toBe(201);
   });
 });
+
+function sessionCookie(headers: Headers): string {
+  const cookie = headers
+    .getSetCookie()
+    .map((line) => line.split(";")[0] ?? "")
+    .find((pair) => pair.includes("session_token="));
+  if (!cookie) throw new Error("no session cookie was set");
+  return cookie;
+}

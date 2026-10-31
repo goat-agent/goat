@@ -2,9 +2,10 @@ import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db";
 import { agents } from "../db/schema/agents";
+import { devices } from "../db/schema/devices";
 import { env } from "../env";
 import { resumeAfterConnect } from "../lib/agent";
-import { finishConnecting, returnToApp, startConnecting } from "../lib/integrations/authorize";
+import { finishConnecting, returnToClient, startConnecting } from "../lib/integrations/authorize";
 import { listConnections } from "../lib/integrations/connections";
 import { integrations } from "../lib/integrations/index";
 import { body, error, invalidRequest, json } from "../lib/openapi";
@@ -80,7 +81,7 @@ const connectIntegration = createRoute({
   responses: {
     200: json(
       z.object({ url: z.url() }),
-      "Open this in a web authentication session; it ends at goat://connected with state and code for createConnection",
+      "Open this in a web authentication session (apps) or the same tab (web). It ends at goat://connected, or at /connected on the web app when a browser started it, with state and code for createConnection",
     ),
     400: error("Invalid request"),
     401: error("Not signed in"),
@@ -126,10 +127,19 @@ const receiveAuthorization = createRoute({
   responses: {
     302: {
       description:
-        "Back to the app at goat://connected?integration=<id>&state=…&code=…, or with error=denied|expired|failed",
+        "Back to the client that started it at goat://connected (apps) or <web app>/connected (browsers), with ?integration=<id>&state=…&code=…, or with error=denied|expired|failed",
     },
   },
 });
+
+async function isBrowser(deviceId: string | undefined): Promise<boolean> {
+  if (!deviceId) return false;
+  const [device] = await db
+    .select({ platform: devices.platform })
+    .from(devices)
+    .where(eq(devices.id, deviceId));
+  return device?.platform === "web";
+}
 
 const app = new OpenAPIHono<SessionEnv>({ defaultHook: invalidRequest });
 
@@ -171,7 +181,7 @@ export default app
         .where(and(eq(agents.id, agentId), eq(agents.userId, c.var.user.id)));
       if (!agent) return c.json({ error: "agent not found" }, 404);
     }
-    const url = await startConnecting(c.var.user.id, id, agentId);
+    const url = await startConnecting(c.var.user.id, id, agentId, await isBrowser(c.var.deviceId));
     if (!url) return c.json({ error: "integration not found" }, 404);
     return c.json({ url }, 200);
   })
@@ -203,6 +213,6 @@ export default app
   })
   .openapi(receiveAuthorization, async (c) => {
     const { id } = c.req.valid("param");
-    const back = await returnToApp(id, c.req.valid("query"));
+    const back = await returnToClient(id, c.req.valid("query"));
     return c.redirect(back.href, 302);
   });

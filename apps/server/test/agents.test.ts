@@ -207,7 +207,7 @@ describe("events", () => {
     await waitForIdle(agentId);
 
     const response = await client.agents[":id"].events.$get(
-      { param: { id: agentId }, header: { "last-event-id": "0" } },
+      { param: { id: agentId }, header: { "last-event-id": "0" }, query: {} },
       bearer(token),
     );
     if (!response.body) throw new Error("no event stream");
@@ -232,6 +232,30 @@ describe("events", () => {
     await reader.cancel();
 
     expect(received.indexOf("들려?")).toBeLessThan(received.indexOf("스트림 답"));
+  });
+
+  test("starts after the message a browser already has", async () => {
+    llm.reply = () => Promise.resolve("지난 답");
+    await send(token, agentId, "지난 질문");
+    await waitForIdle(agentId);
+    const newest = (await listMessages(token, agentId)).at(-1);
+    if (!newest) throw new Error("no messages");
+
+    const response = await client.agents[":id"].events.$get(
+      { param: { id: agentId }, header: {}, query: { after: String(newest.id) } },
+      bearer(token),
+    );
+    if (!response.body) throw new Error("no event stream");
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+    let received = "";
+    while (!received.includes('"status"')) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error("stream ended before the status");
+      received += value;
+    }
+    await reader.cancel();
+
+    expect(received).not.toContain("지난");
   });
 });
 

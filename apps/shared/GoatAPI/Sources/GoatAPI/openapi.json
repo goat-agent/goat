@@ -625,7 +625,8 @@
                 "type": "string",
                 "enum": [
                   "ios",
-                  "macos"
+                  "macos",
+                  "web"
                 ]
               },
               {
@@ -910,7 +911,8 @@
                 "type": "string",
                 "enum": [
                   "ios",
-                  "macos"
+                  "macos",
+                  "web"
                 ]
               },
               {
@@ -1012,7 +1014,7 @@
         },
         "responses": {
           "200": {
-            "description": "Signed in; use the token as a bearer token",
+            "description": "Signed in. Apps use the token as a bearer token; browsers also get a session cookie and should ignore the token",
             "content": {
               "application/json": {
                 "schema": {
@@ -2249,6 +2251,17 @@
           },
           {
             "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "description": "The newest message id the client already has. Browsers cannot send Last-Event-ID on the first connection; when both arrive, the newer one wins"
+            },
+            "required": false,
+            "description": "The newest message id the client already has. Browsers cannot send Last-Event-ID on the first connection; when both arrive, the newer one wins",
+            "name": "after",
+            "in": "query"
+          },
+          {
+            "schema": {
               "type": "string"
             },
             "required": false,
@@ -2258,7 +2271,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Messages after Last-Event-ID, then new messages and status changes",
+            "description": "Messages after Last-Event-ID or after, then new messages and status changes",
             "content": {
               "text/event-stream": {
                 "schema": {
@@ -2409,7 +2422,7 @@
         },
         "responses": {
           "200": {
-            "description": "Open this in a web authentication session; it ends at goat://connected with state and code for createConnection",
+            "description": "Open this in a web authentication session (apps) or the same tab (web). It ends at goat://connected, or at /connected on the web app when a browser started it, with state and code for createConnection",
             "content": {
               "application/json": {
                 "schema": {
@@ -2612,7 +2625,7 @@
         ],
         "responses": {
           "302": {
-            "description": "Back to the app at goat://connected?integration=<id>&state=…&code=…, or with error=denied|expired|failed"
+            "description": "Back to the client that started it at goat://connected (apps) or <web app>/connected (browsers), with ?integration=<id>&state=…&code=…, or with error=denied|expired|failed"
           }
         }
       }

@@ -6,6 +6,7 @@ export const env = z
     DATABASE_URL: z.url(),
     BETTER_AUTH_URL: z.url(),
     BETTER_AUTH_SECRET: z.string().min(32),
+    WEB_URL: z.url(),
     RESEND_API_KEY: z.string().min(1),
     EMAIL_FROM: z.string().min(1),
     ANTHROPIC_API_KEY: z.string().min(1),
@@ -40,3 +41,6 @@ export const env = z
       .default("info"),
   })
   .parse(process.env);
+
+/** Where the web app is served from, for CORS and trusted origins. */
+export const webOrigin = new URL(env.WEB_URL).origin;

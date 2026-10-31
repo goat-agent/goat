@@ -1,0 +1,1 @@
+ALTER TABLE "connection_attempts" ADD COLUMN "returns_to_web" boolean DEFAULT false NOT NULL;
