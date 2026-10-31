@@ -32,6 +32,9 @@ final class AppModel {
   let client: Client
   let serverURL: URL
   private let tokens: TokenStore
+  private let notifications = Notifications()
+  /// A tapped notification that arrived before the agent list was loaded.
+  private var pendingAgentID: String?
 
   /// The session token, for connections the generated client does not make, such as the device
   /// socket.
@@ -41,6 +44,8 @@ final class AppModel {
     self.serverURL = serverURL
     self.tokens = tokens
     client = .goat(serverURL: serverURL, token: { tokens.load() })
+    notifications.visibleAgentID = { [weak self] in self?.agentPath.last }
+    notifications.open = { [weak self] in self?.openAgent(id: $0) }
   }
 
   var userName: String { me?.name ?? "" }
@@ -172,6 +177,23 @@ final class AppModel {
 
   private static let lastAgentKey = "lastAgentID"
 
+  func askForNotifications() async {
+    await notifications.requestIfNotDetermined()
+  }
+
+  func registerPushToken(_ token: Data) async {
+    let hex = token.map { String(format: "%02x", $0) }.joined()
+    _ = try? await client.registerPushToken(body: .json(.init(token: hex)))
+  }
+
+  private func openAgent(id: String) {
+    guard screen == .home else {
+      pendingAgentID = id
+      return
+    }
+    if agents.contains(where: { $0.id == id }) { agentPath = [id] }
+  }
+
   func signOut() async {
     _ = try? await client.signOut()
     clearSession()
@@ -195,6 +217,7 @@ final class AppModel {
     tokens.clear()
     me = nil
     UserDefaults.standard.removeObject(forKey: Self.lastAgentKey)
+    pendingAgentID = nil
     signInPath = []
     agents = []
     agentPath = []
@@ -218,10 +241,12 @@ final class AppModel {
     switch try await client.listAgents() {
     case .ok(let response):
       agents = try response.body.json.agents
-      let lastID = UserDefaults.standard.string(forKey: Self.lastAgentKey)
+      let lastID = pendingAgentID ?? UserDefaults.standard.string(forKey: Self.lastAgentKey)
+      pendingAgentID = nil
       if let agent = agents.first(where: { $0.id == lastID }) ?? agents.first {
         agentPath = [agent.id]
         screen = .home
+        await notifications.registerIfAuthorized()
       } else {
         screen = .setup
       }

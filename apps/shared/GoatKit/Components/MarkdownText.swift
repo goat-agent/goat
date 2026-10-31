@@ -64,7 +64,12 @@ private struct MarkdownBlock: Identifiable {
       interpretedSyntax: .full,
       failurePolicy: .returnPartiallyParsedIfPossible
     )
-    guard let document = try? AttributedString(markdown: source, options: options) else {
+    guard
+      let document = try? AttributedString(
+        markdown: escapingLoneTildes(source),
+        options: options
+      )
+    else {
       return [MarkdownBlock(id: 0, kind: .paragraph, content: AttributedString(source))]
     }
     return document.runs[\.presentationIntent].enumerated().map { index, run in
@@ -72,6 +77,39 @@ private struct MarkdownBlock: Identifiable {
         id: index, kind: kind(of: run.0),
         content: underliningLinks(AttributedString(document[run.1])))
     }
+  }
+
+  /// Apple's parser strikes through text between single tildes, but people write ranges such as
+  /// `14~21도` with them. Only `~~` strikes through here; code keeps its tildes as written.
+  private static func escapingLoneTildes(_ source: String) -> String {
+    var lines: [String] = []
+    var isInFence = false
+    for line in source.split(separator: "\n", omittingEmptySubsequences: false) {
+      let trimmed = line.drop { $0 == " " || $0 == "\t" }
+      if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+        isInFence.toggle()
+        lines.append(String(line))
+      } else {
+        lines.append(isInFence ? String(line) : escapingLoneTildes(inLine: line))
+      }
+    }
+    return lines.joined(separator: "\n")
+  }
+
+  private static func escapingLoneTildes(inLine line: Substring) -> String {
+    let characters = Array(line)
+    var output = ""
+    var isInCode = false
+    for (index, character) in characters.enumerated() {
+      if character == "`" { isInCode.toggle() }
+      let previous = index > 0 ? characters[index - 1] : nil
+      let next = index + 1 < characters.count ? characters[index + 1] : nil
+      if character == "~" && !isInCode && previous != "~" && previous != "\\" && next != "~" {
+        output.append("\\")
+      }
+      output.append(character)
+    }
+    return output
   }
 
   private static func underliningLinks(_ content: AttributedString) -> AttributedString {

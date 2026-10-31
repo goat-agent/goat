@@ -12,6 +12,7 @@ struct AgentSettingsForm: View {
   @State private var name: String
   @State private var instructions: String
   @State private var isConfirmingDelete = false
+  @State private var schedules: SchedulesModel
 
   init(model: AppModel, agent: Components.Schemas.Agent, onDelete: @escaping () -> Void) {
     self.model = model
@@ -19,6 +20,7 @@ struct AgentSettingsForm: View {
     self.onDelete = onDelete
     _name = State(initialValue: agent.name)
     _instructions = State(initialValue: agent.instructions)
+    _schedules = State(initialValue: SchedulesModel(agentID: agent.id, client: model.client))
   }
 
   var body: some View {
@@ -32,6 +34,8 @@ struct AgentSettingsForm: View {
       ) {
         AvatarView(agent: agent, size: 96)
       }
+
+      SchedulesSection(model: schedules)
 
       Section {
         // A Mac form draws a destructive button in plain text unless it is told the color.
@@ -52,6 +56,7 @@ struct AgentSettingsForm: View {
       }
     }
     .formStyle(.grouped)
+    .task { await schedules.load() }
     .task(id: [name, instructions]) {
       do {
         try await Task.sleep(for: .milliseconds(700))
