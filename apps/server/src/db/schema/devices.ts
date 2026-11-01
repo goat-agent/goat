@@ -14,6 +14,8 @@ export const devices = pgTable(
     installationId: uuid().notNull(),
     name: text().notNull(),
     platform: text().notNull(),
+    // APNs token; a device gets pushes only while one of its sessions is signed in.
+    pushToken: text(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [unique().on(table.userId, table.installationId)],

@@ -114,6 +114,16 @@
         }
       }
     },
+    "Ask in the chat, like “Remind me every day at 8,” and it shows up here." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "채팅에서 “매일 8시에 알려 줘”처럼 말하면 여기에 나타나요."
+          }
+        }
+      }
+    },
     "Attach" : {
       "localizations" : {
         "ko" : {
@@ -354,6 +364,16 @@
         }
       }
     },
+    "Didn’t run" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "실행되지 않았어요"
+          }
+        }
+      }
+    },
     "Discard Recording" : {
       "localizations" : {
         "ko" : {
@@ -537,6 +557,16 @@
         }
       }
     },
+    "Missed" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "놓쳤어요"
+          }
+        }
+      }
+    },
     "Mute" : {
       "localizations" : {
         "ko" : {
@@ -677,6 +707,26 @@
         }
       }
     },
+    "Pause" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "일시 중지"
+          }
+        }
+      }
+    },
+    "Paused" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "일시 중지됨"
+          }
+        }
+      }
+    },
     "Permissions" : {
       "localizations" : {
         "ko" : {
@@ -777,6 +827,16 @@
         }
       }
     },
+    "Repeats" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "반복"
+          }
+        }
+      }
+    },
     "Resend Code" : {
       "localizations" : {
         "ko" : {
@@ -793,6 +853,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld초 뒤에 다시 받을 수 있어요"
+          }
+        }
+      }
+    },
+    "Resume" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "다시 시작"
+          }
+        }
+      }
+    },
+    "Schedules" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "일정"
           }
         }
       }

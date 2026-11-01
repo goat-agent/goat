@@ -229,7 +229,7 @@ describe("youtube", () => {
 
   test("every tool needs the one youtube scope, which Google asks for at connect", () => {
     for (const found of Object.values(youtubeTools)) {
-      expect(found.metadata).toEqual({ scope: googleScopes.youtube });
+      expect(found.metadata).toMatchObject({ scope: googleScopes.youtube });
     }
     expect(workspace.auth.scopes).toContain(googleScopes.youtube);
   });

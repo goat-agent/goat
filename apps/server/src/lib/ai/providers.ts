@@ -27,6 +27,8 @@ const registry = createProviderRegistry({
 
 export const model = registry.languageModel("anthropic:claude-opus-5-5");
 
+export const summarizer = registry.languageModel("anthropic:claude-sonnet-5-5");
+
 export const providerOptions = {
   anthropic: {
     effort: "medium",

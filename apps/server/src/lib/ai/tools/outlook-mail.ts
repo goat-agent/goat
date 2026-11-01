@@ -50,6 +50,8 @@ const Outgoing = z.object({
   body: z.string().describe("Plain text"),
 });
 
+const readMetadata = { effect: "read" };
+
 export const outlookMailTools = {
   outlook_mail_search: tool({
     description: `Outlook mail: search the user's mail with Microsoft search syntax (from:boss subject:report hasattachments:true received>=2026-10-01), or list the newest messages when no query is given. Returns senders, subjects, dates, and previews. ${UNTRUSTED_NOTE}`,
@@ -62,6 +64,7 @@ export const outlookMailTools = {
       maxResults: z.int().min(1).max(25).default(10),
     }),
     contextSchema: MicrosoftConnection,
+    metadata: readMetadata,
     execute: async ({ query, folder, maxResults }, { context, abortSignal }) => {
       const scope = folder ? `/mailFolders/${encodeURIComponent(folder)}` : "";
       const url = new URL(`${API}${scope}/messages`);
@@ -87,6 +90,7 @@ export const outlookMailTools = {
       offset: z.int().min(0).optional(),
     }),
     contextSchema: MicrosoftConnection,
+    metadata: readMetadata,
     execute: async ({ messageId, offset }, { context, abortSignal }) => {
       const url = new URL(`${API}/messages/${encodeURIComponent(messageId)}`);
       url.searchParams.set("$select", `${FIELDS},body`);
@@ -146,6 +150,7 @@ export const outlookMailTools = {
     description: "Outlook mail: list the user's top-level mail folders and their ids.",
     inputSchema: z.object({}),
     contextSchema: MicrosoftConnection,
+    metadata: readMetadata,
     execute: async (_, { context, abortSignal }) =>
       Folders.parse(
         await callGraph(context.fetch, `${API}/mailFolders?$top=100`, { signal: abortSignal }),

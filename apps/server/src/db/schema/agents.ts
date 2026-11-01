@@ -16,6 +16,13 @@ export const agents = pgTable(
     instructions: text().notNull().default(""),
     avatarId: uuid(),
     connectionsNote: text(),
+    schedulesNote: text(),
+    memoryNote: text(),
+    // What the user asked to forget since the latest summary was written; the next step rewrites it.
+    summaryRedactions: text()
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     runOwner: uuid(),
     runLeaseUntil: timestamp({ withTimezone: true }),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),

@@ -27,8 +27,9 @@ struct ConversationView: View {
   var body: some View {
     ConversationMessages(
       conversation: conversation, integrations: integrations, agent: agent,
-      userName: model.userName
-    ) { previewURL = $0 }
+      userName: model.userName, open: { previewURL = $0 },
+      askForNotifications: model.askForNotifications
+    )
     .safeAreaBar(edge: .bottom) {
       Composer(conversation: conversation) {
         isPickingPhotos = true

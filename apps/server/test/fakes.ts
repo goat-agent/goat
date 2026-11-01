@@ -15,11 +15,13 @@ const defaultReply: Reply = () => Promise.resolve("ok");
 
 export const llm = {
   prompts: [] as Prompt[],
+  toolNames: [] as string[][],
   active: 0,
   maxActive: 0,
   reply: defaultReply,
   reset() {
     this.prompts = [];
+    this.toolNames = [];
     this.active = 0;
     this.maxActive = 0;
     this.reply = defaultReply;
@@ -74,9 +76,20 @@ const usage = {
   outputTokens: { total: 1, text: 1, reasoning: undefined },
 };
 
+// Input grows with the conversation the way a real model's does, so compaction has a size to read.
+function usageFor(prompt: Prompt) {
+  const conversation = prompt.filter((message) => message.role !== "system");
+  const total = Math.ceil(JSON.stringify(conversation).length / 2.5);
+  return {
+    inputTokens: { total, noCache: total, cacheRead: undefined, cacheWrite: undefined },
+    outputTokens: { total: 1, text: 1, reasoning: undefined },
+  };
+}
+
 export const fakeModel = new MockLanguageModelV4({
-  doGenerate: async ({ prompt }) => {
+  doGenerate: async ({ prompt, tools }) => {
     llm.prompts.push(prompt);
+    llm.toolNames.push(tools?.map((candidate) => candidate.name) ?? []);
     llm.active += 1;
     llm.maxActive = Math.max(llm.maxActive, llm.active);
     try {
@@ -85,7 +98,7 @@ export const fakeModel = new MockLanguageModelV4({
         return {
           content: [{ type: "text", text: reply }],
           finishReason: { unified: "stop", raw: undefined },
-          usage,
+          usage: usageFor(prompt),
           warnings: [],
         };
       }
@@ -99,12 +112,34 @@ export const fakeModel = new MockLanguageModelV4({
           },
         ],
         finishReason: { unified: "tool-calls", raw: undefined },
-        usage,
+        usage: usageFor(prompt),
         warnings: [],
       };
     } finally {
       llm.active -= 1;
     }
+  },
+});
+
+export const summaries = {
+  prompts: [] as Prompt[],
+  reply: (_prompt: Prompt): Promise<string> =>
+    Promise.resolve("summary of the earlier conversation"),
+  reset() {
+    this.prompts = [];
+    this.reply = () => Promise.resolve("summary of the earlier conversation");
+  },
+};
+
+export const fakeSummarizer = new MockLanguageModelV4({
+  doGenerate: async ({ prompt }) => {
+    summaries.prompts.push(prompt);
+    return {
+      content: [{ type: "text", text: await summaries.reply(prompt) }],
+      finishReason: { unified: "stop", raw: undefined },
+      usage,
+      warnings: [],
+    };
   },
 });
 
@@ -300,3 +335,51 @@ function grant(account: Account): string {
   oauth.accounts.set(accessToken, account);
   return accessToken;
 }
+
+// Words map to buckets, so texts that share words are near each other. Two words given the same
+// meaning in `meanings` share a bucket, which stands in for a paraphrase.
+export const embedder = {
+  documents: [] as string[],
+  queries: [] as string[],
+  isFailing: false,
+  // Runs while documents are being embedded, as a change to the conversation would.
+  onDocuments: undefined as (() => Promise<void>) | undefined,
+  meanings: new Map<string, string>(),
+  reset() {
+    this.documents = [];
+    this.queries = [];
+    this.isFailing = false;
+    this.onDocuments = undefined;
+    this.meanings = new Map();
+  },
+};
+
+function vectorOf(text: string): number[] {
+  const vector = Array.from({ length: 768 }, () => 0);
+  for (const word of text
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)) {
+    const meaning = embedder.meanings.get(word) ?? word;
+    let hash = 2166136261;
+    for (const char of meaning) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619) >>> 0;
+    vector[hash % 768] = (vector[hash % 768] ?? 0) + 1;
+  }
+  const length = Math.sqrt(vector.reduce((sum, x) => sum + x * x, 0)) || 1;
+  return vector.map((x) => x / length);
+}
+
+export const fakeEmbeddings = {
+  embeddingModel: "fake-embedder",
+  embedDocuments: async (texts: readonly string[]): Promise<number[][]> => {
+    if (embedder.isFailing) throw new Error("embedder is down");
+    embedder.documents.push(...texts);
+    await embedder.onDocuments?.();
+    return texts.map(vectorOf);
+  },
+  embedQuery: (text: string): Promise<number[]> => {
+    if (embedder.isFailing) return Promise.reject(new Error("embedder is down"));
+    embedder.queries.push(text);
+    return Promise.resolve(vectorOf(text));
+  },
+};

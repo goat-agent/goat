@@ -17,12 +17,13 @@ import { type TranscriptionHints, transcribe } from "../lib/ai/providers";
 import { stepOf } from "../lib/ai/tools/computer";
 import * as avatars from "../lib/avatars";
 import { startCall } from "../lib/calls/index";
-import { recentLines, textOf } from "../lib/conversation";
+import { bubblesOf, recentLines, textOf } from "../lib/conversation";
 import { subscribe, subscribeAll } from "../lib/events";
 import * as files from "../lib/files";
 import { localeOf } from "../lib/i18n";
 import { listConnections, matchIntegration } from "../lib/integrations/connections";
 import { integrations } from "../lib/integrations/index";
+import { deleteSchedule, listSchedules, ScheduleNotFound, setEnabled } from "../lib/jobs/schedules";
 import { logger } from "../lib/logger";
 import { body, error, invalidRequest, json, openEnum } from "../lib/openapi";
 import { session, type SessionEnv } from "../middlewares/session";
@@ -46,11 +47,19 @@ const Message = z
     id: z.int(),
     role: openEnum(["user", "assistant"]),
     text: z.string(),
+    bubbles: z
+      .array(z.string())
+      .optional()
+      .describe("The agent's reply split into chat bubbles, in order; show one bubble each"),
     files: z.array(File).optional().describe("Files the user sent with the message, in order"),
     connect: z
       .array(ConnectRequest)
       .optional()
       .describe("Services the agent asked the user to connect; show a button for each"),
+    scheduled: z
+      .boolean()
+      .optional()
+      .describe("The agent created a schedule here: the moment to ask to send notifications"),
     steps: z
       .array(z.string())
       .optional()
@@ -98,6 +107,21 @@ const AgentsEvent = z
   .openapi("AgentsEvent");
 
 const AgentParams = z.object({ id: z.uuid() });
+
+const Schedule = z
+  .object({
+    id: z.uuid(),
+    title: z.string(),
+    nextRunAt: z.iso.datetime().optional().describe("Absent once nothing is left to run"),
+    repeats: z.boolean(),
+    enabled: z.boolean(),
+    problem: openEnum(["missed", "failed"])
+      .optional()
+      .describe("How the latest run went wrong, if it did; missed means it ran too late to run"),
+  })
+  .openapi("Schedule");
+
+const ScheduleParams = z.object({ id: z.uuid(), scheduleId: z.uuid() });
 
 const FileParams = z.object({ id: z.uuid(), fileId: z.uuid() });
 
@@ -161,13 +185,16 @@ function publicMessage({
   }
   if (message.role !== "assistant") return undefined;
   const connect = connectRequests(message);
+  const scheduled = calls(message, "schedule_create");
   const steps = stepsOf(message);
-  if (!text && connect.length === 0 && steps.length === 0) return undefined;
+  if (!text && connect.length === 0 && !scheduled && steps.length === 0) return undefined;
   return {
     id,
     role: message.role,
     text,
+    bubbles: bubblesOf(message),
     ...(connect.length > 0 ? { connect } : {}),
+    ...(scheduled ? { scheduled } : {}),
     ...(steps.length > 0 ? { steps } : {}),
     createdAt: createdAt.toISOString(),
   };
@@ -182,6 +209,27 @@ function connectRequests(message: AssistantModelMessage): z.infer<typeof Connect
     const integration = integrationId ? integrations[integrationId] : undefined;
     return integrationId && integration ? [{ integrationId, name: integration.name }] : [];
   });
+}
+
+function calls(message: AssistantModelMessage, toolName: string): boolean {
+  return (
+    typeof message.content !== "string" &&
+    message.content.some((part) => part.type === "tool-call" && part.toolName === toolName)
+  );
+}
+
+function publicSchedule({
+  job,
+  error: problem,
+}: Awaited<ReturnType<typeof listSchedules>>[number]): z.infer<typeof Schedule> {
+  return {
+    id: job.id,
+    title: job.title,
+    ...(job.nextRunAt ? { nextRunAt: job.nextRunAt.toISOString() } : {}),
+    repeats: job.rrule !== null,
+    enabled: job.enabled,
+    ...(problem ? { problem } : {}),
+  };
 }
 
 function stepsOf(message: AssistantModelMessage): string[] {
@@ -625,6 +673,52 @@ const streamEvents = createRoute({
   },
 });
 
+const listSchedulesRoute = createRoute({
+  operationId: "listSchedules",
+  method: "get",
+  path: "/{id}/schedules",
+  security: [{ bearer: [] }],
+  request: { params: AgentParams },
+  responses: {
+    200: json(z.object({ schedules: z.array(Schedule) }), "The agent's schedules, oldest first"),
+    401: error("Not signed in"),
+    404: error("No such agent"),
+  },
+});
+
+const updateScheduleRoute = createRoute({
+  operationId: "updateSchedule",
+  method: "patch",
+  path: "/{id}/schedules/{scheduleId}",
+  security: [{ bearer: [] }],
+  request: {
+    params: ScheduleParams,
+    body: body(
+      z.object({ enabled: z.boolean() }),
+      "Pause or resume; a resumed schedule skips the runs it missed",
+    ),
+  },
+  responses: {
+    200: json(z.object({ schedule: Schedule }), "The updated schedule"),
+    400: error("Invalid request"),
+    401: error("Not signed in"),
+    404: error("No such agent or schedule"),
+  },
+});
+
+const deleteScheduleRoute = createRoute({
+  operationId: "deleteSchedule",
+  method: "delete",
+  path: "/{id}/schedules/{scheduleId}",
+  security: [{ bearer: [] }],
+  request: { params: ScheduleParams },
+  responses: {
+    204: { description: "Deleted" },
+    401: error("Not signed in"),
+    404: error("No such agent or schedule"),
+  },
+});
+
 const app = new OpenAPIHono<SessionEnv>({ defaultHook: invalidRequest });
 app.use(session);
 
@@ -804,6 +898,36 @@ export default app
       log.warn({ err: cause, agentId: id }, "call failed to start");
       return c.json({ error: "call failed to start" }, 502);
     }
+  })
+  .openapi(listSchedulesRoute, async (c) => {
+    const { id } = c.req.valid("param");
+    await ownAgent(c.var.user.id, id);
+    const schedules = await listSchedules(id);
+    return c.json({ schedules: schedules.map(publicSchedule) }, 200);
+  })
+  .openapi(updateScheduleRoute, async (c) => {
+    const { id, scheduleId } = c.req.valid("param");
+    await ownAgent(c.var.user.id, id);
+    try {
+      await setEnabled(id, c.var.user.timeZone ?? "UTC", scheduleId, c.req.valid("json").enabled);
+    } catch (cause) {
+      if (cause instanceof ScheduleNotFound) return c.json({ error: "schedule not found" }, 404);
+      throw cause;
+    }
+    const schedule = (await listSchedules(id)).find(({ job }) => job.id === scheduleId);
+    if (!schedule) return c.json({ error: "schedule not found" }, 404);
+    return c.json({ schedule: publicSchedule(schedule) }, 200);
+  })
+  .openapi(deleteScheduleRoute, async (c) => {
+    const { id, scheduleId } = c.req.valid("param");
+    await ownAgent(c.var.user.id, id);
+    try {
+      await deleteSchedule(id, scheduleId, { fromAgent: false });
+    } catch (cause) {
+      if (cause instanceof ScheduleNotFound) return c.json({ error: "schedule not found" }, 404);
+      throw cause;
+    }
+    return c.body(null, 204);
   })
   .openapi(streamEvents, async (c) => {
     const { id } = c.req.valid("param");

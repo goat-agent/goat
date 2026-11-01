@@ -71,6 +71,17 @@ describe("conversation", () => {
     expect(llm.prompts[0]?.map((message) => message.role)).toEqual(["system", "user"]);
   });
 
+  test("splits a reply into bubbles where the agent wrote ---, except inside code", async () => {
+    llm.reply = () =>
+      Promise.resolve("김치볶음밥 어때\n---\n\n이렇게 볶아\n```\n김치\n---\n밥\n```\n---  \n");
+    await send(token, agentId, "저녁 뭐 먹지");
+    await waitForIdle(agentId);
+
+    const reply = (await listMessages(token, agentId)).at(-1);
+    expect(reply?.bubbles).toEqual(["김치볶음밥 어때", "이렇게 볶아\n```\n김치\n---\n밥\n```"]);
+    expect(reply?.text).toBe("김치볶음밥 어때\n\n이렇게 볶아\n```\n김치\n---\n밥\n```");
+  });
+
   test("tells the model the date on the first message of each day in the user's time zone", async () => {
     await client.me.$patch({ json: { timeZone: "Asia/Seoul" } }, bearer(token));
     const today = `Today's date is ${dateIn("Asia/Seoul", new Date())}.`;

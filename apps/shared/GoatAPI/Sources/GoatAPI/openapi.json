@@ -712,6 +712,13 @@
           "text": {
             "type": "string"
           },
+          "bubbles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The agent's reply split into chat bubbles, in order; show one bubble each"
+          },
           "files": {
             "type": "array",
             "items": {
@@ -725,6 +732,10 @@
               "$ref": "#/components/schemas/ConnectRequest"
             },
             "description": "Services the agent asked the user to connect; show a button for each"
+          },
+          "scheduled": {
+            "type": "boolean",
+            "description": "The agent created a schedule here: the moment to ask to send notifications"
           },
           "steps": {
             "type": "array",
@@ -807,6 +818,50 @@
         },
         "required": [
           "type"
+        ]
+      },
+      "Schedule": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string"
+          },
+          "nextRunAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Absent once nothing is left to run"
+          },
+          "repeats": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "missed",
+                  "failed"
+                ]
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "How the latest run went wrong, if it did; missed means it ran too late to run"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "repeats",
+          "enabled"
         ]
       },
       "AgentEvent": {
@@ -1153,6 +1208,71 @@
           },
           "401": {
             "description": "Not signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/push-token": {
+      "put": {
+        "operationId": "registerPushToken",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "description": "This device's APNs token, hex-encoded; send it on every launch",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{32,200}$/i"
+                  }
+                },
+                "required": [
+                  "token"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "This device gets the user's notifications until it signs out"
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This session was not signed in as a device",
             "content": {
               "application/json": {
                 "schema": {
@@ -2220,6 +2340,222 @@
           },
           "502": {
             "description": "The call could not be started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents/{id}/schedules": {
+      "get": {
+        "operationId": "listSchedules",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The agent's schedules, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "schedules": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Schedule"
+                      }
+                    }
+                  },
+                  "required": [
+                    "schedules"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents/{id}/schedules/{scheduleId}": {
+      "patch": {
+        "operationId": "updateSchedule",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "scheduleId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "description": "Pause or resume; a resumed schedule skips the runs it missed",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated schedule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "schedule": {
+                      "$ref": "#/components/schemas/Schedule"
+                    }
+                  },
+                  "required": [
+                    "schedule"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such agent or schedule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteSchedule",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "scheduleId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "Not signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such agent or schedule",
             "content": {
               "application/json": {
                 "schema": {

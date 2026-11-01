@@ -31,6 +31,8 @@ function summary(file: z.infer<typeof File>) {
   };
 }
 
+const readMetadata = { effect: "read" };
+
 export const oneDriveTools = {
   onedrive_search: tool({
     description: "OneDrive: find files and folders by words in their name or content.",
@@ -39,6 +41,7 @@ export const oneDriveTools = {
       maxResults: z.int().min(1).max(50).default(20),
     }),
     contextSchema: MicrosoftConnection,
+    metadata: readMetadata,
     execute: async ({ query, maxResults }, { context, abortSignal }) => {
       const quoted = encodeURIComponent(query.replace(/'/g, "''"));
       const url = new URL(`${API}/root/search(q='${quoted}')`);
@@ -51,6 +54,7 @@ export const oneDriveTools = {
     description: `OneDrive: read a plain text file (text, Markdown, CSV, JSON, XML, HTML, code). Word, Excel, and PowerPoint files cannot be read as text: Microsoft Graph converts them only to PDF or images, so the user has to open them from the link. Long files arrive in parts: when truncated is true, call again with offset set to nextOffset. ${UNTRUSTED_NOTE}`,
     inputSchema: z.object({ fileId: z.string(), offset: z.int().min(0).optional() }),
     contextSchema: MicrosoftConnection,
+    metadata: readMetadata,
     execute: async ({ fileId, offset }, { context, abortSignal }) => {
       const base = `${API}/items/${encodeURIComponent(fileId)}`;
       const found = File.parse(

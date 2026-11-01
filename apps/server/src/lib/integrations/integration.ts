@@ -20,11 +20,18 @@ export type OAuth = {
   identify?: (identity: Identity) => Promise<Account>;
 };
 
+/**
+ * What a tool does to the user's accounts. Jobs that run without the user get only `read` tools,
+ * so a tool is `write` unless it is known to change nothing.
+ */
+export type Effect = "read" | "write";
+
 export type Integration = {
   name: string;
   /** English: the model searches for tools in English. */
   description: string;
   auth: OAuth;
-  mcp?: { url: string; tools: readonly string[] };
+  mcp?: { url: string; tools: Readonly<Record<string, Effect>> };
+  /** A tool here is `write` unless its metadata says `effect: "read"`. */
   tools?: ToolSet;
 };

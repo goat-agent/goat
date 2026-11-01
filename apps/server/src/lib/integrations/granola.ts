@@ -14,13 +14,13 @@ export const granola = {
   },
   mcp: {
     url: "https://mcp.granola.ai/mcp",
-    tools: [
-      "query_granola_meetings",
-      "list_meetings",
-      "get_meetings",
-      "get_meeting_transcript",
-      "list_meeting_folders",
-      "get_meeting_attachment",
-    ],
+    tools: {
+      query_granola_meetings: "read",
+      list_meetings: "read",
+      get_meetings: "read",
+      get_meeting_transcript: "read",
+      list_meeting_folders: "read",
+      get_meeting_attachment: "read",
+    },
   },
 } satisfies Integration;

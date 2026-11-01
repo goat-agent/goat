@@ -5,6 +5,7 @@ import { callGoogle, GoogleConnection, googleScopes } from "./google";
 const API = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const PAGE = 50;
 const metadata = { scope: googleScopes.calendar };
+const readMetadata = { ...metadata, effect: "read" };
 
 const When = z.object({ dateTime: z.string().optional(), date: z.string().optional() });
 
@@ -33,7 +34,7 @@ export const googleCalendarTools = {
       query: z.string().optional().describe("Words to match in the events"),
     }),
     contextSchema: GoogleConnection,
-    metadata,
+    metadata: readMetadata,
     execute: async ({ timeMin, timeMax, query }, { context, abortSignal }) => {
       const url = new URL(API);
       url.search = new URLSearchParams({

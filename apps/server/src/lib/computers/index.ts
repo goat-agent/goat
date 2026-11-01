@@ -49,11 +49,11 @@ export class UnknownId extends Error {}
  * One run's view of the user's computers. It turns the computers' own window and element refs
  * into the short ids the model sees (w3, e12), so an id alone says which computer it belongs to.
  */
-export function openComputers(userId: string, history: readonly ModelMessage[]) {
+export function openComputers(userId: string, floor: number) {
   const ids = new Map<string, Ref>();
   const refs = new Map<string, string>();
   // Ids already in the conversation keep their meaning; new ones start after them.
-  let next = highestId(history) + 1;
+  let next = floor + 1;
 
   async function look(input: {
     computer?: string;
@@ -360,7 +360,7 @@ function describe(computer: Computer): string {
   return `- ${JSON.stringify(computer.name)} id ${computer.id} (${state})`;
 }
 
-function highestId(history: readonly ModelMessage[]): number {
+export function highestId(history: readonly ModelMessage[]): number {
   let highest = 0;
   for (const message of history) {
     if (message.role !== "tool") continue;

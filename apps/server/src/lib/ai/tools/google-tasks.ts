@@ -4,6 +4,7 @@ import { callGoogle, GoogleConnection, googleScopes } from "./google";
 
 const API = "https://tasks.googleapis.com/tasks/v1";
 const metadata = { scope: googleScopes.tasks };
+const readMetadata = { ...metadata, effect: "read" };
 
 const Task = z.object({
   id: z.string(),
@@ -29,7 +30,7 @@ export const googleTasksTools = {
     description: "Google Tasks: list the user's task lists.",
     inputSchema: z.object({}),
     contextSchema: GoogleConnection,
-    metadata,
+    metadata: readMetadata,
     execute: async (_, { context, abortSignal }) =>
       Lists.parse(
         await callGoogle(context.fetch, `${API}/users/@me/lists`, { signal: abortSignal }),
@@ -39,7 +40,7 @@ export const googleTasksTools = {
     description: "Google Tasks: list the to-dos in a task list.",
     inputSchema: z.object({ listId, showCompleted: z.boolean().default(false) }),
     contextSchema: GoogleConnection,
-    metadata,
+    metadata: readMetadata,
     execute: async ({ listId: list, showCompleted }, { context, abortSignal }) => {
       const url = new URL(`${API}/lists/${encodeURIComponent(list)}/tasks`);
       url.search = new URLSearchParams({

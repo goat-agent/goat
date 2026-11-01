@@ -4,10 +4,12 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import {
   FakeResend,
+  fakeEmbeddings,
   fakeFirecrawl,
   fakeIntegrations,
   fakeModel,
   fakeStorage,
+  fakeSummarizer,
   fakeTranscribe,
   fakeVoice,
 } from "./fakes";
@@ -31,9 +33,11 @@ await client.end();
 
 await mock.module("../src/lib/ai/providers", () => ({
   model: fakeModel,
+  summarizer: fakeSummarizer,
   providerOptions: {},
   transcribe: fakeTranscribe,
 }));
+await mock.module("../src/lib/search/embeddings", () => fakeEmbeddings);
 await mock.module("../src/lib/calls/openai", () => fakeVoice);
 await mock.module("resend", () => ({ Resend: FakeResend }));
 await mock.module("../src/lib/web/firecrawl", () => fakeFirecrawl);

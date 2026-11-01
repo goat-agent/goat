@@ -10,8 +10,10 @@ import * as computerProtocol from "./lib/computers/protocol";
 import * as deviceProtocol from "./lib/devices/protocol";
 import { deviceSockets } from "./lib/devices/socket";
 import { startSweeping, stopSweeping } from "./lib/files";
+import { startJobs, stopJobs } from "./lib/jobs";
 import { logger } from "./lib/logger";
 import { document, invalidRequest } from "./lib/openapi";
+import { startEmbedding, stopEmbedding } from "./lib/search/embed";
 import { requestLogger } from "./middlewares/request-logger";
 import agents from "./routes/agents";
 import authRoutes from "./routes/auth";
@@ -63,12 +65,16 @@ if (import.meta.main) {
     idleTimeout: 60,
   });
   startAgents();
+  startJobs();
+  startEmbedding();
   startSweeping();
   logger.info({ port: server.port }, "listening");
 
   const shutdown = async () => {
     await server.stop(true);
     stopSweeping();
+    await stopJobs();
+    await stopEmbedding();
     await stopAgents();
     await client.end();
     logger.flush();

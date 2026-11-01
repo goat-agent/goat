@@ -4,6 +4,7 @@ import { callGoogle, GoogleConnection, googleScopes, untrusted, UNTRUSTED_NOTE }
 
 const API = "https://sheets.googleapis.com/v4/spreadsheets";
 const metadata = { scope: googleScopes.spreadsheets };
+const readMetadata = { ...metadata, effect: "read" };
 
 const Values = z.object({ range: z.string(), values: z.array(z.array(z.unknown())).default([]) });
 const Spreadsheet = z.object({ spreadsheetId: z.string(), spreadsheetUrl: z.string() });
@@ -16,7 +17,7 @@ export const googleSheetsTools = {
     description: `Google Sheets: read cell values in a range. ${UNTRUSTED_NOTE}`,
     inputSchema: z.object({ spreadsheetId: z.string(), range }),
     contextSchema: GoogleConnection,
-    metadata,
+    metadata: readMetadata,
     execute: async ({ spreadsheetId, range: cells }, { context, abortSignal }) => {
       const url = `${API}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(cells)}`;
       const values = Values.parse(await callGoogle(context.fetch, url, { signal: abortSignal }));

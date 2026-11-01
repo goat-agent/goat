@@ -5,6 +5,7 @@ import type { Fetch } from "../../integrations/integration";
 
 const API = "https://www.googleapis.com/youtube/v3";
 const metadata = { scope: googleScopes.youtube };
+const readMetadata = { ...metadata, effect: "read" };
 
 const DESCRIPTION_CHARS = 2_000;
 
@@ -111,7 +112,7 @@ export const youtubeTools = {
       maxResults: z.int().min(1).max(10).default(5),
     }),
     contextSchema: GoogleConnection,
-    metadata,
+    metadata: readMetadata,
     execute: async ({ query, type, maxResults, pageToken }, { context, abortSignal }) => {
       const found = SearchResults.parse(
         await get(
@@ -142,7 +143,7 @@ export const youtubeTools = {
     description: `YouTube: details of videos by id: title, channel, publish date, duration (ISO 8601), view and like counts, and the start of the description. ${UNTRUSTED_NOTE}`,
     inputSchema: z.object({ videoIds: z.array(videoId).min(1).max(10) }),
     contextSchema: GoogleConnection,
-    metadata,
+    metadata: readMetadata,
     execute: async ({ videoIds }, { context, abortSignal }) => {
       const found = Videos.parse(
         await get(
@@ -159,7 +160,7 @@ export const youtubeTools = {
     description: `YouTube: list the videos the user liked, newest first. ${UNTRUSTED_NOTE}`,
     inputSchema: z.object(paging),
     contextSchema: GoogleConnection,
-    metadata,
+    metadata: readMetadata,
     execute: async ({ maxResults, pageToken }, { context, abortSignal }) => {
       const found = Videos.parse(
         await get(
@@ -179,7 +180,7 @@ export const youtubeTools = {
     description: "YouTube: list the user's own playlists with their ids and sizes.",
     inputSchema: z.object(paging),
     contextSchema: GoogleConnection,
-    metadata,
+    metadata: readMetadata,
     execute: async ({ maxResults, pageToken }, { context, abortSignal }) => {
       const found = Playlists.parse(
         await get(
@@ -202,7 +203,7 @@ export const youtubeTools = {
       ...paging,
     }),
     contextSchema: GoogleConnection,
-    metadata,
+    metadata: readMetadata,
     execute: async ({ playlistId, maxResults, pageToken }, { context, abortSignal }) => {
       const found = PlaylistItems.parse(
         await get(
@@ -228,7 +229,7 @@ export const youtubeTools = {
     description: `YouTube: list the channels the user subscribes to. ${UNTRUSTED_NOTE}`,
     inputSchema: z.object(paging),
     contextSchema: GoogleConnection,
-    metadata,
+    metadata: readMetadata,
     execute: async ({ maxResults, pageToken }, { context, abortSignal }) => {
       const found = Subscriptions.parse(
         await get(

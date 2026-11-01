@@ -12,6 +12,8 @@ struct ConversationMessages: View {
   let open: (URL) -> Void
   /// The Mac stops lines at a readable width; an iPhone screen is narrow enough already.
   var maxWidth: CGFloat = .infinity
+  /// Called when a scheduled message shows up, the moment to ask to notify.
+  var askForNotifications: () async -> Void = {}
 
   @State private var isAtBottom = true
   /// Stays on the newest message until the user scrolls away.
@@ -65,6 +67,9 @@ struct ConversationMessages: View {
         if conversation.messages.last?.role.value1 == .assistant {
           AccessibilityNotification.Announcement(String(localized: "New reply")).post()
         }
+        if conversation.messages.contains(where: { $0.scheduled == true }) {
+          Task { await askForNotifications() }
+        }
       }
       .overlay(alignment: .bottomTrailing) {
         if !isAtBottom {
@@ -99,8 +104,12 @@ struct ConversationMessages: View {
         if let steps = message.steps, !steps.isEmpty {
           StepList(steps: steps)
         }
-        if !message.text.isEmpty {
-          MessageBubble(text: message.text, isMine: message.role.value1 == .user)
+        ForEach(Array(bubbles(of: message).enumerated()), id: \.offset) { _, text in
+          if let url = LinkCard.url(in: text) {
+            LinkCard(url: url)
+          } else {
+            MessageBubble(text: text, isMine: message.role.value1 == .user)
+          }
         }
         ForEach(Array((message.connect ?? []).enumerated()), id: \.offset) { _, request in
           ConnectCard(
@@ -123,6 +132,10 @@ struct ConversationMessages: View {
     .animation(.default, value: conversation.isRunning)
     .padding(.horizontal)
     .padding(.vertical, 8)
+  }
+
+  private func bubbles(of message: Components.Schemas.Message) -> [String] {
+    message.bubbles ?? (message.text.isEmpty ? [] : [message.text])
   }
 
   /// Drawn by the app rather than stored, so each device shows it in its own language.
