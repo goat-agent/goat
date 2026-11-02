@@ -38,6 +38,25 @@ xcodebuild -project Goat.xcodeproj -scheme Goat \
 
 Debug builds talk to `GOAT_SERVER_URL` (`http://localhost:3000`); run the server first.
 
+## Previews
+
+Mockups are reviewed as rendered previews ([docs/design/mockup.md](../../docs/design/mockup.md)).
+Render them with the Xcode MCP tools, which need Xcode running.
+
+- Open `Goat.xcodeproj` with `XcodeOpenWorkspace`. Then call `RenderPreview` with the workspace
+  identifier and the file's path in the project (`Goat/...` or `GoatKit/...`, not a file-system
+  path). `previewDefinitionIndexInFile` picks a preview by its position in the file.
+- It returns the image's path in a temporary directory. Open that file for review, passing the
+  path on unchanged: the time in the file name has a narrow no-break space before AM or PM, so
+  a retyped path does not match.
+- `previewVariantOverrides` renders dark mode and other Dynamic Type sizes,
+  `previewLocalizationOverride` renders Korean, and `preferredRenderDestination` picks another
+  iPhone or an iPad. The first result lists the values each one accepts.
+- `GoatKit` files belong to the Mac project too. Keep only one of the two projects open, or the
+  render fails with "Active scheme does not build this file".
+- If the render reports a missing package product, run `xcodebuild -resolvePackageDependencies`
+  for the project, then close and reopen it.
+
 ## Design
 
 - Screens draw only with `../shared/GoatKit/UI`: `Palette` for color and the parts named as in
