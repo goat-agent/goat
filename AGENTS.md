@@ -25,6 +25,8 @@ and the agent can use a signed-in Mac through computer use.
 ```sh
 bun install
 docker compose up -d                 # local Postgres and file storage (RustFS)
+bun run dev                          # server and web
+bun run dev:ios                      # the iPhone app, beside bun run dev; also dev:macos
 bun run typecheck                    # tsc for every workspace
 bun run lint                         # oxlint, type-aware; warnings fail
 bun run format                       # oxfmt; format:check only checks

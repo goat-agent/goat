@@ -12,6 +12,12 @@
         "typescript": "7.0.2",
       },
     },
+    "apps/ios": {
+      "name": "@goat/ios",
+    },
+    "apps/macos": {
+      "name": "@goat/macos",
+    },
     "apps/server": {
       "name": "@goat/server",
       "dependencies": {
@@ -290,6 +296,10 @@
     "@floating-ui/react-dom": ["@floating-ui/react-dom@2.1.9", "", { "dependencies": { "@floating-ui/dom": "^1.8.0" }, "peerDependencies": { "react": ">=16.8.0", "react-dom": ">=16.8.0" } }, "sha512-JDjEFGCpImxDCA7JJKviA0M9+RtmJdj0m/NVU5IMgBK+AmZouAQQ7/+2GLH0GXXY0YMw9oXPB8hKdbPYg5QLYg=="],
 
     "@floating-ui/utils": ["@floating-ui/utils@0.2.12", "", {}, "sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww=="],
+
+    "@goat/ios": ["@goat/ios@workspace:apps/ios"],
+
+    "@goat/macos": ["@goat/macos@workspace:apps/macos"],
 
     "@goat/server": ["@goat/server@workspace:apps/server"],
 
