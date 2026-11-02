@@ -6,70 +6,69 @@ struct SchedulesSection: View {
   let model: SchedulesModel
 
   var body: some View {
-    Section("Schedules") {
-      if model.hasLoaded && model.schedules.isEmpty {
+    Group {
+      if !model.hasLoaded {
+        ProgressView()
+          .controlSize(.small)
+      } else if model.schedules.isEmpty {
         Text("Ask in the chat, like “Remind me every day at 8,” and it shows up here.")
-          .foregroundStyle(.secondary)
-      }
-      ForEach(model.schedules, id: \.id) { schedule in
-        ScheduleRow(schedule: schedule)
-          .swipeActions {
-            Button("Delete", role: .destructive) {
-              Task { await model.delete(schedule) }
-            }
-          }
-          .contextMenu {
-            Button(
-              schedule.enabled ? "Pause" : "Resume",
-              systemImage: schedule.enabled ? "pause" : "play"
-            ) {
+          .foregroundStyle(Palette.mutedForeground)
+          .fixedSize(horizontal: false, vertical: true)
+      } else {
+        ItemGroup {
+          ForEach(model.schedules, id: \.id) { schedule in
+            ScheduleRow(schedule: schedule) {
               Task { await model.setEnabled(!schedule.enabled, for: schedule) }
-            }
-            Button("Delete", systemImage: "trash", role: .destructive) {
+            } delete: {
               Task { await model.delete(schedule) }
             }
           }
+        }
       }
     }
+    .task { await model.load() }
   }
 }
 
 private struct ScheduleRow: View {
   let schedule: Components.Schemas.Schedule
+  let toggle: () -> Void
+  let delete: () -> Void
+
+  @State private var isShowingMenu = false
 
   var body: some View {
-    HStack(spacing: 12) {
-      VStack(alignment: .leading, spacing: 2) {
-        Text(schedule.title)
-        detail
-          .font(.subheadline)
-          .foregroundStyle(.secondary)
-      }
-      Spacer(minLength: 8)
+    Item(title: schedule.title, description: detail) {
       if schedule.repeats {
-        Image(systemName: "repeat")
-          .foregroundStyle(.secondary)
+        IconSlot(systemName: "repeat")
+          .foregroundStyle(Palette.mutedForeground)
+          .accessibilityElement()
           .accessibilityLabel("Repeats")
       }
+      Button("More", systemImage: "ellipsis") { isShowingMenu = true }
+        .buttonStyle(.icon)
+        .dropdownMenu(isPresented: $isShowingMenu, placement: .below(.trailing)) {
+          DropdownMenuItem(
+            title: schedule.enabled ? "Pause" : "Resume",
+            systemImage: schedule.enabled ? "pause" : "play", action: toggle)
+          DropdownMenuItem(
+            title: "Delete", systemImage: "trash", role: .destructive, action: delete)
+        }
     }
     .opacity(schedule.enabled ? 1 : 0.5)
   }
 
-  @ViewBuilder private var detail: some View {
-    if !schedule.enabled {
-      Text("Paused")
-    } else {
-      HStack(spacing: 4) {
-        switch schedule.problem?.value1 {
-        case .missed: Text("Missed")
-        case .failed: Text("Didn’t run")
-        case nil: EmptyView()
-        }
-        if schedule.problem?.value1 != nil && schedule.nextRunAt != nil { Text("·") }
-        if let date = schedule.nextRunAt {
-          Text(date, format: .relative(presentation: .named, unitsStyle: .abbreviated))
-        }
+  private var detail: String? {
+    guard schedule.enabled else { return String(localized: "Paused") }
+    let problem: String? =
+      switch schedule.problem?.value1 {
+      case .missed: String(localized: "Missed")
+      case .failed: String(localized: "Didn’t run")
+      case nil: nil
       }
-    }
+    let next = schedule.nextRunAt?.formatted(
+      .relative(presentation: .named, unitsStyle: .abbreviated))
+    let parts = [problem, next].compactMap(\.self)
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
   }
 }

@@ -9,15 +9,20 @@ struct Composer: View {
   let open: (URL) -> Void
   let call: () -> Void
 
+  @State private var isAttaching = false
   @Environment(\.openURL) private var openURL
 
   private var dictation: Dictation { conversation.dictation }
+
+  /// Concentric with the main button.
+  private static let inset: CGFloat = 4
+  private static let buttonSide: CGFloat = 36
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
       if let problem = dictation.problem {
         problemRow(problem)
-        Divider()
+        Palette.border.frame(height: 1)
       }
       if !conversation.attachments.isEmpty {
         attachmentList
@@ -25,35 +30,44 @@ struct Composer: View {
       HStack(alignment: .bottom, spacing: 2) {
         switch dictation.state {
         case .recording:
-          ToolButton(title: "Discard Recording", systemImage: "xmark") { dictation.cancel() }
+          toolButton("Discard Recording", systemImage: "xmark") { dictation.cancel() }
           Waveform(levels: dictation.levels)
         case .transcribing:
           // The recording stays where it was, dimmed, until its text replaces it.
-          ToolButton(title: "Discard Recording", systemImage: "xmark") {}
+          toolButton("Discard Recording", systemImage: "xmark") {}
             .disabled(true)
           Waveform(levels: dictation.levels)
             .opacity(0.3)
             .accessibilityLabel("Transcribing…")
         case .idle:
-          attachMenu
+          toolButton("Attach", systemImage: "plus") { isAttaching = true }
+            .disabled(!conversation.canAttach)
+            .dropdownMenu(isPresented: $isAttaching, placement: .above(.leading)) {
+              DropdownMenuItem(
+                title: "Photos", systemImage: "photo.on.rectangle", action: pickPhotos)
+              DropdownMenuItem(title: "Files", systemImage: "doc", action: pickFiles)
+            }
           TextField("Message", text: $conversation.draft, axis: .vertical)
             .textFieldStyle(.plain)
+            .foregroundStyle(Palette.foreground)
             .lineLimit(1...5)
             #if os(macOS)
               // Return sends on the Mac, as in Messages; Option-Return starts a new line.
               .onSubmit(send)
             #endif
             .padding(.vertical, 8)
-          ToolButton(title: "Dictate", systemImage: "mic") {
+          toolButton("Dictate", systemImage: "mic") {
             Task { await dictation.start() }
           }
-          .foregroundStyle(.secondary)
         }
         mainButton
       }
     }
-    .padding(4)
-    .glassEffect(.regular, in: .rect(cornerRadius: 22))
+    .padding(Self.inset)
+    .background(
+      Palette.secondary,
+      in: .rect(cornerRadius: Self.buttonSide / 2 + Self.inset, style: .continuous)
+    )
     .sensoryFeedback(.impact(weight: .light), trigger: dictation.state) { old, new in
       new == .recording || old == .recording
     }
@@ -79,18 +93,13 @@ struct Composer: View {
     .scrollIndicators(.hidden)
   }
 
-  private var attachMenu: some View {
-    Menu {
-      Button("Photos", systemImage: "photo.on.rectangle", action: pickPhotos)
-      Button("Files", systemImage: "doc", action: pickFiles)
-    } label: {
-      ToolButton.label(title: "Attach", systemImage: "plus")
-    }
-    .menuStyle(.button)
-    .buttonStyle(.plain)
-    .menuIndicator(.hidden)
-    .tint(.primary)
-    .disabled(!conversation.canAttach)
+  private func toolButton(
+    _ title: LocalizedStringKey, systemImage: String, action: @escaping () -> Void
+  ) -> some View {
+    Button(title, systemImage: systemImage, action: action)
+      .buttonStyle(.icon)
+      .controlSize(.small)
+      .frame(width: Self.buttonSide, height: Self.buttonSide)
   }
 
   @ViewBuilder private var mainButton: some View {
@@ -120,46 +129,25 @@ struct Composer: View {
       switch problem {
       case .microphoneDenied:
         Text("Microphone is off.")
-          .foregroundStyle(.red)
+          .foregroundStyle(Palette.destructive)
         Spacer()
         Button("Settings") {
           if let url = MicrophoneSettings.url { openURL(url) }
         }
       case .transcriptionFailed:
         Text("Couldn’t transcribe.")
-          .foregroundStyle(.red)
+          .foregroundStyle(Palette.destructive)
         Spacer()
         Button("Try Again") {
           Task { await dictation.retry() }
         }
       }
     }
-    .font(.subheadline)
-    .fontWeight(.medium)
-    .tint(.primary)
-    .padding(.horizontal, 12)
+    .font(.callout)
+    .buttonStyle(.ghost)
+    .controlSize(.small)
+    .padding(.leading, 12)
     .frame(minHeight: 36)
-  }
-}
-
-private struct ToolButton: View {
-  let title: LocalizedStringKey
-  let systemImage: String
-  let action: () -> Void
-
-  static func label(title: LocalizedStringKey, systemImage: String) -> some View {
-    Label(title, systemImage: systemImage)
-      .labelStyle(.iconOnly)
-      .font(.title3)
-      .frame(width: 36, height: 36)
-      .contentShape(.circle)
-  }
-
-  var body: some View {
-    Button(action: action) {
-      Self.label(title: title, systemImage: systemImage)
-    }
-    .buttonStyle(.plain)
   }
 }
 
@@ -175,19 +163,19 @@ private struct MainButton: View {
       ZStack {
         if isWorking {
           ProgressView()
-            .tint(.white)
+            .controlSize(.small)
+            .tint(Palette.primaryForeground)
         } else {
           Image(systemName: systemImage)
-            .font(.body.weight(.semibold))
+            .fontWeight(.semibold)
         }
       }
       .frame(width: 36, height: 36)
-      // Fixed colors, because the glass around it would turn hierarchical styles translucent.
-      .foregroundStyle(.white)
-      .background(Color.accentColor, in: .circle)
+      .foregroundStyle(Palette.primaryForeground)
+      .background(Palette.primary, in: .circle)
     }
     .buttonStyle(.plain)
-    .opacity(isEnabled ? 1 : 0.3)
+    .opacity(isEnabled ? 1 : 0.35)
     .disabled(!isEnabled || isWorking)
     .accessibilityLabel(title)
   }
@@ -203,7 +191,7 @@ private struct Waveform: View {
           .frame(width: 3, height: 3 + CGFloat(level) * 24)
       }
     }
-    .foregroundStyle(.primary)
+    .foregroundStyle(Palette.mutedForeground)
     .frame(maxWidth: .infinity, minHeight: 36, alignment: .trailing)
     .clipped()
     .animation(.linear(duration: 0.05), value: levels)

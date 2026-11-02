@@ -17,7 +17,7 @@ struct LocalImage: View {
           .aspectRatio(contentMode: contentMode)
       } else {
         Rectangle()
-          .fill(.fill.secondary)
+          .fill(Palette.secondary)
           .aspectRatio(4 / 3, contentMode: contentMode)
           .overlay { ProgressView() }
       }

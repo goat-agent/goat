@@ -44,16 +44,28 @@ struct ConversationView: View {
     .task { await conversation.listen() }
   }
 
+  /// The title, the messages, and the composer, one above the other. A top bar that the
+  /// messages scroll under would join the window's title bar on macOS 26 and take the clicks
+  /// meant for the sidebar's buttons.
   private var conversationCard: some View {
-    ConversationMessages(
-      conversation: conversation, integrations: integrations, agent: agent,
-      userName: model.userName, open: { previewURL = $0 }, maxWidth: Self.columnWidth
-    )
-    .safeAreaBar(edge: .top) {
-      AgentTitle(agent: agent, action: toggleAgent)
-        .padding(.top, 8)
-    }
-    .safeAreaBar(edge: .bottom) {
+    VStack(spacing: 0) {
+      VStack(spacing: 6) {
+        AgentTitle(agent: agent, action: toggleAgent)
+        if !model.isOnline {
+          ConnectingBanner()
+            .transition(.opacity)
+        }
+      }
+      .padding(.top, 8)
+      .padding(.bottom, 4)
+      .animation(.default, value: model.isOnline)
+      ConversationMessages(
+        conversation: conversation, integrations: integrations, agent: agent,
+        userName: model.userName, open: { previewURL = $0 }, maxWidth: Self.columnWidth
+      )
+      .frame(maxHeight: .infinity)
+      .overlay(alignment: .top) { edgeFade(from: .top) }
+      .overlay(alignment: .bottom) { edgeFade(from: .bottom) }
       Composer(conversation: conversation) {
         isPickingPhotos = true
       } pickFiles: {
@@ -63,13 +75,25 @@ struct ConversationView: View {
       } call: {
         call = Call(agentID: agent.id, client: model.client)
       }
+      // The same column as the messages, so its edges meet the bubbles'.
+      .padding(.horizontal, 16)
       .frame(maxWidth: Self.columnWidth)
-      .padding(.horizontal, 24)
+      .padding(.top, 8)
       .padding(.bottom, 16)
     }
     .attachmentPickers(
       for: conversation, isPickingPhotos: $isPickingPhotos, isPickingFiles: $isPickingFiles
     )
     .quickLookPreview($previewURL)
+  }
+
+  /// Messages fade out at the list's edges instead of being cut by them.
+  private func edgeFade(from edge: UnitPoint) -> some View {
+    LinearGradient(
+      colors: [Palette.background, Palette.background.opacity(0)], startPoint: edge,
+      endPoint: edge == .top ? .bottom : .top
+    )
+    .frame(height: 12)
+    .allowsHitTesting(false)
   }
 }

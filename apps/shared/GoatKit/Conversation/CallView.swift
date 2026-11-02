@@ -18,19 +18,21 @@ struct CallView: View {
   var body: some View {
     VStack(spacing: 0) {
       VStack(spacing: 4) {
-        AvatarView(agent: agent, size: 128)
-          .padding(.bottom, 16)
+        AvatarView(agent: agent, size: 120)
+          .padding(.bottom, 12)
         Text(agent.name)
-          .font(.largeTitle.bold())
+          .font(.title2.bold())
+          .foregroundStyle(Palette.foreground)
         status
-          .font(.title3)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(Palette.mutedForeground)
+          .monospacedDigit()
           .contentTransition(.opacity)
         if call.state == .failed(.microphoneDenied) {
           Button("Open Settings") {
             if let url = MicrophoneSettings.url { openURL(url) }
           }
-          .padding(.top, 8)
+          .buttonStyle(.primary)
+          .padding(.top, 12)
         }
       }
       .multilineTextAlignment(.center)
@@ -49,7 +51,7 @@ struct CallView: View {
         .padding(.bottom, 32)
       }
 
-      HStack(spacing: 32) {
+      HStack(spacing: 24) {
         // A Mac plays calls wherever its sound output is set, so only iPhone has a speaker button.
         #if os(iOS)
           ToggleControl(
@@ -65,15 +67,15 @@ struct CallView: View {
         .disabled(!isLive)
         Button(action: hangUp) {
           Image(systemName: "phone.down.fill")
-            .font(.title)
-            .frame(width: 68, height: 68)
+            .font(callControlFont)
+            .foregroundStyle(.white)
+            .frame(width: callControlSide, height: callControlSide)
+            .background(Palette.destructive, in: .circle)
         }
-        .buttonStyle(.glassProminent)
-        .buttonBorderShape(.circle)
-        .tint(.red)
+        .buttonStyle(.plain)
         .accessibilityLabel("End")
       }
-      .padding(.bottom, 56)
+      .padding(.bottom, 40)
     }
     .frame(maxWidth: .infinity)
     .task { await call.start() }
@@ -115,7 +117,16 @@ struct CallView: View {
   }
 }
 
-/// A call setting that is on or off. On fills the circle, as in the Phone app.
+/// The call's round buttons: as big as a finger on iPhone, as a pointer needs on the Mac.
+#if os(macOS)
+  private let callControlSide: CGFloat = 52
+  private let callControlFont = Font.title3
+#else
+  private let callControlSide: CGFloat = 68
+  private let callControlFont = Font.title
+#endif
+
+/// A call setting that is on or off. On fills the circle with the text color.
 private struct ToggleControl: View {
   let title: LocalizedStringKey
   let systemImage: String
@@ -125,14 +136,12 @@ private struct ToggleControl: View {
   var body: some View {
     Button(action: action) {
       Image(systemName: systemImage)
-        .font(.title)
-        .frame(width: 68, height: 68)
-        .foregroundStyle(isOn ? AnyShapeStyle(.background) : AnyShapeStyle(.primary))
-        .background(isOn ? AnyShapeStyle(.primary) : AnyShapeStyle(.clear), in: .circle)
+        .font(callControlFont)
+        .frame(width: callControlSide, height: callControlSide)
+        .foregroundStyle(isOn ? Palette.background : Palette.foreground)
+        .background(isOn ? Palette.foreground : Palette.muted, in: .circle)
     }
     .buttonStyle(.plain)
-    // Glass over the filled circle would turn it translucent, so an on control is drawn solid.
-    .glassEffect(isOn ? .identity : .regular.interactive(), in: .circle)
     .accessibilityLabel(title)
     .accessibilityAddTraits(isOn ? .isSelected : [])
   }

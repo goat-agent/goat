@@ -3,44 +3,67 @@ import SwiftUI
 
 /// An inset sidebar, as shadcn/ui draws it: the window is the sidebar's color, the sidebar sits
 /// on it with no panel of its own, and the conversation is a raised card inset from the window's
-/// edges, with the agent's settings beside it when asked for. Drag the card's left edge to resize
-/// the sidebar; narrow enough, it becomes a column of faces.
+/// edges. The agent's settings open over the window, so they never change its size. Drag the
+/// card's left edge to resize the sidebar; narrow enough, it becomes a column of faces.
 struct HomeView: View {
   @Bindable var model: AppModel
 
   @AppStorage("sidebarWidth") private var sidebarWidth = 248.0
   @State private var widthAtDragStart: Double?
   @State private var isShowingAgent = false
+  @State private var isSearching = false
+  @State private var isConfirmingSignOut = false
 
-  /// Wide enough for the window's three buttons, which sit on the sidebar.
+  /// Equal margins either side of the window's buttons, which end 68.5 pt in.
   private static let railWidth = 78.0
   private static let widthRange = 78.0...360.0
   private static let railBelow = 140.0
 
   private var isRail: Bool { sidebarWidth < Self.railBelow }
 
-  /// The agent panel's width. The window is the content's size, so opening the panel widens the
-  /// window by this much instead of squeezing the conversation.
-  private static let panelWidth = 300.0
-
   var body: some View {
     HStack(spacing: 0) {
-      SidebarPanel(model: model, isRail: isRail)
-        .frame(width: isRail ? Self.railWidth : sidebarWidth)
+      SidebarPanel(model: model, isRail: isRail) {
+        isSearching = true
+      } signOut: {
+        isConfirmingSignOut = true
+      }
+      .frame(width: isRail ? Self.railWidth : sidebarWidth)
       content
-        .background(Color.card, in: .rect(cornerRadius: 12))
-        .clipShape(.rect(cornerRadius: 12))
-        .shadow(color: .black.opacity(0.08), radius: 1, y: 1)
-        .shadow(color: .black.opacity(0.06), radius: 6, y: 2)
+        .background(Palette.background, in: .rect(cornerRadius: 12, style: .continuous))
+        .clipShape(.rect(cornerRadius: 12, style: .continuous))
+        .shadow(color: .black.opacity(0.06), radius: 1, y: 1)
+        .shadow(color: .black.opacity(0.05), radius: 6, y: 2)
         .overlay(alignment: .leading) { resizeHandle }
         .padding([.top, .trailing, .bottom], 8)
     }
-    .background(Color.sidebar)
+    .background(Palette.sidebar)
     .ignoresSafeArea(.container, edges: .top)
-    .frame(
-      minWidth: 720 + (isShowingAgent ? Self.panelWidth : 0), idealWidth: 960, minHeight: 480,
-      idealHeight: 640
-    )
+    .portalDialog(isPresented: $isSearching) {
+      SearchPanel(agents: model.agents) { agent in
+        isSearching = false
+        model.show(agent.id)
+      } close: {
+        isSearching = false
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+      .padding(.top, 56)
+    }
+    .portalDialog(isPresented: $isShowingAgent) {
+      if let agent = model.agentPath.last.flatMap(model.agent) {
+        AgentSettingsDialog(model: model, agent: agent) { isShowingAgent = false }
+          .id(agent.id)
+      }
+    }
+    .alertDialog(
+      "Sign out?", isPresented: $isConfirmingSignOut,
+      message: "To sign back in, you’ll need a code from your email.", action: "Sign Out"
+    ) {
+      Task { await model.signOut() }
+    }
+    // Search, the agent's settings, and confirmations all open here, over the whole window.
+    .portalHost()
+    .frame(minWidth: 720, idealWidth: 960, minHeight: 480, idealHeight: 640)
     .sheet(isPresented: $model.isCreatingAgent) {
       NewAgentSheet(model: model)
     }
@@ -48,18 +71,11 @@ struct HomeView: View {
 
   @ViewBuilder private var content: some View {
     if let agent = model.agentPath.last.flatMap(model.agent) {
-      HStack(spacing: 0) {
-        ConversationView(model: model, agent: agent) { isShowingAgent.toggle() }
-          .id(agent.id)
-        if isShowingAgent {
-          Divider()
-          AgentPanel(model: model, agent: agent) { isShowingAgent = false }
-            .frame(width: Self.panelWidth)
-            .id(agent.id)
-        }
-      }
+      ConversationView(model: model, agent: agent) { isShowingAgent = true }
+        .id(agent.id)
     } else {
-      ContentUnavailableView("No Agent", systemImage: "bubble.left.and.bubble.right")
+      Text("No Agent")
+        .foregroundStyle(Palette.mutedForeground)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
   }
@@ -86,18 +102,9 @@ struct HomeView: View {
   }
 }
 
-extension Color {
-  /// The window behind the card, a step away from the card toward the middle gray.
-  static let sidebar = adaptive(light: 0.96, dark: 0.15)
-  /// The conversation's card.
-  static let card = adaptive(light: 1, dark: 0.1)
-
-  private static func adaptive(light: CGFloat, dark: CGFloat) -> Color {
-    Color(
-      nsColor: NSColor(name: nil) { appearance in
-        NSColor(
-          white: appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light,
-          alpha: 1)
-      })
+extension AppModel {
+  func show(_ agentID: String) {
+    agentPath = [agentID]
+    open(agentID)
   }
 }

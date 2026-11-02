@@ -1,73 +1,66 @@
 import SwiftUI
 
-/// One step of getting started, laid out the way Mac sign-in windows are: the agent's face, a
-/// title and a line of explanation, the fields, and one button that the Return key presses.
+/// One step of getting started: a title, an optional line under it, the fields, and the step's
+/// one next action, which the Return key presses. A step that submits by itself has none.
 struct OnboardingCard<Fields: View, Links: View>: View {
   let title: LocalizedStringKey
   var message: Text?
-  let action: LocalizedStringKey
-  let workingAction: LocalizedStringKey
+  var action: LocalizedStringKey?
+  var workingAction: LocalizedStringKey = ""
   let isWorking: Bool
-  let canSubmit: Bool
+  var canSubmit = true
   let error: String?
-  let submit: () -> Void
+  var submit: () -> Void = {}
   @ViewBuilder let fields: Fields
   @ViewBuilder let links: Links
 
   var body: some View {
-    VStack(spacing: 0) {
-      AgentFace(size: 64)
+    VStack(alignment: .leading, spacing: 0) {
       Text(title)
-        .font(.title2.weight(.semibold))
-        .padding(.top, 18)
+        .font(.system(size: 24, weight: .bold))
+        .foregroundStyle(Palette.foreground)
       if let message {
         message
-          .foregroundStyle(.secondary)
-          .multilineTextAlignment(.center)
+          .foregroundStyle(Palette.mutedForeground)
           .fixedSize(horizontal: false, vertical: true)
-          .padding(.top, 6)
+          .padding(.top, 4)
       }
-
-      VStack(alignment: .leading, spacing: 8) {
-        fields
-          .textFieldStyle(.roundedBorder)
-          .controlSize(.large)
-        if let error {
-          Label(error, systemImage: "exclamationmark.circle.fill")
-            .font(.callout)
-            .foregroundStyle(.red)
-            .transition(.opacity)
+      VStack(alignment: .leading, spacing: 8) { fields }
+        .controlSize(.large)
+        .padding(.top, 20)
+      if let error {
+        FormFooter(hint: "", error: error)
+          .padding(.top, 8)
+          .transition(.opacity)
+      }
+      if let action {
+        Button(action: submit) {
+          Text(isWorking ? workingAction : action)
+            .frame(maxWidth: .infinity)
         }
+        .buttonStyle(.primary)
+        .controlSize(.large)
+        .keyboardShortcut(.defaultAction)
+        .disabled(!canSubmit || isWorking)
+        .padding(.top, 10)
       }
-      .padding(.top, 24)
-
-      Button(action: submit) {
-        Text(isWorking ? workingAction : action)
-          .frame(maxWidth: .infinity)
-      }
-      .buttonStyle(.glassProminent)
-      .controlSize(.large)
-      .keyboardShortcut(.defaultAction)
-      .disabled(!canSubmit || isWorking)
-      .padding(.top, 20)
-
-      HStack(spacing: 16) { links }
-        .buttonStyle(.link)
-        .font(.callout)
+      HStack { links }
+        .buttonStyle(.inline)
+        .controlSize(.small)
         .padding(.top, 14)
     }
-    .frame(width: 320)
-    .padding(.horizontal, 48)
-    .padding(.vertical, 40)
+    .frame(width: 316)
+    .padding(.horizontal, 52)
+    .padding(.vertical, 48)
     .animation(.default, value: error)
   }
 }
 
 extension OnboardingCard where Links == EmptyView {
   init(
-    title: LocalizedStringKey, message: Text? = nil, action: LocalizedStringKey,
-    workingAction: LocalizedStringKey, isWorking: Bool, canSubmit: Bool, error: String?,
-    submit: @escaping () -> Void, @ViewBuilder fields: () -> Fields
+    title: LocalizedStringKey, message: Text? = nil, action: LocalizedStringKey? = nil,
+    workingAction: LocalizedStringKey = "", isWorking: Bool, canSubmit: Bool = true,
+    error: String?, submit: @escaping () -> Void = {}, @ViewBuilder fields: () -> Fields
   ) {
     self.init(
       title: title, message: message, action: action, workingAction: workingAction,

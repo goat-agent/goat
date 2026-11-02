@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The agent form for an agent that does not exist yet; the picture waits on this device until
-/// the agent is created.
+/// the agent is created, and the server draws one when there is none.
 struct NewAgentForm: View {
   @Binding var name: String
   @Binding var instructions: String
@@ -17,7 +17,13 @@ struct NewAgentForm: View {
       pickPhoto: { photo = $0 },
       removePhoto: { photo = nil }
     ) {
-      AvatarCircle(name: name, image: preview, size: 96)
+      if let preview {
+        AvatarCircle(name: name, image: preview, size: 64)
+      } else {
+        Circle()
+          .fill(Palette.secondary)
+          .frame(width: 64, height: 64)
+      }
     }
     .task(id: photo) {
       preview = photo.flatMap { ImageScaling.thumbnail(of: $0, longEdge: CGFloat(AgentPhoto.side)) }

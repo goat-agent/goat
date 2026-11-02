@@ -9,22 +9,26 @@ struct EmailView: View {
   private var canSubmit: Bool { address.contains("@") && address.contains(".") }
 
   var body: some View {
-    Form {
-      Section {
-        TextField("Email", text: $email, prompt: Text(verbatim: "you@example.com"))
-          .textContentType(.emailAddress)
-          .keyboardType(.emailAddress)
-          .textInputAutocapitalization(.never)
-          .autocorrectionDisabled()
-          .submitLabel(.continue)
-          .focused($isFocused)
-          .onSubmit(submit)
-      } footer: {
-        FormFooter(hint: "", error: model.errorMessage)
+    VStack(alignment: .leading, spacing: 8) {
+      TextField("Email", text: $email, prompt: Text(verbatim: "you@example.com"))
+        .textContentType(.emailAddress)
+        .keyboardType(.emailAddress)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .submitLabel(.continue)
+        .focused($isFocused)
+        .onSubmit(submit)
+        .inputStyle()
+      if let error = model.errorMessage {
+        FormFooter(hint: "", error: error)
+          .padding(.leading, 16)
       }
     }
+    .padding(.horizontal)
+    .padding(.top, 8)
+    .frame(maxHeight: .infinity, alignment: .top)
+    .background(Palette.background)
     .navigationTitle("Welcome")
-    .scrollDismissesKeyboard(.interactively)
     .safeAreaBar(edge: .bottom) {
       PrimaryButton(
         title: "Continue",

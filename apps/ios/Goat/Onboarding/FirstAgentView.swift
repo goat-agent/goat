@@ -11,13 +11,17 @@ struct FirstAgentView: View {
 
   var body: some View {
     NavigationStack {
-      Form {
-        NewAgentForm(name: $name, instructions: $instructions, photo: $photo)
-        if let error = model.errorMessage {
-          Section { FormFooter(hint: "", error: error) }
+      ScrollView {
+        VStack(alignment: .leading, spacing: 12) {
+          NewAgentForm(name: $name, instructions: $instructions, photo: $photo)
+          if let error = model.errorMessage {
+            FormFooter(hint: "", error: error)
+          }
         }
+        .padding()
       }
-      .formStyle(.grouped)
+      .background(Palette.background)
+      .portalHost()
       .navigationTitle("Your Agent")
       .scrollDismissesKeyboard(.interactively)
       .safeAreaBar(edge: .bottom) {

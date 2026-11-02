@@ -4,37 +4,28 @@ import SwiftUI
 /// An agent in the list: who it is, what was said last, and whether it is working now.
 struct AgentRow: View {
   let agent: Components.Schemas.Agent
-  var avatarSize: CGFloat = 52
 
   private var isWorking: Bool { agent.status.value1 == .running }
 
-  /// Mac's subheadline is 11 pt, too small to read under a name, so the Mac uses body there.
-  private var detailFont: Font {
-    #if os(macOS)
-      .body
-    #else
-      .subheadline
-    #endif
-  }
-
   var body: some View {
     HStack(spacing: 12) {
-      AvatarView(agent: agent, size: avatarSize)
+      AvatarView(agent: agent, size: 52)
       VStack(alignment: .leading, spacing: 1) {
         HStack(alignment: .firstTextBaseline) {
           Text(agent.name)
             .font(.headline)
+            .foregroundStyle(Palette.foreground)
             .lineLimit(1)
           Spacer(minLength: 8)
           if let date = agent.lastMessage?.createdAt {
             Text(LastActivity(date: date).text)
-              .font(detailFont)
-              .foregroundStyle(.secondary)
+              .font(.subheadline)
+              .foregroundStyle(Palette.mutedForeground)
           }
         }
         // Two lines are always reserved, so every row is the same height whatever it shows.
         ZStack(alignment: .topLeading) {
-          Text(preview)
+          Text(agent.preview)
             .lineLimit(2, reservesSpace: true)
             .opacity(isWorking ? 0 : 1)
           if isWorking {
@@ -44,16 +35,19 @@ struct AgentRow: View {
               .accessibilityLabel("Working")
           }
         }
-        .font(detailFont)
-        .foregroundStyle(.secondary)
+        .font(.subheadline)
+        .foregroundStyle(Palette.mutedForeground)
         .frame(maxWidth: .infinity, alignment: .topLeading)
       }
     }
     .padding(.vertical, 2)
   }
+}
 
-  private var preview: String {
-    guard let message = agent.lastMessage else { return "" }
+extension Components.Schemas.Agent {
+  /// The last message as a list shows it: its text, or what was sent when there was none.
+  var preview: String {
+    guard let message = lastMessage else { return "" }
     if !message.text.isEmpty { return message.text }
     guard let file = message.files?.first else { return "" }
     return file.mediaType.hasPrefix("image/") ? String(localized: "Photo") : file.name

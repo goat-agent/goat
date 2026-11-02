@@ -28,8 +28,7 @@ struct OnboardingView: View {
     .id(step)
     .transition(.opacity)
     .animation(.default, value: step)
-    .toolbar(removing: .title)
-    .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+    .containerBackground(Palette.background, for: .window)
   }
 }
 
@@ -57,6 +56,7 @@ private struct EmailStep: View {
         .autocorrectionDisabled()
         .focused($isFocused)
         .onSubmit(submit)
+        .inputStyle()
     }
     .onAppear { isFocused = true }
   }
@@ -72,29 +72,18 @@ private struct CodeStep: View {
   let email: String
   @State private var code = ""
   @State private var resendAt = Date.now.addingTimeInterval(30)
-  @FocusState private var isFocused: Bool
 
   var body: some View {
     OnboardingCard(
-      title: "Check your email",
-      message: Text("Enter the 6-digit code we sent to \(email)."),
-      action: "Sign In",
-      workingAction: "Checking…",
+      title: "Enter Code",
+      message: Text("Sent to \(email)."),
       isWorking: model.isWorking,
-      canSubmit: code.count == 6,
-      error: model.errorMessage,
-      submit: submit
+      error: model.errorMessage
     ) {
-      TextField("6-Digit Code", text: $code, prompt: Text(verbatim: "000000"))
-        .labelsHidden()
-        .textContentType(.oneTimeCode)
-        .font(.title2.monospacedDigit())
-        .multilineTextAlignment(.center)
-        .focused($isFocused)
+      InputOTP(code: $code)
+        .disabled(model.isWorking)
         .onChange(of: code) { _, newValue in
-          let digits = String(newValue.filter(\.isNumber).prefix(6))
-          if digits != newValue { code = digits }
-          if digits.count == 6 { submit() }
+          if newValue.count == 6 { submit() }
         }
     } links: {
       TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -105,10 +94,10 @@ private struct CodeStep: View {
         }
         .disabled(remaining > 0 || model.isWorking)
       }
+      Spacer()
       Button("Use a Different Email") { model.signInPath = [] }
     }
     .onChange(of: model.failedAttempts) { code = "" }
-    .onAppear { isFocused = true }
   }
 
   private func submit() {

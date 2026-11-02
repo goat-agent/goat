@@ -14,32 +14,12 @@
         }
       }
     },
-    "%@, Connected" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@, 연결됨"
-          }
-        }
-      }
-    },
     "%@, Not Uploaded. Upload Again" : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@, 올리지 못했어요. 다시 올리기"
-          }
-        }
-      }
-    },
-    "6-Digit Code" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "6자리 코드"
           }
         }
       }
@@ -64,6 +44,16 @@
         }
       }
     },
+    "Add Account" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "계정 추가"
+          }
+        }
+      }
+    },
     "Add Integration" : {
       "localizations" : {
         "ko" : {
@@ -84,22 +74,22 @@
         }
       }
     },
-    "Agent Name" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "에이전트 이름"
-          }
-        }
-      }
-    },
     "Agents" : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "에이전트"
+          }
+        }
+      }
+    },
+    "Agents can no longer use %@." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "에이전트가 더 이상 %@ 계정을 쓰지 않아요."
           }
         }
       }
@@ -164,6 +154,16 @@
         }
       }
     },
+    "Cancel" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "취소"
+          }
+        }
+      }
+    },
     "Change Photo" : {
       "localizations" : {
         "ko" : {
@@ -184,32 +184,12 @@
         }
       }
     },
-    "Check your email" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "메일을 확인해 주세요"
-          }
-        }
-      }
-    },
     "Check your email address." : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "이메일 주소를 확인해 주세요."
-          }
-        }
-      }
-    },
-    "Checking…" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "확인 중…"
           }
         }
       }
@@ -234,12 +214,42 @@
         }
       }
     },
+    "Code" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "코드"
+          }
+        }
+      }
+    },
+    "Connect" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "연결"
+          }
+        }
+      }
+    },
     "Connect %@" : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@ 연결"
+          }
+        }
+      }
+    },
+    "Connected" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "연결됨"
           }
         }
       }
@@ -324,6 +334,16 @@
         }
       }
     },
+    "Create" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "만들기"
+          }
+        }
+      }
+    },
     "Delete" : {
       "localizations" : {
         "ko" : {
@@ -354,12 +374,50 @@
         }
       }
     },
+    "Devices" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "기기"
+          }
+        }
+      }
+    },
     "Dictate" : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "말로 입력"
+          }
+        }
+      }
+    },
+    "Did %lld things on your computer" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Did %lld thing on your computer"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Did %lld things on your computer"
+                }
+              }
+            }
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "컴퓨터에서 %lld가지 했어요"
           }
         }
       }
@@ -390,6 +448,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "연결 끊기"
+          }
+        }
+      }
+    },
+    "Disconnect %@?" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 연결을 끊을까요?"
           }
         }
       }
@@ -434,22 +502,32 @@
         }
       }
     },
-    "Enter the 6-digit code we sent to %@." : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@(으)로 보낸 6자리 코드를 입력해 주세요."
-          }
-        }
-      }
-    },
     "Files" : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "파일"
+          }
+        }
+      }
+    },
+    "Find an Agent" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "에이전트 찾기"
+          }
+        }
+      }
+    },
+    "General" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "일반"
           }
         }
       }
@@ -477,6 +555,16 @@
         }
       }
     },
+    "How it should work (optional)" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "어떻게 일하면 좋을지 적어 주세요 (선택)"
+          }
+        }
+      }
+    },
     "Instructions" : {
       "localizations" : {
         "ko" : {
@@ -497,22 +585,22 @@
         }
       }
     },
+    "It sees the screen, clicks, and types. Press Esc to stop it." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "화면을 보고, 클릭하고, 입력해요. 멈추려면 Esc를 누르세요."
+          }
+        }
+      }
+    },
     "Jump to Latest" : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "최신으로"
-          }
-        }
-      }
-    },
-    "Let the Agent Use This Mac" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "에이전트가 이 맥 쓰기"
           }
         }
       }
@@ -563,6 +651,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "놓쳤어요"
+          }
+        }
+      }
+    },
+    "More" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "더 보기"
           }
         }
       }
@@ -657,6 +755,16 @@
         }
       }
     },
+    "Off" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "끔"
+          }
+        }
+      }
+    },
     "On" : {
       "localizations" : {
         "ko" : {
@@ -693,16 +801,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "시스템 설정 열기"
-          }
-        }
-      }
-    },
-    "Optional" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "선택 사항"
           }
         }
       }
@@ -767,22 +865,22 @@
         }
       }
     },
-    "Press buttons and type for you." : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "버튼을 누르고 글을 입력해요."
-          }
-        }
-      }
-    },
     "Quit Goat" : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Goat 종료"
+          }
+        }
+      }
+    },
+    "Reconnect" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "다시 연결"
           }
         }
       }
@@ -897,16 +995,6 @@
         }
       }
     },
-    "See app windows to know what is on them." : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "앱 창을 보고 무엇이 있는지 알아요."
-          }
-        }
-      }
-    },
     "Send" : {
       "localizations" : {
         "ko" : {
@@ -957,26 +1045,6 @@
         }
       }
     },
-    "Settings…" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "설정…"
-          }
-        }
-      }
-    },
-    "Sign In" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "로그인"
-          }
-        }
-      }
-    },
     "Sign Out" : {
       "localizations" : {
         "ko" : {
@@ -987,22 +1055,22 @@
         }
       }
     },
-    "Sign Out…" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "로그아웃…"
-          }
-        }
-      }
-    },
     "Sign out?" : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "로그아웃할까요?"
+          }
+        }
+      }
+    },
+    "Signed in %@" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@에 로그인"
           }
         }
       }
@@ -1067,16 +1135,6 @@
         }
       }
     },
-    "The agent works in the background when it can. When it needs your pointer for a moment, a ring follows it; press Esc to stop." : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "에이전트는 되도록 뒤에서 일해요. 잠깐 포인터가 필요할 때는 포인터에 링이 따라다니고, Esc를 누르면 멈춰요."
-          }
-        }
-      }
-    },
     "The conversation is deleted too." : {
       "localizations" : {
         "ko" : {
@@ -1087,22 +1145,22 @@
         }
       }
     },
-    "Then what you ask from your iPhone can be done here, with this Mac’s apps and files. The menu bar shows when the agent is using it, and you can stop it any time." : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "켜 두면 아이폰에서 부탁한 일도 이 맥의 앱과 파일로 해요. 에이전트가 이 맥을 쓰는 동안 메뉴 막대에 표시되고, 언제든 멈출 수 있어요."
-          }
-        }
-      }
-    },
     "This Mac" : {
       "localizations" : {
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "이 맥"
+          }
+        }
+      }
+    },
+    "This device" : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 기기"
           }
         }
       }
@@ -1147,6 +1205,16 @@
         }
       }
     },
+    "Turn on these two. You can stop it from the menu bar at any time." : {
+      "localizations" : {
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "두 가지를 켜면 돼요. 언제든 메뉴 막대에서 멈출 수 있어요."
+          }
+        }
+      }
+    },
     "Use This Mac" : {
       "localizations" : {
         "ko" : {
@@ -1163,16 +1231,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "다른 메일 주소 쓰기"
-          }
-        }
-      }
-    },
-    "Using %@ on your screen" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "화면에서 %@ 쓰는 중"
           }
         }
       }
@@ -1223,16 +1281,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "일하는 중…"
-          }
-        }
-      }
-    },
-    "Working on this Mac" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "이 맥에서 일하는 중"
           }
         }
       }

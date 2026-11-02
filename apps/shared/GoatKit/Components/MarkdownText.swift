@@ -21,7 +21,7 @@ struct MarkdownText: View {
           HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(marker)
               .monospacedDigit()
-              .foregroundStyle(.secondary)
+              .foregroundStyle(Palette.mutedForeground)
             Text(block.content)
           }
           .padding(.leading, CGFloat(depth - 1) * 16)
@@ -30,11 +30,11 @@ struct MarkdownText: View {
             .font(.callout.monospaced())
         case .quote:
           Text(block.content)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Palette.mutedForeground)
             .padding(.leading, 12)
             .overlay(alignment: .leading) {
               Capsule()
-                .fill(.separator)
+                .fill(Palette.border)
                 .frame(width: 3)
             }
         }
@@ -42,7 +42,7 @@ struct MarkdownText: View {
     }
     // Links keep the text color and are marked by their underline: the accent color means the
     // user's own words, and it is too faint on the reply bubble in dark mode.
-    .tint(.primary)
+    .tint(Palette.foreground)
   }
 }
 

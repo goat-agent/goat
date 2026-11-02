@@ -76,17 +76,19 @@ private struct BorrowCapsule: View {
       AgentFace(size: 24)
       Text("Using your screen")
         .font(.callout.weight(.medium))
+        .foregroundStyle(Palette.foreground)
       Text(verbatim: "esc")
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(Palette.mutedForeground)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
-        .background(.fill.tertiary, in: .rect(cornerRadius: 5))
+        .background(Palette.secondary, in: .capsule)
         .accessibilityLabel("Press Escape to stop")
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 6)
-    .glassEffect(.regular, in: .capsule)
+    .background(Palette.popover, in: .capsule)
+    .overlay { Capsule().strokeBorder(Palette.border, lineWidth: 0.5) }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 }
@@ -98,12 +100,12 @@ private struct BorrowHalo: View {
   var body: some View {
     ZStack {
       Circle()
-        .fill(.tint.opacity(0.2))
+        .fill(Palette.primary.opacity(0.2))
         .frame(width: 28, height: 28)
         .overlay {
-          Circle().stroke(.tint.opacity(isBright ? 1 : 0.7), lineWidth: 1.5)
+          Circle().stroke(Palette.primary.opacity(isBright ? 1 : 0.7), lineWidth: 1.5)
         }
-        .shadow(color: .accentColor.opacity(0.3), radius: 7)
+        .shadow(color: Palette.primary.opacity(0.3), radius: 7)
       AgentFace(size: 18)
         .offset(x: 14, y: 14)
     }

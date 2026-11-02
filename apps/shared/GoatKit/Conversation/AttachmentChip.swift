@@ -31,8 +31,9 @@ struct AttachmentChip: View {
               .truncationMode(.middle)
           }
           .padding(6)
+          .foregroundStyle(Palette.foreground)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .background(.fill.secondary)
+          .background(Palette.secondary)
         }
         switch attachment.state {
         case .uploading:
@@ -48,19 +49,24 @@ struct AttachmentChip: View {
         }
       }
       .frame(width: 64, height: 64)
-      .clipShape(.rect(cornerRadius: 12))
+      .clipShape(.rect(cornerRadius: 12, style: .continuous))
     }
     .buttonStyle(.plain)
     .accessibilityLabel(
       didFail ? Text("\(attachment.name), Not Uploaded. Upload Again") : Text(attachment.name)
     )
     .overlay(alignment: .topTrailing) {
-      Button("Remove", systemImage: "xmark.circle.fill", action: remove)
-        .labelStyle(.iconOnly)
-        .symbolRenderingMode(.palette)
-        .foregroundStyle(.white, .black.opacity(0.6))
-        .font(.title3)
-        .offset(x: 6, y: -6)
+      Button(action: remove) {
+        Image(systemName: "xmark")
+          .font(.system(size: 9, weight: .bold))
+          .foregroundStyle(Palette.foreground)
+          .frame(width: 20, height: 20)
+          .background(Palette.popover, in: .circle)
+          .overlay { Circle().strokeBorder(Palette.border, lineWidth: 0.5) }
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Remove")
+      .offset(x: 6, y: -6)
     }
   }
 }

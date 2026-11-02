@@ -1,8 +1,9 @@
 import GoatAPI
 import SwiftUI
 
-/// An agent's settings: the iPhone's agent sheet and the Mac's panel beside the conversation.
-/// Changes save shortly after they are made and when the form goes away, so it needs no Save.
+/// An agent's general settings: the Mac's settings dialog and the iPhone's agent sheet. Changes
+/// save shortly after they are made and when the form goes away, so it needs no Save. The
+/// container scrolls it.
 struct AgentSettingsForm: View {
   let model: AppModel
   /// The agent as it is now; show the form with `.id(agent.id)` so another agent starts fresh.
@@ -12,7 +13,6 @@ struct AgentSettingsForm: View {
   @State private var name: String
   @State private var instructions: String
   @State private var isConfirmingDelete = false
-  @State private var schedules: SchedulesModel
 
   init(model: AppModel, agent: Components.Schemas.Agent, onDelete: @escaping () -> Void) {
     self.model = model
@@ -20,11 +20,10 @@ struct AgentSettingsForm: View {
     self.onDelete = onDelete
     _name = State(initialValue: agent.name)
     _instructions = State(initialValue: agent.instructions)
-    _schedules = State(initialValue: SchedulesModel(agentID: agent.id, client: model.client))
   }
 
   var body: some View {
-    Form {
+    VStack(alignment: .leading, spacing: 24) {
       AgentForm(
         name: $name,
         instructions: $instructions,
@@ -32,31 +31,18 @@ struct AgentSettingsForm: View {
         pickPhoto: { photo in Task { await model.setPhoto(photo, of: agent.id) } },
         removePhoto: { Task { await model.removePhoto(of: agent.id) } }
       ) {
-        AvatarView(agent: agent, size: 96)
+        AvatarView(agent: agent, size: 64)
       }
-
-      SchedulesSection(model: schedules)
-
-      Section {
-        // A Mac form draws a destructive button in plain text unless it is told the color.
-        Button("Delete Agent", role: .destructive) { isConfirmingDelete = true }
-          .foregroundStyle(.red)
-          .confirmationDialog(
-            "Delete \(agent.name)?",
-            isPresented: $isConfirmingDelete,
-            titleVisibility: .visible
-          ) {
-            Button("Delete Agent", role: .destructive) {
-              onDelete()
-              Task { await model.delete(agent.id) }
-            }
-          } message: {
-            Text("The conversation is deleted too.")
-          }
-      }
+      Button("Delete Agent") { isConfirmingDelete = true }
+        .buttonStyle(.destructive)
     }
-    .formStyle(.grouped)
-    .task { await schedules.load() }
+    .alertDialog(
+      "Delete \(agent.name)?", isPresented: $isConfirmingDelete,
+      message: "The conversation is deleted too.", action: "Delete Agent"
+    ) {
+      onDelete()
+      Task { await model.delete(agent.id) }
+    }
     .task(id: [name, instructions]) {
       do {
         try await Task.sleep(for: .milliseconds(700))

@@ -73,13 +73,20 @@ struct ConversationMessages: View {
       }
       .overlay(alignment: .bottomTrailing) {
         if !isAtBottom {
-          Button("Jump to Latest", systemImage: "arrow.down") {
+          Button {
             isFollowing = true
             withAnimation { proxy.scrollTo(Self.end, anchor: .bottom) }
+          } label: {
+            Image(systemName: "arrow.down")
+              .fontWeight(.semibold)
+              .foregroundStyle(Palette.foreground)
+              .frame(width: 36, height: 36)
+              .background(Palette.popover, in: .circle)
+              .overlay { Circle().strokeBorder(Palette.border, lineWidth: 0.5) }
+              .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
           }
-          .labelStyle(.iconOnly)
-          .buttonStyle(.glass)
-          .buttonBorderShape(.circle)
+          .buttonStyle(.plain)
+          .accessibilityLabel("Jump to Latest")
           .padding()
           .transition(.scale.combined(with: .opacity))
         }
@@ -89,13 +96,13 @@ struct ConversationMessages: View {
   }
 
   private var messages: some View {
-    LazyVStack(spacing: 6) {
+    LazyVStack(spacing: 4) {
       MessageBubble(text: greeting, isMine: false)
       ForEach(Array(conversation.messages.enumerated()), id: \.element.id) { index, message in
         if let time = gapBefore(index) {
           Text(time, format: .dateTime.month().day().hour().minute())
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Palette.mutedForeground)
             .padding(.top, 12)
         }
         ForEach(message.files ?? [], id: \.id) { file in

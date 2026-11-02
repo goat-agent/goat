@@ -43,6 +43,8 @@ struct ConversationView: View {
       .padding(.horizontal)
       .padding(.bottom, 8)
     }
+    .background(Palette.background)
+    .portalHost()
     .attachmentPickers(
       for: conversation, isPickingPhotos: $isPickingPhotos, isPickingFiles: $isPickingFiles
     )

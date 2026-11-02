@@ -7,47 +7,49 @@ struct PermissionsView: View {
   @Environment(\.dismissWindow) private var dismissWindow
 
   var body: some View {
-    VStack(spacing: 0) {
-      AgentFace(size: 64)
+    VStack(alignment: .leading, spacing: 0) {
       Text("Let the agent use this Mac?")
-        .font(.title2.bold())
-        .padding(.top, 16)
-      Text(
-        "Then what you ask from your iPhone can be done here, with this Mac’s apps and files. The menu bar shows when the agent is using it, and you can stop it any time."
-      )
-      .multilineTextAlignment(.center)
-      .foregroundStyle(.secondary)
-      .padding(.top, 8)
+        .font(.system(size: 20, weight: .bold))
+        .foregroundStyle(Palette.foreground)
+      Text("Turn on these two. You can stop it from the menu bar at any time.")
+        .foregroundStyle(Palette.mutedForeground)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.top, 4)
 
       PermissionRows(permissions: computer.permissions)
-        .padding(.top, 24)
+        .padding(.top, 18)
 
       Text(
         "Turn Goat on in System Settings and come back; this updates by itself. After allowing screen recording, quit and reopen Goat."
       )
       .font(.footnote)
-      .foregroundStyle(.tertiary)
-      .frame(maxWidth: .infinity, alignment: .leading)
+      .foregroundStyle(Palette.mutedForeground)
+      .fixedSize(horizontal: false, vertical: true)
       .padding(.top, 10)
+      .padding(.horizontal, 12)
 
       Spacer(minLength: 24)
 
-      Button {
-        computer.isEnabled = true
-        dismissWindow()
-      } label: {
-        Text("Done").frame(maxWidth: .infinity)
+      HStack(spacing: 8) {
+        Spacer()
+        Button("Not Now") { dismissWindow() }
+          .buttonStyle(.secondary)
+          .keyboardShortcut(.cancelAction)
+        Button("Done") {
+          computer.isEnabled = true
+          dismissWindow()
+        }
+        .buttonStyle(.primary)
+        .keyboardShortcut(.defaultAction)
+        .disabled(!computer.permissions.areGranted)
       }
-      .buttonStyle(.glassProminent)
-      .controlSize(.large)
-      .disabled(!computer.permissions.areGranted)
-
-      Button("Not Now") { dismissWindow() }
-        .buttonStyle(.borderless)
-        .padding(.top, 10)
     }
-    .padding(36)
-    .frame(width: 480, height: 520)
+    .padding(.top, 44)
+    .padding([.horizontal, .bottom], 28)
+    .frame(width: 460, height: 400)
+    .containerBackground(Palette.background, for: .window)
+    .toolbar(removing: .title)
+    .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
     .task { await computer.permissions.watch() }
   }
 }
@@ -57,41 +59,33 @@ struct PermissionRows: View {
   let permissions: ComputerPermissions
 
   var body: some View {
-    VStack(spacing: 0) {
+    ItemGroup {
       row(
-        "Accessibility", detail: "Press buttons and type for you.", systemImage: "accessibility",
-        color: .blue, isGranted: permissions.canUseAccessibility, kind: .accessibility)
-      Divider()
+        String(localized: "Accessibility"), systemImage: "accessibility",
+        isGranted: permissions.canUseAccessibility, kind: .accessibility)
       row(
-        "Screen & System Audio Recording", detail: "See app windows to know what is on them.",
-        systemImage: "rectangle.dashed.badge.record", color: .pink,
-        isGranted: permissions.canRecordScreen, kind: .screenRecording)
+        String(localized: "Screen & System Audio Recording"),
+        systemImage: "rectangle.dashed.badge.record", isGranted: permissions.canRecordScreen,
+        kind: .screenRecording)
     }
-    .background(.fill.quinary, in: .rect(cornerRadius: 12))
   }
 
   private func row(
-    _ title: LocalizedStringKey, detail: LocalizedStringKey, systemImage: String, color: Color,
-    isGranted: Bool, kind: ComputerPermissions.Kind
+    _ title: String, systemImage: String, isGranted: Bool, kind: ComputerPermissions.Kind
   ) -> some View {
-    HStack(spacing: 12) {
-      Image(systemName: systemImage)
-        .font(.body.weight(.semibold))
-        .foregroundStyle(.white)
-        .frame(width: 30, height: 30)
-        .background(color, in: .rect(cornerRadius: 7))
-      VStack(alignment: .leading, spacing: 2) {
-        Text(title).font(.body.weight(.medium))
-        Text(detail).font(.caption).foregroundStyle(.secondary)
-      }
-      Spacer()
+    Item(title: title) {
+      IconSlot(systemName: systemImage, size: .item)
+        .foregroundStyle(Palette.mutedForeground)
+    } trailing: {
       if isGranted {
-        Label("On", systemImage: "checkmark.circle.fill")
-          .foregroundStyle(.green)
+        Label("On", systemImage: "checkmark")
+          .font(.callout)
+          .foregroundStyle(Palette.mutedForeground)
       } else {
         Button("Open System Settings") { permissions.request(kind) }
+          .buttonStyle(.secondary)
+          .controlSize(.small)
       }
     }
-    .padding(12)
   }
 }
