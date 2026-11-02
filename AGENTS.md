@@ -17,6 +17,8 @@ and the agent can use a signed-in Mac through computer use.
   each app) and `GoatAPI` (the client generated from the server's OpenAPI document).
 - `docs/style` — style guides. Read [typescript.md](docs/style/typescript.md) before writing
   TypeScript and [swift.md](docs/style/swift.md) before writing Swift.
+- `docs/design` — how screens are designed. Read [mockup.md](docs/design/mockup.md) before
+  making a mockup.
 - `apps/*` holds what is deployed, plus `apps/shared` for the Swift the Apple apps share;
   `packages/*` is for TypeScript two apps share and is created only when that happens.
 
