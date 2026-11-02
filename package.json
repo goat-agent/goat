@@ -6,7 +6,9 @@
   ],
   "type": "module",
   "scripts": {
-    "dev": "turbo run dev",
+    "dev": "turbo run dev --filter=@goat/server --filter=@goat/web",
+    "dev:ios": "turbo run dev --filter=@goat/ios",
+    "dev:macos": "turbo run dev --filter=@goat/macos",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
     "lint": "oxlint",
