@@ -203,9 +203,9 @@ function PhotoPicker({ agent, onChange }: { agent: Agent; onChange: (saved: Agen
       <div className="flex flex-col gap-1">
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => input.current?.click()}>
-            {agent.avatarId ? m.change_photo() : m.add_photo()}
+            {agent.hasPhoto ? m.change_photo() : m.add_photo()}
           </Button>
-          {agent.avatarId && (
+          {agent.hasPhoto && (
             <Button variant="ghost" size="sm" onClick={() => void removePhoto()}>
               {m.remove()}
             </Button>

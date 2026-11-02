@@ -2,7 +2,7 @@ import AuthenticationServices
 import GoatAPI
 import SwiftUI
 
-/// Every service goat can connect. Picking one already connected adds another account.
+/// Every service goat can connect, in a sheet. A service already connected adds another account.
 struct IntegrationCatalogView: View {
   let integrations: IntegrationsModel
   @State private var query = ""
@@ -17,35 +17,64 @@ struct IntegrationCatalogView: View {
     return query.isEmpty ? all : all.filter { $0.name.localizedStandardContains(query) }
   }
 
+  private var failed: Components.Schemas.Integration? {
+    integrations.integrations.first { $0.id == integrations.failedIntegrationID }
+  }
+
   var body: some View {
-    List {
-      Section {
-        ForEach(shown, id: \.id) { integration in
-          Button {
-            connect(integration.id)
-          } label: {
-            HStack(spacing: 12) {
-              IntegrationIcon(url: integration.iconUrl, size: 28)
-              Text(integration.name)
-              Spacer()
-              if integrations.connectingID == integration.id {
-                ProgressView()
-              }
-            }
+    VStack(alignment: .leading, spacing: 12) {
+      HStack {
+        Text("Add Integration")
+          .font(.title3.weight(.semibold))
+          .foregroundStyle(Palette.foreground)
+        Spacer()
+        Button("Close", systemImage: "xmark") { dismiss() }
+          .buttonStyle(.icon)
+          .keyboardShortcut(.cancelAction)
+      }
+      TextField("Search", text: $query, prompt: Text("Search"))
+        .labelsHidden()
+        .inputStyle()
+      ScrollView {
+        VStack(spacing: 2) {
+          ForEach(shown, id: \.id) { integration in
+            row(integration)
           }
-          .tint(.primary)
-          .disabled(integrations.connectingID != nil)
-        }
-      } footer: {
-        if let failed = integrations.integrations.first(where: {
-          $0.id == integrations.failedIntegrationID
-        }) {
-          FormFooter(hint: "", error: String(localized: "Couldn’t connect \(failed.name)."))
         }
       }
+      .scrollIndicators(.never)
+      if let failed {
+        FormFooter(hint: "", error: String(localized: "Couldn’t connect \(failed.name)."))
+      }
     }
-    .navigationTitle("Add Integration")
-    .searchable(text: $query)
+    .padding(16)
+    #if os(macOS)
+      .frame(width: 440, height: 520)
+    #endif
+    .presentationBackground(Palette.popover)
+  }
+
+  private func row(_ integration: Components.Schemas.Integration) -> some View {
+    HStack(spacing: 10) {
+      IntegrationIcon(url: integration.iconUrl, size: IconSlot.Size.item.side)
+      Text(integration.name)
+        .font(.body.weight(.medium))
+        .foregroundStyle(Palette.foreground)
+      Spacer()
+      if integrations.connectingID == integration.id {
+        ProgressView()
+          .controlSize(.small)
+      } else {
+        Button(integrations.isConnected(integration.id) ? "Add Account" : "Connect") {
+          connect(integration.id)
+        }
+        .buttonStyle(.secondary)
+        .controlSize(.small)
+        .disabled(integrations.connectingID != nil)
+      }
+    }
+    .padding(.horizontal, 10)
+    .frame(minHeight: 48)
   }
 
   private func connect(_ integrationID: String) {

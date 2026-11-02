@@ -5,20 +5,13 @@ struct MessageBubble: View {
   let isMine: Bool
 
   var body: some View {
-    Group {
+    Bubble(variant: isMine ? .primary : .secondary) {
       if isMine {
         Text(text)
       } else {
         MarkdownText(text)
       }
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 11)
-    .foregroundStyle(isMine ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
-    .background(
-      isMine ? AnyShapeStyle(.tint) : AnyShapeStyle(.fill.secondary),
-      in: .rect(cornerRadius: 22)
-    )
     .contextMenu {
       Button("Copy", systemImage: "doc.on.doc") { Pasteboard.copy(text) }
     }

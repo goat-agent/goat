@@ -13,31 +13,41 @@ struct AccountSection: View {
     _name = State(initialValue: model.userName)
   }
 
+  private var email: String { model.me?.email ?? "" }
+
   var body: some View {
-    Section("Account") {
-      LabeledContent("Name") {
-        TextField("Name", text: $name)
-          .labelsHidden()
-          .multilineTextAlignment(.trailing)
-          .submitLabel(.done)
-          .onSubmit(saveName)
+    VStack(alignment: .leading, spacing: 14) {
+      Text("Account")
+        .font(.sectionTitle)
+        .foregroundStyle(Palette.foreground)
+      HStack(alignment: .bottom, spacing: 14) {
+        AvatarCircle(name: name.isEmpty ? email : name, image: nil, size: 56)
+        VStack(alignment: .leading, spacing: 6) {
+          FieldLabel("Name")
+          TextField("Name", text: $name, prompt: Text(verbatim: ""))
+            .labelsHidden()
+            .submitLabel(.done)
+            .onSubmit(saveName)
+            .inputStyle()
+        }
       }
-      LabeledContent("Email", value: model.me?.email ?? "")
+      ItemGroup {
+        Item(title: String(localized: "Email")) {
+          Text(verbatim: email)
+            .foregroundStyle(Palette.mutedForeground)
+        }
+      }
+      Button("Sign Out", role: .destructive) { isConfirmingSignOut = true }
+        .buttonStyle(.destructive)
+        .padding(.top, 4)
+    }
+    .alertDialog(
+      "Sign out?", isPresented: $isConfirmingSignOut,
+      message: "To sign back in, you’ll need a code from your email.", action: "Sign Out"
+    ) {
+      Task { await model.signOut() }
     }
     .onDisappear(perform: saveName)
-
-    Section {
-      // A Mac form draws a destructive button in plain text unless it is told the color.
-      Button("Sign Out", role: .destructive) { isConfirmingSignOut = true }
-        .foregroundStyle(.red)
-        .confirmationDialog("Sign out?", isPresented: $isConfirmingSignOut) {
-          Button("Sign Out", role: .destructive) {
-            Task { await model.signOut() }
-          }
-        } message: {
-          Text("To sign back in, you’ll need a code from your email.")
-        }
-    }
   }
 
   private func saveName() {

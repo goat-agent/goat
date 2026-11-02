@@ -2,8 +2,8 @@ import AuthenticationServices
 import GoatAPI
 import SwiftUI
 
-/// A service the agent asked the user to connect, in the conversation and during a call. The
-/// whole card is the button; it shows connecting, connected, and a failure under it.
+/// A service the agent asked the user to connect, in the conversation and during a call: the
+/// service, and its one next action. It shows connecting, connected, and a failure under it.
 struct ConnectCard: View {
   let request: Components.Schemas.ConnectRequest
   let integrations: IntegrationsModel
@@ -14,41 +14,45 @@ struct ConnectCard: View {
   private var isConnected: Bool { integrations.isConnected(id) }
   private var isConnecting: Bool { integrations.connectingID == id }
 
+  /// Concentric with its small button.
+  private static let inset: CGFloat = 10
+  private static let radius = ControlSize.small.height / 2 + inset
+
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
-      Button(action: connect) {
-        HStack(spacing: 10) {
-          IntegrationIcon(url: integrations.iconURL(of: id), size: 28)
-          Text(request.name)
-            .font(.body.weight(.medium))
-          Spacer(minLength: 16)
-          Group {
-            if isConnecting {
-              ProgressView()
-                .controlSize(.small)
-            } else {
-              Image(systemName: isConnected ? "checkmark" : "plus")
-            }
-          }
-          .foregroundStyle(.secondary)
-          .frame(width: 24)
+      HStack(spacing: 10) {
+        IntegrationIcon(url: integrations.iconURL(of: id), size: 32)
+        Text(request.name)
+          .font(.body.weight(.medium))
+          .foregroundStyle(Palette.foreground)
+        Spacer(minLength: 16)
+        if isConnecting {
+          ProgressView()
+            .controlSize(.small)
+        } else if isConnected {
+          Label("Connected", systemImage: "checkmark")
+            .font(.callout)
+            .foregroundStyle(Palette.mutedForeground)
+        } else {
+          Button("Connect", action: connect)
+            .buttonStyle(.primary)
+            .controlSize(.small)
+            .disabled(integrations.connectingID != nil)
+            .accessibilityLabel("Connect \(request.name)")
         }
-        .padding(.leading, 8)
-        .padding(.trailing, 12)
-        .frame(minHeight: 44)
-        .background(.fill.secondary, in: .capsule)
-        .contentShape(.capsule)
       }
-      .buttonStyle(.plain)
-      .disabled(isConnected || integrations.connectingID != nil)
-      .fixedSize()
-      .accessibilityLabel(isConnected ? "\(request.name), Connected" : "Connect \(request.name)")
+      .padding(Self.inset)
+      .frame(maxWidth: 320)
+      .overlay {
+        RoundedRectangle(cornerRadius: Self.radius, style: .continuous)
+          .strokeBorder(Palette.border)
+      }
 
       if integrations.failedIntegrationID == id && !isConnected {
         Text("Couldn’t connect.")
           .font(.footnote)
-          .foregroundStyle(.red)
-          .padding(.leading, 8)
+          .foregroundStyle(Palette.destructive)
+          .padding(.leading, 12)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)

@@ -43,5 +43,6 @@ struct GoatApp: App {
       Image(computer.isActing ? "MenuBarGoatActive" : "MenuBarGoat")
         .accessibilityLabel("Goat")
     }
+    .menuBarExtraStyle(.window)
   }
 }

@@ -59,8 +59,8 @@ export async function upload<T>(
   return schema.parse(await response.json());
 }
 
-export function avatarUrl(agent: Pick<Agent, "id" | "avatarId">): string | undefined {
-  return agent.avatarId ? `${apiBase}/agents/${agent.id}/avatars/${agent.avatarId}` : undefined;
+export function avatarUrl(agent: Pick<Agent, "id" | "avatarId">): string {
+  return `${apiBase}/agents/${agent.id}/avatars/${agent.avatarId}`;
 }
 
 export function fileUrl(agentId: string, fileId: string): string {

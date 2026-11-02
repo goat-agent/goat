@@ -9,23 +9,28 @@ struct AgentListView: View {
     NavigationStack(path: $model.agentPath) {
       Group {
         if model.agents.isEmpty {
-          ContentUnavailableView {
+          VStack(spacing: 16) {
             Text("No Agents")
-          } actions: {
+              .font(.headline)
+              .foregroundStyle(Palette.foreground)
             Button("New Agent") { model.isCreatingAgent = true }
-              .buttonStyle(.glassProminent)
+              .buttonStyle(.primary)
           }
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
           List(model.agents, id: \.id) { agent in
             NavigationLink(value: agent.id) {
               AgentRow(agent: agent)
             }
             .navigationLinkIndicatorVisibility(.hidden)
-            .listSectionSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
           }
           .listStyle(.plain)
+          .scrollContentBackground(.hidden)
         }
       }
+      .background(Palette.background)
       .navigationTitle("Agents")
       .toolbar {
         ToolbarItem(placement: .topBarLeading) {
@@ -38,6 +43,7 @@ struct AgentListView: View {
       .safeAreaBar(edge: .bottom) {
         if !model.isOnline {
           ConnectingBanner()
+            .padding(.bottom, 8)
         }
       }
       .navigationDestination(for: String.self) { agentID in
@@ -54,19 +60,5 @@ struct AgentListView: View {
     .sheet(isPresented: $model.isCreatingAgent) {
       NewAgentSheet(model: model)
     }
-  }
-}
-
-private struct ConnectingBanner: View {
-  var body: some View {
-    HStack(spacing: 10) {
-      ProgressView()
-      Text("Connecting…")
-    }
-    .font(.subheadline)
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
-    .glassEffect(.regular, in: .capsule)
-    .padding(.bottom, 8)
   }
 }

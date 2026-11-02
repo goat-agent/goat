@@ -1,7 +1,7 @@
 import GoatAPI
 import SwiftUI
 
-/// An agent's face wherever the agent appears: its picture, or the first letter of its name.
+/// An agent's face wherever the agent appears: its photo, or the picture the server drew for it.
 struct AvatarView: View {
   let agent: Components.Schemas.Agent
   let size: CGFloat
@@ -10,16 +10,24 @@ struct AvatarView: View {
   @State private var image: CGImage?
 
   var body: some View {
-    AvatarCircle(name: agent.name, image: agent.avatarId == nil ? nil : image, size: size)
-      .task(id: agent.avatarId) {
-        guard let avatarID = agent.avatarId else { return }
-        image = await AvatarStore.shared.image(
-          agentID: agent.id, avatarID: avatarID, client: model.client)
+    Group {
+      if let image {
+        AvatarCircle(name: agent.name, image: image, size: size)
+      } else {
+        Circle()
+          .fill(Palette.secondary)
+          .frame(width: size, height: size)
       }
+    }
+    .task(id: agent.avatarId) {
+      image = await AvatarStore.shared.image(
+        agentID: agent.id, avatarID: agent.avatarId, client: model.client)
+    }
   }
 }
 
-/// The circle itself, for pictures that are not uploaded yet as well as stored ones.
+/// The circle itself, for pictures that are not uploaded yet as well as stored ones. Without a
+/// picture it shows the first letter of a person's name, or where an agent's picture will go.
 struct AvatarCircle: View {
   let name: String
   let image: CGImage?
@@ -32,19 +40,19 @@ struct AvatarCircle: View {
           .resizable()
           .scaledToFill()
       } else {
-        Group {
-          if let initial = name.first {
-            Text(String(initial).uppercased())
-              .font(.system(size: size * 0.42, weight: .semibold, design: .rounded))
-          } else {
-            // A new agent with no name yet: the circle is where its picture goes.
-            Image(systemName: "camera.fill")
-              .font(.system(size: size * 0.3))
-          }
+        if let initial = name.first {
+          Text(String(initial).uppercased())
+            .font(.system(size: size * 0.42, weight: .semibold, design: .rounded))
+            .foregroundStyle(Palette.background)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Palette.foreground)
+        } else {
+          Image(systemName: "camera.fill")
+            .font(.system(size: size * 0.3))
+            .foregroundStyle(Palette.mutedForeground)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Palette.secondary)
         }
-        .foregroundStyle(.white)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(white: 0.56).gradient)
       }
     }
     .frame(width: size, height: size)
@@ -61,7 +69,7 @@ final class AvatarStore {
 
   func image(agentID: String, avatarID: String, client: Client) async -> CGImage? {
     if let image = images[avatarID] { return image }
-    let name = "avatar.jpg"
+    let name = "avatar"
     var url = FileCache.existing(id: avatarID, name: name)
     if url == nil, let data = try? await client.avatarData(agentID: agentID, avatarID: avatarID) {
       url = try? await FileCache.store(data, id: avatarID, name: name)

@@ -19,25 +19,26 @@ struct OutgoingBubble: View {
         }
       }
       .opacity(message.state == .failed ? 1 : 0.55)
-      switch message.state {
-      case .sending:
-        Text("Sending…")
-          .font(.caption2)
-          .foregroundStyle(.secondary)
-      case .queued:
-        Text("Waiting")
-          .font(.caption2)
-          .foregroundStyle(.secondary)
-      case .failed:
-        Menu {
-          Button("Send Again", systemImage: "arrow.clockwise", action: retry)
-          Button("Delete", systemImage: "trash", role: .destructive, action: discard)
-        } label: {
-          Label("Not Sent", systemImage: "exclamationmark.circle.fill")
-            .font(.caption)
-            .foregroundStyle(.red)
+      Group {
+        switch message.state {
+        case .sending:
+          Text("Sending…")
+            .foregroundStyle(Palette.mutedForeground)
+        case .queued:
+          Text("Waiting")
+            .foregroundStyle(Palette.mutedForeground)
+        case .failed:
+          HStack(spacing: 2) {
+            Text("Not Sent")
+              .foregroundStyle(Palette.destructive)
+            Button("Send Again", action: retry)
+            Button("Delete", role: .destructive, action: discard)
+          }
+          .buttonStyle(.ghost)
+          .controlSize(.small)
         }
       }
+      .font(.caption)
     }
   }
 }

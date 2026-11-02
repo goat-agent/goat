@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN "avatar_parts" jsonb DEFAULT jsonb_build_object('background', floor(random() * 7)::int, 'horns', floor(random() * 2)::int, 'eyes', floor(random() * 3)::int) NOT NULL;

@@ -12,9 +12,11 @@ localization, and API values work as in [apps/ios/AGENTS.md](../ios/AGENTS.md); 
   - `Onboarding/` — sign-in and the first agent, one small card per step.
   - `Home/` — an inset sidebar as shadcn/ui draws it: the window is the sidebar's color, the
     sidebar sits on it with the window's buttons, and the conversation is a raised card. Dragging
-    the card's edge resizes the sidebar; narrow, it becomes a column of faces.
+    the card's edge resizes the sidebar; narrow, it becomes a column of faces. Search (⌘K) and
+    the account menu open over the window.
   - `Conversation/` — the conversation card, built from the shared messages and composer. The
-    agent's title opens `Home/AgentPanel` beside the card, and a call takes the card's place.
+    agent's title opens `Home/AgentSettingsDialog` over the window, so the window keeps its
+    size, and a call takes the card's place.
   - `MenuBar/`, `Permissions/`, `Settings/` — the other surfaces.
   - `Borrowing/BorrowIndicator` — the ring that follows the pointer and the capsule at the top
     while the agent has the user's pointer.

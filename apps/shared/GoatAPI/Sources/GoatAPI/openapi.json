@@ -656,8 +656,11 @@
           },
           "avatarId": {
             "type": "string",
-            "format": "uuid",
             "description": "Load the picture with getAgentAvatar; the id changes when the picture does"
+          },
+          "hasPhoto": {
+            "type": "boolean",
+            "description": "Whether the picture is a photo the user chose"
           },
           "status": {
             "anyOf": [
@@ -685,6 +688,8 @@
           "id",
           "name",
           "instructions",
+          "avatarId",
+          "hasPhoto",
           "status",
           "createdAt"
         ]
@@ -1693,7 +1698,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The agent without a picture",
+            "description": "The agent with its default picture again",
             "content": {
               "application/json": {
                 "schema": {
@@ -1753,8 +1758,7 @@
           },
           {
             "schema": {
-              "type": "string",
-              "format": "uuid"
+              "type": "string"
             },
             "required": true,
             "name": "avatarId",

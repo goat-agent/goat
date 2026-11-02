@@ -14,7 +14,8 @@ Read [docs/style/swift.md](../../docs/style/swift.md) before writing Swift.
   new-agent sheet and the settings form), `Conversation/` (`ConversationModel`, `Dictation`,
   `ConversationMessages`, `Composer`, `Call` and `CallView`, and the bubbles and cards),
   `Integrations/` (`IntegrationsSection`, the catalog, and `Connector`, which runs the sign-in
-  sheet), `Components/`, and the one `Localizable.xcstrings` both apps use. Screens that should look different on each device are
+  sheet), `UI/` (the design system: `Palette`, control sizes, and one file per part, as in
+  apps/web's `shared/ui`), `Components/`, and the one `Localizable.xcstrings` both apps use. Screens that should look different on each device are
   written once per app; only models and the pieces both draw live here. New
   files in either folder join the target without editing the project file.
 - `Conversation/` holds the voice features too. `Dictation` records with the system recorder and
@@ -39,15 +40,23 @@ Debug builds talk to `GOAT_SERVER_URL` (`http://localhost:3000`); run the server
 
 ## Design
 
-- Apple-native: system colors, system navigation, and system components. Do not draw custom
-  chrome where a system component exists.
+- Screens draw only with `../shared/GoatKit/UI`: `Palette` for color and the parts named as in
+  apps/web (`.buttonStyle(.primary)`, `.inputStyle()`, `InputOTP`, `Switch`, `.alertDialog`,
+  `DropdownMenu`, `ItemGroup`). Do not put a system-styled control, color, or dialog on a
+  screen; a missing part is added to `UI/` first. System navigation and sheets stay.
+- Dropdown menus and alert dialogs draw in a portal, as on the web, so a narrow panel does not
+  clip them: every window's root view and every sheet's root view ends in `.portalHost()`, and
+  the innermost host draws what opens inside it.
 - Keep the interface neutral. Color and character belong to the content: agent pictures and the
-  user's own messages. Controls stay monochrome glass. Violet means "you": your messages and the
-  one next action you take (the composer's main button, a screen's primary action). Red is for
-  errors and for ending a call. Links in replies keep the text color and are underlined.
+  user's own messages. Controls are filled and monochrome. Violet (`Palette.primary`) means
+  "you": your messages and the one next action you take (the composer's main button, a screen's
+  primary action). Red is for errors and for ending a call. Links in replies keep the text color
+  and are underlined.
+- List rows are rounded rectangles; a standalone control is a capsule; a surface holding rows
+  is their radius plus its inset.
 - One task is one shape. Everything for writing a message, including attaching, dictating,
   calling, and its errors, lives inside the composer's glass.
-- An agent always shows an avatar: its picture, or its initial. Making an agent and editing one
+- An agent always shows an avatar: its photo, or the picture the server drew from its parts. Making an agent and editing one
   use the same `AgentForm`; edits save as they are made.
 - Each screen has at most one primary action: `PrimaryButton` in `.safeAreaBar(edge: .bottom)`,
   so it sits above the keyboard. Show errors inline with `FormFooter`, not in alerts.

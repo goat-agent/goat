@@ -18,19 +18,21 @@ struct SentFile: View {
       if isImage {
         LocalImage(url: url)
           .frame(maxWidth: 220, maxHeight: 280)
-          .clipShape(.rect(cornerRadius: 18))
+          .clipShape(.rect(cornerRadius: 14, style: .continuous))
       } else {
-        Label {
+        HStack(spacing: 10) {
+          Group {
+            if isOpening { ProgressView().controlSize(.small) } else { Image(systemName: "doc") }
+          }
+          .frame(width: 16)
           Text(file.name)
             .lineLimit(1)
             .truncationMode(.middle)
-        } icon: {
-          if isOpening { ProgressView().tint(.white) } else { Image(systemName: "doc.text") }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .foregroundStyle(.white)
-        .background(.tint, in: .rect(cornerRadius: 22))
+        .foregroundStyle(Palette.foreground)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Palette.secondary, in: .rect(cornerRadius: 14, style: .continuous))
       }
     }
     .buttonStyle(.plain)

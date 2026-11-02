@@ -1,5 +1,7 @@
-import * as storage from "./files/s3";
-import { logger } from "./logger";
+import { Resvg } from "@resvg/resvg-js";
+import * as storage from "../files/s3";
+import { logger } from "../logger";
+import { type AvatarParts, drawAvatar } from "./drawings";
 
 export class AvatarRejected extends Error {}
 
@@ -38,6 +40,14 @@ export async function read(
 ): Promise<{ bytes: Uint8Array<ArrayBuffer>; mediaType: string }> {
   const bytes = new Uint8Array(await storage.get(keyOf(avatarId)));
   return { bytes, mediaType: mediaTypeOf(bytes) ?? "application/octet-stream" };
+}
+
+/** The default picture of an agent with no photo, as large as the apps upload photos. */
+export function draw(parts: AvatarParts): { bytes: Uint8Array<ArrayBuffer>; mediaType: string } {
+  const png = new Resvg(drawAvatar(parts), { fitTo: { mode: "width", value: 512 } })
+    .render()
+    .asPng();
+  return { bytes: new Uint8Array(png), mediaType: "image/png" };
 }
 
 /** Deletes a picture nothing points at anymore; a leftover object costs only storage. */

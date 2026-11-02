@@ -78,6 +78,8 @@ const handlers = [
       id: crypto.randomUUID(),
       name: body.name ?? "Goat",
       instructions: body.instructions ?? "",
+      avatarId: "default-1-0-0-0",
+      hasPhoto: false,
       status: "idle",
       createdAt: new Date().toISOString(),
     };

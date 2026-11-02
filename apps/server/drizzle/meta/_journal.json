@@ -71,6 +71,13 @@
       "when": 1793456913429,
       "tag": "0009_schedules-memory-search",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793547364318,
+      "tag": "0010_agent-avatar-parts",
+      "breakpoints": true
     }
   ]
 }
