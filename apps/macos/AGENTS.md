@@ -51,6 +51,12 @@ Use the Xcode toolchain (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Develop
 `swift test`. The live tests need Accessibility and Screen Recording for the terminal running
 them. Debug builds talk to `GOAT_SERVER_URL` (`http://localhost:3000`).
 
+## Previews
+
+Render previews as [apps/ios/AGENTS.md](../ios/AGENTS.md) describes, with this folder's
+`Goat.xcodeproj` open instead of the iPhone's. The Mac draws each preview inside a window and
+offers only static renders, in light or dark and in English or Korean.
+
 ## Design
 
 - The agent may use this Mac only while the user's switch is on and both permissions are
