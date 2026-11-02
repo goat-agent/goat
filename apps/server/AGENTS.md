@@ -9,7 +9,8 @@ Read [docs/style/typescript.md](../../docs/style/typescript.md) before writing T
 - `src/lib/` — modules several places use: `auth.ts` (Better Auth), `agent.ts` (agent runs),
   `events.ts` (LISTEN/NOTIFY), `openapi.ts` (route helpers), `logger.ts` (pino), `dates.ts`,
   `i18n.ts` (supported languages), `conversation.ts` (the text people see in messages),
-  `avatars.ts` (agent pictures, stored beside files under `avatars/`),
+  `avatars/` (agent pictures: photos stored beside files under `avatars/`, and the default
+  picture drawn from each agent's random parts in `drawings.ts`),
   `ai/providers.ts` (model choice, for replies, for summaries, and for transcribing recordings),
   `ai/instructions.ts` (the system prompt: how agents talk), `ai/tools/` (the tools agents call),
   `ai/trust.ts` (whether the current turn read outside content),

@@ -16,6 +16,7 @@ import {
 import { type TranscriptionHints, transcribe } from "../lib/ai/providers";
 import { stepOf } from "../lib/ai/tools/computer";
 import * as avatars from "../lib/avatars";
+import { defaultAvatarId } from "../lib/avatars/drawings";
 import { startCall } from "../lib/calls/index";
 import { bubblesOf, recentLines, textOf } from "../lib/conversation";
 import { subscribe, subscribeAll } from "../lib/events";
@@ -76,9 +77,9 @@ const Agent = z
     name: z.string(),
     instructions: z.string(),
     avatarId: z
-      .uuid()
-      .optional()
+      .string()
       .describe("Load the picture with getAgentAvatar; the id changes when the picture does"),
+    hasPhoto: z.boolean().describe("Whether the picture is a photo the user chose"),
     status: Status,
     lastMessage: Message.optional().describe("The newest message people can see"),
     createdAt: z.iso.datetime(),
@@ -125,7 +126,7 @@ const ScheduleParams = z.object({ id: z.uuid(), scheduleId: z.uuid() });
 
 const FileParams = z.object({ id: z.uuid(), fileId: z.uuid() });
 
-const AvatarParams = z.object({ id: z.uuid(), avatarId: z.uuid() });
+const AvatarParams = z.object({ id: z.uuid(), avatarId: z.string() });
 
 // Multipart framing adds a little on top of the file itself.
 const UPLOAD_BODY_LIMIT = files.maxUploadBytes + 64 * 1024;
@@ -149,6 +150,10 @@ const log = logger.child({ module: "agents" });
 
 type MessageRow = { id: number; message: ModelMessage; hidden: boolean; createdAt: Date };
 
+function avatarIdOf(agent: Pick<AgentRow, "avatarId" | "avatarParts">): string {
+  return agent.avatarId ?? defaultAvatarId(agent.avatarParts);
+}
+
 function publicAgent(
   agent: AgentRow,
   lastMessage?: z.infer<typeof Message>,
@@ -157,7 +162,8 @@ function publicAgent(
     id: agent.id,
     name: agent.name,
     instructions: agent.instructions,
-    ...(agent.avatarId ? { avatarId: agent.avatarId } : {}),
+    avatarId: avatarIdOf(agent),
+    hasPhoto: agent.avatarId !== null,
     status: agent.runOwner ? "running" : "idle",
     ...(lastMessage ? { lastMessage } : {}),
     createdAt: agent.createdAt.toISOString(),
@@ -460,7 +466,7 @@ const removeAgentAvatar = createRoute({
   security: [{ bearer: [] }],
   request: { params: AgentParams },
   responses: {
-    200: json(z.object({ agent: Agent }), "The agent without a picture"),
+    200: json(z.object({ agent: Agent }), "The agent with its default picture again"),
     401: error("Not signed in"),
     404: error("No such agent"),
   },
@@ -801,11 +807,15 @@ export default app
   .openapi(getAgentAvatar, async (c) => {
     const { id, avatarId } = c.req.valid("param");
     const [agent] = await db
-      .select({ avatarId: agents.avatarId })
+      .select({ avatarId: agents.avatarId, avatarParts: agents.avatarParts })
       .from(agents)
       .where(and(eq(agents.id, id), eq(agents.userId, c.var.user.id)));
-    if (agent?.avatarId !== avatarId) return c.json({ error: "avatar not found" }, 404);
-    const { bytes, mediaType } = await avatars.read(avatarId);
+    if (!agent || avatarIdOf(agent) !== avatarId) {
+      return c.json({ error: "avatar not found" }, 404);
+    }
+    const { bytes, mediaType } = agent.avatarId
+      ? await avatars.read(agent.avatarId)
+      : avatars.draw(agent.avatarParts);
     return c.body(bytes, 200, {
       "content-type": mediaType,
       "cache-control": "private, max-age=31536000, immutable",

@@ -1,6 +1,7 @@
 import type { LanguageModelUsage, ModelMessage, UserModelMessage } from "ai";
 import { sql } from "drizzle-orm";
 import { bigint, boolean, index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { type AvatarParts, partCounts } from "../../lib/avatars/drawings";
 import { users } from "./auth";
 
 export const agents = pgTable(
@@ -15,6 +16,15 @@ export const agents = pgTable(
     name: text().notNull(),
     instructions: text().notNull().default(""),
     avatarId: uuid(),
+    // Random per row, so the migration gives agents made earlier their own faces too.
+    avatarParts: jsonb()
+      .$type<AvatarParts>()
+      .notNull()
+      .default(
+        sql.raw(
+          `jsonb_build_object('background', floor(random() * ${partCounts.background})::int, 'horns', floor(random() * ${partCounts.horns})::int, 'eyes', floor(random() * ${partCounts.eyes})::int)`,
+        ),
+      ),
     connectionsNote: text(),
     schedulesNote: text(),
     memoryNote: text(),

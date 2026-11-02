@@ -10,11 +10,10 @@ struct AvatarView: View {
   @State private var image: CGImage?
 
   var body: some View {
-    AvatarCircle(name: agent.name, image: agent.avatarId == nil ? nil : image, size: size)
+    AvatarCircle(name: agent.name, image: image, size: size)
       .task(id: agent.avatarId) {
-        guard let avatarID = agent.avatarId else { return }
         image = await AvatarStore.shared.image(
-          agentID: agent.id, avatarID: avatarID, client: model.client)
+          agentID: agent.id, avatarID: agent.avatarId, client: model.client)
       }
   }
 }

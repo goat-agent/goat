@@ -368,33 +368,52 @@ function setAvatar(bytes: Uint8Array<ArrayBuffer>, name: string) {
   );
 }
 
+function getAvatar(avatarId: string) {
+  return client.agents[":id"].avatars[":avatarId"].$get(
+    { param: { id: agentId, avatarId } },
+    bearer(token),
+  );
+}
+
+async function currentAgent() {
+  const list = await client.agents.$get(undefined, bearer(token));
+  if (!list.ok) throw new Error(`list agents failed with ${list.status}`);
+  const agent = (await list.json()).agents.find(({ id }) => id === agentId);
+  if (!agent) throw new Error("agent missing from the list");
+  return agent;
+}
+
 describe("avatars", () => {
   const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
   const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 4, 5, 6]);
 
-  test("stores a picture, replaces it, and removes it", async () => {
+  test("draws a default picture until a photo replaces it", async () => {
+    const drawn = await currentAgent();
+    expect(drawn.hasPhoto).toBe(false);
+    const picture = await getAvatar(drawn.avatarId);
+    expect(picture.headers.get("content-type")).toBe("image/png");
+    expect(new Uint8Array(await picture.arrayBuffer()).slice(0, 8)).toEqual(png.slice(0, 8));
+
     const first = await setAvatar(png, "a.png");
     if (!first.ok) throw new Error(`set avatar failed with ${first.status}`);
-    const firstId = (await first.json()).agent.avatarId ?? "";
-
-    const picture = await client.agents[":id"].avatars[":avatarId"].$get(
-      { param: { id: agentId, avatarId: firstId } },
-      bearer(token),
-    );
-    expect(picture.headers.get("content-type")).toBe("image/png");
-    expect(new Uint8Array(await picture.arrayBuffer())).toEqual(png);
+    const photo = (await first.json()).agent;
+    expect(photo.hasPhoto).toBe(true);
+    expect(status(await getAvatar(drawn.avatarId))).toBe(404);
+    expect(new Uint8Array(await (await getAvatar(photo.avatarId)).arrayBuffer())).toEqual(png);
 
     const second = await setAvatar(jpeg, "b.jpg");
     if (!second.ok) throw new Error(`set avatar failed with ${second.status}`);
-    expect((await second.json()).agent.avatarId).not.toBe(firstId);
-    expect(storedObjects.has(`avatars/${firstId}`)).toBe(false);
+    expect((await second.json()).agent.avatarId).not.toBe(photo.avatarId);
+    expect(storedObjects.has(`avatars/${photo.avatarId}`)).toBe(false);
 
     const removed = await client.agents[":id"].avatar.$delete(
       { param: { id: agentId } },
       bearer(token),
     );
     if (!removed.ok) throw new Error(`remove avatar failed with ${removed.status}`);
-    expect((await removed.json()).agent.avatarId).toBeUndefined();
+    const restored = (await removed.json()).agent;
+    expect(restored.avatarId).toBe(drawn.avatarId);
+    expect(restored.hasPhoto).toBe(false);
     expect([...storedObjects.keys()].some((key) => key.startsWith("avatars/"))).toBe(false);
   });
 

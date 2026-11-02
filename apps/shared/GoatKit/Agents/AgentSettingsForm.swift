@@ -28,7 +28,7 @@ struct AgentSettingsForm: View {
       AgentForm(
         name: $name,
         instructions: $instructions,
-        hasPhoto: agent.avatarId != nil,
+        hasPhoto: agent.hasPhoto,
         pickPhoto: { photo in Task { await model.setPhoto(photo, of: agent.id) } },
         removePhoto: { Task { await model.removePhoto(of: agent.id) } }
       ) {
