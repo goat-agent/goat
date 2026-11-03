@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { routeTree } from "./routeTree.gen";
 import { ApiError } from "./shared/api/client";
 import { getLocale } from "./shared/i18n/paraglide/runtime";
+import { host } from "./shared/native";
 import { TooltipProvider } from "./shared/ui/tooltip";
 
 const queryClient = new QueryClient({
@@ -31,6 +32,7 @@ async function start() {
     await startMock();
   }
   document.documentElement.lang = getLocale();
+  document.documentElement.toggleAttribute("data-mac-window", host?.platform === "macos");
   const root = document.getElementById("root");
   if (!root) throw new Error("index.html has no #root");
   createRoot(root).render(

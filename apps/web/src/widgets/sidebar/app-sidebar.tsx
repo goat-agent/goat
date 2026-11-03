@@ -4,12 +4,13 @@ import { type ReactNode, useState } from "react";
 import { useAgents } from "@/entities/agent";
 import { useMe } from "@/entities/me";
 import { m } from "@/shared/i18n/paraglide/messages";
+import { moveWindow } from "@/shared/native";
 import { Avatar, AvatarFallback } from "@/shared/ui/avatar";
 import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader } from "@/shared/ui/sidebar";
 import { AgentList } from "./agent-list";
 
 const ICON_BUTTON =
-  "grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground pointer-coarse:size-11";
+  "grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground pointer-coarse:size-11 mac-window:size-7";
 
 /**
  * The agent list with its search, new-agent button, and account button. The sidebar and the
@@ -104,7 +105,12 @@ export function AppSidebar() {
       isPage={false}
       frame={({ header, list, footer }) => (
         <Sidebar variant="inset" collapsible="icon">
-          <SidebarHeader className="flex-row items-center justify-end gap-0.5 px-1 group-data-[collapsible=icon]:flex-col">
+          <SidebarHeader
+            onMouseDown={moveWindow}
+            // In the Mac window these share a line with the window's buttons; the column of faces
+            // puts them below.
+            className="flex-row items-center justify-end gap-0.5 px-1 group-data-[collapsible=icon]:flex-col mac-window:-mt-2 mac-window:h-8 mac-window:py-0 mac-window:group-data-[collapsible=icon]:mt-6 mac-window:group-data-[collapsible=icon]:h-auto"
+          >
             {header}
           </SidebarHeader>
           <SidebarContent className="px-1">{list}</SidebarContent>

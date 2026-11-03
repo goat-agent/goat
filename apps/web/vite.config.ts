@@ -17,4 +17,7 @@ export default defineConfig({
     }),
   ],
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
+  // The Mac app shows the dev server under its own goat://app address, so the update socket
+  // cannot take its host from the page and is told it here.
+  server: { hmr: { host: "localhost" } },
 });

@@ -4,12 +4,18 @@ import { type FormEvent, useEffect, useState } from "react";
 import { api, ApiError, expectOk } from "@/shared/api/client";
 import { m } from "@/shared/i18n/paraglide/messages";
 import { browserDevice } from "@/shared/lib/browser";
+import { host } from "@/shared/native";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/shared/ui/input-otp";
 import { Label } from "@/shared/ui/label";
 
 const RESEND_SECONDS = 30;
+
+/** The native app signs in as itself, so the server can reach it; a browser signs in as a browser. */
+function signingInDevice() {
+  return host ? { ...host.device, platform: host.platform } : browserDevice();
+}
 
 function sendCode(email: string): Promise<void> {
   return expectOk(api.POST("/auth/email-code", { body: { email } }));
@@ -87,7 +93,7 @@ export function CodeForm({ email }: { email: string }) {
     setError(undefined);
     try {
       await expectOk(
-        api.POST("/auth/sign-in", { body: { email, code: value, device: browserDevice() } }),
+        api.POST("/auth/sign-in", { body: { email, code: value, device: signingInDevice() } }),
       );
       queryClient.clear();
       await navigate({ to: "/" });
