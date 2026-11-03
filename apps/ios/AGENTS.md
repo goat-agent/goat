@@ -8,16 +8,16 @@ Read [docs/style/swift.md](../../docs/style/swift.md) before writing Swift.
   list, the first screen after sign-in), `Agents/` (an agent's settings sheet), `Conversation/`
   (the conversation screen), `Settings/`, `Components/PrimaryButton`, `Info.plist`, and
   `Assets.xcassets`.
-- `../shared/GoatKit/` — what the Mac shares, compiled into this target as a second
-  folder-synchronized group: `App/` (`AppModel`, `TokenStore`, `CurrentDevice`,
-  `AccountSection`), `Agents/` (`AvatarView`, `AgentRow`, `AgentTitle`, `AgentForm` with the
+- `../shared/GoatKit/` — compiled into this target as a second folder-synchronized group:
+  `App/` (`AppModel`, `AccountSection`), `Server/` (`TokenStore`, `CurrentDevice`, and the
+  server's address, the parts the Mac builds too), `Agents/` (`AvatarView`, `AgentRow`, `AgentTitle`, `AgentForm` with the
   new-agent sheet and the settings form), `Conversation/` (`ConversationModel`, `Dictation`,
   `ConversationMessages`, `Composer`, `Call` and `CallView`, and the bubbles and cards),
   `Integrations/` (`IntegrationsSection`, the catalog, and `Connector`, which runs the sign-in
   sheet), `UI/` (the design system: `Palette`, control sizes, and one file per part, as in
-  apps/web's `shared/ui`), `Components/`, and the one `Localizable.xcstrings` both apps use. Screens that should look different on each device are
-  written once per app; only models and the pieces both draw live here. New
-  files in either folder join the target without editing the project file.
+  apps/web's `shared/ui`, which the Mac builds too), `Components/`, and this app's
+  `Localizable.xcstrings`. The Mac's window shows the web app, so the screens here are the
+  iPhone's. New files in either folder join the target without editing the project file.
 - `Conversation/` holds the voice features too. `Dictation` records with the system recorder and
   sends the recording to the server, which turns it into text for the composer. `Call` speaks
   plain WebRTC (the `stasel/WebRTC` package; Apple ships no public WebRTC) and only ever talks
@@ -52,8 +52,8 @@ Render them with the Xcode MCP tools, which need Xcode running.
 - `previewVariantOverrides` renders dark mode and other Dynamic Type sizes,
   `previewLocalizationOverride` renders Korean, and `preferredRenderDestination` picks another
   iPhone or an iPad. The first result lists the values each one accepts.
-- `GoatKit` files belong to the Mac project too. Keep only one of the two projects open, or the
-  render fails with "Active scheme does not build this file".
+- `GoatKit/UI` and `GoatKit/Server` belong to the Mac project too. Keep only one of the two
+  projects open, or the render fails with "Active scheme does not build this file".
 - If the render reports a missing package product, run `xcodebuild -resolvePackageDependencies`
   for the project, then close and reopen it.
 
@@ -92,11 +92,11 @@ Render them with the Xcode MCP tools, which need Xcode running.
 ## Localization
 
 - Write UI text in English in code; `../shared/GoatKit/Localizable.xcstrings` holds the other
-  languages for both apps. Text
-  built outside a view, such as error messages in a model, goes through `String(localized:)`.
+  languages. Text built outside a view, such as error messages in a model, goes through
+  `String(localized:)`.
 - Building in Xcode adds new keys to the catalog; `xcodebuild` does not. From the command line,
-  build both apps, then pass both builds' `.stringsdata` files to `xcrun xcstringstool sync`. A key left
-  untranslated still builds, so fill in every language before finishing.
+  build the app, then pass the build's `.stringsdata` files to `xcrun xcstringstool sync`. A key
+  left untranslated still builds, so fill in every language before finishing.
 
 ## API values
 

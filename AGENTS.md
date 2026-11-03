@@ -9,12 +9,15 @@ and the agent can use a signed-in Mac through computer use.
 - `apps/server` — Bun, Hono, Drizzle on Postgres, Better Auth, Vercel AI SDK. See
   [apps/server/AGENTS.md](apps/server/AGENTS.md).
 - `apps/ios` — SwiftUI app for iOS 26+. See [apps/ios/AGENTS.md](apps/ios/AGENTS.md).
-- `apps/macos` — SwiftUI app for macOS 26+, distributed outside the App Store, and `Computer`,
-  the package that runs computer use. See [apps/macos/AGENTS.md](apps/macos/AGENTS.md).
-- `apps/web` — Vite, React, TanStack Router and Query, shadcn/ui; the browser client and the
-  design reference for the Apple apps. See [apps/web/AGENTS.md](apps/web/AGENTS.md).
-- `apps/shared` — Swift both Apple apps build from: `GoatKit` (screens and models, compiled into
-  each app) and `GoatAPI` (the client generated from the server's OpenAPI document).
+- `apps/macos` — Swift app for macOS 26+, distributed outside the App Store. Its window shows
+  `apps/web`; the Swift does what only the Mac can: computer use (the `Computer` package), the
+  permissions, and the menu bar. See [apps/macos/AGENTS.md](apps/macos/AGENTS.md).
+- `apps/web` — Vite, React, TanStack Router and Query, shadcn/ui; the browser client, the Mac
+  app's window, and the design reference for the iPhone app. See
+  [apps/web/AGENTS.md](apps/web/AGENTS.md).
+- `apps/shared` — Swift both Apple apps build from: `GoatKit` (the iPhone's screens and models;
+  the Mac builds only its `UI/` parts and `Server/`) and `GoatAPI` (the client generated from the
+  server's OpenAPI document).
 - `docs/style` — style guides. Read [typescript.md](docs/style/typescript.md) before writing
   TypeScript and [swift.md](docs/style/swift.md) before writing Swift.
 - `docs/design` — how screens are designed. Read [mockup.md](docs/design/mockup.md) before

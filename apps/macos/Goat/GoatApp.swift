@@ -1,3 +1,4 @@
+import Bridge
 import ServiceManagement
 import SwiftUI
 
@@ -6,11 +7,17 @@ struct GoatApp: App {
   static let mainWindow = "main"
   static let permissionsWindow = "permissions"
 
-  @State private var model = AppModel()
-  @State private var computer = ComputerService()
+  @State private var session: Session
+  @State private var computer: ComputerService
   @State private var connection = DeviceConnection()
+  @State private var webApp: WebApp
 
   init() {
+    let session = Session()
+    let computer = ComputerService()
+    _session = State(initialValue: session)
+    _computer = State(initialValue: computer)
+    _webApp = State(initialValue: WebApp(session: session, computer: computer))
     #if !DEBUG
       // The agent can use this Mac only while Goat runs, so it starts with the user's session.
       try? SMAppService.mainApp.register()
@@ -19,13 +26,12 @@ struct GoatApp: App {
 
   var body: some Scene {
     Window("Goat", id: Self.mainWindow) {
-      RootView(model: model, computer: computer, connection: connection)
+      RootView(webApp: webApp, session: session, computer: computer, connection: connection)
     }
     .defaultSize(width: 1000, height: 680)
-    // The window's buttons sit on the sidebar; there is no title bar above it.
+    // The page draws the window's top: the window's buttons sit on its sidebar.
     .windowStyle(.hiddenTitleBar)
-    // Small while signing in, then as large as the conversation wants.
-    .windowResizability(.contentSize)
+    .commands { AppCommands(webApp: webApp) }
 
     Window("Use This Mac", id: Self.permissionsWindow) {
       PermissionsView(computer: computer)
@@ -33,16 +39,28 @@ struct GoatApp: App {
     .windowResizability(.contentSize)
     .restorationBehavior(.disabled)
 
-    Settings {
-      SettingsView(model: model, computer: computer)
-    }
-
     MenuBarExtra {
-      MenuBarContent(computer: computer, isSignedIn: model.screen == .home)
+      MenuBarContent(computer: computer, isSignedIn: session.isSignedIn)
     } label: {
       Image(computer.isActing ? "MenuBarGoatActive" : "MenuBarGoat")
         .accessibilityLabel("Goat")
     }
     .menuBarExtraStyle(.window)
+  }
+}
+
+/// Settings live in the web app, so the menu command opens them there.
+private struct AppCommands: Commands {
+  let webApp: WebApp
+  @Environment(\.openWindow) private var openWindow
+
+  var body: some Commands {
+    CommandGroup(replacing: .appSettings) {
+      Button("Settings…") {
+        openWindow(id: GoatApp.mainWindow)
+        webApp.send(.openSettings)
+      }
+      .keyboardShortcut(",")
+    }
   }
 }

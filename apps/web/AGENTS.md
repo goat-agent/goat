@@ -2,8 +2,8 @@
 
 Read [docs/style/typescript.md](../../docs/style/typescript.md) before writing TypeScript.
 
-The web app is a conversation client like the iPhone app, and the design reference the Apple apps
-will follow later. Every feature must be reachable by a visible control: hover and right-click
+The web app is the browser client and what the Mac app shows in its window, and the design
+reference the iPhone app follows. Every feature must be reachable by a visible control: hover and right-click
 may only be shortcuts, because touch has neither.
 
 ## Map
@@ -19,8 +19,8 @@ routes → widgets → features → entities → shared. Slices do not import th
   `connect-integration`, `edit-agent`, `account`, `remove-device`.
 - `src/entities/` — one slice per server resource (`agent`, `message`, `integration`, `device`,
   `me`): its query, its event stream, and the parts that draw it.
-- `src/shared/` — `api/` (openapi-fetch client, Zod schemas for streamed JSON, the `dev:mock`
-  server), `config/env.ts` (environment, checked with Zod at startup), `ui/` (shadcn components,
+- `src/shared/` — `native/` (the contract with the native app showing the page, and the calls
+  into it), `api/` (openapi-fetch client, Zod schemas for streamed JSON, the `dev:mock` server), `config/env.ts` (environment, checked with Zod at startup), `ui/` (shadcn components,
   copied in and ours to edit), `lib/`, `i18n/` (generated).
 
 ## Commands
@@ -29,6 +29,7 @@ routes → widgets → features → entities → shared. Slices do not import th
 bun run dev        # needs VITE_API_URL in apps/web/.env (see .env.example)
 bun run dev:mock   # no server: MSW answers from src/shared/api/mock/data.ts
 bun run generate   # route tree, Paraglide messages, API types; typecheck and test run it first
+bun run bridge     # after changing shared/native/contract.ts; a test fails until you do
 bun run typecheck
 bun run test       # Vitest, for pure logic only
 bunx shadcn@latest add <component>
@@ -61,3 +62,11 @@ bunx shadcn@latest add <component>
 - No end-to-end tests: types catch contract breaks, and look-and-feel is checked by opening the
   app (`dev:mock` shows every state). Unit tests cover logic with edge cases, such as merging
   stream events.
+- Inside the Mac app the page runs on `goat://app` and `apiBase` is `/server`, which the app
+  forwards to the server with its own session token: the page never holds the token and needs no
+  cookie or CORS. So sign-in sends the app's device (`host.device`), connecting a service opens
+  the app's sign-in sheet instead of leaving the page, uploads go as bytes because WebKit hands
+  the app no body for a form with files, and the page's bars move the window (`moveWindow`).
+- Whatever the page asks of a native app is a request or event in `shared/native/contract.ts`,
+  the only definition: the Mac generates its Swift types from the export, and a Windows app
+  would answer the same contract.

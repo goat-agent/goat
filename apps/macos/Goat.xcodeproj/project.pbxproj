@@ -9,13 +9,14 @@
 /* Begin PBXBuildFile section */
 		B1000000000000000000000B /* GoatAPI in Frameworks */ = {isa = PBXBuildFile; productRef = B1000000000000000000000D /* GoatAPI */; };
 		B10000000000000000000020 /* Computer in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000022 /* Computer */; };
-		B10000000000000000000040 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000042 /* WebRTC */; };
+		B10000000000000000000050 /* Bridge in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000052 /* Bridge */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		B10000000000000000000004 /* Goat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Goat.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000014 /* GoatAPI */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = GoatAPI; path = ../shared/GoatAPI; sourceTree = "<group>"; };
 		B10000000000000000000015 /* Computer */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = Computer; sourceTree = "<group>"; };
+		B10000000000000000000053 /* Bridge */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = Bridge; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -38,10 +39,16 @@
 			path = Goat;
 			sourceTree = "<group>";
 		};
-		B10000000000000000000030 /* GoatKit */ = {
+		B10000000000000000000030 /* GoatKit UI */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			name = GoatKit;
-			path = ../shared/GoatKit;
+			name = "GoatKit UI";
+			path = ../shared/GoatKit/UI;
+			sourceTree = "<group>";
+		};
+		B10000000000000000000031 /* GoatKit Server */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			name = "GoatKit Server";
+			path = ../shared/GoatKit/Server;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -53,7 +60,7 @@
 			files = (
 				B1000000000000000000000B /* GoatAPI in Frameworks */,
 				B10000000000000000000020 /* Computer in Frameworks */,
-				B10000000000000000000040 /* WebRTC in Frameworks */,
+				B10000000000000000000050 /* Bridge in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,8 +72,10 @@
 			children = (
 				B10000000000000000000014 /* GoatAPI */,
 				B10000000000000000000015 /* Computer */,
+				B10000000000000000000053 /* Bridge */,
 				B10000000000000000000005 /* Goat */,
-				B10000000000000000000030 /* GoatKit */,
+				B10000000000000000000030 /* GoatKit UI */,
+				B10000000000000000000031 /* GoatKit Server */,
 				B10000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -89,6 +98,7 @@
 				B10000000000000000000008 /* Sources */,
 				B10000000000000000000009 /* Frameworks */,
 				B1000000000000000000000A /* Resources */,
+				B10000000000000000000060 /* Bundle Web App */,
 			);
 			buildRules = (
 			);
@@ -96,13 +106,14 @@
 			);
 			fileSystemSynchronizedGroups = (
 				B10000000000000000000005 /* Goat */,
-				B10000000000000000000030 /* GoatKit */,
+				B10000000000000000000030 /* GoatKit UI */,
+				B10000000000000000000031 /* GoatKit Server */,
 			);
 			name = Goat;
 			packageProductDependencies = (
 				B1000000000000000000000D /* GoatAPI */,
 				B10000000000000000000022 /* Computer */,
-				B10000000000000000000042 /* WebRTC */,
+				B10000000000000000000052 /* Bridge */,
 			);
 			productName = Goat;
 			productReference = B10000000000000000000004 /* Goat.app */;
@@ -136,7 +147,7 @@
 			packageReferences = (
 				B1000000000000000000000C /* XCLocalSwiftPackageReference "GoatAPI" */,
 				B10000000000000000000021 /* XCLocalSwiftPackageReference "Computer" */,
-				B10000000000000000000041 /* XCRemoteSwiftPackageReference "WebRTC" */,
+				B10000000000000000000051 /* XCLocalSwiftPackageReference "Bridge" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B10000000000000000000003 /* Products */;
@@ -157,6 +168,30 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		B10000000000000000000060 /* Bundle Web App */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../web/dist",
+			);
+			name = "Bundle Web App";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Web",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Release builds carry the web app inside Goat; debug builds load it from the dev server.\nif [ \"$CONFIGURATION\" != \"Release\" ]; then exit 0; fi\nweb=\"$SRCROOT/../web/dist\"\nif [ ! -f \"$web/index.html\" ]; then\n  echo \"error: build apps/web first (bun run --filter @goat/web build)\"\n  exit 1\nfi\nrsync -a --delete \"$web/\" \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Web/\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		B10000000000000000000008 /* Sources */ = {
@@ -182,6 +217,7 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_OPTIMIZATION_LEVEL = 0;
 				GOAT_SERVER_URL = "http://localhost:3000";
+				GOAT_WEB_URL = "http://localhost:5173";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
@@ -301,18 +337,11 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Computer;
 		};
-/* End XCLocalSwiftPackageReference section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		B10000000000000000000041 /* XCRemoteSwiftPackageReference "WebRTC" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/stasel/WebRTC";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 156.0.0;
-			};
+		B10000000000000000000051 /* XCLocalSwiftPackageReference "Bridge" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Bridge;
 		};
-/* End XCRemoteSwiftPackageReference section */
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		B1000000000000000000000D /* GoatAPI */ = {
@@ -323,10 +352,9 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = Computer;
 		};
-		B10000000000000000000042 /* WebRTC */ = {
+		B10000000000000000000052 /* Bridge */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = B10000000000000000000041 /* XCRemoteSwiftPackageReference "WebRTC" */;
-			productName = WebRTC;
+			productName = Bridge;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

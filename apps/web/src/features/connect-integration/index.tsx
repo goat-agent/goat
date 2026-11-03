@@ -1,25 +1,47 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { CheckIcon } from "lucide-react";
 import { useState } from "react";
-import { IntegrationIcon, isConnected, useIntegrations } from "@/entities/integration";
+import {
+  IntegrationIcon,
+  integrationsQuery,
+  isConnected,
+  useIntegrations,
+} from "@/entities/integration";
 import { api, type ConnectRequest, unwrap, expectOk } from "@/shared/api/client";
 import { m } from "@/shared/i18n/paraglide/messages";
+import * as native from "@/shared/native";
 import { Button } from "@/shared/ui/button";
 
 const RETURN_KEY = "connect-return";
 
 /**
- * Leaves for the service's sign-in in this tab. The server sends the browser back to /connected,
- * which finishes and returns to the page saved here.
+ * Connects a service. A browser leaves for the service's sign-in in this tab, and the server sends
+ * it back to /connected, which finishes and returns to the page saved here. The native app shows
+ * the sign-in in its own sheet and hands back where it ended, so the page stays and finishes here.
  */
-export async function startConnecting(integrationId: string, agentId?: string): Promise<void> {
-  const { url } = await unwrap(
-    api.POST("/integrations/{id}/connect", {
-      params: { path: { id: integrationId } },
-      body: agentId ? { agentId } : {},
-    }),
-  );
-  sessionStorage.setItem(RETURN_KEY, `${location.pathname}${location.search}`);
-  location.assign(url);
+export function useConnect(): (integrationId: string, agentId?: string) => Promise<void> {
+  const queryClient = useQueryClient();
+  return async (integrationId, agentId) => {
+    const { url } = await unwrap(
+      api.POST("/integrations/{id}/connect", {
+        params: { path: { id: integrationId } },
+        body: agentId ? { agentId } : {},
+      }),
+    );
+    if (!native.host) {
+      sessionStorage.setItem(RETURN_KEY, `${location.pathname}${location.search}`);
+      location.assign(url);
+      return;
+    }
+    const { callbackUrl } = await native.request("authenticate", { url });
+    if (!callbackUrl) return;
+    const back = new URL(callbackUrl).searchParams;
+    const state = back.get("state");
+    const code = back.get("code");
+    if (!state || !code) throw new Error(`connecting ${integrationId} ended without a code`);
+    await finishConnecting(integrationId, state, code);
+    await queryClient.invalidateQueries({ queryKey: integrationsQuery.queryKey });
+  };
 }
 
 /** Finishes a connection when the service sends the browser back. */
@@ -47,6 +69,7 @@ export function takeReturnPath(): string {
 /** The card under a reply that asked the user to connect a service. */
 export function ConnectCard({ request, agentId }: { request: ConnectRequest; agentId: string }) {
   const integration = useIntegrations().find(({ id }) => id === request.integrationId);
+  const connectIntegration = useConnect();
   const [isLeaving, setIsLeaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const connected = isConnected(integration);
@@ -55,11 +78,11 @@ export function ConnectCard({ request, agentId }: { request: ConnectRequest; age
     setIsLeaving(true);
     setFailed(false);
     try {
-      await startConnecting(request.integrationId, agentId);
+      await connectIntegration(request.integrationId, agentId);
     } catch {
       setFailed(true);
-      setIsLeaving(false);
     }
+    setIsLeaving(false);
   }
 
   return (

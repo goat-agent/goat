@@ -1,23 +1,20 @@
 # macOS
 
-Read [docs/style/swift.md](../../docs/style/swift.md) before writing Swift. Design rules,
-localization, and API values work as in [apps/ios/AGENTS.md](../ios/AGENTS.md); the screens in
-`../shared/GoatKit` are the same code.
+Read [docs/style/swift.md](../../docs/style/swift.md) before writing Swift. The window shows the
+web app ([apps/web](../web/AGENTS.md)); the Swift here draws only what lives outside it, with the
+parts and rules of [apps/ios/AGENTS.md](../ios/AGENTS.md).
 
 ## Map
 
-- `Goat/` — the Mac's screens. `GoatApp` declares the main window (no title bar), the one-time
-  permissions window, Settings, and the menu bar item. `App/RootView` connects the device socket
-  once someone is signed in.
-  - `Onboarding/` — sign-in and the first agent, one small card per step.
-  - `Home/` — an inset sidebar as shadcn/ui draws it: the window is the sidebar's color, the
-    sidebar sits on it with the window's buttons, and the conversation is a raised card. Dragging
-    the card's edge resizes the sidebar; narrow, it becomes a column of faces. Search (⌘K) and
-    the account menu open over the window.
-  - `Conversation/` — the conversation card, built from the shared messages and composer. The
-    agent's title opens `Home/AgentSettingsDialog` over the window, so the window keeps its
-    size, and a call takes the card's place.
-  - `MenuBar/`, `Permissions/`, `Settings/` — the other surfaces.
+- `Goat/` — `GoatApp` declares the main window (no title bar), the one-time permissions window,
+  and the menu bar item; ⌘, opens the web app's settings. `App/RootView` fills the window with
+  the web app and keeps the device socket open while someone is signed in; `App/Session` keeps
+  the session token in the Keychain.
+  - `Web/` — the web app inside Goat. `WebApp` owns the page, loaded once at launch and kept
+    for the app's life. `AppScheme` serves `goat://app`: the web app's files, and under
+    `/server` the goat server with the session token added. `RequestHandler` answers the page's
+    requests.
+  - `MenuBar/`, `Permissions/` — the surfaces outside the window.
   - `Borrowing/BorrowIndicator` — the ring that follows the pointer and the capsule at the top
     while the agent has the user's pointer.
 - `Goat/Device/` — the link to the server. `DeviceConnection` keeps the WebSocket open and hands
@@ -34,12 +31,19 @@ localization, and API values work as in [apps/ios/AGENTS.md](../ios/AGENTS.md); 
     `Opening` do the work.
   - `AX.swift` holds the one private call, `_AXUIElementGetWindow`, which ties an accessibility
     window to its window server id.
-- `../shared/GoatKit/`, `../shared/GoatAPI/` — shared with iOS; see the iOS notes.
+- `Bridge/` — Swift package with the types of what the page and the app say to each other,
+  generated at build time from `openapi.json`, which apps/web exports from its contract
+  (`bun run bridge` there); never edit it by hand. `Messages.swift` decodes requests and writes
+  the scripts that put the host and events on the page.
+- `../shared/GoatKit/UI`, `../shared/GoatKit/Server` — the design system's parts and this
+  install's identity, shared with iOS; `Goat/Localizable.xcstrings` holds this app's strings.
+  `../shared/GoatAPI/` — the server's client; see the iOS notes.
 
 ## Commands
 
 ```sh
-swift format lint --strict --recursive Goat Computer/Sources Computer/Tests Computer/Package.swift
+swift format lint --strict --recursive Goat Computer/Sources Computer/Tests Computer/Package.swift \
+  Bridge/Package.swift Bridge/Sources
 xcodebuild -project Goat.xcodeproj -scheme Goat -destination 'platform=macOS' \
   -skipPackagePluginValidation build
 (cd Computer && swift test)
@@ -49,7 +53,10 @@ xcodebuild -project Goat.xcodeproj -scheme Goat -destination 'platform=macOS' \
 
 Use the Xcode toolchain (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`) for
 `swift test`. The live tests need Accessibility and Screen Recording for the terminal running
-them. Debug builds talk to `GOAT_SERVER_URL` (`http://localhost:3000`).
+them. Debug builds talk to `GOAT_SERVER_URL` (`http://localhost:3000`) and load the page from
+the web dev server at `GOAT_WEB_URL` (`http://localhost:5173`), so run `bun run dev` first; a
+saved web change shows in the window at once. Release builds copy `apps/web/dist` into the app,
+so build the web app first.
 
 ## Previews
 
@@ -59,6 +66,15 @@ offers only static renders, in light or dark and in English or Korean.
 
 ## Design
 
+- The page runs on `goat://app`, one origin for its files and the server, so it needs no cookies
+  and the server no CORS. The page never holds the session token: `AppScheme` adds it to
+  requests under `/server`, keeps it from the sign-in response, and forgets it on sign-out.
+  Responses stream through as they arrive, so the server's event streams work unchanged.
+- The page has no title bar above it; its bars ask the app to move the window
+  (`performDrag`), and the window's buttons sit on its sidebar. Links that leave the web app
+  open in the default browser; a service's sign-in opens in the system's sign-in sheet.
+- Every request the page makes is a case of the contract's `RequestMethod`, so a new one does
+  not compile until `RequestHandler` answers it.
 - The agent may use this Mac only while the user's switch is on and both permissions are
   granted; `computer.status` reports that, and every other call fails without it.
 - Work happens in the background whenever accessibility can do it: pressing, selecting, showing
