@@ -1,55 +1,39 @@
+import AuthenticationServices
 import SwiftUI
+import WebKit
 
+/// The main window: the web app, edge to edge. It also keeps this Mac's link to the server open
+/// while someone is signed in, and offers computer use once after the first sign-in.
 struct RootView: View {
-  let model: AppModel
+  let webApp: WebApp
+  let session: Session
   let computer: ComputerService
   let connection: DeviceConnection
 
   @AppStorage("didOfferComputerUse") private var didOfferComputerUse = false
   @Environment(\.openWindow) private var openWindow
+  @Environment(\.webAuthenticationSession) private var authentication
 
   var body: some View {
-    Group {
-      switch model.screen {
-      case .loading:
-        Group {
-          if let message = model.errorMessage {
-            VStack(spacing: 16) {
-              Text(verbatim: message)
-                .font(.headline)
-                .foregroundStyle(Palette.foreground)
-                .multilineTextAlignment(.center)
-              Button("Try Again") { Task { await model.start() } }
-                .buttonStyle(.primary)
-            }
-            .padding(48)
-          } else {
-            ProgressView()
-              .controlSize(.small)
-          }
+    WebView(webApp.page)
+      .webViewContentBackground(.hidden)
+      .ignoresSafeArea()
+      .frame(minWidth: 720, minHeight: 480)
+      .containerBackground(Palette.sidebar, for: .window)
+      .onAppear { webApp.requests.authentication = authentication }
+      .onChange(of: session.isSignedIn, initial: true) { _, isSignedIn in
+        if isSignedIn {
+          connection.start(serverURL: .goatServer, token: { session.token }, service: computer)
+          offerComputerUse()
+        } else {
+          connection.stop()
         }
-        .containerBackground(Palette.background, for: .window)
-      case .signIn, .setup:
-        OnboardingView(model: model)
-      case .home:
-        HomeView(model: model)
       }
-    }
-    .portalHost()
-    .environment(model)
-    .animation(.default, value: model.screen)
-    .task { await model.start() }
-    .onChange(of: model.screen, initial: true) { _, screen in
-      if screen == .home {
-        connection.start(
-          serverURL: model.serverURL, token: { model.sessionToken }, service: computer)
-        if !didOfferComputerUse {
-          didOfferComputerUse = true
-          openWindow(id: GoatApp.permissionsWindow)
-        }
-      } else if screen == .signIn {
-        connection.stop()
-      }
-    }
+  }
+
+  private func offerComputerUse() {
+    guard !didOfferComputerUse else { return }
+    didOfferComputerUse = true
+    openWindow(id: GoatApp.permissionsWindow)
   }
 }
