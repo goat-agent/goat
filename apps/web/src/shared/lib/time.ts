@@ -10,7 +10,6 @@ function daysAgo(date: Date, now = new Date()): number {
   return Math.round((startOfDay(now) - startOfDay(date)) / DAY);
 }
 
-/** The short time beside an agent in the list: a time today, then a day name, then a date. */
 export function listTime(iso: string): string {
   const date = new Date(iso);
   const locale = getLocale();
@@ -21,7 +20,6 @@ export function listTime(iso: string): string {
   return date.toLocaleDateString(locale, { month: "short", day: "numeric" });
 }
 
-/** The divider between days in a conversation. */
 export function dayLabel(date: Date): string {
   const locale = getLocale();
   const days = daysAgo(date);

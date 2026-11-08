@@ -5,9 +5,6 @@ import type {
   SentFile as SentFileType,
 } from "./client";
 
-// Event streams and multipart uploads arrive as untyped JSON. These schemas check them, and
-// `satisfies` keeps each one in step with the type generated from the OpenAPI document.
-
 export const SentFile = z.object({
   id: z.string(),
   name: z.string(),

@@ -16,7 +16,6 @@ export type Attachment = {
 
 const Uploaded = z.object({ file: SentFileSchema });
 
-/** What the user is writing to one agent: the text, the files, and sending them. */
 export function useComposer(agentId: string) {
   const queryClient = useQueryClient();
   const [text, setText] = useState("");

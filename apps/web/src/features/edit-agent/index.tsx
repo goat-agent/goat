@@ -25,7 +25,6 @@ import { Textarea } from "@/shared/ui/textarea";
 
 const Updated = z.object({ agent: AgentSchema });
 
-/** Name, picture, and instructions of an agent that exists; every change saves at once. */
 export function AgentSettings({ agent }: { agent: Agent }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -102,7 +101,6 @@ export function AgentSettings({ agent }: { agent: Agent }) {
   );
 }
 
-/** The same fields for an agent that does not exist yet. */
 export function NewAgentForm({ onCancel }: { onCancel: () => void }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();

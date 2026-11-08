@@ -1,10 +1,6 @@
 import type { Message, SentFile } from "@/shared/api/client";
 import { createStore } from "@/shared/lib/store";
 
-/**
- * A message the user sent that the conversation does not show yet. The server queues it and adds
- * it to the conversation when the agent picks it up, which can wait until a long task ends.
- */
 export type Pending = {
   localId: string;
   text: string;
@@ -33,7 +29,6 @@ export function setPendingState(agentId: string, localId: string, state: Pending
   });
 }
 
-/** Forgets the messages the conversation now shows, once their copies have arrived. */
 export function prunePending(agentId: string, messages: Message[]): void {
   const list = pending.get().get(agentId) ?? NONE;
   const still = stillPending(list, messages);
@@ -44,10 +39,6 @@ export function usePending(agentId: string): readonly Pending[] {
   return pending.use().get(agentId) ?? NONE;
 }
 
-/**
- * The pending messages the conversation does not show yet. A user message newer than the send
- * with the same text is the server's copy, and each copy hides one pending message.
- */
 export function stillPending(list: readonly Pending[], messages: Message[]): Pending[] {
   const copies = messages.filter((message) => message.role === "user");
   const used = new Set<number>();

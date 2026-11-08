@@ -1,9 +1,5 @@
 const INSTALLATION_KEY = "installation-id";
 
-/**
- * This browser as a device: an id made once and kept in this browser only, and a name such as
- * "Chrome · Mac" for the device list.
- */
 export function browserDevice(): { installationId: string; name: string; platform: "web" } {
   let installationId = localStorage.getItem(INSTALLATION_KEY);
   if (!installationId) {

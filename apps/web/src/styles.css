@@ -4,10 +4,7 @@
 @import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 
 @custom-variant dark (&:is(.dark *));
-/* Inside the Mac app's window, where the page draws the title bar (shared/native). */
-@custom-variant mac-window (&:is([data-mac-window] *));
 
-/* Material window size classes: sm and md are medium (600px), expanded is 840px. shadcn follows. */
 @theme {
   --breakpoint-sm: 37.5rem;
   --breakpoint-md: 37.5rem;

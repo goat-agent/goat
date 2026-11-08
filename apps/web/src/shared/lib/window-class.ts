@@ -1,10 +1,5 @@
 import { useSyncExternalStore } from "react";
 
-/**
- * Material's window size classes. Compact shows one pane at a time, medium shrinks the agent list
- * to a column of faces, expanded shows the list beside the conversation. The CSS breakpoints
- * `medium:` and `expanded:` in styles.css use the same widths.
- */
 export type WindowClass = "compact" | "medium" | "expanded";
 
 const medium = matchMedia("(min-width: 600px)");

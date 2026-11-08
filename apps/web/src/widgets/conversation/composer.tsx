@@ -5,7 +5,6 @@ import { AttachmentChips, type ComposerState } from "@/features/send-message";
 import { m } from "@/shared/i18n/paraglide/messages";
 import { duration } from "@/shared/lib/time";
 
-/** One block for writing: files, text, attach, dictate, and send. */
 export function Composer({
   agentId,
   agentName,
@@ -15,7 +14,6 @@ export function Composer({
   agentId: string;
   agentName: string;
   composer: ComposerState;
-  /** A call holds the microphone, so dictation waits. */
   isMicrophoneBusy: boolean;
 }) {
   const input = useRef<HTMLInputElement>(null);
@@ -26,7 +24,6 @@ export function Composer({
   });
 
   function keyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    // Enter that confirms a Korean syllable must not send the message.
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
     composer.send();

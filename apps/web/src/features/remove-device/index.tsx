@@ -15,7 +15,6 @@ import {
 } from "@/shared/ui/alert-dialog";
 import { Button } from "@/shared/ui/button";
 
-/** Signs another device out of the account and forgets it. */
 export function RemoveDeviceButton({ device }: { device: Device }) {
   const queryClient = useQueryClient();
 

@@ -8,22 +8,18 @@ and the agent can use a signed-in Mac through computer use.
 
 - `apps/server` — Bun, Hono, Drizzle on Postgres, Better Auth, Vercel AI SDK. See
   [apps/server/AGENTS.md](apps/server/AGENTS.md).
-- `apps/ios` — SwiftUI app for iOS 26+. See [apps/ios/AGENTS.md](apps/ios/AGENTS.md).
-- `apps/macos` — Swift app for macOS 26+, distributed outside the App Store. Its window shows
-  `apps/web`; the Swift does what only the Mac can: computer use (the `Computer` package), the
-  permissions, and the menu bar. See [apps/macos/AGENTS.md](apps/macos/AGENTS.md).
-- `apps/web` — Vite, React, TanStack Router and Query, shadcn/ui; the browser client, the Mac
-  app's window, and the design reference for the iPhone app. See
-  [apps/web/AGENTS.md](apps/web/AGENTS.md).
-- `apps/shared` — Swift both Apple apps build from: `GoatKit` (the iPhone's screens and models;
-  the Mac builds only its `UI/` parts and `Server/`) and `GoatAPI` (the client generated from the
-  server's OpenAPI document).
+- `apps/ios` — SwiftUI app for iOS 26+, only the app shell so far. See
+  [apps/ios/AGENTS.md](apps/ios/AGENTS.md).
+- `apps/macos` — menu bar app for macOS 26+ that lets the agent use the Mac (computer use),
+  distributed outside the App Store. See [apps/macos/AGENTS.md](apps/macos/AGENTS.md).
+- `apps/web` — Vite, React, TanStack Router and Query, shadcn/ui; the browser client and the
+  design reference for the Apple apps. See [apps/web/AGENTS.md](apps/web/AGENTS.md).
 - `docs/style` — style guides. Read [typescript.md](docs/style/typescript.md) before writing
   TypeScript and [swift.md](docs/style/swift.md) before writing Swift.
 - `docs/design` — how screens are designed. Read [mockup.md](docs/design/mockup.md) before
   making a mockup.
-- `apps/*` holds what is deployed, plus `apps/shared` for the Swift the Apple apps share;
-  `packages/*` is for TypeScript two apps share and is created only when that happens.
+- `apps/*` holds what is deployed; `packages/*` is for TypeScript two apps share and is created
+  only when that happens.
 
 ## Commands
 
@@ -31,7 +27,7 @@ and the agent can use a signed-in Mac through computer use.
 bun install
 docker compose up -d                 # local Postgres and file storage (RustFS)
 bun run dev                          # server and web
-bun run dev:ios                      # the iPhone app, beside bun run dev; also dev:macos
+bun run dev:ios                      # the iPhone app in the simulator; also dev:macos
 bun run typecheck                    # tsc for every workspace
 bun run lint                         # oxlint, type-aware; warnings fail
 bun run format                       # oxfmt; format:check only checks
@@ -52,8 +48,9 @@ Before finishing, run the checks for every app you touched.
   decision.
 - Keep one machine's circumstances out of the repo. Ports, proxies, and keys belong in ignored
   files: `.env` at the root (Docker Compose), `apps/server/.env`, `apps/server/.env.test.local`.
-- The server's Zod route schemas are the only API contract. The iOS client is generated from the
-  exported document, so route changes are not done until the document is exported again.
+- The server's Zod route schemas are the only API contract. The web app's types and the Mac app's
+  `GoatAPI` package are generated from the exported document (`apps/server/openapi.json`), so route
+  changes are not done until the document is exported again.
 - Enum-like fields in the API accept any string as well (`openEnum`), so app builds already in
   users' hands keep decoding values added later.
 - Users never see model or provider names.

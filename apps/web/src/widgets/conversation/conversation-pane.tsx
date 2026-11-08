@@ -30,7 +30,6 @@ import {
 } from "@/entities/message";
 import type { Agent, Message } from "@/shared/api/client";
 import { m } from "@/shared/i18n/paraglide/messages";
-import { moveWindow } from "@/shared/native";
 import { isSameDay } from "@/shared/lib/time";
 import { useWindowClass } from "@/shared/lib/window-class";
 import {
@@ -49,7 +48,6 @@ export function ConversationPane({ agentId }: { agentId: string }) {
   const call = useCall();
   if (!agents) return <div className="flex-1" />;
   const agent = agents.find(({ id }) => id === agentId);
-  // A link to an agent that was deleted, or that belongs to someone else.
   if (!agent) return <Navigate to="/" search={{}} replace />;
   if (call?.agentId === agentId) return <CallPane agent={agent} />;
   return <ChatPane key={agentId} agent={agent} />;
@@ -178,7 +176,6 @@ function PendingTurn({
   return <UserTurn agentId={agent.id} message={pending} footer={footer} />;
 }
 
-/** Loads the page before the oldest loaded one when the reader reaches the top. */
 function OlderMessages({
   hasMore,
   isLoading,
@@ -210,10 +207,7 @@ function Header({ agent }: { agent: Agent }) {
   }
 
   return (
-    <header
-      onMouseDown={moveWindow}
-      className="flex h-13 shrink-0 items-center gap-1 border-b px-2"
-    >
+    <header className="flex h-13 shrink-0 items-center gap-1 border-b px-2">
       {windowClass === "compact" ? (
         <Link
           to="/"

@@ -12,10 +12,6 @@ export function useMe(): User {
   return useSuspenseQuery(meQuery).data;
 }
 
-/**
- * Asks the server again whether the session is still good, for when a stream was refused. A 401
- * there sends the signed-in shell to the sign-in page.
- */
 export function useRecheckSession(): () => void {
   const queryClient = useQueryClient();
   return useCallback(() => {
@@ -23,7 +19,6 @@ export function useRecheckSession(): () => void {
   }, [queryClient]);
 }
 
-/** Fills in the user's time zone once, so scheduled work runs at their local time. */
 export function useFillTimeZone(): void {
   const me = useQuery(meQuery).data;
   const queryClient = useQueryClient();

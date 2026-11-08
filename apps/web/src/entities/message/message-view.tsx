@@ -7,7 +7,6 @@ import { Bubble, BubbleContent } from "@/shared/ui/bubble";
 import { Dots } from "@/shared/ui/dots";
 import { Markdown } from "@/shared/ui/markdown";
 
-// A turn is at most 34rem wide so long replies keep a readable line length.
 const TURN = "flex max-w-[min(85%,34rem)] flex-col gap-1";
 const BUBBLE = "rounded-[20px] px-4 py-2.5 text-[15px] leading-relaxed";
 
@@ -51,7 +50,6 @@ export function AgentTurn({ message, children }: { message: Message; children?: 
   );
 }
 
-/** What the agent did on the user's computer: one quiet line that opens into the list. */
 function Steps({ steps }: { steps: string[] }) {
   return (
     <details className="group">

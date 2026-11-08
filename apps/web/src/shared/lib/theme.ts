@@ -2,8 +2,7 @@ import { createStore } from "./store";
 
 export type Theme = "system" | "light" | "dark";
 
-// The theme belongs to the browser, not the account: one account is used from devices that want
-// different themes. index.html applies the same rule before the first paint.
+// index.html applies the saved theme the same way before the first paint.
 const KEY = "theme";
 const systemDark = matchMedia("(prefers-color-scheme: dark)");
 

@@ -9,15 +9,10 @@ export const agentsQuery = queryOptions({
   queryFn: async () => (await unwrap(api.GET("/agents"))).agents,
 });
 
-/** The agents, newest conversation first; undefined until the list has loaded. */
 export function useAgents(): Agent[] | undefined {
   return useQuery(agentsQuery).data;
 }
 
-/**
- * Keeps the agent list current. The server sends the whole list, statuses included, after every
- * change, so this stream is the one place the list and each agent's status come from.
- */
 export function useAgentListEvents(queryClient: QueryClient, onRefused: () => void): void {
   useEffect(
     () =>
@@ -29,10 +24,6 @@ export function useAgentListEvents(queryClient: QueryClient, onRefused: () => vo
   );
 }
 
-/**
- * Shows an agent the server just returned without waiting for the stream, which follows with the
- * same agent. A new agent goes first, where the server lists it.
- */
 export function showAgent(queryClient: QueryClient, agent: Agent): void {
   queryClient.setQueryData(agentsQuery.queryKey, (agents = []) =>
     agents.some(({ id }) => id === agent.id)

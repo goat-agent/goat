@@ -1,4 +1,3 @@
-/** Three dots that pulse in turn, for "working" and "writing a reply". */
 export function Dots() {
   return (
     <span className="inline-flex items-center gap-[3px]">

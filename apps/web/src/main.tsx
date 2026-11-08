@@ -6,13 +6,11 @@ import { createRoot } from "react-dom/client";
 import { routeTree } from "./routeTree.gen";
 import { ApiError } from "./shared/api/client";
 import { getLocale } from "./shared/i18n/paraglide/runtime";
-import { host } from "./shared/native";
 import { TooltipProvider } from "./shared/ui/tooltip";
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      // A 4xx will not change on retry; a dropped connection or a 5xx might.
       retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
     },
   },
@@ -32,7 +30,6 @@ async function start() {
     await startMock();
   }
   document.documentElement.lang = getLocale();
-  document.documentElement.toggleAttribute("data-mac-window", host?.platform === "macos");
   const root = document.getElementById("root");
   if (!root) throw new Error("index.html has no #root");
   createRoot(root).render(

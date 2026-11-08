@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { upload } from "@/shared/api/client";
 
-// Stopping by itself means a recording left running still turns into text instead of failing.
 const LIMIT_SECONDS = 10 * 60;
 
 export type DictationState = "idle" | "recording" | "transcribing";
@@ -10,7 +9,6 @@ export type DictationProblem = "microphone" | "transcription";
 
 const Transcript = z.object({ text: z.string() });
 
-/** Records speech and turns it into text for the composer. */
 export function useDictation(agentId: string, onText: (text: string) => void) {
   const [state, setState] = useState<DictationState>("idle");
   const [problem, setProblem] = useState<DictationProblem>();

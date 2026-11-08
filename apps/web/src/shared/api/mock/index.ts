@@ -14,9 +14,6 @@ import {
   screenshotSvg,
 } from "./data";
 
-// `dev:mock` runs the app with no server: every request is answered here from the data in
-// ./data.ts, and replies are made up, so every screen state can be seen and worked on.
-
 const http = createOpenApiHttp<paths>({ baseUrl: apiBase });
 const listeners = new Set<() => void>();
 let nextId = 100;
