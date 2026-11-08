@@ -2,16 +2,10 @@ import type { ReactNode } from "react";
 import { Dialog, DialogContent, DialogTitle } from "@/shared/ui/dialog";
 
 const SIZES = {
-  // Grows with its content, up to the window.
   form: "sm:h-auto sm:max-h-[min(47.5rem,calc(100dvh-3rem))] sm:max-w-[35rem]",
-  // Keeps one height while its sections change, so the window does not jump.
   panel: "sm:h-[min(40rem,calc(100dvh-3rem))] sm:max-w-[47.5rem]",
 };
 
-/**
- * A dialog over the page that fills the screen when the window is compact, the way a sheet does
- * on a phone. `leading` sits before the title, such as a back button.
- */
 export function ResponsiveDialog({
   title,
   leading,

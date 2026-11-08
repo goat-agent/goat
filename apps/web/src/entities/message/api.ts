@@ -39,16 +39,11 @@ export function messagesQuery(agentId: string) {
   });
 }
 
-/** The newest message id in the cached conversation, or 0 before it has loaded. */
 export function newestMessageId(queryClient: QueryClient, agentId: string): number {
   const conversation = queryClient.getQueryData<Conversation>(messagesQuery(agentId).queryKey);
   return allMessages(conversation).at(-1)?.id ?? 0;
 }
 
-/**
- * One agent's conversation, kept current: the newest page loads first, then the event stream
- * adds what comes after it. The agent's status comes from the agent list stream, not this one.
- */
 export function useConversation(agentId: string, onRefused: () => void) {
   const queryClient = useQueryClient();
   const query = useInfiniteQuery(messagesQuery(agentId));

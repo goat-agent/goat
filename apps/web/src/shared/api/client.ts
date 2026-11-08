@@ -25,7 +25,6 @@ export class ApiError extends Error {
   }
 }
 
-/** The body of a successful response, or an `ApiError` with the status. */
 export async function unwrap<T>(
   request: Promise<{ data?: T; response: Response }>,
 ): Promise<NonNullable<T>> {
@@ -34,16 +33,12 @@ export async function unwrap<T>(
   return body;
 }
 
-/** Waits for a response that has no body worth reading, such as 202 or 204. */
 export async function expectOk(request: Promise<{ response: Response }>): Promise<void> {
   const { response } = await request;
   if (!response.ok) throw new ApiError(response.status);
 }
 
-/**
- * Sends a multipart form. openapi-fetch types binary fields as strings, so uploads go through
- * plain fetch and the response is checked against the schema instead.
- */
+// openapi-fetch types binary fields as strings, so uploads use fetch and check the schema here.
 export async function upload<T>(
   method: "POST" | "PUT",
   path: string,

@@ -20,7 +20,6 @@ import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { Label } from "@/shared/ui/label";
 
-/** `beforeSignOut` lets the caller stop what must not outlive the session, such as a call. */
 export function AccountForm({ beforeSignOut }: { beforeSignOut: () => void }) {
   const me = useMe();
   const queryClient = useQueryClient();

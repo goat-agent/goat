@@ -2,7 +2,6 @@ import { m } from "@/shared/i18n/paraglide/messages";
 import { isTheme, setTheme, useTheme } from "@/shared/lib/theme";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 
-/** Settings that belong to this browser rather than the account. */
 export function General() {
   const theme = useTheme();
   return (

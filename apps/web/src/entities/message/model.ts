@@ -3,13 +3,8 @@ import type { Message } from "@/shared/api/client";
 
 export type MessagePage = { messages: Message[] };
 
-/** Pages of a conversation, oldest page first; the cursor is the `before` id that loaded it. */
 export type Conversation = InfiniteData<MessagePage, number | undefined>;
 
-/**
- * Adds a message from the event stream. The stream can repeat a message after a reconnect, and a
- * message can arrive before or between loaded pages, so this keeps ids unique and in order.
- */
 export function withMessage(
   conversation: Conversation | undefined,
   message: Message,

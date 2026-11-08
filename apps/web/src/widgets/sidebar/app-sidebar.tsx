@@ -11,10 +11,6 @@ import { AgentList } from "./agent-list";
 const ICON_BUTTON =
   "grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground pointer-coarse:size-11";
 
-/**
- * The agent list with its search, new-agent button, and account button. The sidebar and the
- * narrow-screen page both show it; `frame` places its three parts.
- */
 function AgentPanel({
   isPage,
   frame,
@@ -97,7 +93,6 @@ function MeButton({ isPage }: { isPage: boolean }) {
   );
 }
 
-/** Beside the conversation, inset, collapsing to a column of faces. */
 export function AppSidebar() {
   return (
     <AgentPanel
@@ -115,7 +110,6 @@ export function AppSidebar() {
   );
 }
 
-/** On a narrow screen the list is its own page, the first one people see. */
 export function AgentListPage() {
   return (
     <AgentPanel

@@ -5,7 +5,6 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Material window size classes: sm and md are medium (600px), expanded is 840px. shadcn follows. */
 @theme {
   --breakpoint-sm: 37.5rem;
   --breakpoint-md: 37.5rem;

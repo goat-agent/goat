@@ -8,10 +8,6 @@ import { m } from "@/shared/i18n/paraglide/messages";
 import { listTime } from "@/shared/lib/time";
 import { Dots } from "@/shared/ui/dots";
 
-/**
- * What a row says about its agent, most pressing first. A new state (a new reply, waiting for
- * the user, a failed task) is a new case in `rowState` and a new entry in `rows`.
- */
 type RowState = "inCall" | "working" | "idle";
 
 function rowState(agent: Agent, call: Call | undefined): RowState {
@@ -20,8 +16,6 @@ function rowState(agent: Agent, call: Call | undefined): RowState {
   return "idle";
 }
 
-// `line` replaces the last message under the name. In the column of faces that line is hidden,
-// so `ring` puts a moving ring around the face instead.
 const rows: Record<RowState, { line: (agent: Agent) => ReactNode; ring: boolean }> = {
   inCall: {
     line: () => (

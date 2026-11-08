@@ -1,12 +1,6 @@
 import { z } from "zod";
 import { apiBase } from "./client";
 
-/**
- * Opens a server event stream and hands each event, checked against `schema`, to `onEvent`. The
- * browser reconnects by itself after a dropped connection and sends Last-Event-ID when it does;
- * it gives up only when the server refuses the stream, such as after the session ended, and then
- * `onRefused` runs. Returns a function that closes the stream.
- */
 export function listen<T>(
   path: string,
   types: readonly string[],

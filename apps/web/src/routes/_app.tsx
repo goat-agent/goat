@@ -12,7 +12,6 @@ import { m } from "@/shared/i18n/paraglide/messages";
 import { useWindowClass } from "@/shared/lib/window-class";
 import { SidebarInset, SidebarProvider } from "@/shared/ui/sidebar";
 
-// Dialogs live in the search so a reload or a link reopens them over the same page.
 const Search = z.object({
   dialog: z.enum(["settings", "agent", "new"]).optional().catch(undefined),
   tab: z.enum(settingsTabs).optional().catch(undefined),
@@ -59,7 +58,6 @@ function Shell() {
   }
   return (
     <SidebarProvider
-      // A medium window always shows the column of faces; only an expanded one can open fully.
       open={windowClass === "expanded" && isOpen}
       onOpenChange={(open) => {
         if (windowClass !== "expanded") return;

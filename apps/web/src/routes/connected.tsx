@@ -4,7 +4,6 @@ import { z } from "zod";
 import { finishConnecting, takeReturnPath } from "@/features/connect-integration";
 import { m } from "@/shared/i18n/paraglide/messages";
 
-/** Where the server sends the browser back after a service's sign-in. */
 export const Route = createFileRoute("/connected")({
   validateSearch: z.object({
     integration: z.string().optional().catch(undefined),

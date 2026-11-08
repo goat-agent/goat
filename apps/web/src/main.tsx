@@ -11,7 +11,6 @@ import { TooltipProvider } from "./shared/ui/tooltip";
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      // A 4xx will not change on retry; a dropped connection or a 5xx might.
       retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
     },
   },

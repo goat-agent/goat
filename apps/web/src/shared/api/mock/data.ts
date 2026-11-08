@@ -7,10 +7,6 @@ import {
   type User,
 } from "../client";
 
-// One account that shows every state the screens have: a working agent, a reply that asks to
-// connect a service, an account that needs reconnecting, steps taken on a Mac, files, and an
-// agent with no picture and no messages.
-
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
 
 export const me: User = {
@@ -202,7 +198,6 @@ export const devices: Device[] = [
 
 const faces = ["#ffb3c7,#c9a7ff", "#9fe3c9,#6cb8ff", "#ffd59e,#ff9d7a", "#d6e4ff,#a3b8ff"];
 
-/** A gradient face standing in for an uploaded picture. */
 export function faceSvg(seed: string): string {
   const index = Array.from(seed).reduce((sum, char) => sum + char.charCodeAt(0), 0) % faces.length;
   const [from, to] = (faces[index] ?? "").split(",");

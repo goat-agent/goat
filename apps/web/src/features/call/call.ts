@@ -5,16 +5,12 @@ export type Call = {
   agentId: string;
   phase: "connecting" | "connected" | "failed";
   problem?: "microphone" | "unreachable";
-  /** When audio started flowing, for the timer. */
   since?: number;
   isMuted: boolean;
-  /** The agent's voice is above the noise floor right now. */
   isSpeaking: boolean;
-  /** The newest message when the call began; cards from later messages show on the call. */
   after: number;
 };
 
-// One call at a time, kept outside React so it survives moving between conversations.
 const call = createStore<Call | undefined>(undefined);
 const speaker = new Audio();
 let connection: RTCPeerConnection | undefined;

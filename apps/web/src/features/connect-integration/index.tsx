@@ -7,10 +7,6 @@ import { Button } from "@/shared/ui/button";
 
 const RETURN_KEY = "connect-return";
 
-/**
- * Leaves for the service's sign-in in this tab. The server sends the browser back to /connected,
- * which finishes and returns to the page saved here.
- */
 export async function startConnecting(integrationId: string, agentId?: string): Promise<void> {
   const { url } = await unwrap(
     api.POST("/integrations/{id}/connect", {
@@ -22,7 +18,6 @@ export async function startConnecting(integrationId: string, agentId?: string): 
   location.assign(url);
 }
 
-/** Finishes a connection when the service sends the browser back. */
 export async function finishConnecting(
   integrationId: string,
   state: string,
@@ -36,7 +31,6 @@ export async function finishConnecting(
   );
 }
 
-/** The page saved before leaving, read once. */
 export function takeReturnPath(): string {
   const path = sessionStorage.getItem(RETURN_KEY) ?? "/";
   sessionStorage.removeItem(RETURN_KEY);
@@ -44,7 +38,6 @@ export function takeReturnPath(): string {
   return path.startsWith("/") && !path.startsWith("//") ? path : "/";
 }
 
-/** The card under a reply that asked the user to connect a service. */
 export function ConnectCard({ request, agentId }: { request: ConnectRequest; agentId: string }) {
   const integration = useIntegrations().find(({ id }) => id === request.integrationId);
   const [isLeaving, setIsLeaving] = useState(false);

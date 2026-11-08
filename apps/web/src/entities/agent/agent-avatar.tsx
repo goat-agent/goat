@@ -2,7 +2,6 @@ import { cn } from "cn";
 import { type Agent, avatarUrl } from "@/shared/api/client";
 import { Avatar, AvatarFallback, AvatarImage } from "@/shared/ui/avatar";
 
-/** An agent's face: its photo or the picture the server drew, and its first letter while loading. */
 export function AgentAvatar({
   agent,
   className,

@@ -1,6 +1,5 @@
 import { useSyncExternalStore } from "react";
 
-/** A value that lives outside React and that components read with `use`. */
 export type Store<T> = {
   get: () => T;
   set: (value: T) => void;

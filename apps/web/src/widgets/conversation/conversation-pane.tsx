@@ -48,7 +48,6 @@ export function ConversationPane({ agentId }: { agentId: string }) {
   const call = useCall();
   if (!agents) return <div className="flex-1" />;
   const agent = agents.find(({ id }) => id === agentId);
-  // A link to an agent that was deleted, or that belongs to someone else.
   if (!agent) return <Navigate to="/" search={{}} replace />;
   if (call?.agentId === agentId) return <CallPane agent={agent} />;
   return <ChatPane key={agentId} agent={agent} />;
@@ -177,7 +176,6 @@ function PendingTurn({
   return <UserTurn agentId={agent.id} message={pending} footer={footer} />;
 }
 
-/** Loads the page before the oldest loaded one when the reader reaches the top. */
 function OlderMessages({
   hasMore,
   isLoading,

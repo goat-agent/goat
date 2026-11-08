@@ -8,7 +8,6 @@ import { m } from "@/shared/i18n/paraglide/messages";
 import { Button } from "@/shared/ui/button";
 import { Heading, List, Row } from "./rows";
 
-/** The services the account has connected, and the catalog to connect another. */
 export function Integrations() {
   const integrations = useIntegrations();
   const queryClient = useQueryClient();

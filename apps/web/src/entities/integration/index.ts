@@ -12,7 +12,6 @@ export function useIntegrations(): Integration[] {
   return useQuery(integrationsQuery).data ?? [];
 }
 
-/** Connected with at least one account that still works. */
 export function isConnected(integration: Integration | undefined): boolean {
   return integration?.connections.some(({ needsReconnect }) => !needsReconnect) ?? false;
 }

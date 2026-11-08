@@ -19,7 +19,6 @@ import { Integrations } from "./integrations";
 export const settingsTabs = ["general", "account", "integrations", "devices"] as const;
 export type SettingsTab = (typeof settingsTabs)[number];
 
-// A new section is one entry here and one file beside this one.
 const sections: Record<
   SettingsTab,
   { label: () => string; icon: ReactNode; body: () => ReactNode }
@@ -34,10 +33,6 @@ const sections: Record<
   devices: { label: m.devices, icon: <LaptopIcon />, body: () => <Devices /> },
 };
 
-/**
- * Settings for the whole account, over whatever page is open. On a compact window the sections
- * are a list that opens each one, like a settings app.
- */
 export function SettingsDialog({
   tab,
   onTab,

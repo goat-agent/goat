@@ -14,7 +14,6 @@ import {
 } from "@/shared/ui/dropdown-menu";
 import { type Call, canChooseSpeaker, chooseSpeaker, endCall, startCall, toggleMute } from "./call";
 
-/** The conversation pane while a call is on: the face, what is happening, and the controls. */
 export function CallScreen({
   agent,
   call,
@@ -22,7 +21,6 @@ export function CallScreen({
 }: {
   agent: Agent;
   call: Call;
-  /** Cards from messages during the call that need a tap, such as connecting a service. */
   cards?: ReactNode;
 }) {
   const elapsed = useElapsed(call.since);

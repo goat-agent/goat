@@ -8,7 +8,6 @@ import { Button } from "@/shared/ui/button";
 
 export const Route = createFileRoute("/_app/")({ component: Home });
 
-/** A narrow screen starts at the list; a wide one goes back to the last conversation. */
 function Home() {
   const windowClass = useWindowClass();
   const agents = useAgents();
