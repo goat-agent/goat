@@ -1,11 +1,9 @@
 import createClient from "openapi-fetch";
 import type { z } from "zod";
 import { env } from "@/shared/config/env";
-import { host } from "@/shared/native";
 import type { components, paths } from "./schema.gen";
 
-// Inside the native app the server is a path on the page's own origin; the app adds the session.
-export const apiBase = host ? "/server" : env.VITE_API_URL;
+export const apiBase = env.VITE_API_URL;
 
 export const api = createClient<paths>({ baseUrl: apiBase, credentials: "include" });
 
@@ -44,8 +42,7 @@ export async function expectOk(request: Promise<{ response: Response }>): Promis
 
 /**
  * Sends a multipart form. openapi-fetch types binary fields as strings, so uploads go through
- * plain fetch and the response is checked against the schema instead. The form goes as bytes:
- * WebKit hands the native app no body for a form that holds files.
+ * plain fetch and the response is checked against the schema instead.
  */
 export async function upload<T>(
   method: "POST" | "PUT",
@@ -53,11 +50,9 @@ export async function upload<T>(
   form: FormData,
   schema: z.ZodType<T>,
 ): Promise<T> {
-  const encoded = new Response(form);
   const response = await fetch(`${apiBase}${path}`, {
     method,
-    body: await encoded.arrayBuffer(),
-    headers: { "Content-Type": encoded.headers.get("Content-Type") ?? "multipart/form-data" },
+    body: form,
     credentials: "include",
   });
   if (!response.ok) throw new ApiError(response.status);

@@ -2,7 +2,6 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   LaptopIcon,
-  MonitorIcon,
   PlugIcon,
   SunIcon,
   UserIcon,
@@ -12,14 +11,12 @@ import { AccountForm } from "@/features/account";
 import { endCall } from "@/features/call";
 import { m } from "@/shared/i18n/paraglide/messages";
 import { useWindowClass } from "@/shared/lib/window-class";
-import { host } from "@/shared/native";
 import { ResponsiveDialog } from "@/shared/ui/responsive-dialog";
 import { Devices } from "./devices";
 import { General } from "./general";
 import { Integrations } from "./integrations";
-import { ThisMac } from "./this-mac";
 
-export const settingsTabs = ["general", "account", "integrations", "devices", "thisMac"] as const;
+export const settingsTabs = ["general", "account", "integrations", "devices"] as const;
 export type SettingsTab = (typeof settingsTabs)[number];
 
 // A new section is one entry here and one file beside this one.
@@ -35,11 +32,7 @@ const sections: Record<
   },
   integrations: { label: m.integrations, icon: <PlugIcon />, body: () => <Integrations /> },
   devices: { label: m.devices, icon: <LaptopIcon />, body: () => <Devices /> },
-  thisMac: { label: m.this_mac, icon: <MonitorIcon />, body: () => <ThisMac /> },
 };
-
-// Only the Mac app can let the agent use the computer it runs on.
-const shownTabs = settingsTabs.filter((id) => id !== "thisMac" || host?.platform === "macos");
 
 /**
  * Settings for the whole account, over whatever page is open. On a compact window the sections
@@ -55,7 +48,7 @@ export function SettingsDialog({
   onClose: () => void;
 }) {
   const isCompact = useWindowClass() === "compact";
-  const shown = tab && shownTabs.includes(tab) ? tab : "general";
+  const shown = tab ?? "general";
   const isInSection = isCompact && tab !== undefined;
 
   return (
@@ -82,7 +75,7 @@ export function SettingsDialog({
             aria-label={m.settings()}
             className="flex w-full flex-col gap-0.5 p-3 md:w-46 md:shrink-0 md:border-e md:px-2"
           >
-            {shownTabs.map((id) => (
+            {settingsTabs.map((id) => (
               <button
                 key={id}
                 type="button"

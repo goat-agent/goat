@@ -9,8 +9,7 @@
     "preview": "vite preview",
     "generate": "tsr generate && paraglide-js compile --project ./project.inlang --outdir ./src/shared/i18n/paraglide --strategy preferredLanguage baseLocale && openapi-typescript ../shared/GoatAPI/Sources/GoatAPI/openapi.json -o ./src/shared/api/schema.gen.ts",
     "typecheck": "bun run generate && tsc --noEmit",
-    "test": "bun run generate && vitest run",
-    "bridge": "bun run scripts/export-bridge.ts"
+    "test": "bun run generate && vitest run"
   },
   "dependencies": {
     "@shadcn/react": "0.3.1",

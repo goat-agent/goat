@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { PlusIcon } from "lucide-react";
 import { useState } from "react";
-import { useConnect } from "@/features/connect-integration";
+import { startConnecting } from "@/features/connect-integration";
 import { IntegrationIcon, integrationsQuery, useIntegrations } from "@/entities/integration";
 import { api, expectOk, type Integration } from "@/shared/api/client";
 import { m } from "@/shared/i18n/paraglide/messages";
@@ -12,7 +12,6 @@ import { Heading, List, Row } from "./rows";
 export function Integrations() {
   const integrations = useIntegrations();
   const queryClient = useQueryClient();
-  const connect = useConnect();
   const [isAdding, setIsAdding] = useState(false);
   const connected = integrations.filter(({ connections }) => connections.length > 0);
 
@@ -39,7 +38,11 @@ export function Integrations() {
               icon={<IntegrationIcon src={integration.iconUrl} />}
               title={integration.name}
             >
-              <Button variant="outline" size="sm" onClick={() => void connect(integration.id)}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void startConnecting(integration.id)}
+              >
                 {m.connect()}
               </Button>
             </Row>
@@ -80,7 +83,6 @@ function Accounts({
   integration: Integration;
   onDisconnect: (connectionId: string) => Promise<void>;
 }) {
-  const connect = useConnect();
   return (
     <>
       <Row icon={<IntegrationIcon src={integration.iconUrl} />} title={integration.name}>
@@ -88,7 +90,7 @@ function Accounts({
           variant="ghost"
           size="sm"
           className="text-muted-foreground"
-          onClick={() => void connect(integration.id)}
+          onClick={() => void startConnecting(integration.id)}
         >
           {m.add_account()}
         </Button>
@@ -102,7 +104,11 @@ function Accounts({
           isWarning={connection.needsReconnect}
         >
           {connection.needsReconnect ? (
-            <Button variant="outline" size="sm" onClick={() => void connect(integration.id)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void startConnecting(integration.id)}
+            >
               {m.reconnect()}
             </Button>
           ) : (

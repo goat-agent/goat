@@ -30,7 +30,6 @@ import {
 } from "@/entities/message";
 import type { Agent, Message } from "@/shared/api/client";
 import { m } from "@/shared/i18n/paraglide/messages";
-import { moveWindow } from "@/shared/native";
 import { isSameDay } from "@/shared/lib/time";
 import { useWindowClass } from "@/shared/lib/window-class";
 import {
@@ -210,10 +209,7 @@ function Header({ agent }: { agent: Agent }) {
   }
 
   return (
-    <header
-      onMouseDown={moveWindow}
-      className="flex h-13 shrink-0 items-center gap-1 border-b px-2"
-    >
+    <header className="flex h-13 shrink-0 items-center gap-1 border-b px-2">
       {windowClass === "compact" ? (
         <Link
           to="/"

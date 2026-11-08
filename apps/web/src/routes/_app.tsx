@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Navigate, Outlet, useParams } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { z } from "zod";
 import { AgentDialog, NewAgentDialog } from "@/widgets/agent-dialog";
 import { SettingsDialog, settingsTabs } from "@/widgets/settings-dialog";
@@ -10,7 +10,6 @@ import { meQuery, useFillTimeZone, useRecheckSession } from "@/entities/me";
 import { ApiError } from "@/shared/api/client";
 import { m } from "@/shared/i18n/paraglide/messages";
 import { useWindowClass } from "@/shared/lib/window-class";
-import { host, onNativeEvent } from "@/shared/native";
 import { SidebarInset, SidebarProvider } from "@/shared/ui/sidebar";
 
 // Dialogs live in the search so a reload or a link reopens them over the same page.
@@ -44,14 +43,6 @@ const SIDEBAR_KEY = "sidebar-open";
 
 function Shell() {
   const queryClient = useQueryClient();
-  const navigate = Route.useNavigate();
-  useEffect(
-    () =>
-      onNativeEvent("openSettings", () => {
-        void navigate({ search: (previous) => ({ ...previous, dialog: "settings" as const }) });
-      }),
-    [navigate],
-  );
   useAgentListEvents(queryClient, useRecheckSession());
   useFillTimeZone();
   const windowClass = useWindowClass();
@@ -75,11 +66,7 @@ function Shell() {
         setIsOpen(open);
         localStorage.setItem(SIDEBAR_KEY, String(open));
       }}
-      style={{
-        "--sidebar-width": "17rem",
-        // Wide enough for the Mac window's buttons, which sit at the top of the column.
-        "--sidebar-width-icon": host?.platform === "macos" ? "4.875rem" : "3.25rem",
-      }}
+      style={{ "--sidebar-width": "17rem", "--sidebar-width-icon": "3.25rem" }}
       className="h-dvh min-h-0"
     >
       <AppSidebar />

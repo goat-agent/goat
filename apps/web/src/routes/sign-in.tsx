@@ -2,7 +2,6 @@ import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import { CodeForm, EmailForm } from "@/features/sign-in";
 import { m } from "@/shared/i18n/paraglide/messages";
-import { moveWindow } from "@/shared/native";
 
 export const Route = createFileRoute("/sign-in")({
   validateSearch: z.object({ email: z.email().optional().catch(undefined) }),
@@ -12,7 +11,7 @@ export const Route = createFileRoute("/sign-in")({
 function SignIn() {
   const { email } = Route.useSearch();
   return (
-    <main onMouseDown={moveWindow} className="grid min-h-dvh place-items-center bg-background p-6">
+    <main className="grid min-h-dvh place-items-center bg-background p-6">
       <div className="flex w-full max-w-90 flex-col gap-5">
         <div className="grid size-11 place-items-center rounded-xl bg-primary text-lg font-bold text-primary-foreground">
           G
