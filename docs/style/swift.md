@@ -48,6 +48,3 @@ cites its source.
 - Keep `body` cheap: no formatters, parsing, or other work there. Do no work in a view's `init`.
 - Extract a subview when a part has its own state or repeats.
 - Pass views the narrowest data they need, so they redraw only when it changes.
-- Build screens from the parts in `apps/shared/GoatKit/UI`, which keep SwiftUI's own controls
-  underneath for keyboard and accessibility (see the design notes in
-  [apps/ios/AGENTS.md](../../apps/ios/AGENTS.md)).

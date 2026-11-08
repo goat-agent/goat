@@ -2,9 +2,9 @@
 
 Read [docs/style/typescript.md](../../docs/style/typescript.md) before writing TypeScript.
 
-The web app is a conversation client like the iPhone app, and the design reference the Apple apps
-will follow later. Every feature must be reachable by a visible control: hover and right-click
-may only be shortcuts, because touch has neither.
+The web app is the browser client, and the design reference the Apple apps will follow. Every
+feature must be reachable by a visible control: hover and right-click may only be shortcuts,
+because touch has neither.
 
 ## Map
 

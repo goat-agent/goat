@@ -11,7 +11,7 @@ tools="$(xcode-select -p)/../Applications"
 open "$tools/DeviceHub.app" 2>/dev/null || open "$tools/Simulator.app"
 
 xcodebuild -project Goat.xcodeproj -scheme Goat -destination "id=$device" \
-  -derivedDataPath DerivedData -skipPackagePluginValidation -quiet build
+  -derivedDataPath DerivedData -quiet build
 xcrun simctl install "$device" DerivedData/Build/Products/Debug-iphonesimulator/Goat.app
 
 trap 'xcrun simctl terminate "$device" com.goatagent.goat' EXIT

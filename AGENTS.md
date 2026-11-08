@@ -8,7 +8,8 @@ and the agent can use a signed-in Mac through computer use.
 
 - `apps/server` — Bun, Hono, Drizzle on Postgres, Better Auth, Vercel AI SDK. See
   [apps/server/AGENTS.md](apps/server/AGENTS.md).
-- `apps/ios` — SwiftUI app for iOS 26+. See [apps/ios/AGENTS.md](apps/ios/AGENTS.md).
+- `apps/ios` — SwiftUI app for iOS 26+, only the app shell so far. See
+  [apps/ios/AGENTS.md](apps/ios/AGENTS.md).
 - `apps/macos` — Swift app for macOS 26+, distributed outside the App Store. Its window shows
   `apps/web`; the Swift does what only the Mac can: computer use (the `Computer` package), the
   permissions, and the menu bar. See [apps/macos/AGENTS.md](apps/macos/AGENTS.md).
@@ -31,7 +32,7 @@ and the agent can use a signed-in Mac through computer use.
 bun install
 docker compose up -d                 # local Postgres and file storage (RustFS)
 bun run dev                          # server and web
-bun run dev:ios                      # the iPhone app, beside bun run dev; also dev:macos
+bun run dev:ios                      # the iPhone app in the simulator; also dev:macos
 bun run typecheck                    # tsc for every workspace
 bun run lint                         # oxlint, type-aware; warnings fail
 bun run format                       # oxfmt; format:check only checks

@@ -83,7 +83,7 @@ bun test
 ## Routes
 
 - Define every route with `createRoute`, an `operationId`, and `security: [{ bearer: [] }]` when
-  it needs a session. The iOS client's method names come from `operationId`.
+  it needs a session. Generated clients name their methods after `operationId`.
 - Use `body()` for request bodies, `json()` and `error()` for responses, `openEnum()` for
   enum-like fields (all in `src/lib/openapi.ts`).
 - Return only public shapes (`publicAgent`, `publicMessage`). Rows carry fields users must not
