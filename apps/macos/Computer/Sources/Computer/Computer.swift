@@ -1,439 +1,277 @@
 import AppKit
 import ApplicationServices
-import GoatAPI
 
-/// Runs what the agent asks of this Mac. It works in the background through accessibility
-/// whenever it can: pressing, setting values, choosing menu items, and typing reach one app without
-/// touching the user's pointer or front app. Pointer gestures need the real pointer, so for those
-/// it borrows the screen for a moment and gives it back.
+/// Looks at and acts in the windows of this Mac without taking over the user's screen. Each action
+/// runs in the first way that reaches the app from the background: a press through accessibility,
+/// then posted events. What only works in front is done in front, and only after the user says yes.
 public actor Computer {
-  public typealias Outcome = Components.Schemas.ComputerOutcome
-  public typealias View = Components.Schemas.ComputerView
-  public typealias Target = Components.Schemas.ComputerTarget
+  /// Asks the user whether an app may come to the front; `app` is its name.
+  public typealias Consent = @Sendable (_ app: String) async -> Bool
 
-  /// Told when a borrow starts, with the app's name, and when it ends, with nil.
-  public typealias BorrowObserver = @Sendable (String?) async -> Void
+  private struct Peeked {
+    let original: CGPoint
+    let moved: CGPoint
+    var until: ContinuousClock.Instant
+  }
 
-  static let screenRef = "screen"
   private static let settle = Duration.milliseconds(350)
-  private static let chromium: Set<String> = [
-    "com.google.Chrome", "com.google.Chrome.canary", "com.microsoft.edgemac", "com.brave.Browser",
-    "company.thebrowser.Browser", "com.vivaldi.Vivaldi", "com.operasoftware.Opera",
-  ]
+  private static let peekLasts = Duration.seconds(60)
 
-  private struct Geometry {
-    /// The image the agent last saw of the window, in pixels.
-    let imageSize: CGSize
-  }
+  private let askToBringForward: Consent
+  private var imageSizes: [CGWindowID: CGSize] = [:]
+  private var kinds: [pid_t: AppKind] = [:]
+  private var peeked: [CGWindowID: Peeked] = [:]
+  private var restoringPeeks: Task<Void, Never>?
 
-  private enum Resolved {
-    case element(Elements.Entry)
-    case point(CGPoint, window: WindowInfo?)
-  }
-
-  /// The element the agent named changed; nothing was done.
-  private struct Stale: Error {
-    let window: CGWindowID
-  }
-
-  private let elements = Elements()
-  private let onBorrow: BorrowObserver
-  private var geometry: [String: Geometry] = [:]
-  private var lastRefs: [CGWindowID: Set<String>] = [:]
-  private var preparedApps: Set<pid_t> = []
-  private var isStopped = false
-
-  public init(onBorrow: @escaping BorrowObserver) {
-    self.onBorrow = onBorrow
-  }
-
-  /// Ends a borrow in progress; called when the user presses Esc or chooses Stop.
-  public func stop() {
-    isStopped = true
+  public init(askToBringForward: @escaping Consent) {
+    self.askToBringForward = askToBringForward
   }
 
   // MARK: Looking
 
-  public func screen(includeImage: Bool) async throws -> Components.Schemas.ComputerScreen {
+  public func windows() async -> [WindowSummary] {
+    let front = await MainActor.run { NSWorkspace.shared.frontmostApplication?.processIdentifier }
     let windows = WindowCatalog.all()
-    let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
-    let frontWindow = windows.first { $0.pid == front && !$0.isMinimized }?.id
-    var screen = Components.Schemas.ComputerScreen(
-      ref: Self.screenRef,
-      windows: windows.map {
-        .init(
-          ref: String($0.id), app: $0.app, title: $0.title, isFront: $0.id == frontWindow,
-          isMinimized: $0.isMinimized)
-      }
-    )
-    if includeImage {
-      let bounds = CGDisplayBounds(CGMainDisplayID())
-      let image = Capture.forModel(try await Capture.screen(), points: bounds.size)
-      geometry[Self.screenRef] = Geometry(
-        imageSize: CGSize(width: image.width, height: image.height))
-      screen.image = try encode(image)
-    }
-    return screen
+    let frontWindow = windows.first { $0.isOnScreen && $0.pid == front }?.id
+    return windows.map { summary(of: $0, isFront: $0.id == frontWindow) }
   }
 
-  public func view(
-    window ref: String, region: CGRect? = nil, waitSeconds: Double? = nil
-  ) async throws -> View {
-    if let waitSeconds, waitSeconds > 0 {
-      try await Task.sleep(for: .seconds(min(waitSeconds, 60)))
-    }
-    if ref == Self.screenRef { return try await screenView(region: region) }
-    guard let id = CGWindowID(ref), var info = WindowCatalog.window(id) else {
-      throw ComputerError.windowGone
-    }
-    if info.isMinimized, let element = WindowCatalog.element(of: info) {
-      element.set(kAXMinimizedAttribute, to: kCFBooleanFalse)
-      try await Task.sleep(for: .milliseconds(400))
-      info = WindowCatalog.window(id) ?? info
-    }
-    prepare(info.pid)
-
-    let full = try await Capture.window(id)
-    let header = Components.Schemas.ComputerWindow(ref: ref, app: info.app, title: info.title)
-    if let region { return try zoom(full, region: region, ref: ref, header: header) }
-
-    let image = Capture.forModel(full, points: info.frame.size)
-    geometry[ref] = Geometry(imageSize: CGSize(width: image.width, height: image.height))
-    var nodes: [Components.Schemas.ComputerNode] = []
-    var isTruncated = false
-    // Apps build their accessibility tree on demand, so a window that just opened can read empty.
-    for attempt in 0..<4 {
-      if attempt > 0 { try await Task.sleep(for: .milliseconds(250)) }
-      guard let element = WindowCatalog.element(of: info) else { continue }
-      let snapshot = Snapshot(window: element, id: id, frame: info.frame, elements: elements)
-      guard !snapshot.nodes.isEmpty else { continue }
-      nodes = snapshot.nodes
-      isTruncated = snapshot.isTruncated
-      elements.keep(snapshot.refs.union(lastRefs[id] ?? []), in: id)
-      lastRefs[id] = snapshot.refs
-      break
-    }
-    return View(
-      window: header, image: try encode(image), nodes: nodes,
-      isTruncated: isTruncated ? true : nil)
+  public func view(window ref: String, region: CGRect? = nil, wait: Duration? = nil) async throws
+    -> View
+  {
+    if let wait { try await Task.sleep(for: min(wait, .seconds(60))) }
+    let window = try resolve(ref)
+    if WindowCatalog.isMinimized(window) { throw ComputerError.minimized }
+    await keepVisible(window)
+    return try await capture(window, region: region)
   }
 
   // MARK: Acting
 
-  public func click(
-    _ target: Target, button: String?, count: Int?, modifiers: [String]
-  ) async throws -> Outcome {
-    try await act {
-      let resolved = try resolve(target)
-      let flags = Input.flags(modifiers)
-      let clicks = count ?? 1
-      if case .element(let entry) = resolved, flags.isEmpty, clicks == 1 {
-        let actions = entry.element.actions()
-        if button == nil || button == "left" {
-          if actions.contains(kAXPressAction), entry.element.perform(kAXPressAction) {
-            return entry.window
-          }
-          if entry.element.isSettable(kAXSelectedAttribute),
-            entry.element.set(kAXSelectedAttribute, to: kCFBooleanTrue)
-          {
-            return entry.window
-          }
-        } else if button == "right", actions.contains(kAXShowMenuAction),
-          entry.element.perform(kAXShowMenuAction)
-        {
-          return entry.window
-        }
-      }
-      let (point, pid, window) = try locate(resolved)
-      let mouseButton: CGMouseButton =
-        switch button {
-        case "right": .right
-        case "middle": .center
-        default: .left
-        }
-      try await borrow(pid: pid, window: window) {
-        await Input.click(at: point, button: mouseButton, count: clicks, flags: flags)
-      }
-      return window
-    }
-  }
+  public func perform(_ action: Action, window ref: String, foreground: Bool) async throws
+    -> Outcome
+  {
+    let window = try resolve(ref)
+    let element = WindowCatalog.element(of: window)
+    if foreground { return try await performInFront(action, window: window, element: element) }
+    if element?.bool(kAXMinimizedAttribute) == true { return .notDone(.minimized) }
+    if case .move = action { return .notDone(.needsForeground) }
 
-  public func hover(_ target: Target) async throws -> Outcome {
-    let (point, pid, window) = try locate(try resolve(target))
-    // What hovering reveals goes away with the pointer, so the look happens before giving it back.
-    let view = try await borrow(pid: pid, window: window) { () async throws -> View? in
-      Input.move(to: point)
-      try await Task.sleep(for: .milliseconds(600))
-      guard let window else { return nil }
-      return try await self.view(window: String(window))
-    }
-    return Outcome(view: view)
-  }
+    let kind = kind(of: window.pid)
+    await keepVisible(window)
+    let current = WindowCatalog.window(window.id) ?? window
+    let onScreen = try action.mapped { try screenPoint($0, in: current) }
+    element?.set(kAXMainAttribute, to: kCFBooleanTrue)
 
-  public func drag(_ from: Target, to: Target, modifiers: [String]) async throws -> Outcome {
-    try await act {
-      let (start, pid, window) = try locate(try resolve(from))
-      let (end, _, _) = try locate(try resolve(to))
-      try await borrow(pid: pid, window: window) {
-        await Input.drag(from: start, to: end, flags: Input.flags(modifiers))
-      }
-      return window
-    }
-  }
-
-  public func scroll(_ target: Target, direction: String, amount: Int) async throws -> Outcome {
-    try await act {
-      let (point, pid, window) = try locate(try resolve(target))
-      let notches = Int32(clamping: max(1, amount))
-      let (dx, dy): (Int32, Int32) =
-        switch direction {
-        case "up": (0, notches)
-        case "left": (notches, 0)
-        case "right": (-notches, 0)
-        default: (0, -notches)
-        }
-      try await borrow(pid: pid, window: window) {
-        await Input.scroll(at: point, dx: dx, dy: dy)
-      }
-      return window
-    }
-  }
-
-  public func type(_ target: Target, text: String) async throws -> Outcome {
-    try await act {
-      switch try resolve(target) {
-      case .element(let entry):
-        entry.element.set(kAXFocusedAttribute, to: kCFBooleanTrue)
-        // Inserting at the caret through accessibility needs no keyboard focus at all.
-        if entry.element.isSettable(kAXSelectedTextAttribute),
-          entry.element.set(kAXSelectedTextAttribute, to: text as CFString)
-        {
-          return entry.window
-        }
-        guard let pid = entry.element.pid else { throw ComputerError.windowGone }
-        await Input.type(text, to: .app(pid))
-        return entry.window
-      case .point(let point, let window) where target.x != nil:
-        guard let window else { throw ComputerError.windowGone }
-        try await borrow(pid: window.pid, window: window.id) {
-          await Input.click(at: point, button: .left, count: 1, flags: [])
-          await Input.type(text, to: .system)
-        }
-        return window.id
-      case .point(_, let window):
-        guard let window else { throw ComputerError.windowGone }
-        await Input.type(text, to: .app(window.pid))
-        return window.id
-      }
-    }
-  }
-
-  public func key(_ target: Target, keys: String, repeating times: Int?) async throws -> Outcome {
-    let chord = try Input.chord(keys)
-    return try await act {
-      switch try resolve(target) {
-      case .element(let entry):
-        entry.element.set(kAXFocusedAttribute, to: kCFBooleanTrue)
-        guard let pid = entry.element.pid else { throw ComputerError.windowGone }
-        await Input.press(chord, times: times ?? 1, to: .app(pid))
-        return entry.window
-      case .point(_, let window):
-        guard let window else { throw ComputerError.windowGone }
-        await Input.press(chord, times: times ?? 1, to: .app(window.pid))
-        return window.id
-      }
-    }
-  }
-
-  public func set(_ target: Target, value: String) async throws -> Outcome {
-    try await act {
-      guard case .element(let entry) = try resolve(target) else { throw ComputerError.notAnElement }
-      try Values.set(entry.element, role: entry.role, to: value)
-      return entry.window
-    }
-  }
-
-  public func menu(window ref: String, path: [String]) async throws -> Outcome {
-    try await act {
-      guard let id = CGWindowID(ref), let info = WindowCatalog.window(id) else {
-        throw ComputerError.windowGone
-      }
-      try Menus.choose(path, in: info.pid)
-      return id
-    }
-  }
-
-  public func open(app: String?, path: String?, url: String?) async throws -> Outcome {
-    try await act {
-      let pid = try await Opening.open(app: app, path: path, url: url)
-      if let window = try await Opening.firstWindow(of: pid, within: .milliseconds(1500)) {
-        return window
-      }
-      // Some apps, Calculator among them, make their first window only when they come to the
-      // front; bring it forward for a moment, and the window stays when the user's app returns.
-      return try await borrow(pid: pid, window: nil) {
-        try await Opening.firstWindow(of: pid, within: .seconds(4))
-      }
-    }
-  }
-
-  public func clipboard(text: String?, path: String?) -> Outcome {
-    if text != nil || path != nil {
-      Opening.copy(text: text, path: path)
-      return Outcome()
-    }
-    let contents = Opening.pasteboard()
-    return Outcome(clipboard: .init(text: contents.text, files: contents.files))
-  }
-
-  // MARK: Plumbing
-
-  /// Runs an action, lets the app settle, and looks at the window it changed. A stale element
-  /// becomes an outcome that says so, with the window as it is now.
-  private func act(_ work: () async throws -> CGWindowID?) async throws -> Outcome {
-    do {
-      let window = try await work()
-      try await Task.sleep(for: Self.settle)
-      guard let window, WindowCatalog.window(window) != nil else { return Outcome() }
-      return Outcome(view: try await view(window: String(window)))
-    } catch let stale as Stale {
-      return Outcome(view: try await view(window: String(stale.window)), isStale: true)
-    }
-  }
-
-  private func resolve(_ target: Target) throws -> Resolved {
-    if let ref = target.element {
-      guard let entry = elements.entry(ref) else { throw ComputerError.unknownRef }
-      if entry.element.isAlive { return .element(entry) }
-      if let found = refind(entry) { return .element(found) }
-      throw Stale(window: entry.window)
-    }
-    guard let ref = target.window else { throw ComputerError.unknownRef }
-    let window = ref == Self.screenRef ? nil : CGWindowID(ref).flatMap(WindowCatalog.window)
-    let frame =
-      ref == Self.screenRef ? CGDisplayBounds(CGMainDisplayID()) : window?.frame
-    guard let frame else { throw ComputerError.windowGone }
-    guard let x = target.x, let y = target.y else {
-      return .point(CGPoint(x: frame.midX, y: frame.midY), window: window)
-    }
-    // Points are pixels of the last full image of the window; the window may have moved since.
-    let image = geometry[ref]?.imageSize ?? frame.size
-    return .point(
-      CGPoint(
-        x: frame.minX + x * frame.width / image.width,
-        y: frame.minY + y * frame.height / image.height),
-      window: window)
-  }
-
-  /// The element again, when its app replaced it with an equal one at the same place.
-  private func refind(_ entry: Elements.Entry) -> Elements.Entry? {
-    guard let info = WindowCatalog.window(entry.window),
-      var element = WindowCatalog.element(of: info)
-    else { return nil }
-    for index in entry.path {
-      let children = element.children()
-      guard index < children.count else { return nil }
-      element = children[index]
-    }
-    let values = element.attributes([kAXRoleAttribute, kAXTitleAttribute, kAXDescriptionAttribute])
-    let label =
-      values[kAXTitleAttribute] as? String ?? values[kAXDescriptionAttribute] as? String
-    guard values[kAXRoleAttribute] as? String == entry.role,
-      (label ?? "").isEmpty ? entry.label == nil : label == entry.label
-    else { return nil }
-    return .init(
-      element: element, window: entry.window, role: entry.role, label: entry.label,
-      path: entry.path)
-  }
-
-  private func locate(_ resolved: Resolved) throws -> (CGPoint, pid_t, CGWindowID?) {
-    switch resolved {
-    case .element(let entry):
-      guard let frame = entry.element.frame, let pid = entry.element.pid else {
-        throw Stale(window: entry.window)
-      }
-      return (CGPoint(x: frame.midX, y: frame.midY), pid, entry.window)
-    case .point(let point, let window):
-      if let window { return (point, window.pid, window.id) }
-      let front = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
-      return (point, front, nil)
-    }
-  }
-
-  /// Takes the user's pointer and front app for `work` and gives both back afterwards.
-  private func borrow<T>(
-    pid: pid_t, window: CGWindowID?, _ work: () async throws -> T
-  ) async throws -> T {
-    isStopped = false
-    let app = NSRunningApplication(processIdentifier: pid)
-    await onBorrow(app?.localizedName ?? "")
-    let previousApp = NSWorkspace.shared.frontmostApplication
-    let previousPoint = CGEvent(source: nil)?.location
-    defer {
-      if let previousPoint { CGWarpMouseCursorPosition(previousPoint) }
-      if let previous = previousApp?.processIdentifier, previous != pid {
-        AXUIElement.application(previous).set(kAXFrontmostAttribute, to: kCFBooleanTrue)
-      }
-    }
-
-    // Since macOS 14 an app in the background cannot activate another one; accessibility can,
-    // as window managers do.
-    AXUIElement.application(pid).set(kAXFrontmostAttribute, to: kCFBooleanTrue)
-    if let window, let info = WindowCatalog.window(window) {
-      WindowCatalog.element(of: info)?.perform(kAXRaiseAction)
-    }
-    try await Task.sleep(for: .milliseconds(150))
-    do {
-      guard !isStopped else { throw ComputerError.stopped }
-      let result = try await work()
-      guard !isStopped else { throw ComputerError.stopped }
-      await onBorrow(nil)
-      return result
-    } catch {
-      await onBorrow(nil)
-      throw error
-    }
-  }
-
-  /// Turns on the accessibility trees that Chromium and Electron apps build only on request.
-  private func prepare(_ pid: pid_t) {
-    guard preparedApps.insert(pid).inserted else { return }
-    let app = AXUIElement.application(pid)
-    app.set("AXManualAccessibility", to: kCFBooleanTrue)
-    if let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier,
-      Self.chromium.contains(id)
+    if case .click(let point, .left, 1, []) = onScreen,
+      AccessibilityPress.pressControl(at: point, pid: window.pid)
     {
-      app.set("AXEnhancedUserInterface", to: kCFBooleanTrue)
+      return try await done(.background, window: window)
+    }
+    if case .key(let combo, _) = action, combo.modifiers.contains(.command), kind == .chromium {
+      return .notDone(.needsForeground)
+    }
+    if kind == .uikit && action.isPointer { return .notDone(.needsForeground) }
+
+    await Input(route: .background(pid: window.pid, window: window.id)).perform(onScreen)
+    return try await done(.background, window: window)
+  }
+
+  public func open(_ target: OpenTarget, foreground: Bool) async throws -> Outcome {
+    if foreground, await !askToBringForward(target.name) { return .notDone(.declined) }
+    let pid = try await Self.open(target.url(), activates: foreground)
+    for _ in 0..<30 {
+      if let window = WindowCatalog.all().first(where: { $0.pid == pid && $0.isOnScreen }) {
+        try await Task.sleep(for: Self.settle)
+        return Outcome(
+          result: .done(foreground ? .foreground : .background),
+          view: try await capture(window, region: nil))
+      }
+      try await Task.sleep(for: .milliseconds(200))
+    }
+    if !foreground { return .notDone(.needsForeground) }
+    throw ComputerError.noWindowOpened
+  }
+
+  // MARK: Steps
+
+  private func performInFront(_ action: Action, window: Window, element: AXUIElement?) async throws
+    -> Outcome
+  {
+    guard await askToBringForward(window.app) else { return .notDone(.declined) }
+    let id = window.id
+    let hovering: Bool
+    if case .move = action { hovering = true } else { hovering = false }
+    let size = imageSizes[id]
+    let view: View? = try await ForegroundSession(pid: window.pid, window: element).run {
+      guard let current = WindowCatalog.window(id) else { throw ComputerError.windowGone }
+      let onScreen = try action.mapped { try Self.screenPoint($0, in: current, imageSize: size) }
+      await Input(route: .foreground).perform(onScreen)
+      guard hovering else { return nil }
+      try await Task.sleep(for: .milliseconds(700))
+      return try await self.capture(current, region: nil)
+    }
+    if let view { return Outcome(result: .done(.foreground), view: view) }
+    return try await done(.foreground, window: window)
+  }
+
+  private func done(_ delivery: Outcome.Delivery, window: Window) async throws -> Outcome {
+    try await Task.sleep(for: Self.settle)
+    let current = WindowCatalog.window(window.id) ?? window
+    return Outcome(result: .done(delivery), view: try await capture(current, region: nil))
+  }
+
+  private func capture(_ window: Window, region: CGRect?) async throws -> View {
+    let full = try await Capture.window(window.id)
+    let summary = summary(of: window, isFront: false)
+    if let region {
+      let shown = imageSizes[window.id] ?? window.frame.size
+      let scale = CGFloat(full.width) / shown.width
+      let crop = CGRect(
+        x: region.minX * scale, y: region.minY * scale, width: region.width * scale,
+        height: region.height * scale
+      ).integral.intersection(CGRect(x: 0, y: 0, width: full.width, height: full.height))
+      guard let zoom = full.cropping(to: crop) else { throw ComputerError.outsideWindow }
+      return try encode(zoom, points: crop.size, window: summary)
+    }
+    let size = Capture.sizeForModel(of: full, points: window.frame.size)
+    imageSizes[window.id] = size
+    guard let image = Capture.resized(full, to: size) else { throw ComputerError.captureFailed }
+    return try encode(image, points: size, window: summary)
+  }
+
+  private func encode(_ image: CGImage, points: CGSize, window: WindowSummary) throws -> View {
+    let size = Capture.sizeForModel(of: image, points: points)
+    guard let scaled = Capture.resized(image, to: size), let jpeg = Capture.jpeg(scaled) else {
+      throw ComputerError.captureFailed
+    }
+    return View(window: window, jpeg: jpeg, width: scaled.width, height: scaled.height)
+  }
+
+  /// Slides a fully covered Chromium window so a strip of it shows, and puts it back once the
+  /// agent has left it alone for a while.
+  private func keepVisible(_ window: Window) async {
+    guard kind(of: window.pid) == .chromium else { return }
+    if var known = peeked[window.id] {
+      known.until = .now + Self.peekLasts
+      peeked[window.id] = known
+      return
+    }
+    let covers = WindowCatalog.framesAbove(window)
+    let screens = Self.screens()
+    guard Peek.isFullyCovered(window.frame, by: covers, screens: screens),
+      let origin = Peek.origin(for: window.frame, covers: covers, screens: screens),
+      WindowCatalog.element(of: window)?.move(to: origin) == true
+    else { return }
+    peeked[window.id] = Peeked(
+      original: window.frame.origin, moved: origin, until: .now + Self.peekLasts)
+    restoringPeeks = restoringPeeks ?? Task { await restorePeeks() }
+    try? await Task.sleep(for: .milliseconds(500))
+  }
+
+  private func restorePeeks() async {
+    while !peeked.isEmpty {
+      try? await Task.sleep(for: .seconds(5))
+      for (id, peek) in peeked where peek.until <= .now {
+        peeked[id] = nil
+        guard let window = WindowCatalog.window(id), window.frame.origin == peek.moved else {
+          continue
+        }
+        WindowCatalog.element(of: window)?.move(to: peek.original)
+      }
+    }
+    restoringPeeks = nil
+  }
+
+  private func resolve(_ ref: String) throws -> Window {
+    guard let id = CGWindowID(ref), let window = WindowCatalog.window(id) else {
+      throw ComputerError.windowGone
+    }
+    return window
+  }
+
+  private func kind(of pid: pid_t) -> AppKind {
+    if let known = kinds[pid] { return known }
+    let kind = AppKind.of(pid)
+    kinds[pid] = kind
+    return kind
+  }
+
+  private func screenPoint(_ point: CGPoint, in window: Window) throws -> CGPoint {
+    try Self.screenPoint(point, in: window, imageSize: imageSizes[window.id])
+  }
+
+  private static func screenPoint(_ point: CGPoint, in window: Window, imageSize: CGSize?) throws
+    -> CGPoint
+  {
+    let image = imageSize ?? window.frame.size
+    guard (0...image.width).contains(point.x), (0...image.height).contains(point.y) else {
+      throw ComputerError.outsideWindow
+    }
+    return CGPoint(
+      x: window.frame.minX + point.x * window.frame.width / image.width,
+      y: window.frame.minY + point.y * window.frame.height / image.height)
+  }
+
+  private func summary(of window: Window, isFront: Bool) -> WindowSummary {
+    WindowSummary(
+      ref: String(window.id), app: window.app, title: window.title, isFront: isFront,
+      isMinimized: !window.isOnScreen)
+  }
+
+  @MainActor
+  private static func open(_ url: URL, activates: Bool) async throws -> pid_t {
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.activates = activates
+    let app =
+      url.pathExtension == "app"
+      ? try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+      : try await NSWorkspace.shared.open(url, configuration: configuration)
+    return app.processIdentifier
+  }
+
+  private static func screens() -> [CGRect] {
+    var count: UInt32 = 0
+    guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+    var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+    guard CGGetActiveDisplayList(count, &displays, &count) == .success else { return [] }
+    return displays.prefix(Int(count)).map(CGDisplayBounds)
+  }
+}
+
+extension OpenTarget {
+  fileprivate var name: String {
+    switch self {
+    case .app(let name): name
+    case .file(let path): (path as NSString).lastPathComponent
+    case .url(let url): url.host() ?? url.absoluteString
     }
   }
 
-  private func screenView(region: CGRect?) async throws -> View {
-    let bounds = CGDisplayBounds(CGMainDisplayID())
-    let full = try await Capture.screen()
-    let header = Components.Schemas.ComputerWindow(ref: Self.screenRef, app: "", title: "Screen")
-    if let region { return try zoom(full, region: region, ref: Self.screenRef, header: header) }
-    let image = Capture.forModel(full, points: bounds.size)
-    geometry[Self.screenRef] = Geometry(imageSize: CGSize(width: image.width, height: image.height))
-    return View(window: header, image: try encode(image), nodes: [])
+  fileprivate func url() throws -> URL {
+    switch self {
+    case .app(let name):
+      guard let url = Self.application(named: name) else { throw ComputerError.appNotFound(name) }
+      return url
+    case .file(let path):
+      return URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+    case .url(let url):
+      return url
+    }
   }
 
-  /// Part of the window at full resolution. Points stay in the last full image's pixels.
-  private func zoom(
-    _ full: CGImage, region: CGRect, ref: String, header: Components.Schemas.ComputerWindow
-  ) throws -> View {
-    let shown = geometry[ref]?.imageSize ?? CGSize(width: full.width, height: full.height)
-    let scale = CGFloat(full.width) / shown.width
-    let rect = CGRect(
-      x: region.minX * scale, y: region.minY * scale, width: region.width * scale,
-      height: region.height * scale)
-    guard let cropped = Capture.crop(full, to: rect) else { throw ComputerError.windowGone }
-    let image = Capture.forModel(
-      cropped, points: CGSize(width: cropped.width, height: cropped.height))
-    return View(window: header, image: try encode(image), nodes: [])
-  }
-
-  private func encode(_ image: CGImage) throws -> Components.Schemas.ComputerImage {
-    guard let data = Capture.jpeg(image) else { throw ComputerError.windowGone }
-    return .init(data: data, width: image.width, height: image.height)
+  private static func application(named name: String) -> URL? {
+    let folders = [
+      "/Applications", "/Applications/Utilities", "/System/Applications",
+      "/System/Applications/Utilities", NSHomeDirectory() + "/Applications",
+    ]
+    let wanted = name.lowercased().replacing(/\.app$/, with: "")
+    for folder in folders {
+      let names = (try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? []
+      if let match = names.first(where: { $0.lowercased() == wanted + ".app" }) {
+        return URL(fileURLWithPath: folder).appending(path: match)
+      }
+    }
+    return nil
   }
 }

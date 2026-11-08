@@ -69,13 +69,11 @@ async function signInDevice(email: string, name: string, platform = "macos") {
 const image = { data: "aW1hZ2U=", width: 1280, height: 800 };
 
 const keynote = {
-  window: { ref: "win-7", app: "Keynote", title: "3분기 발표" },
-  image,
-  nodes: [
-    { depth: 0, role: "toolbar" },
-    { depth: 1, role: "button", label: "Export", ref: "el-1" },
-    { depth: 1, role: "text field", label: "Title", value: "Q3", ref: "el-2", states: ["focused"] },
-  ],
+  ref: "win-7",
+  app: "Keynote",
+  title: "3분기 발표",
+  isFront: false,
+  isMinimized: false,
 };
 
 beforeEach(async () => {
@@ -167,30 +165,16 @@ describe("devices", () => {
 });
 
 describe("computer tools", () => {
-  test("the agent looks at the Mac, clicks by element id, and the screens shrink afterwards", async () => {
+  test("the agent lists windows, looks at one, clicks a point, and the screens shrink afterwards", async () => {
     const { token, deviceId } = await signInDevice("minho@example.com", "Mac mini");
     const agentId = await createAgent(token);
     const received: { method: string; params: unknown }[] = [];
     const socket = await connect(token, (method, params) => {
       received.push({ method, params });
       if (method === "computer.status") return { isAvailable: true };
-      if (method === "computer.screen") {
-        return {
-          ref: "screen",
-          image,
-          windows: [
-            {
-              ref: "win-7",
-              app: "Keynote",
-              title: "3분기 발표",
-              isFront: true,
-              isMinimized: false,
-            },
-          ],
-        };
-      }
-      if (method === "computer.view") return keynote;
-      return { view: keynote };
+      if (method === "computer.windows") return { windows: [keynote] };
+      if (method === "computer.view") return { window: keynote, image };
+      return { delivery: "background", view: { window: keynote, image } };
     });
 
     llm.reply = (prompt) => {
@@ -201,11 +185,10 @@ describe("computer tools", () => {
       if (results.length === 1) {
         return Promise.resolve({ toolName: "computer_view", input: { window } });
       }
-      const exportButton = /button \\"Export\\" \[(e\d+)\]/.exec(seen)?.[1];
       if (results.length === 2) {
         return Promise.resolve({
           toolName: "computer_click",
-          input: { target: exportButton, intent: "내보내기 누르기" },
+          input: { window, x: 640, y: 120, intent: "내보내기 누르기" },
         });
       }
       return Promise.resolve("PDF로 내보냈어요.");
@@ -216,12 +199,12 @@ describe("computer tools", () => {
 
     expect(received.map(({ method }) => method)).toEqual([
       "computer.status",
-      "computer.screen",
+      "computer.windows",
       "computer.view",
       "computer.click",
     ]);
     expect(received[2]?.params).toEqual({ window: "win-7" });
-    expect(received[3]?.params).toEqual({ target: { element: "el-1" } });
+    expect(received[3]?.params).toEqual({ window: "win-7", at: { x: 640, y: 120 } });
 
     const shown = await listMessages(token, agentId);
     expect(shown.flatMap((message) => message.steps ?? [])).toEqual(["내보내기 누르기"]);
@@ -238,6 +221,37 @@ describe("computer tools", () => {
     socket.close();
   });
 
+  test("an action the app takes only in front tells the agent how to ask for it", async () => {
+    const { token } = await signInDevice("minho@example.com", "Mac mini");
+    const agentId = await createAgent(token);
+    const socket = await connect(token, (method) => {
+      if (method === "computer.status") return { isAvailable: true };
+      if (method === "computer.windows") return { windows: [keynote] };
+      return { notDone: "needs_foreground" };
+    });
+    llm.reply = (prompt) => {
+      const results = prompt.filter((message) => message.role === "tool");
+      if (results.length === 0) return Promise.resolve({ toolName: "computer_view", input: {} });
+      const window = /\[(w\d+)\]/.exec(JSON.stringify(results.at(-1)))?.[1];
+      if (results.length === 1) {
+        return Promise.resolve({
+          toolName: "computer_scroll",
+          input: { window, x: 10, y: 10, direction: "down", amount: 3, intent: "내리기" },
+        });
+      }
+      return Promise.resolve("알겠어요.");
+    };
+
+    await send(token, agentId, "내려줘");
+    await waitForIdle(agentId);
+    const result = JSON.stringify(
+      llm.prompts.at(-1)?.findLast((message) => message.role === "tool"),
+    );
+    expect(result).toContain("Keynote does not take this while it is in the background");
+    expect(result).toContain("foreground: true");
+    socket.close();
+  });
+
   test("an id the run never saw asks the agent to look again", async () => {
     const { token } = await signInDevice("minho@example.com", "Mac mini");
     const agentId = await createAgent(token);
@@ -245,7 +259,7 @@ describe("computer tools", () => {
       Promise.resolve(
         prompt.some((message) => message.role === "tool")
           ? "알겠어요."
-          : { toolName: "computer_click", input: { target: "e99", intent: "누르기" } },
+          : { toolName: "computer_click", input: { window: "w99", x: 1, y: 1, intent: "누르기" } },
       );
 
     await send(token, agentId, "눌러줘");

@@ -1,51 +1,81 @@
 import SwiftUI
 
-/// The small window under Goat's menu bar icon: what the agent is doing and how to stop it, the
-/// switch that lets it use this Mac, and the way back to the window.
 struct MenuBarContent: View {
-  @Bindable var computer: ComputerService
-  let isSignedIn: Bool
-  @Environment(\.openWindow) private var openWindow
+  let model: AppModel
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      if computer.isActing {
-        HStack(spacing: 10) {
-          AgentFace(size: 28)
-          VStack(alignment: .leading, spacing: 1) {
-            Text("Using your screen")
-              .font(.body.weight(.medium))
-              .foregroundStyle(Palette.foreground)
-            if let app = computer.borrowedApp {
-              Text(verbatim: app)
-                .font(.callout)
-                .foregroundStyle(Palette.mutedForeground)
-                .lineLimit(1)
-            }
-          }
-          Spacer(minLength: 8)
-          Button("Stop") { computer.stop() }
-            .buttonStyle(.destructive)
-            .controlSize(.small)
-        }
-        .padding(8)
-        DropdownMenuSeparator()
+    VStack(alignment: .leading, spacing: 12) {
+      if model.account.isSignedIn {
+        SignedIn(model: model)
+      } else {
+        SignInView(account: model.account, onSignIn: model.didSignIn)
       }
-      if isSignedIn {
-        Switch("Let the agent use this Mac", isOn: $computer.isEnabled)
-          .foregroundStyle(Palette.foreground)
-          .padding(.horizontal, 8)
-          .frame(minHeight: 40)
-        DropdownMenuSeparator()
-      }
-      DropdownMenuItem(title: "Open Goat") {
-        openWindow(id: GoatApp.mainWindow)
-        NSApplication.shared.activate()
-      }
-      DropdownMenuItem(title: "Quit Goat") { NSApplication.shared.terminate(nil) }
+      Divider()
+      Button("Quit Goat") { NSApp.terminate(nil) }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
     }
-    .padding(6)
-    .frame(width: 280)
-    .background(Palette.popover)
+    .padding(16)
+    .frame(width: 320)
+  }
+}
+
+private struct SignedIn: View {
+  let model: AppModel
+
+  var body: some View {
+    @Bindable var computerUse = model.computerUse
+    VStack(alignment: .leading, spacing: 12) {
+      Toggle("Let the agent use this Mac", isOn: $computerUse.isEnabled)
+        .toggleStyle(.switch)
+      Text(status)
+        .font(.callout)
+        .foregroundStyle(.secondary)
+      if !model.permissions.areGranted {
+        PermissionsList(permissions: model.permissions)
+      }
+      Button("Sign Out") { Task { await model.signOut() } }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+    }
+  }
+
+  private var status: LocalizedStringKey {
+    switch model.connection.state {
+    case .online: model.computerUse.isActing ? "Working on this Mac…" : "Connected"
+    case .connecting: "Connecting…"
+    case .offline: "Offline"
+    }
+  }
+}
+
+private struct PermissionsList: View {
+  let permissions: Permissions
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("Goat needs two permissions to see and use your apps.")
+        .font(.callout)
+      row("Accessibility", isGranted: permissions.hasAccessibility, kind: .accessibility)
+      row(
+        "Screen & System Audio Recording", isGranted: permissions.hasScreenRecording,
+        kind: .screenRecording)
+    }
+  }
+
+  private func row(_ title: LocalizedStringKey, isGranted: Bool, kind: Permissions.Kind)
+    -> some View
+  {
+    HStack {
+      Text(title)
+      Spacer()
+      if isGranted {
+        Image(systemName: "checkmark")
+          .foregroundStyle(.secondary)
+          .accessibilityLabel("Allowed")
+      } else {
+        Button("Allow…") { permissions.request(kind) }
+      }
+    }
   }
 }

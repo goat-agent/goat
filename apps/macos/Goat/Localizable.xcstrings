@@ -1,179 +1,289 @@
 {
-  "sourceLanguage" : "en",
-  "strings" : {
-    "Accessibility" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "손쉬운 사용"
+  "sourceLanguage": "en",
+  "strings": {
+    "6-digit code": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "6자리 코드"
           }
         }
       }
     },
-    "Done" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "완료"
+    "Accessibility": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "손쉬운 사용"
           }
         }
       }
     },
-    "Goat" : {
-      "shouldTranslate" : false
-    },
-    "Let the agent use this Mac" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "에이전트가 이 맥 쓰기"
+    "Allow": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "허용"
           }
         }
       }
     },
-    "Let the agent use this Mac?" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "에이전트가 이 맥을 쓰게 할까요?"
+    "Allowed": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "허용됨"
           }
         }
       }
     },
-    "Not Now" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "나중에"
+    "Allow…": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "허용…"
           }
         }
       }
     },
-    "On" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "켜짐"
+    "Check the email address.": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이메일 주소를 확인해 주세요."
           }
         }
       }
     },
-    "Open Goat" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Goat 열기"
+    "Connected": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "연결됨"
           }
         }
       }
     },
-    "Open System Settings" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "시스템 설정 열기"
+    "Connecting…": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "연결 중…"
           }
         }
       }
     },
-    "Press Escape to stop" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Esc를 누르면 멈춰요"
+    "Continue": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "계속"
           }
         }
       }
     },
-    "Quit Goat" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Goat 종료"
+    "Couldn’t reach Goat. Try again in a moment.": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Goat에 연결하지 못했어요. 잠시 후 다시 시도해 주세요."
           }
         }
       }
     },
-    "Screen & System Audio Recording" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "화면 및 시스템 오디오 녹음"
+    "Don’t Allow": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "허용 안 함"
           }
         }
       }
     },
-    "Settings…" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "설정…"
+    "Email": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이메일"
           }
         }
       }
     },
-    "Stop" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "멈춤"
+    "Enter the code": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "코드 입력"
           }
         }
       }
     },
-    "Turn Goat on in System Settings and come back; this updates by itself. After allowing screen recording, quit and reopen Goat." : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "시스템 설정에서 Goat를 켜고 돌아오면 여기 표시가 저절로 바뀌어요. 화면 녹음을 허용한 뒤에는 Goat를 종료했다가 다시 열어야 해요."
+    "Goat": {
+      "shouldTranslate": false
+    },
+    "Goat needs two permissions to see and use your apps.": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Goat가 앱을 보고 쓰려면 권한 두 개가 필요해요."
           }
         }
       }
     },
-    "Turn on these two. You can stop it from the menu bar at any time." : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "두 가지를 켜면 돼요. 언제든 메뉴 막대에서 멈출 수 있어요."
+    "Let Goat bring %@ to the front?": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Goat가 %@ 앱을 앞으로 가져와도 될까요?"
           }
         }
       }
     },
-    "Use This Mac" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "이 맥 쓰기"
+    "Let the agent use this Mac": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "에이전트가 이 맥 쓰기"
           }
         }
       }
     },
-    "Using your screen" : {
-      "localizations" : {
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "화면을 쓰는 중"
+    "Offline": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "오프라인"
+          }
+        }
+      }
+    },
+    "Quit Goat": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Goat 종료"
+          }
+        }
+      }
+    },
+    "Screen & System Audio Recording": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "화면 및 시스템 오디오 녹음"
+          }
+        }
+      }
+    },
+    "Sign In": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "로그인"
+          }
+        }
+      }
+    },
+    "Sign Out": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "로그아웃"
+          }
+        }
+      }
+    },
+    "Sign in to Goat": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Goat에 로그인"
+          }
+        }
+      }
+    },
+    "That code is not right. Check it and try again.": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "코드가 맞지 않아요. 확인하고 다시 입력해 주세요."
+          }
+        }
+      }
+    },
+    "The agent needs %@ in front for a moment. Your pointer and the app you were using come back right after.": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "에이전트가 잠깐 %@ 앱을 앞에 두고 써야 해요. 끝나면 포인터와 쓰던 앱이 바로 돌아와요."
+          }
+        }
+      }
+    },
+    "Use a Different Email": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "다른 이메일 쓰기"
+          }
+        }
+      }
+    },
+    "Use the email of your Goat account.": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Goat 계정의 이메일을 써 주세요."
+          }
+        }
+      }
+    },
+    "We sent a 6-digit code to %@.": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@(으)로 6자리 코드를 보냈어요."
+          }
+        }
+      }
+    },
+    "Working on this Mac…": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 맥에서 작업 중…"
           }
         }
       }
     }
   },
-  "version" : "1.0"
+  "version": "1.0"
 }

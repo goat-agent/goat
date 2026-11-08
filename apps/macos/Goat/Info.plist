@@ -4,8 +4,6 @@
 <dict>
 	<key>GoatServerURL</key>
 	<string>$(GOAT_SERVER_URL)</string>
-	<key>GoatWebURL</key>
-	<string>$(GOAT_WEB_URL)</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

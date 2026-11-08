@@ -31,7 +31,7 @@ export const summaries = pgTable(
     text: text().notNull(),
     // The state restated after the cut, because the messages that announced it are gone.
     notes: jsonb().$type<SummaryNotes>().notNull(),
-    // Computer ids (w3, e12) up to the cut, so later ones never reuse them.
+    // Computer window ids (w3) up to the cut, so later ones never reuse them.
     computerIdHigh: integer().notNull(),
     // False when summarizing kept failing and the text only marks what is missing.
     complete: boolean().notNull(),

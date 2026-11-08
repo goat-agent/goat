@@ -1,24 +1,20 @@
 import { z } from "@hono/zod-openapi";
 import { openEnum } from "../openapi";
 
-// What the server and a computer say to each other through `devices.call`. Refs are the
-// computer's own handles for windows and elements; the server turns them into the short ids the
-// model sees, so the computer never needs to know about other computers.
+// What the server and a computer say to each other through `devices.call`. A window ref is the
+// computer's own handle; the server turns it into the short id the model sees.
 
 export const methods = {
   status: "computer.status",
-  screen: "computer.screen",
+  windows: "computer.windows",
   view: "computer.view",
   click: "computer.click",
-  hover: "computer.hover",
   drag: "computer.drag",
   scroll: "computer.scroll",
+  move: "computer.move",
   type: "computer.type",
   key: "computer.key",
-  set: "computer.set",
-  menu: "computer.menu",
   open: "computer.open",
-  clipboard: "computer.clipboard",
 } as const;
 
 export const ComputerStatus = z
@@ -29,20 +25,7 @@ export const ComputerStatus = z
   })
   .openapi("ComputerStatus");
 
-const ComputerImage = z
-  .object({
-    data: z.string().describe("Base64 JPEG"),
-    width: z.int().positive(),
-    height: z.int().positive(),
-  })
-  .describe("Points in targets are pixels of the window's latest full image, not of a zoom")
-  .openapi("ComputerImage");
-
 const ComputerWindow = z
-  .object({ ref: z.string(), app: z.string(), title: z.string() })
-  .openapi("ComputerWindow");
-
-const ComputerScreenWindow = z
   .object({
     ref: z.string(),
     app: z.string(),
@@ -50,72 +33,58 @@ const ComputerScreenWindow = z
     isFront: z.boolean(),
     isMinimized: z.boolean(),
   })
-  .openapi("ComputerScreenWindow");
+  .openapi("ComputerWindow");
 
-export const ComputerScreen = z
-  .object({
-    ref: z
-      .string()
-      .describe("Acts as a window covering the whole screen, for points outside windows"),
-    image: ComputerImage.optional(),
-    windows: z.array(ComputerScreenWindow).describe("Front to back"),
-  })
-  .openapi("ComputerScreen");
+export const ComputerWindows = z
+  .object({ windows: z.array(ComputerWindow).describe("Front to back") })
+  .openapi("ComputerWindows");
 
-const ComputerNode = z
+const ComputerImage = z
   .object({
-    ref: z.string().optional().describe("Present when the element can be acted on"),
-    depth: z.int().min(0),
-    role: z.string().describe("Lowercase words, such as button or text field"),
-    label: z.string().optional(),
-    value: z.string().optional(),
-    states: z.array(z.string()).optional().describe("Such as selected, focused, disabled"),
+    data: z.string().describe("Base64 JPEG"),
+    width: z.int().positive(),
+    height: z.int().positive(),
   })
-  .openapi("ComputerNode");
+  .openapi("ComputerImage");
 
 export const ComputerView = z
-  .object({
-    window: ComputerWindow,
-    image: ComputerImage,
-    nodes: z.array(ComputerNode).describe("The window's elements in tree order"),
-    isTruncated: z.boolean().optional().describe("Elements were left out to keep the view small"),
-  })
+  .object({ window: ComputerWindow, image: ComputerImage })
   .openapi("ComputerView");
+
+const ComputerPoint = z
+  .object({ x: z.number(), y: z.number() })
+  .describe("Pixels of the window's latest full image, not of a zoom")
+  .openapi("ComputerPoint");
 
 export const ComputerOutcome = z
   .object({
+    delivery: openEnum(["background", "foreground"])
+      .optional()
+      .describe("How the action reached the app; absent when it was not done"),
+    notDone: openEnum(["needs_foreground", "declined", "minimized"])
+      .optional()
+      .describe(
+        "Why it was not done: the app takes it only in front, the user did not allow bringing it forward, or the window is minimized",
+      ),
     view: ComputerView.optional(),
-    isStale: z
-      .boolean()
-      .optional()
-      .describe("The target element no longer matched; nothing was done and view shows the window"),
-    clipboard: z
-      .object({ text: z.string().optional(), files: z.array(z.string()).optional() })
-      .optional()
-      .describe("What the clipboard holds, when it was read"),
   })
   .openapi("ComputerOutcome");
 
-export const ComputerTarget = z
-  .object({
-    element: z.string().optional(),
-    window: z.string().optional(),
-    x: z.number().optional(),
-    y: z.number().optional(),
-  })
-  .describe("An element, a whole window, or a point on a window's image")
-  .openapi("ComputerTarget");
+export type ComputerOutcome = z.infer<typeof ComputerOutcome>;
 
-export type ComputerTarget = z.infer<typeof ComputerTarget>;
-
+const window = z.string().describe("A window ref from computer.windows");
+const foreground = z
+  .boolean()
+  .optional()
+  .describe("Bring the app to the front for this action; the computer asks the user first");
 const modifiers = z.array(openEnum(["cmd", "shift", "option", "ctrl"])).optional();
 
 export const params = {
   status: z.object({}).openapi("ComputerStatusParams"),
-  screen: z.object({ includeImage: z.boolean() }).openapi("ComputerScreenParams"),
+  windows: z.object({}).openapi("ComputerWindowsParams"),
   view: z
     .object({
-      window: z.string(),
+      window,
       region: z
         .object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() })
         .optional()
@@ -125,57 +94,62 @@ export const params = {
     .openapi("ComputerViewParams"),
   click: z
     .object({
-      target: ComputerTarget,
+      window,
+      at: ComputerPoint,
       button: openEnum(["left", "right", "middle"]).optional(),
       count: z.int().min(1).max(3).optional(),
       modifiers,
+      foreground,
     })
     .openapi("ComputerClickParams"),
-  hover: z.object({ target: ComputerTarget }).openapi("ComputerHoverParams"),
   drag: z
-    .object({ from: ComputerTarget, to: ComputerTarget, modifiers })
+    .object({ window, from: ComputerPoint, to: ComputerPoint, modifiers, foreground })
     .openapi("ComputerDragParams"),
   scroll: z
     .object({
-      target: ComputerTarget,
+      window,
+      at: ComputerPoint,
       direction: openEnum(["up", "down", "left", "right"]),
-      amount: z.int().min(1),
+      amount: z.int().min(1).describe("Wheel notches"),
+      foreground,
     })
     .openapi("ComputerScrollParams"),
-  type: z.object({ target: ComputerTarget, text: z.string() }).openapi("ComputerTypeParams"),
+  move: z.object({ window, at: ComputerPoint, foreground }).openapi("ComputerMoveParams"),
+  type: z.object({ window, text: z.string(), foreground }).openapi("ComputerTypeParams"),
   key: z
-    .object({ target: ComputerTarget, keys: z.string(), repeat: z.int().min(1).optional() })
+    .object({
+      window,
+      keys: z.string().describe("Keys joined with +, such as cmd+shift+t or return"),
+      repeat: z.int().min(1).optional(),
+      foreground,
+    })
     .openapi("ComputerKeyParams"),
-  set: z.object({ target: ComputerTarget, value: z.string() }).openapi("ComputerSetParams"),
-  menu: z
-    .object({ window: z.string(), path: z.array(z.string()).min(1) })
-    .openapi("ComputerMenuParams"),
   open: z
-    .object({ app: z.string().optional(), path: z.string().optional(), url: z.string().optional() })
+    .object({
+      app: z.string().optional(),
+      path: z.string().optional(),
+      url: z.string().optional(),
+      foreground,
+    })
     .openapi("ComputerOpenParams"),
-  clipboard: z
-    .object({ text: z.string().optional(), path: z.string().optional() })
-    .describe("Writes text or a file when one is given; reads otherwise")
-    .openapi("ComputerClipboardParams"),
 };
+
+export type ActionMethod = "click" | "drag" | "scroll" | "move" | "type" | "key";
 
 /** Registered in the OpenAPI document, keyed by name, so the apps get these types generated. */
 export const schemas = {
   ComputerStatus,
-  ComputerScreen,
+  ComputerWindows,
   ComputerView,
   ComputerOutcome,
   ComputerStatusParams: params.status,
-  ComputerScreenParams: params.screen,
+  ComputerWindowsParams: params.windows,
   ComputerViewParams: params.view,
   ComputerClickParams: params.click,
-  ComputerHoverParams: params.hover,
   ComputerDragParams: params.drag,
   ComputerScrollParams: params.scroll,
+  ComputerMoveParams: params.move,
   ComputerTypeParams: params.type,
   ComputerKeyParams: params.key,
-  ComputerSetParams: params.set,
-  ComputerMenuParams: params.menu,
   ComputerOpenParams: params.open,
-  ComputerClipboardParams: params.clipboard,
 };

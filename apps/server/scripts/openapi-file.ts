@@ -1,4 +1,1 @@
-export const openapiFile = new URL(
-  "../../shared/GoatAPI/Sources/GoatAPI/openapi.json",
-  import.meta.url,
-);
+export const openapiFile = new URL("../openapi.json", import.meta.url);
