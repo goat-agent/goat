@@ -17,6 +17,7 @@ struct MenuBarContent: View {
     }
     .padding(16)
     .frame(width: 320)
+    .onAppear(perform: model.permissions.refresh)
   }
 }
 

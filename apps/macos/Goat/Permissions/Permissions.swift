@@ -2,8 +2,9 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 
-/// The two grants computer use needs. macOS does not announce changes to them, so they are read
-/// again every few seconds while one is missing.
+/// The two grants computer use needs. macOS announces neither change, so both are read when the
+/// menu opens and every second while one is missing. Screen recording applies only after Goat
+/// reopens, which macOS offers itself once the switch is on.
 @Observable
 final class Permissions {
   enum Kind {
@@ -18,6 +19,11 @@ final class Permissions {
 
   init() {
     pollWhileMissing()
+  }
+
+  func refresh() {
+    hasAccessibility = AXIsProcessTrusted()
+    hasScreenRecording = CGPreflightScreenCaptureAccess()
   }
 
   func request(_ kind: Kind) {
@@ -49,9 +55,8 @@ final class Permissions {
     guard polling == nil, !areGranted else { return }
     polling = Task {
       while !areGranted {
-        try? await Task.sleep(for: .seconds(2))
-        hasAccessibility = AXIsProcessTrusted()
-        hasScreenRecording = CGPreflightScreenCaptureAccess()
+        try? await Task.sleep(for: .seconds(1))
+        refresh()
       }
       polling = nil
     }
