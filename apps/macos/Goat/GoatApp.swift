@@ -8,7 +8,7 @@ struct GoatApp: App {
     MenuBarExtra {
       MenuBarContent(model: model)
     } label: {
-      Image(systemName: model.computerUse.isActing ? "cursorarrow.motionlines" : "cursorarrow")
+      Image(model.computerUse.isActing ? "MenuBarIconActive" : "MenuBarIcon")
         .accessibilityLabel("Goat")
     }
     .menuBarExtraStyle(.window)

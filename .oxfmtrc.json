@@ -10,6 +10,7 @@
     "**/.build/**",
     "**/Package.resolved",
     "**/*.xcassets/**",
+    "**/*.icon/**",
     "**/*.xcodeproj/**",
     "apps/web/src/routeTree.gen.ts",
     "apps/web/src/shared/i18n/paraglide/**",
