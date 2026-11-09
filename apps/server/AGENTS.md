@@ -11,7 +11,8 @@ Read [docs/style/typescript.md](../../docs/style/typescript.md) before writing T
   `i18n.ts` (supported languages), `conversation.ts` (the text people see in messages),
   `avatars/` (agent pictures: photos stored beside files under `avatars/`, and the default
   picture drawn from each agent's random parts in `drawings.ts`),
-  `ai/providers.ts` (model choice, for replies, for summaries, and for transcribing recordings),
+  `ai/providers.ts` (model choice, for replies, for summaries, and for transcribing recordings;
+  `AGENT_MODEL` and `SUMMARY_MODEL` pick another provider's model, Claude by default),
   `ai/instructions.ts` (the system prompt: how agents talk), `ai/tools/` (the tools agents call),
   `ai/trust.ts` (whether the current turn read outside content),
   `compaction.ts` (summaries that replace the older part of a long conversation;

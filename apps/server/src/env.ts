@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+const modelId = z.templateLiteral([z.enum(["anthropic", "openai"]), ":", z.string()]);
+
 export const env = z
   .object({
     PORT: z.coerce.number().int().positive().default(3000),
@@ -10,6 +12,9 @@ export const env = z
     RESEND_API_KEY: z.string().min(1),
     EMAIL_FROM: z.string().min(1),
     ANTHROPIC_API_KEY: z.string().min(1),
+    // provider:model for replies and for summaries, such as openai:gpt-6.1-terra.
+    AGENT_MODEL: modelId.default("anthropic:claude-opus-5-5"),
+    SUMMARY_MODEL: modelId.default("anthropic:claude-sonnet-5-5"),
     OPENAI_API_KEY: z.string().min(1),
     FIRECRAWL_API_KEY: z.string().min(1),
     S3_ENDPOINT: z.url(),

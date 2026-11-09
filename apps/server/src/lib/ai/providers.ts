@@ -25,9 +25,9 @@ const registry = createProviderRegistry({
   }),
 });
 
-export const model = registry.languageModel("anthropic:claude-opus-5-5");
+export const model = registry.languageModel(env.AGENT_MODEL);
 
-export const summarizer = registry.languageModel("anthropic:claude-sonnet-5-5");
+export const summarizer = registry.languageModel(env.SUMMARY_MODEL);
 
 export const providerOptions = {
   anthropic: {
