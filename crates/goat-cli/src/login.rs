@@ -1,13 +1,13 @@
 use anyhow::{Context, bail};
-use goat_core::account::chatgpt::{self, Authorization};
-use goat_core::account::{Account, Credential, Kind};
+use goat_core::account::{Account, Credential, Kind, chatgpt, codex};
 use goat_core::store::Store;
 
 use crate::ask;
 use crate::paths::Paths;
 
 const METHODS: &[&str] = &[
-    "ChatGPT (use your ChatGPT plan)",
+    "ChatGPT (Sign in with ChatGPT)",
+    "ChatGPT (Codex login)",
     "OpenAI API key",
     "Anthropic API key",
 ];
@@ -17,7 +17,8 @@ pub(crate) async fn login(paths: &Paths) -> anyhow::Result<()> {
     let method = ask::choose("Sign in with:", METHODS)?;
     let (kind, default_name) = match method {
         0 => (Kind::OpenAi, "chatgpt"),
-        1 => (Kind::OpenAi, "api"),
+        1 => (Kind::OpenAi, "codex"),
+        2 => (Kind::OpenAi, "api"),
         _ => (Kind::Anthropic, "api"),
     };
     let entered = ask::line(&format!("Account name [{default_name}]: "))?;
@@ -31,20 +32,24 @@ pub(crate) async fn login(paths: &Paths) -> anyhow::Result<()> {
         .into_iter()
         .find(|account| account.kind == kind && &*account.name == name);
 
-    let credential = if method == 0 {
-        let previous = existing
-            .as_ref()
-            .and_then(|account| match &account.credential {
-                Credential::Chatgpt(token) => Some(token),
-                Credential::ApiKey { .. } => None,
-            });
-        Credential::Chatgpt(sign_in(previous).await?)
-    } else {
-        let key = ask::secret("API key: ")?;
-        if key.is_empty() {
-            bail!("no API key entered");
+    let credential = match method {
+        0 => {
+            let previous = existing
+                .as_ref()
+                .and_then(|account| match &account.credential {
+                    Credential::Chatgpt(token) => Some(token),
+                    _ => None,
+                });
+            Credential::Chatgpt(sign_in_chatgpt(previous).await?)
         }
-        Credential::ApiKey { key: key.into() }
+        1 => Credential::Codex(sign_in_codex().await?),
+        _ => {
+            let key = ask::secret("API key: ")?;
+            if key.is_empty() {
+                bail!("no API key entered");
+            }
+            Credential::ApiKey { key: key.into() }
+        }
     };
 
     let account = Account::new(kind, name, credential);
@@ -53,16 +58,29 @@ pub(crate) async fn login(paths: &Paths) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn sign_in(previous: Option<&chatgpt::Token>) -> anyhow::Result<chatgpt::Token> {
-    let authorization = Authorization::start(previous).await?;
-    ask::say("Opening your browser to sign in to ChatGPT. If it does not open, visit:")?;
-    ask::say(authorization.url())?;
-    webbrowser::open(authorization.url()).ok();
-    let http = crate::chat::http()?;
+async fn sign_in_chatgpt(previous: Option<&chatgpt::Token>) -> anyhow::Result<chatgpt::Token> {
+    let authorization = chatgpt::Authorization::start(previous).await?;
+    open_browser(authorization.url())?;
     authorization
-        .finish(&http)
+        .finish(&crate::chat::http()?)
         .await
         .context("sign in to ChatGPT")
+}
+
+async fn sign_in_codex() -> anyhow::Result<codex::Token> {
+    let authorization = codex::Authorization::start().await?;
+    open_browser(authorization.url())?;
+    authorization
+        .finish(&crate::chat::http()?)
+        .await
+        .context("sign in to ChatGPT with the Codex login")
+}
+
+fn open_browser(url: &str) -> anyhow::Result<()> {
+    ask::say("Opening your browser to sign in to ChatGPT. If it does not open, visit:")?;
+    ask::say(url)?;
+    webbrowser::open(url).ok();
+    Ok(())
 }
 
 pub(crate) fn logout(paths: &Paths, label: &str) -> anyhow::Result<()> {
@@ -86,6 +104,13 @@ pub(crate) fn list(paths: &Paths) -> anyhow::Result<()> {
                 Some(email) => format!("ChatGPT, {email}"),
                 None => "ChatGPT".to_owned(),
             },
+            Credential::Codex(token) => {
+                let detail: Vec<&str> = [token.email.as_deref(), token.plan.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                format!("ChatGPT via Codex login, {}", detail.join(", "))
+            }
         };
         ask::say(&format!("{}  {detail}", account.label()))?;
     }

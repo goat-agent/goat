@@ -1,8 +1,14 @@
 pub mod chatgpt;
+pub mod codex;
+mod oauth;
 
 use serde::{Deserialize, Serialize};
 
+pub use oauth::Error;
+
 crate::id::define!(Id);
+
+const REFRESH_MARGIN_SECS: i64 = 300;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -55,4 +61,40 @@ impl Account {
 pub enum Credential {
     ApiKey { key: Box<str> },
     Chatgpt(chatgpt::Token),
+    Codex(codex::Token),
+}
+
+impl Credential {
+    pub fn secret(&self) -> &str {
+        match self {
+            Self::ApiKey { key } => key,
+            Self::Chatgpt(token) => &token.access_token,
+            Self::Codex(token) => &token.access_token,
+        }
+    }
+
+    pub fn expires_at(&self) -> Option<i64> {
+        match self {
+            Self::ApiKey { .. } => None,
+            Self::Chatgpt(token) => Some(token.expires_at),
+            Self::Codex(token) => Some(token.expires_at),
+        }
+    }
+
+    pub fn needs_refresh(&self) -> bool {
+        self.expires_at()
+            .is_some_and(|at| at - REFRESH_MARGIN_SECS <= oauth::now())
+    }
+
+    pub fn is_newer_than(&self, other: &Self) -> bool {
+        self.expires_at() > other.expires_at()
+    }
+
+    pub async fn refresh(&self, http: &reqwest::Client) -> Result<Self, Error> {
+        Ok(match self {
+            Self::ApiKey { .. } => self.clone(),
+            Self::Chatgpt(token) => Self::Chatgpt(token.refresh(http).await?),
+            Self::Codex(token) => Self::Codex(token.refresh(http).await?),
+        })
+    }
 }

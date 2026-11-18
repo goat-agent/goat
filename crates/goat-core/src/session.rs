@@ -2,7 +2,7 @@ mod prompt;
 
 use std::path::Path;
 
-use crate::account::{Account, Credential};
+use crate::account::Account;
 use crate::message::{self, Message, Origin, Part, Role};
 use crate::provider::{self, Endpoints, Provider, Request, Usage};
 use crate::store::{self, Store};
@@ -20,7 +20,7 @@ pub enum Error {
     #[error("model")]
     Provider(#[from] provider::Error),
     #[error("sign-in")]
-    Auth(#[from] crate::account::chatgpt::Error),
+    Auth(#[from] crate::account::Error),
     #[error("tools")]
     Tool(#[from] tool::Error),
     #[error("session {0} not found")]
@@ -125,7 +125,7 @@ impl Session {
     ) -> Result<Self, Error> {
         Ok(Self {
             id,
-            provider: Provider::new(account.kind, http.clone(), &env.endpoints),
+            provider: Provider::new(&account, http.clone(), &env.endpoints),
             store,
             http,
             endpoints: env.endpoints.clone(),
@@ -169,13 +169,13 @@ impl Session {
     }
 
     pub fn set_account(&mut self, account: Account, model: &str) {
-        self.provider = Provider::new(account.kind, self.http.clone(), &self.endpoints);
+        self.provider = Provider::new(&account, self.http.clone(), &self.endpoints);
         self.account = account;
         self.model = model.into();
     }
 
     pub async fn models(&mut self) -> Result<Vec<Box<str>>, Error> {
-        let bearer = self.bearer().await?;
+        let bearer = self.bearer(false).await?;
         Ok(self.provider.models(&bearer).await?)
     }
 
@@ -228,20 +228,30 @@ impl Session {
         use_tools: bool,
         on_text: &mut dyn FnMut(&str),
     ) -> Result<provider::Reply, Error> {
-        let bearer = self.bearer().await?;
-        let origin = self.origin();
-        let cache_key = self.id.to_string();
-        let request = Request {
-            model: &self.model,
-            instructions: &self.instructions,
-            messages: &self.messages,
-            trailing,
-            tools: &self.specs,
-            use_tools,
-            origin: &origin,
-            cache_key: &cache_key,
-        };
-        Ok(self.provider.send(&request, &bearer, on_text).await?)
+        let mut refreshed = false;
+        loop {
+            let bearer = self.bearer(refreshed).await?;
+            let origin = self.origin();
+            let cache_key = self.id.to_string();
+            let request = Request {
+                model: &self.model,
+                instructions: &self.instructions,
+                messages: &self.messages,
+                trailing,
+                tools: &self.specs,
+                use_tools,
+                origin: &origin,
+                cache_key: &cache_key,
+            };
+            match self.provider.send(&request, &bearer, on_text).await {
+                Err(provider::Error::Status { status: 401, .. })
+                    if !refreshed && self.account.credential.expires_at().is_some() =>
+                {
+                    refreshed = true;
+                }
+                result => return Ok(result?),
+            }
+        }
     }
 
     async fn compact(&mut self, next: message::Id) -> Result<(), Error> {
@@ -312,33 +322,23 @@ impl Session {
         }
     }
 
-    async fn bearer(&mut self) -> Result<Box<str>, Error> {
-        let current = match &self.account.credential {
-            Credential::ApiKey { key } => return Ok(key.clone()),
-            Credential::Chatgpt(token) => token,
-        };
-        if !current.expires_soon() {
-            return Ok(current.access_token.clone());
+    async fn bearer(&mut self, force: bool) -> Result<Box<str>, Error> {
+        let current = &self.account.credential;
+        if current.expires_at().is_none() || !(force || current.needs_refresh()) {
+            return Ok(current.secret().into());
         }
-        let stored =
-            self.store
-                .account(self.account.id)?
-                .and_then(|account| match account.credential {
-                    Credential::Chatgpt(token) if token.expires_at > current.expires_at => {
-                        Some(token)
-                    }
-                    _ => None,
-                });
+        let stored = self
+            .store
+            .account(self.account.id)?
+            .map(|account| account.credential)
+            .filter(|credential| credential.is_newer_than(current));
         let freshest = stored.unwrap_or_else(|| current.clone());
-        let token = if freshest.expires_soon() {
-            let refreshed = freshest.refresh(&self.http).await?;
-            self.account.credential = Credential::Chatgpt(refreshed.clone());
+        if force || freshest.needs_refresh() {
+            self.account.credential = freshest.refresh(&self.http).await?;
             self.store.save_account(&self.account)?;
-            refreshed
         } else {
-            self.account.credential = Credential::Chatgpt(freshest.clone());
-            freshest
-        };
-        Ok(token.access_token)
+            self.account.credential = freshest;
+        }
+        Ok(self.account.credential.secret().into())
     }
 }
