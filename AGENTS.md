@@ -1,0 +1,42 @@
+# AGENTS.md
+
+## Commands
+
+```sh
+cargo fmt
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo test -p goat-core --test session
+cargo test -p goat-core hashline
+cargo deny check
+```
+
+Run the first three and `cargo deny check` before you finish. The toolchain is pinned in `rust-toolchain.toml`. A `RUSTUP_TOOLCHAIN` variable in the shell overrides the pin; run `cargo +1.100.0 …` in that case.
+
+## Layout
+
+- `crates/goat-core` is the library: agent loop (`session`), providers (`provider/openai`, `provider/anthropic`), tools (`tool/`), SQLite store (`store`), and accounts with ChatGPT sign-in (`account`). It never prints, reads environment variables or touches the terminal.
+- `crates/goat-cli` builds the `goat` binary: the inline input box (`input`), output (`render`), and the commands (`chat`, `login`).
+- `docs/style/rust.md` is the binding code style. Read it before writing code.
+
+## Rules
+
+- No comments in code. The only exceptions are listed in `docs/style/rust.md`.
+- Keep memory low. Stream instead of buffering, and keep large data on disk. `crates/goat-core/tests/memory.rs` fails on Linux when 50 turns peak above 50 MiB.
+- A failed tool call is an `Outcome` with `is_error`, not an `Err`.
+- Persist a message only when it is complete. A cancelled turn must leave history that both providers accept.
+
+## Gotchas
+
+- `message::Native` holds provider data that must be replayed byte for byte: OpenAI reasoning items and `phase`, Claude thinking signatures. It is sent back only when the message's model and account equal the current ones. Never edit it.
+- Claude rejects edited thinking blocks and any text placed before `tool_result` blocks. History is append-only.
+- On the ChatGPT plan, OpenAI requires `store:false` and `stream:true`, and rejects `temperature`, `max_output_tokens` and hosted tools.
+- Tool schemas are strict JSON Schema for OpenAI: every property is listed in `required`, and optional ones are nullable.
+- The SSE fixtures in `crates/goat-core/tests/fixtures` follow the documented event shapes. They are not recordings of real responses.
+- `~/.goat/goat.db` stores credentials with mode 0600. Tests use `Store::open_in_memory` or a temporary directory, never the real home.
+
+## Boundaries
+
+- Always: add or update a test with every behavior change.
+- Ask first: new dependencies, schema migrations, and changes to the blocked commands in `tool/danger.rs`.
+- Never: put real keys or tokens in code, tests or fixtures, or call real model APIs from tests.
