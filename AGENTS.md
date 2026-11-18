@@ -31,6 +31,7 @@ Run the first three and `cargo deny check` before you finish. The toolchain is p
 - `message::Native` holds provider data that must be replayed byte for byte: OpenAI reasoning items and `phase`, Claude thinking signatures. It is sent back only when the message's model and account equal the current ones. Never edit it.
 - Claude rejects edited thinking blocks and any text placed before `tool_result` blocks. History is append-only.
 - On the ChatGPT plan, OpenAI requires `store:false` and `stream:true`, and rejects `temperature`, `max_output_tokens` and hosted tools.
+- The Codex login (`account::codex`) calls `chatgpt.com/backend-api/codex` with `chatgpt-account-id`, `originator: goat` and `session-id` headers. It is undocumented; keep its differences inside `provider/openai.rs` and `account/codex.rs`.
 - Tool schemas are strict JSON Schema for OpenAI: every property is listed in `required`, and optional ones are nullable.
 - The SSE fixtures in `crates/goat-core/tests/fixtures` follow the documented event shapes. They are not recordings of real responses.
 - `~/.goat/goat.db` stores credentials with mode 0600. Tests use `Store::open_in_memory` or a temporary directory, never the real home.

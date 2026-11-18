@@ -30,6 +30,7 @@ pub enum Error {
 #[derive(Debug, Clone)]
 pub struct Endpoints {
     pub openai: Box<str>,
+    pub codex: Box<str>,
     pub anthropic: Box<str>,
 }
 
@@ -37,6 +38,7 @@ impl Default for Endpoints {
     fn default() -> Self {
         Self {
             openai: openai::BASE_URL.into(),
+            codex: openai::CODEX_BASE_URL.into(),
             anthropic: anthropic::BASE_URL.into(),
         }
     }
@@ -80,10 +82,17 @@ pub enum Provider {
 }
 
 impl Provider {
-    pub fn new(kind: account::Kind, http: reqwest::Client, endpoints: &Endpoints) -> Self {
-        match kind {
-            account::Kind::OpenAi => Self::OpenAi(openai::Client::new(http, &endpoints.openai)),
-            account::Kind::Anthropic => {
+    pub fn new(account: &account::Account, http: reqwest::Client, endpoints: &Endpoints) -> Self {
+        match (account.kind, &account.credential) {
+            (_, account::Credential::Codex(token)) => Self::OpenAi(openai::Client::codex(
+                http,
+                &endpoints.codex,
+                &token.account_id,
+            )),
+            (account::Kind::OpenAi, _) => {
+                Self::OpenAi(openai::Client::new(http, &endpoints.openai))
+            }
+            (account::Kind::Anthropic, _) => {
                 Self::Anthropic(anthropic::Client::new(http, &endpoints.anthropic))
             }
         }
@@ -173,6 +182,7 @@ fn error_message(body: &str) -> String {
         message: Option<String>,
         code: Option<String>,
         r#type: Option<String>,
+        resets_at: Option<i64>,
     }
 
     let raw = || body.chars().take(ERROR_BODY_LIMIT).collect();
@@ -180,10 +190,11 @@ fn error_message(body: &str) -> String {
         return raw();
     };
     if let Some(detail) = envelope.error {
+        let reset = detail.resets_at.map_or_else(String::new, resets_in);
         match (detail.code.or(detail.r#type), detail.message) {
-            (Some(kind), Some(message)) => return format!("{kind}: {message}"),
-            (None, Some(message)) => return message,
-            (Some(kind), None) => return kind,
+            (Some(kind), Some(message)) => return format!("{kind}: {message}{reset}"),
+            (None, Some(message)) => return format!("{message}{reset}"),
+            (Some(kind), None) => return format!("{kind}{reset}"),
             (None, None) => {}
         }
     }
@@ -192,6 +203,14 @@ fn error_message(body: &str) -> String {
         Some(detail) => detail.to_string(),
         None => raw(),
     }
+}
+
+fn resets_in(at: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let minutes = (at - now).max(0) / 60;
+    format!(" (resets in {}h {}m)", minutes / 60, minutes % 60)
 }
 
 async fn read_events(
@@ -227,6 +246,24 @@ mod tests {
     fn anthropic_error_body_shows_type_and_message() {
         let body = r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
         assert_eq!(error_message(body), "overloaded_error: Overloaded");
+    }
+
+    #[test]
+    fn codex_usage_limit_shows_when_it_resets() {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 2 * 3600
+            + 30 * 60
+            + 30;
+        let body = format!(
+            r#"{{"error":{{"type":"usage_limit_reached","plan_type":"pro","resets_at":{at}}}}}"#
+        );
+        assert_eq!(
+            error_message(&body),
+            "usage_limit_reached (resets in 2h 30m)"
+        );
     }
 
     #[test]

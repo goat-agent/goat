@@ -2,15 +2,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 use super::{Error, Flow, Reply, Request, Usage};
+use crate::account::codex;
 use crate::message::{Message, Native, Part, Role};
 
 pub const BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MODEL: &str = "gpt-6.2-astra";
+pub const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug)]
 pub struct Client {
     http: reqwest::Client,
     base: Box<str>,
+    codex_account: Option<Box<str>>,
 }
 
 impl Client {
@@ -18,6 +22,30 @@ impl Client {
         Self {
             http,
             base: base.trim_end_matches('/').into(),
+            codex_account: None,
+        }
+    }
+
+    pub(super) fn codex(http: reqwest::Client, base: &str, account_id: &str) -> Self {
+        Self {
+            codex_account: Some(account_id.into()),
+            ..Self::new(http, base)
+        }
+    }
+
+    fn authorize(
+        &self,
+        builder: reqwest::RequestBuilder,
+        bearer: &str,
+        session: &str,
+    ) -> reqwest::RequestBuilder {
+        let builder = builder.bearer_auth(bearer);
+        match &self.codex_account {
+            Some(account) => builder
+                .header("chatgpt-account-id", &**account)
+                .header("originator", codex::ORIGINATOR)
+                .header("session-id", session),
+            None => builder,
         }
     }
 
@@ -30,9 +58,7 @@ impl Client {
         let body = serde_json::to_string(&Body::new(request))?;
         let url = format!("{}/responses", self.base);
         let response = super::post(|| {
-            self.http
-                .post(&url)
-                .bearer_auth(bearer)
+            self.authorize(self.http.post(&url), bearer, request.cache_key)
                 .header(reqwest::header::ACCEPT, "text/event-stream")
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(body.clone())
@@ -82,12 +108,11 @@ impl Client {
     }
 
     pub(super) async fn models(&self, bearer: &str) -> Result<Vec<Box<str>>, Error> {
-        let body = super::get(
-            self.http
-                .get(format!("{}/models", self.base))
-                .bearer_auth(bearer),
-        )
-        .await?;
+        let url = match self.codex_account {
+            Some(_) => format!("{}/models?client_version={CLIENT_VERSION}", self.base),
+            None => format!("{}/models", self.base),
+        };
+        let body = super::get(self.authorize(self.http.get(url), bearer, "")).await?;
         let listing: Listing = serde_json::from_str(&body)?;
         Ok(listing.ids())
     }
@@ -105,6 +130,7 @@ struct Body<'a> {
     stream: bool,
     parallel_tool_calls: bool,
     reasoning: Reasoning,
+    include: [&'static str; 1],
     prompt_cache_key: &'a str,
 }
 
@@ -134,6 +160,7 @@ impl<'a> Body<'a> {
             stream: true,
             parallel_tool_calls: true,
             reasoning: Reasoning { summary: "auto" },
+            include: ["reasoning.encrypted_content"],
             prompt_cache_key: request.cache_key,
         }
     }

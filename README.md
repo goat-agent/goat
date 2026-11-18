@@ -13,7 +13,7 @@ This installs `goat` to `~/.local/bin` on macOS or Linux, x86_64 or arm64.
 ## Usage
 
 ```sh
-goat login                 # sign in with ChatGPT, or add an OpenAI or Anthropic API key
+goat login                 # ChatGPT (Sign in with ChatGPT or Codex login), or an OpenAI or Anthropic API key
 goat                       # start a session in the current directory
 goat resume                # continue the latest session in this directory
 goat accounts              # list accounts
@@ -27,6 +27,7 @@ You can add several accounts per provider and switch between them with `/account
 ## How it works
 
 - The model has four tools: `read`, `edit`, `write` and `bash`. Edits point at lines by hash anchors, so an edit made against an outdated read is rejected and the file is left untouched.
+- The Codex login uses the backend of the Codex CLI with your ChatGPT plan. It is not a documented API, so OpenAI may change it.
 - There is no sandbox and no approval prompt. A built-in check blocks a few irreversible commands, such as `rm -rf ~` or formatting a disk.
 - The conversation is summarized once a request passes 200k input tokens.
 - Sessions, messages and accounts are stored in `~/.goat/goat.db` (SQLite, mode 0600). Long command output is kept in `~/.goat/outputs` for 7 days.

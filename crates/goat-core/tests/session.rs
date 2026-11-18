@@ -4,7 +4,7 @@ mod server;
 
 use std::path::Path;
 
-use goat_core::account::{Account, Credential, Kind};
+use goat_core::account::{Account, Credential, Kind, codex};
 use goat_core::message::{Part, Role};
 use goat_core::provider::Endpoints;
 use goat_core::session::{Environment, Event, Session, Sink};
@@ -38,6 +38,7 @@ fn environment(dir: &Path, url: &str) -> Environment {
         spill: dir.join(".spill"),
         endpoints: Endpoints {
             openai: url.into(),
+            codex: url.into(),
             anthropic: url.into(),
         },
     }
@@ -279,4 +280,39 @@ event: response.completed"#;
     };
     assert!(output.contains("interrupted"));
     assert!(is_error);
+}
+
+#[tokio::test]
+async fn codex_login_sends_account_and_originator_headers() {
+    let server = server::replay(vec![OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let token = codex::Token {
+        account_id: "acc-1".into(),
+        plan: Some("pro".into()),
+        email: None,
+        id_token: "id".into(),
+        access_token: "access".into(),
+        refresh_token: "refresh".into(),
+        expires_at: i64::MAX / 2,
+    };
+    let account = Account::new(Kind::OpenAi, "codex", Credential::Codex(token));
+    let mut session = Session::create(
+        Store::open_in_memory().unwrap(),
+        reqwest::Client::new(),
+        &env,
+        account,
+        "gpt-6.2-sol",
+    )
+    .unwrap();
+
+    session.turn("hi", &mut Recorder::default()).await.unwrap();
+
+    let request = server.requests.lock().unwrap()[0].to_lowercase();
+    assert!(request.starts_with("post /responses "));
+    assert!(request.contains("authorization: bearer access"));
+    assert!(request.contains("chatgpt-account-id: acc-1"));
+    assert!(request.contains("originator: goat"));
+    assert!(request.contains(&format!("session-id: {}", session.id())));
+    assert!(request.contains(r#""include":["reasoning.encrypted_content"]"#));
 }

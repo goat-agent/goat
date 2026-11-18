@@ -48,5 +48,5 @@ async fn read_request(stream: &mut TcpStream) -> String {
         let n = stream.read(&mut chunk).await.unwrap();
         buf.extend_from_slice(&chunk[..n]);
     }
-    String::from_utf8_lossy(&buf[header_end..]).into_owned()
+    String::from_utf8_lossy(&buf).into_owned()
 }
