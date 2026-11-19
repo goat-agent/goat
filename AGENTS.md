@@ -32,6 +32,7 @@ Run the first three and `cargo deny check` before you finish. The toolchain is p
 - Claude rejects edited thinking blocks and any text placed before `tool_result` blocks. History is append-only.
 - On the ChatGPT plan, OpenAI requires `store:false` and `stream:true`, and rejects `temperature`, `max_output_tokens` and hosted tools.
 - The Codex login (`account::codex`) calls `chatgpt.com/backend-api/codex` with `chatgpt-account-id`, `originator: goat` and `session-id` headers. It is undocumented; keep its differences inside `provider/openai.rs` and `account/codex.rs`.
+- The Codex model list (`/models?client_version=`) is empty for low versions, so `openai.rs` sends a fixed `CODEX_CLIENT_VERSION`, not goat's own version. It returns each model's effort levels and default; the Anthropic list returns levels but no default.
 - Tool schemas are strict JSON Schema for OpenAI: every property is listed in `required`, and optional ones are nullable.
 - The SSE fixtures in `crates/goat-core/tests/fixtures` follow the documented event shapes. They are not recordings of real responses.
 - The model has one tool, `run`: JavaScript in an embedded QuickJS sandbox (`tool/script.rs`). The sandbox reaches the system only through `tool/host.rs`, so every shell command passes `danger.rs`. Do not give it other ways out.

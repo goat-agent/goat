@@ -1,14 +1,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::{Error, Flow, Reply, Request, Usage};
+use super::{Chunk, Error, Flow, Model, Reply, Request, Usage};
 use crate::account::codex;
 use crate::message::{Message, Native, Part, Role};
 
 pub const BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MODEL: &str = "gpt-6.2-astra";
 pub const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
-const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const CODEX_CLIENT_VERSION: &str = "0.200.0";
 
 #[derive(Debug)]
 pub struct Client {
@@ -53,7 +53,7 @@ impl Client {
         &self,
         request: &Request<'_>,
         bearer: &str,
-        on_text: &mut dyn FnMut(&str),
+        on_chunk: &mut dyn FnMut(Chunk<'_>),
     ) -> Result<Reply, Error> {
         let body = serde_json::to_string(&Body::new(request))?;
         let url = format!("{}/responses", self.base);
@@ -72,7 +72,12 @@ impl Client {
             match envelope.r#type.as_str() {
                 "response.output_text.delta" => {
                     let delta: TextDelta = serde_json::from_str(&event.data)?;
-                    on_text(&delta.delta);
+                    on_chunk(Chunk::Text(&delta.delta));
+                }
+                "response.reasoning_summary_part.added" => on_chunk(Chunk::Reasoning("\n")),
+                "response.reasoning_summary_text.delta" => {
+                    let delta: TextDelta = serde_json::from_str(&event.data)?;
+                    on_chunk(Chunk::Reasoning(&delta.delta));
                 }
                 "response.output_item.done" => {
                     let done: ItemDone = serde_json::from_str(&event.data)?;
@@ -107,14 +112,14 @@ impl Client {
         Ok(Reply { parts, usage })
     }
 
-    pub(super) async fn models(&self, bearer: &str) -> Result<Vec<Box<str>>, Error> {
+    pub(super) async fn models(&self, bearer: &str) -> Result<Vec<Model>, Error> {
         let url = match self.codex_account {
-            Some(_) => format!("{}/models?client_version={CLIENT_VERSION}", self.base),
+            Some(_) => format!("{}/models?client_version={CODEX_CLIENT_VERSION}", self.base),
             None => format!("{}/models", self.base),
         };
         let body = super::get(self.authorize(self.http.get(url), bearer, "")).await?;
         let listing: Listing = serde_json::from_str(&body)?;
-        Ok(listing.ids())
+        Ok(listing.models())
     }
 }
 
@@ -129,7 +134,7 @@ struct Body<'a> {
     store: bool,
     stream: bool,
     parallel_tool_calls: bool,
-    reasoning: Reasoning,
+    reasoning: Reasoning<'a>,
     include: [&'static str; 1],
     prompt_cache_key: &'a str,
 }
@@ -159,7 +164,10 @@ impl<'a> Body<'a> {
             store: false,
             stream: true,
             parallel_tool_calls: false,
-            reasoning: Reasoning { summary: "auto" },
+            reasoning: Reasoning {
+                summary: "auto",
+                effort: request.effort,
+            },
             include: ["reasoning.encrypted_content"],
             prompt_cache_key: request.cache_key,
         }
@@ -252,8 +260,10 @@ struct Tool<'a> {
 }
 
 #[derive(Serialize)]
-struct Reasoning {
+struct Reasoning<'a> {
     summary: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -437,6 +447,13 @@ struct Listing {
 struct PlanModel {
     slug: String,
     visibility: Option<String>,
+    default_reasoning_level: Option<String>,
+    supported_reasoning_levels: Option<Vec<ReasoningLevel>>,
+}
+
+#[derive(Deserialize)]
+struct ReasoningLevel {
+    effort: String,
 }
 
 #[derive(Deserialize)]
@@ -445,13 +462,23 @@ struct ApiModel {
 }
 
 impl Listing {
-    fn ids(self) -> Vec<Box<str>> {
+    fn models(self) -> Vec<Model> {
         let plan = self
             .models
             .into_iter()
             .filter(|model| model.visibility.as_deref().is_none_or(|v| v == "list"))
-            .map(|model| model.slug.into());
-        let api = self.data.into_iter().map(|model| model.id.into());
+            .map(|model| Model {
+                id: model.slug.into(),
+                efforts: model
+                    .supported_reasoning_levels
+                    .map(|levels| levels.into_iter().map(|l| l.effort.into()).collect()),
+                default_effort: model.default_reasoning_level.map(Into::into),
+            });
+        let api = self.data.into_iter().map(|model| Model {
+            id: model.id.into(),
+            efforts: None,
+            default_effort: None,
+        });
         plan.chain(api).collect()
     }
 }
@@ -542,11 +569,41 @@ mod tests {
     }
 
     #[test]
-    fn plan_listing_keeps_listed_slugs() {
+    fn plan_listing_keeps_listed_models_with_their_efforts() {
         let listing: Listing = serde_json::from_str(
-            r#"{"models":[{"slug":"gpt-6.2-sol","visibility":"list"},{"slug":"hidden","visibility":"hide"}]}"#,
+            r#"{"models":[{"slug":"gpt-6.2-sol","visibility":"list","default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low","description":"Fast"},{"effort":"high","description":"Deep"}]},{"slug":"hidden","visibility":"hide"}]}"#,
         )
         .unwrap();
-        assert_eq!(listing.ids(), vec![Box::<str>::from("gpt-6.2-sol")]);
+        assert_eq!(
+            listing.models(),
+            [Model {
+                id: "gpt-6.2-sol".into(),
+                efforts: Some(vec!["low".into(), "high".into()]),
+                default_effort: Some("low".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn api_listing_has_unknown_efforts() {
+        let listing: Listing =
+            serde_json::from_str(r#"{"data":[{"id":"gpt-6.2-astra"}]}"#).unwrap();
+        assert_eq!(listing.models()[0].efforts, None);
+    }
+
+    #[test]
+    fn effort_is_sent_only_when_chosen() {
+        let reasoning = |effort| {
+            serde_json::to_string(&Reasoning {
+                summary: "auto",
+                effort,
+            })
+            .unwrap()
+        };
+        assert_eq!(reasoning(None), r#"{"summary":"auto"}"#);
+        assert_eq!(
+            reasoning(Some("high")),
+            r#"{"summary":"auto","effort":"high"}"#
+        );
     }
 }

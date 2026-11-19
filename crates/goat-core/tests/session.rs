@@ -18,6 +18,7 @@ const ANTHROPIC_ANSWER: &str = include_str!("fixtures/anthropic/answer.sse");
 #[derive(Default)]
 struct Recorder {
     text: String,
+    reasoning: String,
     tools: Vec<String>,
 }
 
@@ -25,6 +26,7 @@ impl Sink for Recorder {
     fn emit(&mut self, event: Event<'_>) {
         match event {
             Event::Text(text) => self.text.push_str(text),
+            Event::Reasoning(text) => self.reasoning.push_str(text),
             Event::RunStarted { description } => self.tools.push(description.to_owned()),
             Event::Call { summary } => self.tools.push(summary.to_owned()),
             _ => {}
@@ -68,6 +70,7 @@ async fn openai_turn_runs_the_tool_and_replays_reasoning() {
     session.turn("say hi", &mut recorder).await.unwrap();
 
     assert_eq!(recorder.text, "Done.");
+    assert_eq!(recorder.reasoning, "\nRun a command.\nThen answer.");
     assert_eq!(recorder.tools, ["Say hi", "bash echo hi"]);
     let roles: Vec<Role> = session.messages().iter().map(|m| m.role).collect();
     assert_eq!(
@@ -110,6 +113,7 @@ async fn anthropic_turn_echoes_thinking_with_its_signature() {
     session.turn("say hi", &mut recorder).await.unwrap();
 
     assert_eq!(recorder.text, "Done.");
+    assert_eq!(recorder.reasoning, "Run a command.");
     let requests = server.requests.lock().unwrap();
     assert!(
         requests[0].contains(r#""tool_choice":{"type":"auto","disable_parallel_tool_use":true}"#)
@@ -325,4 +329,25 @@ async fn codex_login_sends_account_and_originator_headers() {
     assert!(request.contains("originator: goat"));
     assert!(request.contains(&format!("session-id: {}", session.id())));
     assert!(request.contains(r#""include":["reasoning.encrypted_content"]"#));
+}
+
+#[tokio::test]
+async fn chosen_effort_is_sent_with_the_request() {
+    let server = server::replay(vec![ANTHROPIC_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = Session::create(
+        Store::open_in_memory().unwrap(),
+        reqwest::Client::new(),
+        &env,
+        account(Kind::Anthropic),
+        "claude-opus-5-5",
+    )
+    .unwrap();
+    session.set_effort(Some("xhigh"));
+
+    session.turn("hi", &mut Recorder::default()).await.unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].contains(r#""output_config":{"effort":"xhigh"}"#));
 }

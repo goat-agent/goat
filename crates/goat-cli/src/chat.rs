@@ -1,6 +1,6 @@
 use anyhow::{Context, bail};
 use goat_core::account::Account;
-use goat_core::provider::{Endpoints, Provider};
+use goat_core::provider::{Endpoints, Model, Provider};
 use goat_core::session::{self, Environment, Session};
 use goat_core::store::Store;
 
@@ -14,12 +14,16 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 const HELP: &str = "\
 /model NAME    switch model        /models     list models
+/effort LEVEL  set effort          /effort     show effort levels
 /account NAME  switch account      /accounts   list accounts
 /exit          quit";
+
+const DEFAULT_EFFORT: &str = "default";
 
 pub(crate) struct Choice {
     pub(crate) model: Option<String>,
     pub(crate) account: Option<String>,
+    pub(crate) effort: Option<String>,
 }
 
 pub(crate) async fn start(paths: &Paths, choice: Choice) -> anyhow::Result<()> {
@@ -27,7 +31,7 @@ pub(crate) async fn start(paths: &Paths, choice: Choice) -> anyhow::Result<()> {
     let account = pick_account(&store, choice.account.as_deref(), None)?;
     let model = pick_model(&store, &account, choice.model)?;
     let session = Session::create(store, http()?, &environment(paths), account, &model)?;
-    run(session).await
+    run(session, choice.effort.as_deref()).await
 }
 
 pub(crate) async fn resume(paths: &Paths, choice: Choice, id: Option<&str>) -> anyhow::Result<()> {
@@ -55,12 +59,17 @@ pub(crate) async fn resume(paths: &Paths, choice: Choice, id: Option<&str>) -> a
         (None, _) => pick_model(&store, &account, None)?,
     };
     let session = Session::resume(store, http()?, &environment(paths), id, account, &model)?;
-    run(session).await
+    run(session, choice.effort.as_deref()).await
 }
 
-async fn run(mut session: Session) -> anyhow::Result<()> {
+async fn run(mut session: Session, effort: Option<&str>) -> anyhow::Result<()> {
     let mut terminal = Terminal::new();
     let mut editor = Editor::default();
+    if let Some(effort) = effort
+        && let Err(err) = choose_effort(&mut session, effort).await
+    {
+        terminal.error(&format!("{err:#}"));
+    }
     terminal.note(&status(&session));
     loop {
         let Entry::Line(line) = editor.read()? else {
@@ -91,7 +100,7 @@ async fn run(mut session: Session) -> anyhow::Result<()> {
 }
 
 const COMMANDS: &[&str] = &[
-    "exit", "quit", "model", "models", "account", "accounts", "help",
+    "exit", "quit", "model", "models", "effort", "account", "accounts", "help",
 ];
 
 fn is_command(input: &str) -> bool {
@@ -115,11 +124,21 @@ async fn command_result(
         ("model", "") => terminal.note(&status(session)),
         ("model", model) => {
             session.set_model(model);
+            keep_supported_effort(session, terminal).await?;
             terminal.note(&status(session));
         }
         ("models", _) => {
             let models = session.models().await?;
-            terminal.note(&models.join("\n"));
+            let lines: Vec<String> = models.iter().map(describe_model).collect();
+            terminal.note(&lines.join("\n"));
+        }
+        ("effort", "") => {
+            let model = current_model(session).await?;
+            terminal.note(&describe_effort(session.effort(), model.as_ref()));
+        }
+        ("effort", effort) => {
+            choose_effort(session, effort).await?;
+            terminal.note(&status(session));
         }
         ("account", "") | ("accounts", _) => {
             let current = session.account().id;
@@ -132,6 +151,7 @@ async fn command_result(
             let account = login::find(session.store(), label)?;
             let model = pick_model(session.store(), &account, None)?;
             session.set_account(account, &model);
+            keep_supported_effort(session, terminal).await?;
             terminal.note(&status(session));
         }
         _ => terminal.note(HELP),
@@ -139,9 +159,80 @@ async fn command_result(
     Ok(Flow::Continue)
 }
 
+async fn current_model(session: &mut Session) -> anyhow::Result<Option<Model>> {
+    let models = session.models().await?;
+    Ok(models
+        .into_iter()
+        .find(|model| *model.id == *session.model()))
+}
+
+async fn choose_effort(session: &mut Session, effort: &str) -> anyhow::Result<()> {
+    if effort == DEFAULT_EFFORT {
+        session.set_effort(None);
+        return Ok(());
+    }
+    if let Some(model) = current_model(session).await?
+        && !model.accepts(effort)
+    {
+        bail!("{} supports effort {}", model.id, levels(&model));
+    }
+    session.set_effort(Some(effort));
+    Ok(())
+}
+
+async fn keep_supported_effort(
+    session: &mut Session,
+    terminal: &mut Terminal,
+) -> anyhow::Result<()> {
+    let Some(effort) = session.effort().map(str::to_owned) else {
+        return Ok(());
+    };
+    if let Some(model) = current_model(session).await?
+        && !model.accepts(&effort)
+    {
+        session.set_effort(None);
+        terminal.note(&format!(
+            "{} has no effort {effort}; using its default",
+            model.id
+        ));
+    }
+    Ok(())
+}
+
+fn levels(model: &Model) -> String {
+    match &model.efforts {
+        Some(efforts) if efforts.is_empty() => "none".to_owned(),
+        Some(efforts) => efforts.join(" "),
+        None => "unknown".to_owned(),
+    }
+}
+
+fn describe_effort(effort: Option<&str>, model: Option<&Model>) -> String {
+    let default = model.and_then(|model| model.default_effort.as_deref());
+    let current = match (effort, default) {
+        (Some(effort), _) => effort.to_owned(),
+        (None, Some(default)) => format!("{DEFAULT_EFFORT} ({default})"),
+        (None, None) => DEFAULT_EFFORT.to_owned(),
+    };
+    match model.filter(|model| model.efforts.is_some()) {
+        Some(model) => format!("effort {current} · {}", levels(model)),
+        None => format!("effort {current}"),
+    }
+}
+
+fn describe_model(model: &Model) -> String {
+    match &model.default_effort {
+        Some(default) => format!("{} · effort {default}", model.id),
+        None => model.id.to_string(),
+    }
+}
+
 fn status(session: &Session) -> String {
+    let effort = session
+        .effort()
+        .map_or_else(String::new, |effort| format!(" · effort {effort}"));
     format!(
-        "goat · {} · {} · {}",
+        "goat · {}{effort} · {} · {}",
         session.model(),
         session.account().label(),
         session.workspace().display()
@@ -194,4 +285,38 @@ pub(crate) fn http() -> anyhow::Result<reqwest::Client> {
         .user_agent(USER_AGENT)
         .connect_timeout(CONNECT_TIMEOUT)
         .build()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sol() -> Model {
+        Model {
+            id: "gpt-6.2-sol".into(),
+            efforts: Some(vec!["low".into(), "high".into()]),
+            default_effort: Some("low".into()),
+        }
+    }
+
+    #[test]
+    fn unset_effort_shows_the_model_default_and_levels() {
+        assert_eq!(
+            describe_effort(None, Some(&sol())),
+            "effort default (low) · low high"
+        );
+    }
+
+    #[test]
+    fn chosen_effort_is_shown_as_is() {
+        assert_eq!(
+            describe_effort(Some("high"), Some(&sol())),
+            "effort high · low high"
+        );
+    }
+
+    #[test]
+    fn effort_of_an_unlisted_model_shows_no_levels() {
+        assert_eq!(describe_effort(None, None), "effort default");
+    }
 }
