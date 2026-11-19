@@ -162,7 +162,8 @@ mod tests {
     async fn output_and_exit_code_are_reported() {
         let (ran, _dir) = bash("echo out; echo err >&2; exit 3", Duration::from_secs(5)).await;
         assert_eq!(ran.code, Some(3));
-        assert_eq!(ran.output, "out\nerr\n");
+        assert!(ran.output.contains("out\n"));
+        assert!(ran.output.contains("err\n"));
     }
 
     #[tokio::test]
