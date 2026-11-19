@@ -8,7 +8,7 @@ use crate::message::{Message, Native, Part, Role};
 pub const BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MODEL: &str = "gpt-6.2-astra";
 pub const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
-const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const CODEX_CLIENT_VERSION: &str = "0.200.0";
 
 #[derive(Debug)]
 pub struct Client {
@@ -109,7 +109,7 @@ impl Client {
 
     pub(super) async fn models(&self, bearer: &str) -> Result<Vec<Box<str>>, Error> {
         let url = match self.codex_account {
-            Some(_) => format!("{}/models?client_version={CLIENT_VERSION}", self.base),
+            Some(_) => format!("{}/models?client_version={CODEX_CLIENT_VERSION}", self.base),
             None => format!("{}/models", self.base),
         };
         let body = super::get(self.authorize(self.http.get(url), bearer, "")).await?;
