@@ -28,6 +28,13 @@ struct Cli {
         help = "Account to use, for example openai/work"
     )]
     account: Option<String>,
+    #[arg(
+        short,
+        long,
+        global = true,
+        help = "Reasoning effort, for example high"
+    )]
+    effort: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -52,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
     let choice = chat::Choice {
         model: cli.model,
         account: cli.account,
+        effort: cli.effort,
     };
     match cli.command {
         None => chat::start(&paths, choice).await,

@@ -60,6 +60,7 @@ pub struct Session {
     provider: Provider,
     account: Account,
     model: Box<str>,
+    effort: Option<Box<str>>,
     instructions: Box<str>,
     runner: Runner,
     tool: tool::Spec,
@@ -135,6 +136,7 @@ impl Session {
             endpoints: env.endpoints.clone(),
             account,
             model: model.into(),
+            effort: None,
             instructions,
             runner: Runner::new(&env.workspace, &env.home, &env.spill, !messages.is_empty())?,
             tool: tool::spec(),
@@ -151,6 +153,10 @@ impl Session {
 
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    pub fn effort(&self) -> Option<&str> {
+        self.effort.as_deref()
     }
 
     pub fn account(&self) -> &Account {
@@ -173,13 +179,17 @@ impl Session {
         self.model = model.into();
     }
 
+    pub fn set_effort(&mut self, effort: Option<&str>) {
+        self.effort = effort.map(Into::into);
+    }
+
     pub fn set_account(&mut self, account: Account, model: &str) {
         self.provider = Provider::new(&account, self.http.clone(), &self.endpoints);
         self.account = account;
         self.model = model.into();
     }
 
-    pub async fn models(&mut self) -> Result<Vec<Box<str>>, Error> {
+    pub async fn models(&mut self) -> Result<Vec<provider::Model>, Error> {
         let bearer = self.bearer(false).await?;
         Ok(self.provider.models(&bearer).await?)
     }
@@ -269,6 +279,7 @@ impl Session {
                 use_tools,
                 origin: &origin,
                 cache_key: &cache_key,
+                effort: self.effort.as_deref(),
             };
             match self.provider.send(&request, &bearer, on_chunk).await {
                 Err(provider::Error::Status { status: 401, .. })

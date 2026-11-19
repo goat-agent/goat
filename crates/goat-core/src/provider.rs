@@ -61,11 +61,27 @@ pub struct Request<'a> {
     pub use_tools: bool,
     pub origin: &'a Origin,
     pub cache_key: &'a str,
+    pub effort: Option<&'a str>,
 }
 
 impl<'a> Request<'a> {
     fn all_messages(&self) -> impl Iterator<Item = &'a Message> {
         self.messages.iter().chain(self.trailing)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Model {
+    pub id: Box<str>,
+    pub efforts: Option<Vec<Box<str>>>,
+    pub default_effort: Option<Box<str>>,
+}
+
+impl Model {
+    pub fn accepts(&self, effort: &str) -> bool {
+        self.efforts
+            .as_ref()
+            .is_none_or(|efforts| efforts.iter().any(|e| &**e == effort))
     }
 }
 
@@ -123,7 +139,7 @@ impl Provider {
         }
     }
 
-    pub async fn models(&self, bearer: &str) -> Result<Vec<Box<str>>, Error> {
+    pub async fn models(&self, bearer: &str) -> Result<Vec<Model>, Error> {
         match self {
             Self::OpenAi(client) => client.models(bearer).await,
             Self::Anthropic(client) => client.models(bearer).await,
@@ -238,6 +254,26 @@ async fn read_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn model(efforts: Option<Vec<Box<str>>>) -> Model {
+        Model {
+            id: "m".into(),
+            efforts,
+            default_effort: None,
+        }
+    }
+
+    #[test]
+    fn model_with_known_levels_rejects_other_efforts() {
+        let model = model(Some(vec!["low".into(), "high".into()]));
+        assert!(model.accepts("high"));
+        assert!(!model.accepts("ultra"));
+    }
+
+    #[test]
+    fn model_with_unknown_levels_accepts_any_effort() {
+        assert!(model(None).accepts("ultra"));
+    }
 
     #[test]
     fn openai_error_body_shows_code_and_message() {

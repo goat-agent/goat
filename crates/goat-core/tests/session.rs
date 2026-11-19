@@ -330,3 +330,24 @@ async fn codex_login_sends_account_and_originator_headers() {
     assert!(request.contains(&format!("session-id: {}", session.id())));
     assert!(request.contains(r#""include":["reasoning.encrypted_content"]"#));
 }
+
+#[tokio::test]
+async fn chosen_effort_is_sent_with_the_request() {
+    let server = server::replay(vec![ANTHROPIC_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = Session::create(
+        Store::open_in_memory().unwrap(),
+        reqwest::Client::new(),
+        &env,
+        account(Kind::Anthropic),
+        "claude-opus-5-5",
+    )
+    .unwrap();
+    session.set_effort(Some("xhigh"));
+
+    session.turn("hi", &mut Recorder::default()).await.unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].contains(r#""output_config":{"effort":"xhigh"}"#));
+}
