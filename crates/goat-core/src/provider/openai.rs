@@ -158,7 +158,7 @@ impl<'a> Body<'a> {
             tool_choice: (!request.use_tools).then_some("none"),
             store: false,
             stream: true,
-            parallel_tool_calls: true,
+            parallel_tool_calls: false,
             reasoning: Reasoning { summary: "auto" },
             include: ["reasoning.encrypted_content"],
             prompt_cache_key: request.cache_key,

@@ -85,6 +85,7 @@ async fn openai_turn_runs_the_tool_and_replays_reasoning() {
 
     let requests = server.requests.lock().unwrap();
     assert!(requests[0].contains(r#""tools":[{"type":"function","name":"run""#));
+    assert!(requests[0].contains(r#""parallel_tool_calls":false"#));
     assert!(requests[1].contains(r#""encrypted_content":"enc-1""#));
     assert!(requests[1].contains(r#""type":"function_call_output","call_id":"call_1""#));
     assert!(requests[1].contains(r#""store":false"#));
@@ -110,6 +111,9 @@ async fn anthropic_turn_echoes_thinking_with_its_signature() {
 
     assert_eq!(recorder.text, "Done.");
     let requests = server.requests.lock().unwrap();
+    assert!(
+        requests[0].contains(r#""tool_choice":{"type":"auto","disable_parallel_tool_use":true}"#)
+    );
     assert!(requests[1].contains(r#""signature":"sig-1""#));
     assert!(requests[1].contains(r#""type":"tool_result","tool_use_id":"toolu_1""#));
     assert!(requests[1].contains(

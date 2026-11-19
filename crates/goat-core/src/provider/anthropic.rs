@@ -118,8 +118,7 @@ struct Body<'a> {
     stream: bool,
     system: [TextBlock<'a>; 1],
     tools: Vec<Tool<'a>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<ToolChoice>,
+    tool_choice: ToolChoice,
     messages: Vec<Turn<'a>>,
     cache_control: CacheControl,
     thinking: Thinking,
@@ -148,7 +147,13 @@ impl<'a> Body<'a> {
                     input_schema: &spec.schema,
                 })
                 .collect(),
-            tool_choice: (!request.use_tools).then_some(ToolChoice { r#type: "none" }),
+            tool_choice: if request.use_tools {
+                ToolChoice::Auto {
+                    disable_parallel_tool_use: true,
+                }
+            } else {
+                ToolChoice::None
+            },
             messages,
             cache_control: CacheControl {
                 r#type: "ephemeral",
@@ -243,8 +248,10 @@ struct Tool<'a> {
 }
 
 #[derive(Serialize)]
-struct ToolChoice {
-    r#type: &'static str,
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ToolChoice {
+    Auto { disable_parallel_tool_use: bool },
+    None,
 }
 
 #[derive(Serialize)]
