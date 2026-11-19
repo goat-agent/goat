@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::{Error, Flow, Reply, Request, Usage};
+use super::{Chunk, Error, Flow, Reply, Request, Usage};
 use crate::message::{Message, Native, Part, Role};
 
 pub const BASE_URL: &str = "https://api.anthropic.com/v1";
@@ -28,7 +28,7 @@ impl Client {
         &self,
         request: &Request<'_>,
         key: &str,
-        on_text: &mut dyn FnMut(&str),
+        on_chunk: &mut dyn FnMut(Chunk<'_>),
     ) -> Result<Reply, Error> {
         let body = serde_json::to_string(&Body::new(request))?;
         let url = format!("{}/messages", self.base);
@@ -67,7 +67,7 @@ impl Client {
                 "content_block_delta" => {
                     let delta: BlockDelta = serde_json::from_str(&event.data)?;
                     if let Some(Some(block)) = blocks.get_mut(delta.index) {
-                        block.apply(delta.delta, on_text);
+                        block.apply(delta.delta, on_chunk);
                     }
                 }
                 "message_delta" => {
@@ -301,13 +301,14 @@ impl Building {
         })
     }
 
-    fn apply(&mut self, delta: Delta, on_text: &mut dyn FnMut(&str)) {
+    fn apply(&mut self, delta: Delta, on_chunk: &mut dyn FnMut(Chunk<'_>)) {
         match (self, delta) {
             (Self::Text(text), Delta::Text { text: piece }) => {
-                on_text(&piece);
+                on_chunk(Chunk::Text(&piece));
                 text.push_str(&piece);
             }
             (Self::Thinking { thinking, .. }, Delta::Thinking { thinking: piece }) => {
+                on_chunk(Chunk::Reasoning(&piece));
                 thinking.push_str(&piece);
             }
             (Self::Thinking { signature, .. }, Delta::Signature { signature: piece }) => {

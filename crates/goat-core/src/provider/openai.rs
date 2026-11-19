@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::{Error, Flow, Reply, Request, Usage};
+use super::{Chunk, Error, Flow, Reply, Request, Usage};
 use crate::account::codex;
 use crate::message::{Message, Native, Part, Role};
 
@@ -53,7 +53,7 @@ impl Client {
         &self,
         request: &Request<'_>,
         bearer: &str,
-        on_text: &mut dyn FnMut(&str),
+        on_chunk: &mut dyn FnMut(Chunk<'_>),
     ) -> Result<Reply, Error> {
         let body = serde_json::to_string(&Body::new(request))?;
         let url = format!("{}/responses", self.base);
@@ -72,7 +72,12 @@ impl Client {
             match envelope.r#type.as_str() {
                 "response.output_text.delta" => {
                     let delta: TextDelta = serde_json::from_str(&event.data)?;
-                    on_text(&delta.delta);
+                    on_chunk(Chunk::Text(&delta.delta));
+                }
+                "response.reasoning_summary_part.added" => on_chunk(Chunk::Reasoning("\n")),
+                "response.reasoning_summary_text.delta" => {
+                    let delta: TextDelta = serde_json::from_str(&event.data)?;
+                    on_chunk(Chunk::Reasoning(&delta.delta));
                 }
                 "response.output_item.done" => {
                     let done: ItemDone = serde_json::from_str(&event.data)?;

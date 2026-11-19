@@ -69,6 +69,12 @@ impl<'a> Request<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum Chunk<'a> {
+    Text(&'a str),
+    Reasoning(&'a str),
+}
+
 #[derive(Debug)]
 pub struct Reply {
     pub parts: Vec<Part>,
@@ -109,11 +115,11 @@ impl Provider {
         &self,
         request: &Request<'_>,
         bearer: &str,
-        on_text: &mut dyn FnMut(&str),
+        on_chunk: &mut dyn FnMut(Chunk<'_>),
     ) -> Result<Reply, Error> {
         match self {
-            Self::OpenAi(client) => client.send(request, bearer, on_text).await,
-            Self::Anthropic(client) => client.send(request, bearer, on_text).await,
+            Self::OpenAi(client) => client.send(request, bearer, on_chunk).await,
+            Self::Anthropic(client) => client.send(request, bearer, on_chunk).await,
         }
     }
 

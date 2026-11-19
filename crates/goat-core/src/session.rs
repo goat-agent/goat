@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::account::Account;
 use crate::message::{self, Message, Origin, Part, Role};
-use crate::provider::{self, Endpoints, Provider, Request, Usage};
+use crate::provider::{self, Chunk, Endpoints, Provider, Request, Usage};
 use crate::store::{self, Store};
 use crate::tool::{self, Outcome, Runner, Step};
 
@@ -30,6 +30,7 @@ pub enum Error {
 #[derive(Debug, Clone, Copy)]
 pub enum Event<'a> {
     Text(&'a str),
+    Reasoning(&'a str),
     RunStarted { description: &'a str },
     Call { summary: &'a str },
     CallFailed { problem: &'a str },
@@ -193,7 +194,7 @@ impl Session {
         self.push(message)?;
         loop {
             let reply = self
-                .request(None, true, &mut |text| sink.emit(Event::Text(text)))
+                .request(None, true, &mut |chunk| sink.emit(chunk.into()))
                 .await?;
             self.last_input = reply.usage.input;
             sink.emit(Event::Usage(reply.usage));
@@ -252,7 +253,7 @@ impl Session {
         &mut self,
         trailing: Option<&Message>,
         use_tools: bool,
-        on_text: &mut dyn FnMut(&str),
+        on_chunk: &mut dyn FnMut(Chunk<'_>),
     ) -> Result<provider::Reply, Error> {
         let mut refreshed = false;
         loop {
@@ -269,7 +270,7 @@ impl Session {
                 origin: &origin,
                 cache_key: &cache_key,
             };
-            match self.provider.send(&request, &bearer, on_text).await {
+            match self.provider.send(&request, &bearer, on_chunk).await {
                 Err(provider::Error::Status { status: 401, .. })
                     if !refreshed && self.account.credential.expires_at().is_some() =>
                 {
@@ -367,6 +368,15 @@ impl Session {
             self.account.credential = freshest;
         }
         Ok(self.account.credential.secret().into())
+    }
+}
+
+impl<'a> From<Chunk<'a>> for Event<'a> {
+    fn from(chunk: Chunk<'a>) -> Self {
+        match chunk {
+            Chunk::Text(text) => Self::Text(text),
+            Chunk::Reasoning(text) => Self::Reasoning(text),
+        }
     }
 }
 
