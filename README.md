@@ -18,9 +18,12 @@ goat                       # start a session in the current directory
 goat resume                # continue the latest session in this directory
 goat accounts              # list accounts
 goat -m claude-opus-5-5 -a anthropic/api
+goat -e high               # reasoning effort for this session
 ```
 
-In a session, Enter sends and Alt+Enter or Ctrl+J starts a new line. Ctrl+C stops the running turn and Ctrl+D quits. Commands: `/model`, `/models`, `/account`, `/accounts`, `/exit`.
+In a session, Enter sends and Alt+Enter or Ctrl+J starts a new line. Ctrl+C stops the running turn and Ctrl+D quits. Commands: `/model`, `/models`, `/effort`, `/account`, `/accounts`, `/exit`.
+
+`/effort` shows the current effort and the levels the model offers, `/effort high` sets it, and `/effort default` goes back to the model's default. The effort lasts for the session. The model's summary of its reasoning is shown dimmed while it thinks.
 
 You can add several accounts per provider and switch between them with `/account`.
 
