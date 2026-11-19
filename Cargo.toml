@@ -17,6 +17,7 @@ clap = { version = "4.6", features = ["derive"] }
 crossterm = "0.29"
 getrandom = "0.4"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "form"] }
+rquickjs = { version = "0.14", default-features = false, features = ["std", "futures"] }
 rusqlite = { version = "0.43", features = ["bundled", "uuid"] }
 rustix = { version = "1", features = ["process"] }
 serde = { version = "1", features = ["derive"] }
