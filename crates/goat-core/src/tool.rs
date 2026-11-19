@@ -2,20 +2,39 @@ mod bash;
 mod danger;
 mod files;
 mod hashline;
+mod host;
+mod script;
+mod spill;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::rc::Rc;
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::value::RawValue;
+use tokio::sync::mpsc;
 
-const DEFAULT_TIMEOUT_SECS: u64 = 120;
-const SUMMARY_CHARS: usize = 100;
+use self::host::Host;
+use self::script::Script;
 
-const READ_SCHEMA: &str = r#"{"type":"object","properties":{"path":{"type":"string","description":"File path, relative to the working directory or absolute"},"offset":{"type":["integer","null"],"description":"First line to show, 1-based; null starts at line 1"},"limit":{"type":["integer","null"],"description":"Maximum number of lines; null shows up to 2000"}},"required":["path","offset","limit"],"additionalProperties":false}"#;
-const EDIT_SCHEMA: &str = r#"{"type":"object","properties":{"path":{"type":"string","description":"File to edit"},"edits":{"type":"array","description":"Edits addressed against the file as last read; applied together or not at all","items":{"type":"object","properties":{"op":{"type":"string","enum":["replace","insert_after","delete"]},"from":{"type":["string","null"],"description":"Anchor N:hhh of the first line of the range, or of the line to insert after; null with insert_after inserts at the top"},"to":{"type":["string","null"],"description":"Anchor of the last line of the range; null means the same line as from"},"lines":{"type":["array","null"],"items":{"type":"string"},"description":"New lines without line endings; null for delete"}},"required":["op","from","to","lines"],"additionalProperties":false}}},"required":["path","edits"],"additionalProperties":false}"#;
-const WRITE_SCHEMA: &str = r#"{"type":"object","properties":{"path":{"type":"string","description":"File to create or replace"},"content":{"type":"string","description":"Complete file content"}},"required":["path","content"],"additionalProperties":false}"#;
-const BASH_SCHEMA: &str = r#"{"type":"object","properties":{"command":{"type":"string","description":"Command for bash -c, run in the working directory"},"timeout":{"type":["integer","null"],"description":"Seconds before the command is killed; null means 120"}},"required":["command","timeout"],"additionalProperties":false}"#;
+const NAME: &str = "run";
+const SCRIPT_LIMIT: Duration = Duration::from_mins(10);
+const STEP_BACKLOG: usize = 64;
+const NEW_SANDBOX: &str = "[this run started a new sandbox; variables from earlier runs are gone]";
+
+const SCHEMA: &str = r#"{"type":"object","properties":{"code":{"type":"string","description":"JavaScript to run; top-level await works and the last expression is the result"},"description":{"type":"string","description":"What this run does in 3 to 8 words, shown to the user"}},"required":["code","description"],"additionalProperties":false}"#;
+const DESCRIPTION: &str = "\
+Run JavaScript in a sandbox to work in the workspace. Top-level await works, the value of the last expression comes back to you, and variables persist between runs. \
+Do steps that belong together in one run, such as search, read, edit and test, and return only what you need to see; everything else stays in the sandbox.
+
+The sandbox reaches the system only through these async functions:
+- bash`cmd ${value}` or bash(command, {timeout}) runs bash -c in the working directory. Template values are shell-quoted. Returns {code, output, file}: code is null when the command was killed or timed out (default 120 seconds), output holds stdout and stderr cut to their first and last 20 KB, and file names the full output when it was cut. A non-zero exit is returned, not thrown.
+- read(path, {offset, limit}) returns {lines, total, next}. Each line is `N:hhh|text`, where `N:hhh` is its anchor. It gives up to 2000 lines from offset (1-based); next is the offset to continue from, or null.
+- edit(path, edits) changes lines of an existing file. Each edit is {op: \"replace\" | \"insert_after\" | \"delete\", from, to, lines}. from and to are lines or anchors from your latest read or edit of that file; to defaults to from; lines are the new lines; insert_after without from inserts at the top. Edits apply together or not at all, and a line that changed since it was read rejects them. Returns {total, preview}, where preview shows the changed lines with their new anchors.
+- write(path, content) creates a file or replaces a whole file. Returns {created, lines}.
+- console.log(...) adds lines to what you see, before the result.
+
+A failed read, edit or write, and a blocked command, throw an Error. A run returns only after all its calls finish, so await the calls whose results you use. Paths are relative to the working directory, and ~ is the home directory.";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -30,54 +49,40 @@ pub struct Spec {
     pub schema: Box<RawValue>,
 }
 
-pub fn specs() -> Vec<Spec> {
-    [
-        (
-            "read",
-            "Read a text file. Every line is shown as `N:hhh|text`; `N:hhh` is that line's anchor for edit.",
-            READ_SCHEMA,
-        ),
-        (
-            "edit",
-            "Change lines of an existing file by anchor. Use anchors from your latest read or edit result for that file. If a line changed since, nothing is written and the current lines are shown.",
-            EDIT_SCHEMA,
-        ),
-        (
-            "write",
-            "Create a file or replace a whole file with new content.",
-            WRITE_SCHEMA,
-        ),
-        (
-            "bash",
-            "Run a shell command with bash -c in the working directory: search with rg, list files, build, test, use git. Output is cut to its start and end when long; the full output is saved to a file named in the result.",
-            BASH_SCHEMA,
-        ),
-    ]
-    .into_iter()
-    .map(|(name, description, schema)| Spec {
-        name,
-        description,
-        schema: RawValue::from_string(schema.to_owned())
-            .unwrap_or_else(|err| unreachable!("tool schema for {name} is valid json: {err}")),
-    })
-    .collect()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
     pub output: Box<str>,
     pub is_error: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Step {
+    Started(Box<str>),
+    Failed(Box<str>),
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Run {
+    code: String,
+    description: String,
+}
+
+pub(crate) struct Runner {
+    host: Rc<Host>,
+    steps: mpsc::Receiver<Step>,
+    script: Option<Script>,
+    had_sandbox: bool,
+}
+
 impl Outcome {
-    fn ok(output: impl Into<Box<str>>) -> Self {
+    pub(crate) fn ok(output: impl Into<Box<str>>) -> Self {
         Self {
             output: output.into(),
             is_error: false,
         }
     }
 
-    fn error(output: impl Into<Box<str>>) -> Self {
+    pub(crate) fn error(output: impl Into<Box<str>>) -> Self {
         Self {
             output: output.into(),
             is_error: true,
@@ -85,214 +90,192 @@ impl Outcome {
     }
 }
 
-#[derive(Debug)]
-pub struct Toolbox {
-    workspace: PathBuf,
-    home: PathBuf,
-    spill: PathBuf,
-    danger: danger::Checker,
+impl Run {
+    pub(crate) fn parse(name: &str, input: &str) -> Result<Self, String> {
+        if name != NAME {
+            return Err(format!("there is no tool named {name}; use {NAME}"));
+        }
+        serde_json::from_str(input).map_err(|err| format!("invalid arguments for {NAME}: {err}"))
+    }
+
+    pub(crate) fn description(&self) -> &str {
+        &self.description
+    }
 }
 
-impl Toolbox {
-    pub fn new(workspace: &Path, home: &Path, spill: &Path) -> Result<Self, Error> {
+impl Runner {
+    pub(crate) fn new(
+        workspace: &Path,
+        home: &Path,
+        spill: &Path,
+        resumed: bool,
+    ) -> Result<Self, Error> {
+        let (tx, steps) = mpsc::channel(STEP_BACKLOG);
         Ok(Self {
-            workspace: workspace.to_owned(),
-            home: home.to_owned(),
-            spill: spill.to_owned(),
-            danger: danger::Checker::new()?,
+            host: Rc::new(Host::new(workspace, home, spill, tx)?),
+            steps,
+            script: None,
+            had_sandbox: resumed,
         })
     }
 
-    pub fn workspace(&self) -> &Path {
-        &self.workspace
+    pub(crate) fn workspace(&self) -> &Path {
+        self.host.workspace()
     }
 
-    pub async fn run(&mut self, name: &str, input: &str) -> Outcome {
-        let call = match Call::parse(name, input) {
-            Ok(call) => call,
-            Err(problem) => return Outcome::error(problem),
+    pub(crate) async fn run(&mut self, run: &Run, on_step: &mut dyn FnMut(Step)) -> Outcome {
+        while self.steps.try_recv().is_ok() {}
+        let (script, note) = match self.script.take() {
+            Some(script) => (script, None),
+            None => match Script::new(Rc::clone(&self.host)).await {
+                Ok(script) => (script, self.had_sandbox.then_some(NEW_SANDBOX)),
+                Err(err) => return Outcome::error(format!("could not start the sandbox: {err}")),
+            },
         };
-        match call {
-            Call::Read(args) => files::read(
-                &self.resolve(&args.path),
-                &args.path,
-                args.offset,
-                args.limit,
-            ),
-            Call::Edit(args) => files::edit(&self.resolve(&args.path), &args.path, args.edits),
-            Call::Write(args) => files::write(&self.resolve(&args.path), &args.path, &args.content),
-            Call::Bash(args) => {
-                if let Some(reason) = self
-                    .danger
-                    .check(&args.command, &self.workspace, &self.home)
-                {
-                    return Outcome::error(format!(
-                        "blocked: {reason}. goat never runs this; the user can run it themselves."
-                    ));
+        self.had_sandbox = true;
+        let finished = {
+            let eval = tokio::time::timeout(SCRIPT_LIMIT, script.eval(&run.code));
+            tokio::pin!(eval);
+            loop {
+                tokio::select! {
+                    finished = &mut eval => break finished,
+                    Some(step) = self.steps.recv() => on_step(step),
                 }
-                let timeout =
-                    Duration::from_secs(args.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS).max(1));
-                bash::run(&args.command, &self.workspace, timeout, &self.spill).await
             }
+        };
+        while let Ok(step) = self.steps.try_recv() {
+            on_step(step);
         }
-    }
-
-    fn resolve(&self, raw: &str) -> PathBuf {
-        match raw.strip_prefix('~') {
-            Some("") => self.home.clone(),
-            Some(rest) if rest.starts_with('/') => self.home.join(rest.trim_start_matches('/')),
-            _ => self.workspace.join(raw),
-        }
-    }
-}
-
-pub fn summarize(name: &str, input: &str) -> String {
-    #[derive(Deserialize)]
-    struct Target {
-        path: Option<String>,
-        command: Option<String>,
-    }
-
-    let target = serde_json::from_str::<Target>(input).ok();
-    let detail = target
-        .and_then(|t| t.path.or(t.command))
-        .and_then(|detail| detail.lines().next().map(str::to_owned))
-        .unwrap_or_default();
-    let mut summary = format!("{name} {detail}");
-    if let Some((cut, _)) = summary.char_indices().nth(SUMMARY_CHARS) {
-        summary.truncate(cut);
-        summary.push('…');
-    }
-    summary
-}
-
-enum Call {
-    Read(ReadArgs),
-    Edit(EditArgs),
-    Write(WriteArgs),
-    Bash(BashArgs),
-}
-
-impl Call {
-    fn parse(name: &str, input: &str) -> Result<Self, String> {
-        let invalid = |err: serde_json::Error| format!("invalid arguments for {name}: {err}");
-        match name {
-            "read" => serde_json::from_str(input).map(Self::Read).map_err(invalid),
-            "edit" => serde_json::from_str(input).map(Self::Edit).map_err(invalid),
-            "write" => serde_json::from_str(input)
-                .map(Self::Write)
-                .map_err(invalid),
-            "bash" => serde_json::from_str(input).map(Self::Bash).map_err(invalid),
-            other => Err(format!(
-                "there is no tool named {other}; use read, edit, write or bash"
+        let outcome = match finished {
+            Ok(outcome) => {
+                self.script = Some(script);
+                outcome
+            }
+            Err(_) => Outcome::error(format!(
+                "stopped: the run took over {} minutes, and its calls were killed",
+                SCRIPT_LIMIT.as_secs() / 60
             )),
+        };
+        let text = match note {
+            Some(note) => format!("{note}\n{}", outcome.output),
+            None => outcome.output.into(),
+        };
+        Outcome {
+            output: spill::fit(text, self.host.spill()).into(),
+            is_error: outcome.is_error,
         }
     }
 }
 
-#[derive(Deserialize)]
-struct ReadArgs {
-    path: String,
-    offset: Option<usize>,
-    limit: Option<usize>,
+impl std::fmt::Debug for Runner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Runner")
+            .field("workspace", &self.host.workspace())
+            .field("has_sandbox", &self.script.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
-#[derive(Deserialize)]
-struct EditArgs {
-    path: String,
-    edits: Vec<hashline::RawOp>,
-}
-
-#[derive(Deserialize)]
-struct WriteArgs {
-    path: String,
-    content: String,
-}
-
-#[derive(Deserialize)]
-struct BashArgs {
-    command: String,
-    timeout: Option<u64>,
+pub fn spec() -> Spec {
+    Spec {
+        name: NAME,
+        description: DESCRIPTION,
+        schema: RawValue::from_string(SCHEMA.to_owned())
+            .unwrap_or_else(|err| unreachable!("the run schema is valid json: {err}")),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn toolbox(dir: &Path) -> Toolbox {
-        Toolbox::new(dir, Path::new("/home/me"), &dir.join(".spill")).unwrap()
+    fn runner(dir: &Path) -> Runner {
+        Runner::new(dir, dir, &dir.join(".spill"), false).unwrap()
     }
 
-    #[test]
-    fn specs_have_valid_schemas() {
-        let specs = specs();
-        assert_eq!(
-            specs.iter().map(|s| s.name).collect::<Vec<_>>(),
-            ["read", "edit", "write", "bash"]
-        );
-        for spec in specs {
-            serde_json::from_str::<serde_json::Value>(spec.schema.get()).unwrap();
+    fn run(code: &str) -> Run {
+        Run {
+            code: code.to_owned(),
+            description: "test".to_owned(),
         }
     }
 
-    #[tokio::test]
-    async fn write_read_edit_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut tools = toolbox(dir.path());
-        tools
-            .run(
-                "write",
-                r#"{"path":"a.rs","content":"fn a() {}\nfn b() {}\n"}"#,
-            )
-            .await;
-        let read = tools
-            .run("read", r#"{"path":"a.rs","offset":null,"limit":null}"#)
-            .await;
-        let anchor = read
-            .output
-            .lines()
-            .nth(1)
-            .unwrap()
-            .split('|')
-            .next()
-            .unwrap();
-        let edit = format!(
-            r#"{{"path":"a.rs","edits":[{{"op":"replace","from":"{anchor}","to":null,"lines":["fn b() {{ a() }}"]}}]}}"#
-        );
-        let outcome = tools.run("edit", &edit).await;
-        assert!(!outcome.is_error, "{}", outcome.output);
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("a.rs")).unwrap(),
-            "fn a() {}\nfn b() { a() }\n"
-        );
-    }
-
-    #[tokio::test]
-    async fn dangerous_bash_is_blocked_before_it_runs() {
-        let dir = tempfile::tempdir().unwrap();
-        let outcome = toolbox(dir.path())
-            .run("bash", r#"{"command":"rm -rf ~","timeout":null}"#)
-            .await;
-        assert!(outcome.is_error);
-        assert!(outcome.output.starts_with("blocked:"));
-    }
-
-    #[tokio::test]
-    async fn unknown_tool_is_an_error_result() {
-        let dir = tempfile::tempdir().unwrap();
-        let outcome = toolbox(dir.path()).run("browse", "{}").await;
-        assert!(outcome.is_error);
+    #[test]
+    fn spec_schema_is_valid_json() {
+        serde_json::from_str::<serde_json::Value>(spec().schema.get()).unwrap();
     }
 
     #[test]
-    fn summary_shows_tool_and_target() {
+    fn unknown_tool_is_rejected() {
         assert_eq!(
-            summarize("bash", r#"{"command":"cargo test\necho"}"#),
-            "bash cargo test"
+            Run::parse("bash", "{}").unwrap_err(),
+            "there is no tool named bash; use run"
         );
+    }
+
+    #[tokio::test]
+    async fn steps_are_reported_while_the_script_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut steps = Vec::new();
+        runner(dir.path())
+            .run(
+                &run("await bash`true`; await write('a.txt', 'x')"),
+                &mut |step| {
+                    steps.push(step);
+                },
+            )
+            .await;
         assert_eq!(
-            summarize("read", r#"{"path":"src/lib.rs"}"#),
-            "read src/lib.rs"
+            steps,
+            [
+                Step::Started("bash true".into()),
+                Step::Started("write a.txt".into())
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn sandbox_lost_to_a_cancel_is_announced_in_the_next_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut runner = runner(dir.path());
+        runner.run(&run("let kept = 1"), &mut |_| {}).await;
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(300),
+            runner.run(&run("await bash`sleep 5`"), &mut |_| {}),
+        )
+        .await;
+        assert!(cancelled.is_err());
+
+        let outcome = runner.run(&run("typeof kept"), &mut |_| {}).await;
+        assert_eq!(outcome, Outcome::ok(format!("{NEW_SANDBOX}\nundefined")));
+    }
+
+    #[tokio::test]
+    async fn cancel_kills_the_commands_of_the_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut runner = runner(dir.path());
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(500),
+            runner.run(&run("await bash`sleep 1; touch late`"), &mut |_| {}),
+        )
+        .await;
+        assert!(cancelled.is_err());
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(!dir.path().join("late").exists());
+    }
+
+    #[tokio::test]
+    async fn long_result_is_cut_and_spilled() {
+        let dir = tempfile::tempdir().unwrap();
+        let outcome = runner(dir.path())
+            .run(&run("'x'.repeat(100000)"), &mut |_| {})
+            .await;
+        assert!(outcome.output.contains("bytes omitted"));
+        assert_eq!(
+            std::fs::read_dir(dir.path().join(".spill"))
+                .unwrap()
+                .count(),
+            1
         );
     }
 }

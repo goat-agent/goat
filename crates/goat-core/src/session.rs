@@ -6,12 +6,12 @@ use crate::account::Account;
 use crate::message::{self, Message, Origin, Part, Role};
 use crate::provider::{self, Endpoints, Provider, Request, Usage};
 use crate::store::{self, Store};
-use crate::tool::{self, Outcome, Toolbox};
+use crate::tool::{self, Outcome, Runner, Step};
 
 crate::id::define!(Id);
 
 const COMPACT_AT_TOKENS: u64 = 200_000;
-const INTERRUPTED: &str = "interrupted by the user before this tool finished";
+const INTERRUPTED: &str = "interrupted by the user before this run finished";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -30,8 +30,10 @@ pub enum Error {
 #[derive(Debug, Clone, Copy)]
 pub enum Event<'a> {
     Text(&'a str),
-    ToolStarted { name: &'a str, summary: &'a str },
-    ToolFinished { outcome: &'a Outcome },
+    RunStarted { description: &'a str },
+    Call { summary: &'a str },
+    CallFailed { problem: &'a str },
+    RunFinished { outcome: &'a Outcome },
     Usage(Usage),
     Compacting,
 }
@@ -58,10 +60,11 @@ pub struct Session {
     account: Account,
     model: Box<str>,
     instructions: Box<str>,
-    tools: Toolbox,
-    specs: Vec<tool::Spec>,
+    runner: Runner,
+    tool: tool::Spec,
     messages: Vec<Message>,
     finished: Vec<Part>,
+    started: Vec<Box<str>>,
     last_input: u64,
 }
 
@@ -132,10 +135,11 @@ impl Session {
             account,
             model: model.into(),
             instructions,
-            tools: Toolbox::new(&env.workspace, &env.home, &env.spill)?,
-            specs: tool::specs(),
+            runner: Runner::new(&env.workspace, &env.home, &env.spill, !messages.is_empty())?,
+            tool: tool::spec(),
             messages,
             finished: Vec::new(),
+            started: Vec::new(),
             last_input: 0,
         })
     }
@@ -157,7 +161,7 @@ impl Session {
     }
 
     pub fn workspace(&self) -> &Path {
-        self.tools.workspace()
+        self.runner.workspace()
     }
 
     pub fn messages(&self) -> &[Message] {
@@ -204,13 +208,7 @@ impl Session {
             }
 
             for (id, name, input) in calls {
-                let summary = tool::summarize(&name, &input);
-                sink.emit(Event::ToolStarted {
-                    name: &name,
-                    summary: &summary,
-                });
-                let outcome = self.tools.run(&name, &input).await;
-                sink.emit(Event::ToolFinished { outcome: &outcome });
+                let outcome = self.run(&name, &input, sink).await;
                 self.finished.push(Part::ToolResult {
                     call_id: id,
                     output: outcome.output,
@@ -220,6 +218,34 @@ impl Session {
             let results = std::mem::take(&mut self.finished);
             self.push(Message::new(Role::Tool, None, results))?;
         }
+    }
+
+    async fn run(&mut self, name: &str, input: &str, sink: &mut impl Sink) -> Outcome {
+        let run = match tool::Run::parse(name, input) {
+            Ok(run) => run,
+            Err(problem) => {
+                let outcome = Outcome::error(problem);
+                sink.emit(Event::RunFinished { outcome: &outcome });
+                return outcome;
+            }
+        };
+        sink.emit(Event::RunStarted {
+            description: run.description(),
+        });
+        self.started.clear();
+        let started = &mut self.started;
+        let outcome = self
+            .runner
+            .run(&run, &mut |step| match step {
+                Step::Started(summary) => {
+                    sink.emit(Event::Call { summary: &summary });
+                    started.push(summary);
+                }
+                Step::Failed(problem) => sink.emit(Event::CallFailed { problem: &problem }),
+            })
+            .await;
+        sink.emit(Event::RunFinished { outcome: &outcome });
+        outcome
     }
 
     async fn request(
@@ -238,7 +264,7 @@ impl Session {
                 instructions: &self.instructions,
                 messages: &self.messages,
                 trailing,
-                tools: &self.specs,
+                tools: std::slice::from_ref(&self.tool),
                 use_tools,
                 origin: &origin,
                 cache_key: &cache_key,
@@ -287,6 +313,7 @@ impl Session {
         let Some(last) = self.messages.last().filter(|m| m.role == Role::Assistant) else {
             return Ok(());
         };
+        let mut started = Some(std::mem::take(&mut self.started));
         let results: Vec<Part> = last
             .tool_calls()
             .map(|(id, _, _)| {
@@ -298,7 +325,7 @@ impl Session {
                     .cloned()
                     .unwrap_or_else(|| Part::ToolResult {
                         call_id: id.into(),
-                        output: INTERRUPTED.into(),
+                        output: interrupted(&started.take().unwrap_or_default()).into(),
                         is_error: true,
                     })
             })
@@ -341,4 +368,16 @@ impl Session {
         }
         Ok(self.account.credential.secret().into())
     }
+}
+
+fn interrupted(started: &[Box<str>]) -> String {
+    if started.is_empty() {
+        return INTERRUPTED.to_owned();
+    }
+    let mut text = format!("{INTERRUPTED}. Calls it had started, which may have changed files:");
+    for summary in started {
+        text.push_str("\n- ");
+        text.push_str(summary);
+    }
+    text
 }
