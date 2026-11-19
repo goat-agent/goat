@@ -71,20 +71,23 @@ impl Sink for Terminal {
                 self.at_line_start = text.ends_with('\n');
                 self.flush();
             }
-            Event::ToolStarted { summary, .. } => self.note(&format!("  {summary}")),
-            Event::ToolFinished { outcome } if outcome.is_error => {
-                let first = outcome
-                    .output
-                    .lines()
-                    .find(|l| !l.trim().is_empty())
-                    .unwrap_or_default();
-                self.error(&format!("    {first}"));
+            Event::RunStarted { description } => self.note(&format!("  {description}")),
+            Event::Call { summary } => self.note(&format!("    {summary}")),
+            Event::CallFailed { problem } => self.error(&format!("    {}", first_line(problem))),
+            Event::RunFinished { outcome } if outcome.is_error => {
+                self.error(&format!("    {}", first_line(&outcome.output)));
             }
-            Event::ToolFinished { .. } => {}
+            Event::RunFinished { .. } => {}
             Event::Usage(usage) => self.usage = Some(usage),
             Event::Compacting => self.note("  compacting the conversation"),
         }
     }
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default()
 }
 
 fn tokens(count: u64) -> String {

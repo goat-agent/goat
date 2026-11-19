@@ -26,7 +26,8 @@ You can add several accounts per provider and switch between them with `/account
 
 ## How it works
 
-- The model has four tools: `read`, `edit`, `write` and `bash`. Edits point at lines by hash anchors, so an edit made against an outdated read is rejected and the file is left untouched.
+- The model has one tool, `run`. It writes JavaScript that calls `bash`, `read`, `edit` and `write` in a sandbox, so a search, an edit and a test run take one step, and only the result it returns goes into the conversation. The sandbox reaches the system only through those functions, and every shell command passes the same blocked-command check.
+- Edits point at lines by hash anchors, so an edit made against an outdated read is rejected and the file is left untouched.
 - The Codex login uses the backend of the Codex CLI with your ChatGPT plan. It is not a documented API, so OpenAI may change it.
 - There is no sandbox and no approval prompt. A built-in check blocks a few irreversible commands, such as `rm -rf ~` or formatting a disk.
 - The conversation is summarized once a request passes 200k input tokens.

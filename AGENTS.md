@@ -15,7 +15,7 @@ Run the first three and `cargo deny check` before you finish. The toolchain is p
 
 ## Layout
 
-- `crates/goat-core` is the library: agent loop (`session`), providers (`provider/openai`, `provider/anthropic`), tools (`tool/`), SQLite store (`store`), and accounts with ChatGPT sign-in (`account`). It never prints, reads environment variables or touches the terminal.
+- `crates/goat-core` is the library: agent loop (`session`), providers (`provider/openai`, `provider/anthropic`), the `run` tool and its sandbox (`tool/`), SQLite store (`store`), and accounts with ChatGPT sign-in (`account`). It never prints, reads environment variables or touches the terminal.
 - `crates/goat-cli` builds the `goat` binary: the inline input box (`input`), output (`render`), and the commands (`chat`, `login`).
 - `docs/style/rust.md` is the binding code style. Read it before writing code.
 
@@ -34,6 +34,8 @@ Run the first three and `cargo deny check` before you finish. The toolchain is p
 - The Codex login (`account::codex`) calls `chatgpt.com/backend-api/codex` with `chatgpt-account-id`, `originator: goat` and `session-id` headers. It is undocumented; keep its differences inside `provider/openai.rs` and `account/codex.rs`.
 - Tool schemas are strict JSON Schema for OpenAI: every property is listed in `required`, and optional ones are nullable.
 - The SSE fixtures in `crates/goat-core/tests/fixtures` follow the documented event shapes. They are not recordings of real responses.
+- The model has one tool, `run`: JavaScript in an embedded QuickJS sandbox (`tool/script.rs`). The sandbox reaches the system only through `tool/host.rs`, so every shell command passes `danger.rs`. Do not give it other ways out.
+- `Script` declares `finish` before `context` and `runtime`. Fields drop in order, and QuickJS aborts the process when a runtime is freed while a saved value is still alive.
 - `~/.goat/goat.db` stores credentials with mode 0600. Tests use `Store::open_in_memory` or a temporary directory, never the real home.
 
 ## Boundaries

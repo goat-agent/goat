@@ -10,6 +10,7 @@ publish.workspace = true
 base64.workspace = true
 getrandom.workspace = true
 reqwest.workspace = true
+rquickjs.workspace = true
 rusqlite.workspace = true
 rustix.workspace = true
 serde.workspace = true

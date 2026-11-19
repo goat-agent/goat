@@ -25,7 +25,8 @@ impl Sink for Recorder {
     fn emit(&mut self, event: Event<'_>) {
         match event {
             Event::Text(text) => self.text.push_str(text),
-            Event::ToolStarted { summary, .. } => self.tools.push(summary.to_owned()),
+            Event::RunStarted { description } => self.tools.push(description.to_owned()),
+            Event::Call { summary } => self.tools.push(summary.to_owned()),
             _ => {}
         }
     }
@@ -67,7 +68,7 @@ async fn openai_turn_runs_the_tool_and_replays_reasoning() {
     session.turn("say hi", &mut recorder).await.unwrap();
 
     assert_eq!(recorder.text, "Done.");
-    assert_eq!(recorder.tools, ["bash echo hi"]);
+    assert_eq!(recorder.tools, ["Say hi", "bash echo hi"]);
     let roles: Vec<Role> = session.messages().iter().map(|m| m.role).collect();
     assert_eq!(
         roles,
@@ -83,6 +84,8 @@ async fn openai_turn_runs_the_tool_and_replays_reasoning() {
     assert!(!is_error);
 
     let requests = server.requests.lock().unwrap();
+    assert!(requests[0].contains(r#""tools":[{"type":"function","name":"run""#));
+    assert!(requests[0].contains(r#""parallel_tool_calls":false"#));
     assert!(requests[1].contains(r#""encrypted_content":"enc-1""#));
     assert!(requests[1].contains(r#""type":"function_call_output","call_id":"call_1""#));
     assert!(requests[1].contains(r#""store":false"#));
@@ -108,9 +111,14 @@ async fn anthropic_turn_echoes_thinking_with_its_signature() {
 
     assert_eq!(recorder.text, "Done.");
     let requests = server.requests.lock().unwrap();
+    assert!(
+        requests[0].contains(r#""tool_choice":{"type":"auto","disable_parallel_tool_use":true}"#)
+    );
     assert!(requests[1].contains(r#""signature":"sig-1""#));
     assert!(requests[1].contains(r#""type":"tool_result","tool_use_id":"toolu_1""#));
-    assert!(requests[1].contains(r#""input":{"command": "echo hi", "timeout": null}"#));
+    assert!(requests[1].contains(
+        r#""input":{"code": "(await bash('echo hi')).output", "description": "Say hi"}"#
+    ));
 }
 
 #[tokio::test]
@@ -224,7 +232,9 @@ async fn cancelled_tool_call_is_closed_before_the_next_turn() {
         .await
         .unwrap();
     let requests = server.requests.lock().unwrap();
-    assert!(requests[1].contains("interrupted by the user before this tool finished"));
+    assert!(requests[1].contains(
+        "interrupted by the user before this run finished. Calls it had started, which may have changed files:\\n- bash sleep 5"
+    ));
     let roles: Vec<Role> = session.messages().iter().map(|m| m.role).collect();
     assert_eq!(
         roles,
@@ -241,7 +251,7 @@ async fn cancelled_tool_call_is_closed_before_the_next_turn() {
 #[tokio::test]
 async fn finished_results_survive_a_cancel_in_a_later_call() {
     let second_call = r#"event: response.output_item.done
-data: {"type":"response.output_item.done","sequence_number":3,"output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"bash","arguments":"{\"command\":\"sleep 5\",\"timeout\":null}","status":"completed"}}
+data: {"type":"response.output_item.done","sequence_number":3,"output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"run","arguments":"{\"code\":\"await bash('sleep 5')\",\"description\":\"Wait\"}","status":"completed"}}
 
 event: response.completed"#;
     let two_calls = leak(OPENAI_TOOL_CALL.replacen("event: response.completed", second_call, 1));

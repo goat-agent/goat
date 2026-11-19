@@ -5,7 +5,7 @@ event: response.output_item.done
 data: {"type":"response.output_item.done","sequence_number":1,"output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"Run a command."}],"encrypted_content":"enc-1"}}
 
 event: response.output_item.done
-data: {"type":"response.output_item.done","sequence_number":2,"output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"bash","arguments":"{\"command\":\"echo hi\",\"timeout\":null}","status":"completed"}}
+data: {"type":"response.output_item.done","sequence_number":2,"output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"run","arguments":"{\"code\":\"(await bash('echo hi')).output\",\"description\":\"Say hi\"}","status":"completed"}}
 
 event: response.completed
 data: {"type":"response.completed","sequence_number":3,"response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1200,"input_tokens_details":{"cached_tokens":1000},"output_tokens":20,"output_tokens_details":{"reasoning_tokens":8},"total_tokens":1220}}}

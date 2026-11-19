@@ -1,6 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 
-use tree_sitter::{Node, Parser};
+use tree_sitter::{Language, Node, Parser};
 
 const SHELLS: &[&str] = &["bash", "sh", "zsh", "dash", "ksh", "fish"];
 const SAFE_DEVICES: &[&str] = &[
@@ -57,7 +57,7 @@ const DISKUTIL_ERASERS: &[&str] = &[
 ];
 
 pub(crate) struct Checker {
-    parser: Parser,
+    language: Language,
 }
 
 impl std::fmt::Debug for Checker {
@@ -73,26 +73,30 @@ struct Scope<'a> {
 
 impl Checker {
     pub(crate) fn new() -> Result<Self, tree_sitter::LanguageError> {
+        let language = tree_sitter_bash::LANGUAGE.into();
+        Parser::new().set_language(&language)?;
+        Ok(Self { language })
+    }
+
+    pub(crate) fn check(&self, command: &str, workspace: &Path, home: &Path) -> Option<String> {
         let mut parser = Parser::new();
-        parser.set_language(&tree_sitter_bash::LANGUAGE.into())?;
-        Ok(Self { parser })
-    }
-
-    pub(crate) fn check(&mut self, command: &str, workspace: &Path, home: &Path) -> Option<String> {
-        self.check_source(command, &Scope { workspace, home }, 0)
-    }
-
-    fn check_source(&mut self, source: &str, scope: &Scope<'_>, depth: u8) -> Option<String> {
-        let tree = self.parser.parse(source, None)?;
-        let mut nested = Vec::new();
-        let found = visit(tree.root_node(), source, scope, &mut nested);
-        if found.is_some() || depth > 2 {
-            return found;
+        if parser.set_language(&self.language).is_err() {
+            return Some("the command could not be parsed".to_owned());
         }
-        nested
-            .into_iter()
-            .find_map(|inner| self.check_source(&inner, scope, depth + 1))
+        check_source(&mut parser, command, &Scope { workspace, home }, 0)
     }
+}
+
+fn check_source(parser: &mut Parser, source: &str, scope: &Scope<'_>, depth: u8) -> Option<String> {
+    let tree = parser.parse(source, None)?;
+    let mut nested = Vec::new();
+    let found = visit(tree.root_node(), source, scope, &mut nested);
+    if found.is_some() || depth > 2 {
+        return found;
+    }
+    nested
+        .into_iter()
+        .find_map(|inner| check_source(parser, &inner, scope, depth + 1))
 }
 
 fn visit(
