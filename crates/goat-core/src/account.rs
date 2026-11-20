@@ -52,7 +52,7 @@ impl Account {
     }
 
     pub fn label(&self) -> String {
-        format!("{}/{}", self.kind.as_str(), self.name)
+        format!("{}:{}", self.kind.as_str(), self.name)
     }
 }
 

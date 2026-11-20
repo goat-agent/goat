@@ -1,37 +1,240 @@
+use std::cell::RefCell;
+use std::pin::pin;
+use std::time::Duration;
+
 use anyhow::{Context, bail};
-use goat_core::account::Account;
-use goat_core::provider::{Endpoints, Model, Provider};
-use goat_core::session::{self, Environment, Session};
+use goat_core::account::{self, Account};
+use goat_core::catalog::{self, Model};
+use goat_core::provider::{Endpoints, Provider};
+use goat_core::session::{self, Environment, Event, Session, Sink};
 use goat_core::store::Store;
 
-use crate::input::{Editor, Entry};
-use crate::login;
+use crate::command::{self, Name};
+use crate::input::{Editor, Entry, Keys, RawMode, TurnKeys};
 use crate::paths::Paths;
-use crate::render::Terminal;
+use crate::render::{Ending, Terminal};
+use crate::target::{self, Choices, Current, DEFAULT_EFFORT, Effort, Offer};
 
 const USER_AGENT: &str = concat!("goat/", env!("CARGO_PKG_VERSION"));
-const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const TICK: Duration = Duration::from_millis(80);
 
-const HELP: &str = "\
-/model NAME    switch model        /models     list models
-/effort LEVEL  set effort          /effort     show effort levels
-/account NAME  switch account      /accounts   list accounts
-/exit          quit";
-
-const DEFAULT_EFFORT: &str = "default";
+const KEYS: &str = "\
+Enter sends, and Alt+Enter or Ctrl+J adds a line
+Tab completes a command or its value
+Esc or Ctrl+C stops a turn, and Ctrl+D quits";
 
 pub(crate) struct Choice {
     pub(crate) model: Option<String>,
-    pub(crate) account: Option<String>,
-    pub(crate) effort: Option<String>,
+}
+
+struct Opening {
+    account: Account,
+    model: String,
+    effort: Option<String>,
+}
+
+struct Chat {
+    session: Session,
+    terminal: Terminal,
+    editor: Editor,
+    keys: Keys,
+    offers: Vec<Offer>,
+    catalog: Vec<Model>,
+}
+
+struct Live<'a, 'b>(&'a RefCell<&'b mut Terminal>);
+
+enum Flow {
+    Continue,
+    Exit,
+}
+
+impl Chat {
+    async fn read(&mut self) -> anyhow::Result<Entry> {
+        let Self {
+            session,
+            editor,
+            keys,
+            offers,
+            catalog,
+            ..
+        } = self;
+        let choices = choices(session, offers, catalog);
+        Ok(editor.read(keys, &choices).await?)
+    }
+
+    async fn turn(&mut self, line: &str) -> anyhow::Result<()> {
+        let Self {
+            session,
+            terminal,
+            editor,
+            keys,
+            ..
+        } = self;
+        terminal.begin_turn();
+        let shared = RefCell::new(terminal);
+        let ending = {
+            let mut sink = Live(&shared);
+            let mut turn = pin!(session.turn(line, &mut sink));
+            let mut ticks = tokio::time::interval(TICK);
+            loop {
+                tokio::select! {
+                    result = &mut turn => break match result {
+                        Ok(()) => Ending::Complete,
+                        Err(err) => Ending::Failed(format!("{:#}", anyhow::Error::new(err))),
+                    },
+                    event = keys.next() => {
+                        if let TurnKeys::Interrupt = editor.during_turn(event?) {
+                            break Ending::Interrupted;
+                        }
+                    }
+                    _ = ticks.tick() => shared.borrow_mut().tick(),
+                }
+            }
+        };
+        shared.into_inner().finish_turn(ending);
+        Ok(())
+    }
+
+    fn command(&mut self, name: Name, argument: &str) -> anyhow::Result<Flow> {
+        match (name, argument) {
+            (Name::Exit, _) => return Ok(Flow::Exit),
+            (Name::Help, _) => self.terminal.reply(&help()),
+            (Name::Model, "") => {
+                let status = self.status();
+                self.terminal.reply(&status);
+            }
+            (Name::Model, spec) => self.switch(spec)?,
+            (Name::Effort, "") => {
+                let effort = self.describe_effort();
+                self.terminal.reply(&effort);
+            }
+            (Name::Effort, level) => self.set_effort(level)?,
+        }
+        Ok(Flow::Continue)
+    }
+
+    fn switch(&mut self, spec: &str) -> anyhow::Result<()> {
+        let choices = choices(&self.session, &self.offers, &self.catalog);
+        let selection = choices.resolve(spec).map_err(anyhow::Error::msg)?;
+        let name = choices.name(selection.account, &selection.model);
+        let is_new_account = selection.account != self.session.account().id;
+        if is_new_account {
+            let account = self
+                .session
+                .store()
+                .account(selection.account)?
+                .context("the account was removed")?;
+            self.session.set_account(account, &selection.model);
+        } else {
+            self.session.set_model(&selection.model);
+        }
+        let effort = match selection.effort {
+            Effort::Level(level) => {
+                self.session.set_effort(Some(&level));
+                Some(level)
+            }
+            Effort::Default => {
+                self.session.set_effort(None);
+                Some(DEFAULT_EFFORT.to_owned())
+            }
+            Effort::Keep => self
+                .drop_unsupported_effort()
+                .then(|| DEFAULT_EFFORT.to_owned()),
+        };
+        let account = if is_new_account {
+            format!(" on {}", self.session.account().label())
+        } else {
+            String::new()
+        };
+        let effort = effort.map_or_else(String::new, |effort| format!(" with {effort} effort"));
+        let result = format!("Set model to {name}{account}{effort}");
+        self.terminal.outcome(Ok(&result));
+        Ok(())
+    }
+
+    fn set_effort(&mut self, level: &str) -> anyhow::Result<()> {
+        let effort = choices(&self.session, &self.offers, &self.catalog)
+            .effort(level)
+            .map_err(anyhow::Error::msg)?;
+        match effort {
+            Effort::Level(level) => self.session.set_effort(Some(&level)),
+            Effort::Default | Effort::Keep => self.session.set_effort(None),
+        }
+        self.terminal.outcome(Ok(&format!("Set effort to {level}")));
+        Ok(())
+    }
+
+    fn drop_unsupported_effort(&mut self) -> bool {
+        let Some(effort) = self.session.effort() else {
+            return false;
+        };
+        let choices = choices(&self.session, &self.offers, &self.catalog);
+        let is_supported = choices
+            .current_model()
+            .is_none_or(|model| model.accepts(effort));
+        if !is_supported {
+            self.session.set_effort(None);
+        }
+        !is_supported
+    }
+
+    fn status(&self) -> String {
+        let session = &self.session;
+        let name = choices(session, &self.offers, &self.catalog)
+            .name(session.account().id, session.model());
+        let effort = session
+            .effort()
+            .map_or_else(String::new, |effort| format!(" with {effort} effort"));
+        format!("{name} on {}{effort}", session.account().label())
+    }
+
+    fn describe_effort(&self) -> String {
+        let choices = choices(&self.session, &self.offers, &self.catalog);
+        let effort = self.session.effort().unwrap_or(DEFAULT_EFFORT);
+        match choices
+            .current_model()
+            .filter(|model| model.efforts.is_some())
+        {
+            Some(model) => format!(
+                "Effort is {effort}. {} offers {}.",
+                model.name(),
+                target::levels(model)
+            ),
+            None => format!("Effort is {effort}"),
+        }
+    }
+}
+
+impl Sink for Live<'_, '_> {
+    fn emit(&mut self, event: Event<'_>) {
+        self.0.borrow_mut().emit(event);
+    }
 }
 
 pub(crate) async fn start(paths: &Paths, choice: Choice) -> anyhow::Result<()> {
     let store = Store::open(&paths.database)?;
-    let account = pick_account(&store, choice.account.as_deref(), None)?;
-    let model = pick_model(&store, &account, choice.model)?;
-    let session = Session::create(store, http()?, &environment(paths), account, &model)?;
-    run(session, choice.effort.as_deref()).await
+    let catalog = catalog::models()?;
+    let offers = offers(&store)?;
+    let account = pick_account(&store, None)?;
+    let model = pick_model(&store, &account)?;
+    let opening = open(
+        &store,
+        &offers,
+        &catalog,
+        account,
+        model,
+        choice.model.as_deref(),
+    )?;
+    let session = Session::create(
+        store,
+        http()?,
+        &environment(paths),
+        opening.account,
+        &opening.model,
+    )?;
+    run(session, opening.effort.as_deref(), offers, catalog).await
 }
 
 pub(crate) async fn resume(paths: &Paths, choice: Choice, id: Option<&str>) -> anyhow::Result<()> {
@@ -47,206 +250,140 @@ pub(crate) async fn resume(paths: &Paths, choice: Choice, id: Option<&str>) -> a
                 .id
         }
     };
+    let catalog = catalog::models()?;
+    let offers = offers(&store)?;
     let last = store.last_origin(id)?;
-    let account = pick_account(
-        &store,
-        choice.account.as_deref(),
-        last.as_ref().map(|o| o.account),
-    )?;
-    let model = match (choice.model, last) {
-        (Some(model), _) => model,
-        (None, Some(origin)) if origin.account == account.id => origin.model.into(),
-        (None, _) => pick_model(&store, &account, None)?,
+    let account = pick_account(&store, last.as_ref().map(|origin| origin.account))?;
+    let model = match last {
+        Some(origin) if origin.account == account.id => origin.model.into(),
+        _ => pick_model(&store, &account)?,
     };
-    let session = Session::resume(store, http()?, &environment(paths), id, account, &model)?;
-    run(session, choice.effort.as_deref()).await
+    let opening = open(
+        &store,
+        &offers,
+        &catalog,
+        account,
+        model,
+        choice.model.as_deref(),
+    )?;
+    let session = Session::resume(
+        store,
+        http()?,
+        &environment(paths),
+        id,
+        opening.account,
+        &opening.model,
+    )?;
+    run(session, opening.effort.as_deref(), offers, catalog).await
 }
 
-async fn run(mut session: Session, effort: Option<&str>) -> anyhow::Result<()> {
-    let mut terminal = Terminal::new();
-    let mut editor = Editor::default();
-    if let Some(effort) = effort
-        && let Err(err) = choose_effort(&mut session, effort).await
-    {
-        terminal.error(&format!("{err:#}"));
-    }
-    terminal.note(&status(&session));
+fn offers(store: &Store) -> anyhow::Result<Vec<Offer>> {
+    Ok(store
+        .accounts()?
+        .iter()
+        .map(|account| Offer {
+            account: account.id,
+            kind: account.kind,
+            label: account.label(),
+        })
+        .collect())
+}
+
+fn open(
+    store: &Store,
+    offers: &[Offer],
+    catalog: &[Model],
+    account: Account,
+    model: String,
+    spec: Option<&str>,
+) -> anyhow::Result<Opening> {
+    let Some(spec) = spec else {
+        return Ok(Opening {
+            account,
+            model,
+            effort: None,
+        });
+    };
+    let choices = Choices {
+        offers,
+        catalog,
+        current: Current {
+            account: account.id,
+            model: &model,
+            effort: None,
+        },
+    };
+    let selection = choices.resolve(spec).map_err(anyhow::Error::msg)?;
+    let account = store
+        .account(selection.account)?
+        .context("the account was removed")?;
+    let effort = match selection.effort {
+        Effort::Level(level) => Some(level),
+        Effort::Keep | Effort::Default => None,
+    };
+    Ok(Opening {
+        account,
+        model: selection.model,
+        effort,
+    })
+}
+
+async fn run(
+    mut session: Session,
+    effort: Option<&str>,
+    offers: Vec<Offer>,
+    catalog: Vec<Model>,
+) -> anyhow::Result<()> {
+    session.set_effort(effort);
+    let _raw = RawMode::enable()?;
+    let mut chat = Chat {
+        session,
+        terminal: Terminal::new(),
+        editor: Editor::default(),
+        keys: Keys::start(),
+        offers,
+        catalog,
+    };
     loop {
-        let Entry::Line(line) = editor.read()? else {
+        chat.terminal.settle();
+        let Entry::Line(line) = chat.read().await? else {
             return Ok(());
         };
-        let line = line.trim();
-        if let Some(command) = line.strip_prefix('/').filter(|c| is_command(c)) {
-            match command_result(&mut session, &mut terminal, command).await {
+        if let Some(run) = command::parse(&line) {
+            match chat.command(run.name, run.argument) {
                 Ok(Flow::Continue) => {}
                 Ok(Flow::Exit) => return Ok(()),
-                Err(err) => terminal.error(&format!("{err:#}")),
+                Err(err) => chat.terminal.outcome(Err(&format!("{err:#}"))),
             }
             continue;
         }
-        tokio::select! {
-            result = session.turn(line, &mut terminal) => {
-                terminal.finish_turn();
-                if let Err(err) = result {
-                    terminal.error(&format!("{:#}", anyhow::Error::new(err)));
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                terminal.finish_turn();
-                terminal.note("interrupted");
-            }
-        }
+        chat.turn(line.trim()).await?;
     }
 }
 
-const COMMANDS: &[&str] = &[
-    "exit", "quit", "model", "models", "effort", "account", "accounts", "help",
-];
-
-fn is_command(input: &str) -> bool {
-    COMMANDS.contains(&input.split_whitespace().next().unwrap_or_default())
-}
-
-enum Flow {
-    Continue,
-    Exit,
-}
-
-async fn command_result(
-    session: &mut Session,
-    terminal: &mut Terminal,
-    command: &str,
-) -> anyhow::Result<Flow> {
-    let (name, argument) = command.split_once(' ').unwrap_or((command, ""));
-    let argument = argument.trim();
-    match (name, argument) {
-        ("exit" | "quit", _) => return Ok(Flow::Exit),
-        ("model", "") => terminal.note(&status(session)),
-        ("model", model) => {
-            session.set_model(model);
-            keep_supported_effort(session, terminal).await?;
-            terminal.note(&status(session));
-        }
-        ("models", _) => {
-            let models = session.models().await?;
-            let lines: Vec<String> = models.iter().map(describe_model).collect();
-            terminal.note(&lines.join("\n"));
-        }
-        ("effort", "") => {
-            let model = current_model(session).await?;
-            terminal.note(&describe_effort(session.effort(), model.as_ref()));
-        }
-        ("effort", effort) => {
-            choose_effort(session, effort).await?;
-            terminal.note(&status(session));
-        }
-        ("account", "") | ("accounts", _) => {
-            let current = session.account().id;
-            for account in session.store().accounts()? {
-                let marker = if account.id == current { "*" } else { " " };
-                terminal.note(&format!("{marker} {}", account.label()));
-            }
-        }
-        ("account", label) => {
-            let account = login::find(session.store(), label)?;
-            let model = pick_model(session.store(), &account, None)?;
-            session.set_account(account, &model);
-            keep_supported_effort(session, terminal).await?;
-            terminal.note(&status(session));
-        }
-        _ => terminal.note(HELP),
-    }
-    Ok(Flow::Continue)
-}
-
-async fn current_model(session: &mut Session) -> anyhow::Result<Option<Model>> {
-    let models = session.models().await?;
-    Ok(models
-        .into_iter()
-        .find(|model| *model.id == *session.model()))
-}
-
-async fn choose_effort(session: &mut Session, effort: &str) -> anyhow::Result<()> {
-    if effort == DEFAULT_EFFORT {
-        session.set_effort(None);
-        return Ok(());
-    }
-    if let Some(model) = current_model(session).await?
-        && !model.accepts(effort)
-    {
-        bail!("{} supports effort {}", model.id, levels(&model));
-    }
-    session.set_effort(Some(effort));
-    Ok(())
-}
-
-async fn keep_supported_effort(
-    session: &mut Session,
-    terminal: &mut Terminal,
-) -> anyhow::Result<()> {
-    let Some(effort) = session.effort().map(str::to_owned) else {
-        return Ok(());
-    };
-    if let Some(model) = current_model(session).await?
-        && !model.accepts(&effort)
-    {
-        session.set_effort(None);
-        terminal.note(&format!(
-            "{} has no effort {effort}; using its default",
-            model.id
-        ));
-    }
-    Ok(())
-}
-
-fn levels(model: &Model) -> String {
-    match &model.efforts {
-        Some(efforts) if efforts.is_empty() => "none".to_owned(),
-        Some(efforts) => efforts.join(" "),
-        None => "unknown".to_owned(),
+fn choices<'a>(session: &'a Session, offers: &'a [Offer], catalog: &'a [Model]) -> Choices<'a> {
+    Choices {
+        offers,
+        catalog,
+        current: Current {
+            account: session.account().id,
+            model: session.model(),
+            effort: session.effort(),
+        },
     }
 }
 
-fn describe_effort(effort: Option<&str>, model: Option<&Model>) -> String {
-    let default = model.and_then(|model| model.default_effort.as_deref());
-    let current = match (effort, default) {
-        (Some(effort), _) => effort.to_owned(),
-        (None, Some(default)) => format!("{DEFAULT_EFFORT} ({default})"),
-        (None, None) => DEFAULT_EFFORT.to_owned(),
-    };
-    match model.filter(|model| model.efforts.is_some()) {
-        Some(model) => format!("effort {current} · {}", levels(model)),
-        None => format!("effort {current}"),
-    }
+fn help() -> String {
+    let mut lines: Vec<String> = command::SPECS
+        .iter()
+        .map(|spec| format!("/{:<10}{}", spec.word, spec.about))
+        .collect();
+    lines.push(String::new());
+    lines.push(KEYS.to_owned());
+    lines.join("\n")
 }
 
-fn describe_model(model: &Model) -> String {
-    match &model.default_effort {
-        Some(default) => format!("{} · effort {default}", model.id),
-        None => model.id.to_string(),
-    }
-}
-
-fn status(session: &Session) -> String {
-    let effort = session
-        .effort()
-        .map_or_else(String::new, |effort| format!(" · effort {effort}"));
-    format!(
-        "goat · {}{effort} · {} · {}",
-        session.model(),
-        session.account().label(),
-        session.workspace().display()
-    )
-}
-
-fn pick_account(
-    store: &Store,
-    label: Option<&str>,
-    preferred: Option<goat_core::account::Id>,
-) -> anyhow::Result<Account> {
-    if let Some(label) = label {
-        return login::find(store, label);
-    }
+fn pick_account(store: &Store, preferred: Option<account::Id>) -> anyhow::Result<Account> {
     let accounts = store.accounts()?;
     if accounts.is_empty() {
         bail!("no accounts yet; add one with `goat login`");
@@ -261,10 +398,7 @@ fn pick_account(
         .unwrap_or_else(|| unreachable!("accounts is not empty")))
 }
 
-fn pick_model(store: &Store, account: &Account, chosen: Option<String>) -> anyhow::Result<String> {
-    if let Some(model) = chosen {
-        return Ok(model);
-    }
+fn pick_model(store: &Store, account: &Account) -> anyhow::Result<String> {
     Ok(store.last_model(account.id)?.map_or_else(
         || Provider::default_model(account.kind).to_owned(),
         String::from,
@@ -285,38 +419,4 @@ pub(crate) fn http() -> anyhow::Result<reqwest::Client> {
         .user_agent(USER_AGENT)
         .connect_timeout(CONNECT_TIMEOUT)
         .build()?)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn sol() -> Model {
-        Model {
-            id: "gpt-6.2-sol".into(),
-            efforts: Some(vec!["low".into(), "high".into()]),
-            default_effort: Some("low".into()),
-        }
-    }
-
-    #[test]
-    fn unset_effort_shows_the_model_default_and_levels() {
-        assert_eq!(
-            describe_effort(None, Some(&sol())),
-            "effort default (low) · low high"
-        );
-    }
-
-    #[test]
-    fn chosen_effort_is_shown_as_is() {
-        assert_eq!(
-            describe_effort(Some("high"), Some(&sol())),
-            "effort high · low high"
-        );
-    }
-
-    #[test]
-    fn effort_of_an_unlisted_model_shows_no_levels() {
-        assert_eq!(describe_effort(None, None), "effort default");
-    }
 }

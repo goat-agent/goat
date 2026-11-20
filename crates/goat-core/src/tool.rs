@@ -55,9 +55,23 @@ pub struct Outcome {
     pub is_error: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Bash,
+    Read,
+    Edit,
+    Write,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Call {
+    pub kind: Kind,
+    pub target: Box<str>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Step {
-    Started(Box<str>),
+    Started(Call),
     Failed(Box<str>),
 }
 
@@ -86,6 +100,17 @@ impl Outcome {
         Self {
             output: output.into(),
             is_error: true,
+        }
+    }
+}
+
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bash => "bash",
+            Self::Read => "read",
+            Self::Edit => "edit",
+            Self::Write => "write",
         }
     }
 }
@@ -228,8 +253,14 @@ mod tests {
         assert_eq!(
             steps,
             [
-                Step::Started("bash true".into()),
-                Step::Started("write a.txt".into())
+                Step::Started(Call {
+                    kind: Kind::Bash,
+                    target: "true".into(),
+                }),
+                Step::Started(Call {
+                    kind: Kind::Write,
+                    target: "a.txt".into(),
+                })
             ]
         );
     }

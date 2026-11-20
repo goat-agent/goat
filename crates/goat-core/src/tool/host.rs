@@ -4,10 +4,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use super::{Step, bash, danger, files, hashline};
+use super::{Call, Kind, Step, bash, danger, files, hashline};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
-const SUMMARY_CHARS: usize = 100;
 
 #[derive(Debug)]
 pub(crate) struct Host {
@@ -20,7 +19,7 @@ pub(crate) struct Host {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
-enum Call {
+enum Op {
     Bash {
         command: String,
         timeout: Option<u64>,
@@ -72,13 +71,10 @@ impl Host {
     }
 
     pub(crate) async fn call(&self, request: &str) -> String {
-        let reply = match serde_json::from_str::<Call>(request) {
-            Ok(call) => {
-                self.steps
-                    .send(Step::Started(call.summary().into()))
-                    .await
-                    .ok();
-                let reply = self.dispatch(call).await;
+        let reply = match serde_json::from_str::<Op>(request) {
+            Ok(op) => {
+                self.steps.send(Step::Started(op.to_call())).await.ok();
+                let reply = self.dispatch(op).await;
                 if let Err(problem) = &reply {
                     self.steps
                         .send(Step::Failed(problem.as_str().into()))
@@ -97,18 +93,16 @@ impl Host {
             .unwrap_or_else(|err| format!(r#"{{"error":"reply could not be encoded: {err}"}}"#))
     }
 
-    async fn dispatch(&self, call: Call) -> Result<serde_json::Value, String> {
-        match call {
-            Call::Bash { command, timeout } => to_value(self.bash(&command, timeout).await?),
-            Call::Read {
+    async fn dispatch(&self, op: Op) -> Result<serde_json::Value, String> {
+        match op {
+            Op::Bash { command, timeout } => to_value(self.bash(&command, timeout).await?),
+            Op::Read {
                 path,
                 offset,
                 limit,
             } => to_value(files::read(&self.resolve(&path), &path, offset, limit)?),
-            Call::Edit { path, edits } => {
-                to_value(files::edit(&self.resolve(&path), &path, edits)?)
-            }
-            Call::Write { path, content } => {
+            Op::Edit { path, edits } => to_value(files::edit(&self.resolve(&path), &path, edits)?),
+            Op::Write { path, content } => {
                 to_value(files::write(&self.resolve(&path), &path, &content)?)
             }
         }
@@ -135,20 +129,18 @@ impl Host {
     }
 }
 
-impl Call {
-    fn summary(&self) -> String {
-        let (verb, target) = match self {
-            Self::Bash { command, .. } => ("bash", command.lines().next().unwrap_or_default()),
-            Self::Read { path, .. } => ("read", path.as_str()),
-            Self::Edit { path, .. } => ("edit", path.as_str()),
-            Self::Write { path, .. } => ("write", path.as_str()),
+impl Op {
+    fn to_call(&self) -> Call {
+        let (kind, target) = match self {
+            Self::Bash { command, .. } => (Kind::Bash, command),
+            Self::Read { path, .. } => (Kind::Read, path),
+            Self::Edit { path, .. } => (Kind::Edit, path),
+            Self::Write { path, .. } => (Kind::Write, path),
         };
-        let mut summary = format!("{verb} {target}");
-        if let Some((cut, _)) = summary.char_indices().nth(SUMMARY_CHARS) {
-            summary.truncate(cut);
-            summary.push('…');
+        Call {
+            kind,
+            target: target.as_str().into(),
         }
-        summary
     }
 }
 
@@ -183,7 +175,7 @@ mod tests {
         let reply = host.call(r#"{"op":"bash","command":"rm -rf ~"}"#).await;
         assert!(reply.starts_with(r#"{"error":"blocked:"#));
         assert!(
-            matches!(rx.recv().await, Some(Step::Started(summary)) if &*summary == "bash rm -rf ~")
+            matches!(rx.recv().await, Some(Step::Started(call)) if call.kind == Kind::Bash && &*call.target == "rm -rf ~")
         );
         assert!(matches!(rx.recv().await, Some(Step::Failed(_))));
     }

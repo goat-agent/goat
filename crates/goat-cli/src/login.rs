@@ -127,7 +127,7 @@ pub(crate) fn find(store: &Store, label: &str) -> anyhow::Result<Account> {
         [account] => Ok((*account).clone()),
         [] => bail!("no account named {label}; see `goat accounts`"),
         _ => {
-            bail!("{label} matches several accounts; use provider/name, for example openai/{label}")
+            bail!("{label} matches several accounts; use provider:name, for example openai:{label}")
         }
     }
 }

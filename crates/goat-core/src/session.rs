@@ -12,6 +12,7 @@ crate::id::define!(Id);
 
 const COMPACT_AT_TOKENS: u64 = 200_000;
 const INTERRUPTED: &str = "interrupted by the user before this run finished";
+const CALL_CHARS: usize = 100;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -32,7 +33,7 @@ pub enum Event<'a> {
     Text(&'a str),
     Reasoning(&'a str),
     RunStarted { description: &'a str },
-    Call { summary: &'a str },
+    Call(&'a tool::Call),
     CallFailed { problem: &'a str },
     RunFinished { outcome: &'a Outcome },
     Usage(Usage),
@@ -66,7 +67,7 @@ pub struct Session {
     tool: tool::Spec,
     messages: Vec<Message>,
     finished: Vec<Part>,
-    started: Vec<Box<str>>,
+    started: Vec<tool::Call>,
     last_input: u64,
 }
 
@@ -189,11 +190,6 @@ impl Session {
         self.model = model.into();
     }
 
-    pub async fn models(&mut self) -> Result<Vec<provider::Model>, Error> {
-        let bearer = self.bearer(false).await?;
-        Ok(self.provider.models(&bearer).await?)
-    }
-
     pub async fn turn(&mut self, input: &str, sink: &mut impl Sink) -> Result<(), Error> {
         self.close_interrupted_calls()?;
         let message = Message::user(input);
@@ -248,9 +244,9 @@ impl Session {
         let outcome = self
             .runner
             .run(&run, &mut |step| match step {
-                Step::Started(summary) => {
-                    sink.emit(Event::Call { summary: &summary });
-                    started.push(summary);
+                Step::Started(call) => {
+                    sink.emit(Event::Call(&call));
+                    started.push(call);
                 }
                 Step::Failed(problem) => sink.emit(Event::CallFailed { problem: &problem }),
             })
@@ -362,23 +358,7 @@ impl Session {
     }
 
     async fn bearer(&mut self, force: bool) -> Result<Box<str>, Error> {
-        let current = &self.account.credential;
-        if current.expires_at().is_none() || !(force || current.needs_refresh()) {
-            return Ok(current.secret().into());
-        }
-        let stored = self
-            .store
-            .account(self.account.id)?
-            .map(|account| account.credential)
-            .filter(|credential| credential.is_newer_than(current));
-        let freshest = stored.unwrap_or_else(|| current.clone());
-        if force || freshest.needs_refresh() {
-            self.account.credential = freshest.refresh(&self.http).await?;
-            self.store.save_account(&self.account)?;
-        } else {
-            self.account.credential = freshest;
-        }
-        Ok(self.account.credential.secret().into())
+        bearer(&self.store, &self.http, &mut self.account, force).await
     }
 }
 
@@ -391,14 +371,47 @@ impl<'a> From<Chunk<'a>> for Event<'a> {
     }
 }
 
-fn interrupted(started: &[Box<str>]) -> String {
+async fn bearer(
+    store: &Store,
+    http: &reqwest::Client,
+    account: &mut Account,
+    force: bool,
+) -> Result<Box<str>, Error> {
+    let current = &account.credential;
+    if current.expires_at().is_none() || !(force || current.needs_refresh()) {
+        return Ok(current.secret().into());
+    }
+    let stored = store
+        .account(account.id)?
+        .map(|stored| stored.credential)
+        .filter(|credential| credential.is_newer_than(current));
+    let freshest = stored.unwrap_or_else(|| current.clone());
+    if force || freshest.needs_refresh() {
+        account.credential = freshest.refresh(http).await?;
+        store.save_account(account)?;
+    } else {
+        account.credential = freshest;
+    }
+    Ok(account.credential.secret().into())
+}
+
+fn interrupted(started: &[tool::Call]) -> String {
     if started.is_empty() {
         return INTERRUPTED.to_owned();
     }
     let mut text = format!("{INTERRUPTED}. Calls it had started, which may have changed files:");
-    for summary in started {
+    for call in started {
+        let mut line = format!(
+            "{} {}",
+            call.kind.as_str(),
+            call.target.lines().next().unwrap_or_default()
+        );
+        if let Some((cut, _)) = line.char_indices().nth(CALL_CHARS) {
+            line.truncate(cut);
+            line.push('…');
+        }
         text.push_str("\n- ");
-        text.push_str(summary);
+        text.push_str(&line);
     }
     text
 }

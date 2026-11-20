@@ -13,18 +13,24 @@ data: {"type":"response.reasoning_summary_text.delta","sequence_number":3,"item_
 event: response.reasoning_summary_text.delta
 data: {"type":"response.reasoning_summary_text.delta","sequence_number":4,"item_id":"rs_1","output_index":0,"summary_index":0,"delta":"command."}
 
+event: response.reasoning_summary_part.done
+data: {"type":"response.reasoning_summary_part.done","sequence_number":5,"item_id":"rs_1","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":"Run a command."}}
+
 event: response.reasoning_summary_part.added
-data: {"type":"response.reasoning_summary_part.added","sequence_number":5,"item_id":"rs_1","output_index":0,"summary_index":1,"part":{"type":"summary_text","text":""}}
+data: {"type":"response.reasoning_summary_part.added","sequence_number":6,"item_id":"rs_1","output_index":0,"summary_index":1,"part":{"type":"summary_text","text":""}}
 
 event: response.reasoning_summary_text.delta
-data: {"type":"response.reasoning_summary_text.delta","sequence_number":6,"item_id":"rs_1","output_index":0,"summary_index":1,"delta":"Then answer."}
+data: {"type":"response.reasoning_summary_text.delta","sequence_number":7,"item_id":"rs_1","output_index":0,"summary_index":1,"delta":"Then answer."}
+
+event: response.reasoning_summary_part.done
+data: {"type":"response.reasoning_summary_part.done","sequence_number":8,"item_id":"rs_1","output_index":0,"summary_index":1,"part":{"type":"summary_text","text":"Then answer."}}
 
 event: response.output_item.done
-data: {"type":"response.output_item.done","sequence_number":7,"output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"Run a command."},{"type":"summary_text","text":"Then answer."}],"encrypted_content":"enc-1"}}
+data: {"type":"response.output_item.done","sequence_number":9,"output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"Run a command."},{"type":"summary_text","text":"Then answer."}],"encrypted_content":"enc-1"}}
 
 event: response.output_item.done
-data: {"type":"response.output_item.done","sequence_number":8,"output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"run","arguments":"{\"code\":\"(await bash('echo hi')).output\",\"description\":\"Say hi\"}","status":"completed"}}
+data: {"type":"response.output_item.done","sequence_number":10,"output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"run","arguments":"{\"code\":\"(await bash('echo hi')).output\",\"description\":\"Say hi\"}","status":"completed"}}
 
 event: response.completed
-data: {"type":"response.completed","sequence_number":9,"response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1200,"input_tokens_details":{"cached_tokens":1000},"output_tokens":20,"output_tokens_details":{"reasoning_tokens":8},"total_tokens":1220}}}
+data: {"type":"response.completed","sequence_number":11,"response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1200,"input_tokens_details":{"cached_tokens":1000},"output_tokens":20,"output_tokens_details":{"reasoning_tokens":8},"total_tokens":1220}}}
 
