@@ -5,9 +5,10 @@ mod server;
 use std::path::Path;
 
 use goat_core::account::{Account, Credential, Kind, codex};
+use goat_core::image;
 use goat_core::message::{Part, Role};
 use goat_core::provider::Endpoints;
-use goat_core::session::{Environment, Event, Session, Sink};
+use goat_core::session::{self, Environment, Event, Prompt, Session, Sink};
 use goat_core::store::Store;
 
 const OPENAI_TOOL_CALL: &str = include_str!("fixtures/openai/tool_call.sse");
@@ -20,6 +21,8 @@ struct Recorder {
     text: String,
     reasoning: String,
     tools: Vec<String>,
+    shell: String,
+    shell_ends: Vec<(Option<i32>, Option<String>)>,
 }
 
 impl Sink for Recorder {
@@ -31,6 +34,10 @@ impl Sink for Recorder {
             Event::Call(call) => self
                 .tools
                 .push(format!("{} {}", call.kind.as_str(), call.target)),
+            Event::ShellOutput(chunk) => self.shell.push_str(chunk),
+            Event::ShellFinished { code, problem } => {
+                self.shell_ends.push((code, problem.map(str::to_owned)));
+            }
             _ => {}
         }
     }
@@ -51,6 +58,23 @@ fn environment(dir: &Path, url: &str) -> Environment {
 
 fn account(kind: Kind) -> Account {
     Account::new(kind, "test", Credential::ApiKey { key: "key".into() })
+}
+
+fn openai_session(env: &Environment) -> Result<Session, session::Error> {
+    Session::create(
+        Store::open_in_memory()?,
+        reqwest::Client::new(),
+        env,
+        account(Kind::OpenAi),
+        "gpt-6.2-astra",
+    )
+}
+
+fn text_of(session: &Session, index: usize) -> &str {
+    let Part::Text { text, .. } = &session.messages()[index].parts[0] else {
+        panic!("expected text");
+    };
+    text
 }
 
 #[tokio::test]
@@ -352,4 +376,142 @@ async fn chosen_effort_is_sent_with_the_request() {
 
     let requests = server.requests.lock().unwrap();
     assert!(requests[0].contains(r#""output_config":{"effort":"xhigh"}"#));
+}
+
+#[tokio::test]
+async fn shell_output_streams_and_reaches_the_next_request() {
+    let server = server::replay(vec![OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+    let mut recorder = Recorder::default();
+
+    session.shell("echo hi", &mut recorder).await.unwrap();
+    session
+        .turn("what did it print", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    assert_eq!(recorder.shell, "hi\n");
+    assert_eq!(recorder.shell_ends, [(Some(0), None)]);
+    assert!(text_of(&session, 0).ends_with("$ echo hi\nhi\n[exit 0]"));
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].contains("$ echo hi\\nhi\\n[exit 0]"));
+}
+
+#[tokio::test]
+async fn blocked_shell_command_is_neither_run_nor_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), "http://127.0.0.1:9");
+    let mut session = openai_session(&env).unwrap();
+    let mut recorder = Recorder::default();
+
+    session.shell("rm -rf ~", &mut recorder).await.unwrap();
+
+    let [(None, Some(problem))] = recorder.shell_ends.as_slice() else {
+        panic!("expected a blocked command");
+    };
+    assert!(problem.starts_with("blocked: "));
+    assert!(session.messages().is_empty());
+}
+
+#[tokio::test]
+async fn shell_after_a_cancelled_tool_call_follows_its_result() {
+    let slow_tool_call = leak(OPENAI_TOOL_CALL.replace("echo hi", "sleep 5"));
+    let server = server::replay(vec![slow_tool_call]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+    let cancelled = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        session.turn("slow", &mut Recorder::default()),
+    )
+    .await;
+    assert!(cancelled.is_err());
+
+    session
+        .shell("echo hi", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let roles: Vec<Role> = session.messages().iter().map(|m| m.role).collect();
+    assert_eq!(roles, [Role::User, Role::Assistant, Role::Tool, Role::User]);
+}
+
+fn png(width: u32, height: u32) -> Result<Vec<u8>, ::image::ImageError> {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    ::image::RgbImage::new(width, height).write_to(&mut bytes, ::image::ImageFormat::Png)?;
+    Ok(bytes.into_inner())
+}
+
+#[tokio::test]
+async fn an_image_the_model_reads_is_sent_with_its_result() {
+    let read_call =
+        leak(OPENAI_TOOL_CALL.replace("(await bash('echo hi')).output", "await read('shot.png')"));
+    let server = server::replay(vec![read_call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("shot.png"), png(6, 4).unwrap()).unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    session
+        .turn("look", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let Part::ToolResult { images, .. } = &session.messages()[2].parts[0] else {
+        panic!("expected a tool result");
+    };
+    assert_eq!(images.len(), 1);
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[1].contains(r#""type":"input_image","image_url":"data:image/png;base64,"#));
+}
+
+#[tokio::test]
+async fn attached_images_are_sent_again_after_resume() {
+    let server = server::replay(vec![OPENAI_ANSWER, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let db = dir.path().join("goat.db");
+    let account = account(Kind::OpenAi);
+    let picture = image::prepare(png(6, 4).unwrap()).unwrap();
+    let mut session = Session::create(
+        Store::open(&db).unwrap(),
+        reqwest::Client::new(),
+        &env,
+        account.clone(),
+        "gpt-6.2-astra",
+    )
+    .unwrap();
+    let prompt = Prompt {
+        text: "what is this",
+        images: std::slice::from_ref(&picture),
+    };
+    session
+        .turn(prompt, &mut Recorder::default())
+        .await
+        .unwrap();
+    let id = session.id();
+    drop(session);
+
+    let mut resumed = Session::resume(
+        Store::open(&db).unwrap(),
+        reqwest::Client::new(),
+        &env,
+        id,
+        account,
+        "gpt-6.2-astra",
+    )
+    .unwrap();
+    resumed
+        .turn("and now", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let Part::Image(stored) = &resumed.messages()[0].parts[1] else {
+        panic!("expected the attached image");
+    };
+    assert_eq!(stored, &picture.image);
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[1].contains("data:image/png;base64,"));
 }

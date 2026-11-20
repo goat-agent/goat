@@ -15,19 +15,46 @@ use tokio::sync::mpsc;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use goat_core::image::{Image, Picture};
+use goat_core::store::Store;
+
+use crate::attach::{self, Tile};
 use crate::command::{self, Name, Typing};
-use crate::render::{Frame, Spot, Terminal};
+use crate::kitty;
+use crate::render::{Frame, Placement, Spot, Terminal};
 use crate::target::Choices;
 
 const PROMPT: &str = "› ";
+const SHELL_PROMPT: &str = "! ";
 const INDENT: &str = "  ";
 const TAB: &str = "    ";
 const PALETTE_ROWS: usize = 12;
 const KEY_POLL: Duration = Duration::from_millis(100);
 const KEY_BACKLOG: usize = 64;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Mode {
+    #[default]
+    Agent,
+    Shell,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct Input {
+    pub(crate) mode: Mode,
+    pub(crate) text: String,
+    pub(crate) images: Vec<Picture>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct Past {
+    mode: Mode,
+    text: String,
+    images: Vec<(usize, Image)>,
+}
+
 pub(crate) enum Entry {
-    Line(String),
+    Input(Input),
     Exit,
 }
 
@@ -43,14 +70,17 @@ pub(crate) struct Keys {
 
 #[derive(Default)]
 pub(crate) struct Editor {
-    history: Vec<String>,
-    queue: VecDeque<String>,
+    history: Vec<Past>,
+    queue: VecDeque<Input>,
     line: Line,
+    images: usize,
+    store: Option<Store>,
 }
 
 enum Action {
     Edit,
     Submit,
+    Clipboard,
     Exit,
 }
 
@@ -62,12 +92,21 @@ struct Pick {
 
 #[derive(Default)]
 struct Line {
+    mode: Mode,
     text: String,
     cursor: usize,
     recall: usize,
-    draft: String,
+    draft: Past,
     selected: Option<usize>,
     effort: Option<usize>,
+    attachments: Vec<Attachment>,
+    recalled: Vec<(usize, Image)>,
+}
+
+struct Attachment {
+    number: usize,
+    picture: Picture,
+    tile: Option<Tile>,
 }
 
 struct Item {
@@ -77,6 +116,19 @@ struct Item {
     is_final: bool,
     efforts: Vec<String>,
     effort: usize,
+}
+
+impl Input {
+    pub(crate) fn plain(&self) -> String {
+        let mut plain = String::with_capacity(self.text.len());
+        for c in self.text.chars() {
+            match image_of_char(c) {
+                Some(number) => plain.push_str(&label(number)),
+                None => plain.push(c),
+            }
+        }
+        plain
+    }
 }
 
 impl Keys {
@@ -107,33 +159,44 @@ impl Drop for Keys {
 }
 
 impl Editor {
+    pub(crate) fn new(store: Store) -> Self {
+        Self {
+            store: Some(store),
+            ..Self::default()
+        }
+    }
+
     pub(crate) async fn read(
         &mut self,
         keys: &mut Keys,
         choices: &Choices<'_>,
         terminal: &mut Terminal<impl Write>,
     ) -> io::Result<Entry> {
-        if let Some(text) = self.queue.pop_front() {
-            return Ok(self.send(text, choices, terminal));
+        if let Some(input) = self.queue.pop_front() {
+            return Ok(self.send(input, choices, terminal));
         }
-        terminal.show(self.frame(terminal.columns(), choices));
+        self.show(choices, terminal);
         loop {
             let action = match keys.next().await? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     self.line.key(key, &self.history, choices)
                 }
                 Event::Paste(text) => {
-                    self.line.insert(&clean_paste(&text));
+                    self.paste(&text, terminal);
                     Action::Edit
                 }
                 Event::Resize(..) => Action::Edit,
                 _ => continue,
             };
             match action {
-                Action::Edit => terminal.show(self.frame(terminal.columns(), choices)),
+                Action::Edit => self.show(choices, terminal),
+                Action::Clipboard => {
+                    self.paste_clipboard(terminal);
+                    self.show(choices, terminal);
+                }
                 Action::Submit => {
-                    let text = self.take();
-                    return Ok(self.send(text, choices, terminal));
+                    let input = self.take();
+                    return Ok(self.send(input, choices, terminal));
                 }
                 Action::Exit => {
                     terminal.close();
@@ -150,20 +213,24 @@ impl Editor {
         terminal: &mut Terminal<impl Write>,
     ) -> TurnKeys {
         match event {
-            Event::Paste(text) => self.line.insert(&clean_paste(&text)),
+            Event::Paste(text) => self.paste(&text, terminal),
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 if is_interrupt(key) {
                     return TurnKeys::Interrupt;
                 }
-                if let Action::Submit = self.line.key(key, &self.history, choices) {
-                    let text = self.take();
-                    self.queue.push_back(text);
+                match self.line.key(key, &self.history, choices) {
+                    Action::Submit => {
+                        let input = self.take();
+                        self.queue.push_back(input);
+                    }
+                    Action::Clipboard => self.paste_clipboard(terminal),
+                    Action::Edit | Action::Exit => {}
                 }
             }
             Event::Resize(..) => {}
             _ => return TurnKeys::Continue,
         }
-        terminal.show(self.frame(terminal.columns(), choices));
+        self.show(choices, terminal);
         TurnKeys::Continue
     }
 
@@ -171,37 +238,164 @@ impl Editor {
         if self.queue.is_empty() {
             return;
         }
-        let mut texts: Vec<String> = self.queue.drain(..).collect();
+        let mut inputs: Vec<Input> = self.queue.drain(..).collect();
         if !self.line.text.is_empty() {
-            texts.push(mem::take(&mut self.line.text));
+            inputs.push(Input {
+                mode: self.line.mode,
+                text: mem::take(&mut self.line.text),
+                images: Vec::new(),
+            });
         }
-        self.line.text = texts.join("\n");
+        for input in &mut inputs {
+            let numbers = images_in(&input.text);
+            for (number, picture) in numbers.into_iter().zip(input.images.drain(..)) {
+                self.line.attachments.push(Attachment {
+                    number,
+                    picture,
+                    tile: None,
+                });
+            }
+        }
+        let is_shell = inputs.iter().all(|input| input.mode == Mode::Shell);
+        let lines: Vec<String> = inputs
+            .into_iter()
+            .map(|input| match (is_shell, input.mode) {
+                (false, Mode::Shell) => format!("!{}", input.text),
+                _ => input.text,
+            })
+            .collect();
+        self.line.mode = if is_shell { Mode::Shell } else { Mode::Agent };
+        self.line.text = lines.join("\n");
         self.line.cursor = self.line.text.len();
     }
 
-    fn take(&mut self) -> String {
-        let text = mem::take(&mut self.line).text;
-        if self.history.last() != Some(&text) {
-            self.history.push(text.clone());
+    fn take(&mut self) -> Input {
+        let mut line = mem::take(&mut self.line);
+        let mut images = Vec::new();
+        let mut kept = Vec::new();
+        for number in images_in(&line.text) {
+            let Some(at) = line
+                .attachments
+                .iter()
+                .position(|attachment| attachment.number == number)
+            else {
+                continue;
+            };
+            let picture = line.attachments.swap_remove(at).picture;
+            if let Some(store) = &self.store {
+                store.put_image(&picture).ok();
+            }
+            kept.push((number, picture.image.clone()));
+            images.push(picture);
+        }
+        let past = Past {
+            mode: line.mode,
+            text: line.text.clone(),
+            images: kept,
+        };
+        if self.history.last() != Some(&past) {
+            self.history.push(past);
         }
         self.line.recall = self.history.len();
-        text
+        Input {
+            mode: line.mode,
+            text: line.text,
+            images,
+        }
+    }
+
+    fn paste(&mut self, text: &str, terminal: &mut Terminal<impl Write>) {
+        let paths = match self.line.mode {
+            Mode::Agent => attach::pasted_images(text),
+            Mode::Shell => None,
+        };
+        let Some(paths) = paths else {
+            self.line.insert(&clean_paste(text));
+            return;
+        };
+        for path in paths {
+            match attach::load(&path) {
+                Ok(picture) => self.attach(picture),
+                Err(problem) => terminal.note(&problem),
+            }
+        }
+    }
+
+    fn paste_clipboard(&mut self, terminal: &mut Terminal<impl Write>) {
+        match attach::clipboard() {
+            Ok(Some(picture)) => self.attach(picture),
+            Ok(None) => terminal.note("There is no image in the clipboard"),
+            Err(problem) => terminal.note(&problem),
+        }
+    }
+
+    fn attach(&mut self, picture: Picture) {
+        self.images += 1;
+        self.line.insert(&format!("{} ", marker(self.images)));
+        self.line.attachments.push(Attachment {
+            number: self.images,
+            picture,
+            tile: None,
+        });
+    }
+
+    fn restore(&mut self) {
+        for (number, image) in mem::take(&mut self.line.recalled) {
+            let is_attached = self
+                .line
+                .attachments
+                .iter()
+                .any(|attachment| attachment.number == number);
+            let picture = self
+                .store
+                .as_ref()
+                .filter(|_| !is_attached)
+                .and_then(|store| store.image(&image.id).ok().flatten())
+                .and_then(|bytes| goat_core::image::prepare(bytes).ok());
+            if let Some(picture) = picture {
+                self.line.attachments.push(Attachment {
+                    number,
+                    picture,
+                    tile: None,
+                });
+            }
+        }
+    }
+
+    fn show(&mut self, choices: &Choices<'_>, terminal: &mut Terminal<impl Write>) {
+        self.restore();
+        if let Some(cell) = terminal.graphics() {
+            let text = &self.line.text;
+            for attachment in &mut self.line.attachments {
+                if attachment.tile.is_some() || !text.contains(marker(attachment.number)) {
+                    continue;
+                }
+                if let Some((png, columns)) = attach::thumbnail(&attachment.picture, cell) {
+                    let id = tile_id(attachment.number);
+                    terminal.write_raw(&kitty::transmit(id, &png));
+                    attachment.tile = Some(Tile { id, columns });
+                }
+            }
+        }
+        terminal.show(self.frame(terminal.columns(), choices));
     }
 
     fn send(
         &mut self,
-        text: String,
+        input: Input,
         choices: &Choices<'_>,
         terminal: &mut Terminal<impl Write>,
     ) -> Entry {
-        let columns = terminal.columns();
-        terminal.echo(&echo(&text, columns));
-        terminal.show(self.frame(columns, choices));
-        Entry::Line(text)
+        terminal.echo(&echo(&input, terminal.columns()));
+        self.show(choices, terminal);
+        Entry::Input(input)
     }
 
     fn frame(&self, columns: usize, choices: &Choices<'_>) -> Frame {
-        let items = palette(&self.line.text, choices);
+        let items = match self.line.mode {
+            Mode::Agent => palette(&self.line.text, choices),
+            Mode::Shell => Vec::new(),
+        };
         let rows = self.line.rows(&items);
         let selected = self
             .line
@@ -209,18 +403,56 @@ impl Editor {
             .or(preselected(&self.line.text, rows.len()));
         let mut frame = self.line.frame(columns, &rows, selected);
         let room = width(columns) - 1 - PROMPT.width();
-        let queued = self.queue.iter().map(|text| {
-            let first = text.lines().next().unwrap_or_default();
-            format!("{}{}", PROMPT.dim(), fit(first, room).dim())
-        });
-        frame.rows.splice(0..0, queued);
-        frame.cursor.row += self.queue.len();
+        let queued: Vec<String> = self
+            .queue
+            .iter()
+            .map(|input| {
+                let plain = input.plain();
+                let first = plain.lines().next().unwrap_or_default();
+                format!("{}{}", sign(input.mode).dim(), fit(first, room).dim())
+            })
+            .collect();
+        let tiles = self.tiles(columns, queued.len());
+        let blank = if tiles.is_empty() {
+            0
+        } else {
+            usize::from(kitty::ROWS)
+        };
+        let above = queued.len() + blank;
+        frame.rows.splice(
+            0..0,
+            queued.into_iter().chain((0..blank).map(|_| String::new())),
+        );
+        frame.cursor.row += above;
+        frame.images = tiles;
         frame
+    }
+
+    fn tiles(&self, columns: usize, row: usize) -> Vec<Placement> {
+        let mut column = INDENT.width();
+        let mut placed = Vec::new();
+        for attachment in &self.line.attachments {
+            let Some(tile) = attachment.tile else {
+                continue;
+            };
+            let end = column + usize::from(tile.columns);
+            if !self.line.text.contains(marker(attachment.number)) || end > width(columns) {
+                continue;
+            }
+            placed.push(Placement {
+                row,
+                column: u16::try_from(column).unwrap_or(u16::MAX),
+                id: tile.id,
+                columns: tile.columns,
+            });
+            column = end + 1;
+        }
+        placed
     }
 }
 
 impl Line {
-    fn key(&mut self, key: KeyEvent, history: &[String], choices: &Choices<'_>) -> Action {
+    fn key(&mut self, key: KeyEvent, history: &[Past], choices: &Choices<'_>) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key
             .modifiers
@@ -231,11 +463,21 @@ impl Line {
         if let Some(action) = self.choose(key.code, alt, pick, history, choices) {
             return action;
         }
+        let is_shell = self.mode == Mode::Shell;
         match key.code {
+            KeyCode::Char('!') if !ctrl && !is_shell && self.text.is_empty() => {
+                self.mode = Mode::Shell;
+            }
+            KeyCode::Backspace | KeyCode::Esc if is_shell && self.text.is_empty() => {
+                self.mode = Mode::Agent;
+            }
             KeyCode::Enter if alt => self.insert("\n"),
             KeyCode::Char('j') if ctrl => self.insert("\n"),
             KeyCode::Enter if self.text.trim().is_empty() => {}
             KeyCode::Enter => return Action::Submit,
+            KeyCode::Char('c') if ctrl && self.text.is_empty() && is_shell => {
+                self.mode = Mode::Agent;
+            }
             KeyCode::Char('c') if ctrl => {
                 if self.text.is_empty() {
                     return Action::Exit;
@@ -244,6 +486,7 @@ impl Line {
                 self.cursor = 0;
             }
             KeyCode::Char('d') if ctrl && self.text.is_empty() => return Action::Exit,
+            KeyCode::Char('v') if ctrl && !is_shell => return Action::Clipboard,
             KeyCode::Char('a') if ctrl => self.cursor = self.line_start(),
             KeyCode::Char('e') if ctrl => self.cursor = self.line_end(),
             KeyCode::Char('u') if ctrl => {
@@ -252,7 +495,7 @@ impl Line {
             }
             KeyCode::Char('w') if ctrl => self.delete_word(),
             KeyCode::Tab => {
-                if !self.complete() {
+                if is_shell || !self.complete() {
                     self.insert(TAB);
                 }
             }
@@ -284,17 +527,15 @@ impl Line {
         self.cursor = start;
     }
     fn previous_boundary(&self) -> usize {
-        self.text[..self.cursor]
-            .grapheme_indices(true)
-            .next_back()
-            .map_or(0, |(at, _)| at)
+        clusters(&self.text[..self.cursor])
+            .last()
+            .map_or(0, |(at, _)| *at)
     }
 
     fn next_boundary(&self) -> usize {
-        self.text[self.cursor..]
-            .graphemes(true)
-            .next()
-            .map_or(self.cursor, |g| self.cursor + g.len())
+        clusters(&self.text[self.cursor..])
+            .first()
+            .map_or(self.cursor, |(_, cluster)| self.cursor + cluster.len())
     }
 
     fn line_start(&self) -> usize {
@@ -323,9 +564,12 @@ impl Line {
         code: KeyCode,
         alt: bool,
         pick: Pick,
-        history: &[String],
+        history: &[Past],
         choices: &Choices<'_>,
     ) -> Option<Action> {
+        if self.mode == Mode::Shell {
+            return None;
+        }
         let is_moving = matches!(code, KeyCode::Up | KeyCode::Down);
         let is_turning = matches!(code, KeyCode::Left | KeyCode::Right) && pick.selected.is_some();
         let is_taking = match code {
@@ -402,7 +646,7 @@ impl Line {
         true
     }
 
-    fn recall(&mut self, history: &[String], step: isize) {
+    fn recall(&mut self, history: &[Past], step: isize) {
         let Some(next) = self.recall.checked_add_signed(step) else {
             return;
         };
@@ -410,11 +654,18 @@ impl Line {
             return;
         }
         if self.recall == history.len() {
-            self.draft.clone_from(&self.text);
+            self.draft = Past {
+                mode: self.mode,
+                text: self.text.clone(),
+                images: Vec::new(),
+            };
         }
         self.recall = next;
-        self.text = history.get(next).unwrap_or(&self.draft).clone();
+        let past = history.get(next).unwrap_or(&self.draft).clone();
+        self.mode = past.mode;
+        self.text = past.text;
         self.cursor = self.text.len();
+        self.recalled = past.images;
     }
 
     fn rows(&self, items: &[Item]) -> Vec<String> {
@@ -451,13 +702,19 @@ impl Line {
 
     fn frame(&self, columns: usize, palette: &[String], selected: Option<usize>) -> Frame {
         let width = width(columns);
-        let command = command::parse(&self.text).map(|run| run.span);
+        let command = match self.mode {
+            Mode::Agent => command::parse(&self.text).map(|run| run.span),
+            Mode::Shell => None,
+        };
         let mut rows = Vec::new();
-        let mut row = format!("{}", PROMPT.dim());
+        let mut row = match self.mode {
+            Mode::Agent => format!("{}", PROMPT.dim()),
+            Mode::Shell => format!("{}", SHELL_PROMPT.red()),
+        };
         let mut col = PROMPT.width();
         let mut at_cursor = None;
-        for (index, grapheme) in self.text.grapheme_indices(true) {
-            if grapheme == "\n" {
+        for (index, cluster) in clusters(&self.text) {
+            if cluster == "\n" {
                 if index == self.cursor {
                     at_cursor = Some((rows.len(), col));
                 }
@@ -465,20 +722,23 @@ impl Line {
                 col = INDENT.width();
                 continue;
             }
-            let grapheme_width = grapheme.width();
-            if col + grapheme_width > width {
+            let label = image_of(cluster).map(label);
+            let cluster_width = label.as_deref().unwrap_or(cluster).width();
+            if col + cluster_width > width {
                 rows.push(mem::replace(&mut row, INDENT.to_owned()));
                 col = INDENT.width();
             }
             if index == self.cursor {
                 at_cursor = Some((rows.len(), col));
             }
-            if command.as_ref().is_some_and(|span| span.contains(&index)) {
-                row.push_str(&grapheme.cyan().to_string());
+            if let Some(label) = &label {
+                row.push_str(&label.as_str().cyan().to_string());
+            } else if command.as_ref().is_some_and(|span| span.contains(&index)) {
+                row.push_str(&cluster.cyan().to_string());
             } else {
-                row.push_str(grapheme);
+                row.push_str(cluster);
             }
-            col += grapheme_width;
+            col += cluster_width;
         }
         let (mut cursor_row, mut cursor_col) = at_cursor.unwrap_or((rows.len(), col));
         if cursor_col >= width {
@@ -501,6 +761,7 @@ impl Line {
                 row: cursor_row,
                 column: cursor_col,
             },
+            images: Vec::new(),
         }
     }
 }
@@ -577,13 +838,80 @@ fn shared_start<'a>(options: impl Iterator<Item = &'a str>, typed: &str) -> Opti
     Some((shared.to_owned(), is_unique))
 }
 
-fn echo(text: &str, columns: usize) -> Vec<String> {
+fn echo(input: &Input, columns: usize) -> Vec<String> {
     let line = Line {
-        text: text.to_owned(),
-        cursor: text.len(),
+        mode: input.mode,
+        text: input.text.clone(),
+        cursor: input.text.len(),
         ..Line::default()
     };
     line.frame(columns, &[], None).rows
+}
+
+const MARKERS: u32 = 0xF_0000;
+const MARKER_COUNT: u32 = 0xFFFE;
+
+fn marker(number: usize) -> char {
+    let offset = u32::try_from(number).unwrap_or(0) % MARKER_COUNT;
+    char::from_u32(MARKERS + offset).unwrap_or(char::REPLACEMENT_CHARACTER)
+}
+
+fn image_of_char(c: char) -> Option<usize> {
+    let offset = u32::from(c).checked_sub(MARKERS)?;
+    (offset < MARKER_COUNT).then(|| usize::try_from(offset).unwrap_or(0))
+}
+
+fn image_of(cluster: &str) -> Option<usize> {
+    let mut chars = cluster.chars();
+    let first = chars.next()?;
+    chars
+        .next()
+        .is_none()
+        .then_some(first)
+        .and_then(image_of_char)
+}
+
+fn label(number: usize) -> String {
+    format!("[Image #{number}]")
+}
+
+fn images_in(text: &str) -> Vec<usize> {
+    let mut numbers = Vec::new();
+    for number in text.chars().filter_map(image_of_char) {
+        if !numbers.contains(&number) {
+            numbers.push(number);
+        }
+    }
+    numbers
+}
+
+fn clusters(text: &str) -> Vec<(usize, &str)> {
+    let mut found = Vec::new();
+    for (at, grapheme) in text.grapheme_indices(true) {
+        let mut chars = grapheme.char_indices();
+        match chars.next() {
+            Some((_, first))
+                if image_of_char(first).is_some() && grapheme.len() > first.len_utf8() =>
+            {
+                let split = first.len_utf8();
+                found.push((at, &grapheme[..split]));
+                found.push((at + split, &grapheme[split..]));
+            }
+            _ => found.push((at, grapheme)),
+        }
+    }
+    found
+}
+
+fn tile_id(number: usize) -> u8 {
+    u8::try_from(number % 255).unwrap_or(0) + 1
+}
+
+fn sign(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Agent => PROMPT,
+        Mode::Shell => SHELL_PROMPT,
+    }
 }
 
 fn width(columns: usize) -> usize {
@@ -629,7 +957,7 @@ fn clean_paste(text: &str) -> String {
         .replace('\r', "\n")
         .replace('\t', TAB)
         .chars()
-        .filter(|c| *c == '\n' || !c.is_control())
+        .filter(|c| image_of_char(*c).is_none() && (*c == '\n' || !c.is_control()))
         .collect()
 }
 
@@ -699,7 +1027,38 @@ mod tests {
         })
     }
 
-    fn key(line: &mut Line, code: KeyCode, modifiers: KeyModifiers, history: &[String]) {
+    fn message(text: &str) -> Input {
+        Input {
+            mode: Mode::Agent,
+            text: text.to_owned(),
+            images: Vec::new(),
+        }
+    }
+
+    fn shell(text: &str) -> Input {
+        Input {
+            mode: Mode::Shell,
+            text: text.to_owned(),
+            images: Vec::new(),
+        }
+    }
+
+    fn shell_line(text: &str) -> Line {
+        Line {
+            mode: Mode::Shell,
+            ..line(text, text.len())
+        }
+    }
+
+    fn past(text: &str, mode: Mode) -> Past {
+        Past {
+            mode,
+            text: text.to_owned(),
+            images: Vec::new(),
+        }
+    }
+
+    fn key(line: &mut Line, code: KeyCode, modifiers: KeyModifiers, history: &[Past]) {
         with_choices(|choices| line.key(KeyEvent::new(code, modifiers), history, choices));
     }
 
@@ -761,7 +1120,7 @@ mod tests {
 
     #[test]
     fn history_recall_keeps_the_draft() {
-        let history = ["first".to_owned(), "second".to_owned()];
+        let history = [past("first", Mode::Agent), past("second", Mode::Agent)];
         let mut line = Line {
             recall: history.len(),
             ..line("draft", 5)
@@ -816,7 +1175,7 @@ mod tests {
     #[test]
     fn unqueueing_puts_queued_lines_back_before_the_draft() {
         let mut editor = Editor {
-            queue: ["first".to_owned(), "second".to_owned()].into(),
+            queue: [message("first"), message("second")].into(),
             line: line("draft", 5),
             ..Editor::default()
         };
@@ -825,6 +1184,272 @@ mod tests {
 
         assert_eq!(editor.line.text, "first\nsecond\ndraft");
         assert!(editor.queue.is_empty());
+    }
+
+    #[test]
+    fn bang_on_an_empty_line_enters_shell_mode() {
+        let mut line = line("", 0);
+        press(&mut line, &[KeyCode::Char('!')]);
+        assert_eq!((line.mode, line.text.as_str()), (Mode::Shell, ""));
+    }
+
+    #[test]
+    fn bang_after_text_is_typed() {
+        let mut line = line("hi", 2);
+        press(&mut line, &[KeyCode::Char('!')]);
+        assert_eq!((line.mode, line.text.as_str()), (Mode::Agent, "hi!"));
+    }
+
+    #[test]
+    fn backspace_on_an_empty_shell_line_returns_to_agent_mode() {
+        let mut line = shell_line("");
+        press(&mut line, &[KeyCode::Backspace]);
+        assert_eq!(line.mode, Mode::Agent);
+    }
+
+    #[test]
+    fn the_shell_prompt_is_a_red_bang() {
+        let rows = shell_line("ls").frame(80, &[], None).rows;
+        assert_eq!(rows, [format!("{}ls", SHELL_PROMPT.red())]);
+    }
+
+    #[test]
+    fn shell_mode_lists_no_commands() {
+        let editor = Editor {
+            line: shell_line("/mo"),
+            ..Editor::default()
+        };
+        let rows = with_choices(|choices| editor.frame(80, choices).rows);
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn a_sent_shell_line_is_queued_as_shell_and_the_prompt_returns_to_agent_mode() {
+        let mut editor = Editor {
+            line: shell_line("ls"),
+            ..Editor::default()
+        };
+
+        during_turn(&mut editor, KeyCode::Enter);
+
+        assert_eq!(editor.queue, [shell("ls")]);
+        assert_eq!(editor.line.mode, Mode::Agent);
+    }
+
+    #[test]
+    fn history_recall_brings_back_shell_mode() {
+        let history = [past("ls", Mode::Shell)];
+        let mut line = Line {
+            recall: history.len(),
+            ..line("", 0)
+        };
+        key(&mut line, KeyCode::Up, KeyModifiers::NONE, &history);
+        assert_eq!((line.mode, line.text.as_str()), (Mode::Shell, "ls"));
+    }
+
+    #[test]
+    fn unqueueing_shell_lines_only_stays_in_shell_mode() {
+        let mut editor = Editor {
+            queue: [shell("ls"), shell("pwd")].into(),
+            ..Editor::default()
+        };
+
+        editor.unqueue();
+
+        assert_eq!(
+            (editor.line.mode, editor.line.text.as_str()),
+            (Mode::Shell, "ls\npwd")
+        );
+    }
+
+    #[test]
+    fn unqueueing_mixed_lines_keeps_shell_lines_as_text() {
+        let mut editor = Editor {
+            queue: [shell("ls"), message("fix it")].into(),
+            ..Editor::default()
+        };
+
+        editor.unqueue();
+
+        assert_eq!(
+            (editor.line.mode, editor.line.text.as_str()),
+            (Mode::Agent, "!ls\nfix it")
+        );
+    }
+
+    fn png_in(dir: &std::path::Path) -> std::path::PathBuf {
+        let path = dir.join("shot.png");
+        ::image::RgbImage::new(4, 2).save(&path).unwrap();
+        path
+    }
+
+    fn pasting(editor: &mut Editor, text: &str) {
+        let mut terminal = Terminal::with_writer(Vec::new(), || 40);
+        editor.paste(text, &mut terminal);
+    }
+
+    #[test]
+    fn a_pasted_image_path_becomes_an_attachment() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = png_in(dir.path());
+        let mut editor = Editor {
+            line: line("see ", 4),
+            ..Editor::default()
+        };
+
+        pasting(&mut editor, &format!("{} ", path.display()));
+        let input = editor.take();
+
+        assert_eq!(input.plain(), "see [Image #1] ");
+        assert_eq!(input.images.len(), 1);
+    }
+
+    #[test]
+    fn deleting_the_token_drops_the_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = png_in(dir.path());
+        let mut editor = Editor::default();
+        pasting(&mut editor, &path.display().to_string());
+
+        editor.line.text = "never mind".to_owned();
+        editor.line.cursor = editor.line.text.len();
+        let input = editor.take();
+
+        assert_eq!(input.images, Vec::new());
+    }
+
+    #[test]
+    fn a_path_pasted_in_shell_mode_stays_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = png_in(dir.path());
+        let mut editor = Editor {
+            line: shell_line(""),
+            ..Editor::default()
+        };
+
+        pasting(&mut editor, &path.display().to_string());
+
+        assert_eq!(editor.line.text, path.display().to_string());
+        assert_eq!(editor.line.attachments.len(), 0);
+    }
+
+    #[test]
+    fn thumbnails_sit_above_the_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = png_in(dir.path());
+        let mut editor = Editor::default();
+        pasting(&mut editor, &path.display().to_string());
+        editor.line.attachments[0].tile = Some(Tile { id: 2, columns: 3 });
+
+        let frame = with_choices(|choices| editor.frame(40, choices));
+
+        assert_eq!(frame.rows.len(), usize::from(kitty::ROWS) + 1);
+        assert_eq!(
+            frame.images,
+            [Placement {
+                row: 0,
+                column: 2,
+                id: 2,
+                columns: 3
+            }]
+        );
+        assert_eq!(frame.cursor.row, usize::from(kitty::ROWS));
+    }
+
+    #[test]
+    fn unqueueing_brings_the_attachments_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = png_in(dir.path());
+        let mut editor = Editor::default();
+        pasting(&mut editor, &path.display().to_string());
+        let input = editor.take();
+        editor.queue.push_back(input);
+
+        editor.unqueue();
+        let again = editor.take();
+
+        assert_eq!(again.plain(), "[Image #1] ");
+        assert_eq!(again.images.len(), 1);
+    }
+
+    fn with_image(dir: &std::path::Path) -> Editor {
+        let mut editor = Editor {
+            line: line("look ", 5),
+            store: Some(Store::open_in_memory().unwrap()),
+            ..Editor::default()
+        };
+        pasting(&mut editor, &png_in(dir).display().to_string());
+        editor
+    }
+
+    #[test]
+    fn backspace_after_an_image_removes_it_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut editor = with_image(dir.path());
+
+        press(&mut editor.line, &[KeyCode::Backspace, KeyCode::Backspace]);
+        let input = editor.take();
+
+        assert_eq!(input.plain(), "look ");
+        assert_eq!(input.images, Vec::new());
+    }
+
+    #[test]
+    fn arrows_step_over_an_image_in_one_move() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut editor = with_image(dir.path());
+
+        press(&mut editor.line, &[KeyCode::Left, KeyCode::Left]);
+
+        assert_eq!(editor.line.cursor, "look ".len());
+    }
+
+    #[test]
+    fn an_image_shows_as_its_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let editor = with_image(dir.path());
+
+        let rows = editor.line.frame(80, &[], None).rows;
+
+        assert_eq!(
+            rows,
+            [format!("{}look {} ", PROMPT.dim(), "[Image #1]".cyan())]
+        );
+    }
+
+    #[test]
+    fn a_mark_typed_after_an_image_stays_separate() {
+        let text = format!("{}\u{301}", marker(1));
+
+        let found = clusters(&text);
+
+        assert_eq!(found.len(), 2);
+        assert_eq!(image_of(found[0].1), Some(1));
+    }
+
+    #[test]
+    fn pasted_text_cannot_carry_image_markers() {
+        assert_eq!(clean_paste(&format!("a{}b", marker(3))), "ab");
+    }
+
+    #[test]
+    fn recalling_a_sent_message_brings_its_image_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut editor = with_image(dir.path());
+        editor.take();
+
+        with_choices(|choices| {
+            editor.line.key(
+                KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+                &editor.history,
+                choices,
+            )
+        });
+        editor.restore();
+        let again = editor.take();
+
+        assert_eq!(again.plain(), "look [Image #1] ");
+        assert_eq!(again.images.len(), 1);
     }
 
     #[test]
@@ -954,7 +1579,7 @@ mod tests {
 
     #[test]
     fn arrows_outside_a_list_recall_history() {
-        let history = ["first".to_owned()];
+        let history = [past("first", Mode::Agent)];
         let mut line = Line {
             recall: history.len(),
             ..line("draft", 5)

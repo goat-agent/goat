@@ -2,11 +2,13 @@ pub mod anthropic;
 pub mod openai;
 mod sse;
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::account;
+use crate::image;
 use crate::message::{Message, Origin, Part};
 use crate::tool;
 
@@ -56,12 +58,33 @@ pub struct Request<'a> {
     pub model: &'a str,
     pub instructions: &'a str,
     pub messages: &'a [Message],
+    pub images: &'a Images,
     pub trailing: Option<&'a Message>,
     pub tools: &'a [tool::Spec],
     pub use_tools: bool,
     pub origin: &'a Origin,
     pub cache_key: &'a str,
     pub effort: Option<&'a str>,
+}
+
+const OMITTED_IMAGE: &str = "[image omitted]";
+const BODY_TEXT_BYTES: usize = 256 * 1024;
+
+#[derive(Debug, Default)]
+pub struct Images(HashMap<image::Id, String>);
+
+impl Images {
+    pub fn insert(&mut self, id: image::Id, base64: String) {
+        self.0.insert(id, base64);
+    }
+
+    pub fn get(&self, id: &image::Id) -> Option<&str> {
+        self.0.get(id).map(String::as_str)
+    }
+
+    fn len(&self) -> usize {
+        self.0.values().map(String::len).sum()
+    }
 }
 
 impl<'a> Request<'a> {
@@ -131,10 +154,13 @@ enum Flow {
     Done,
 }
 
-async fn post(build: impl Fn() -> reqwest::RequestBuilder) -> Result<reqwest::Response, Error> {
+async fn post(request: reqwest::RequestBuilder) -> Result<reqwest::Response, Error> {
     let mut attempt = 0;
     loop {
-        let response = build().send().await?;
+        let Some(this_attempt) = request.try_clone() else {
+            unreachable!("a request with an in-memory body can be cloned");
+        };
+        let response = this_attempt.send().await?;
         let status = response.status();
         if status.is_success() {
             return Ok(response);
@@ -152,6 +178,12 @@ async fn post(build: impl Fn() -> reqwest::RequestBuilder) -> Result<reqwest::Re
         tokio::time::sleep(Duration::from_secs(retry_after.unwrap_or(1 << attempt))).await;
         attempt += 1;
     }
+}
+
+fn json(body: &impl serde::Serialize, images: &Images) -> Result<Vec<u8>, Error> {
+    let mut out = Vec::with_capacity(images.len() + BODY_TEXT_BYTES);
+    serde_json::to_writer(&mut out, body)?;
+    Ok(out)
 }
 
 async fn status_error(response: reqwest::Response) -> Error {

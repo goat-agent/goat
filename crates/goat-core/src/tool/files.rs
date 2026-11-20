@@ -6,10 +6,12 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::hashline::{self, Document, RawOp};
+use crate::image::Media;
 
 const DEFAULT_LIMIT: usize = 2000;
 const MAX_LINE_CHARS: usize = 2000;
 const SNIFF_BYTES: usize = 8 * 1024;
+const IMAGE_FILE_BYTES: u64 = 50 * 1024 * 1024;
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct Page {
@@ -28,6 +30,27 @@ pub(crate) struct Written {
 pub(crate) struct Edited {
     pub(crate) total: usize,
     pub(crate) preview: String,
+}
+
+pub(crate) fn image(path: &Path, shown: &str) -> Result<Option<Vec<u8>>, String> {
+    let io = |err: std::io::Error| format!("could not read {shown}: {err}");
+    let Ok(mut file) = File::open(path) else {
+        return Ok(None);
+    };
+    let mut head = [0; 16];
+    let sniffed = file.read(&mut head).map_err(io)?;
+    if Media::sniff(&head[..sniffed]).is_none() {
+        return Ok(None);
+    }
+    let size = file.metadata().map_err(io)?.len();
+    if size > IMAGE_FILE_BYTES {
+        return Err(format!(
+            "{shown} is an image of {size} bytes, over the {IMAGE_FILE_BYTES} byte limit"
+        ));
+    }
+    let mut bytes = head[..sniffed].to_vec();
+    file.read_to_end(&mut bytes).map_err(io)?;
+    Ok(Some(bytes))
 }
 
 pub(crate) fn read(

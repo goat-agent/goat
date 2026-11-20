@@ -3,12 +3,14 @@
 mod server;
 
 use goat_core::account::{Account, Credential, Kind};
+use goat_core::image;
 use goat_core::provider::Endpoints;
-use goat_core::session::{Environment, Event, Session, Sink};
+use goat_core::session::{Environment, Event, Prompt, Session, Sink};
 use goat_core::store::Store;
 
 const TURNS: usize = 50;
 const BUDGET_KIB: u64 = 50 * 1024;
+const IMAGE_EDGE: u32 = 260;
 
 struct Discard;
 
@@ -49,14 +51,22 @@ async fn fifty_turns_stay_within_the_memory_budget() {
     )
     .unwrap();
 
+    let mut requests = 0;
     for turn in 0..TURNS {
-        session
-            .turn(&format!("turn {turn}"), &mut Discard)
-            .await
-            .unwrap();
+        let seed = u32::try_from(turn).unwrap();
+        let picture = image::prepare(noise(seed).unwrap()).unwrap();
+        let text = format!("turn {turn}");
+        let prompt = Prompt {
+            text: &text,
+            images: std::slice::from_ref(&picture),
+        };
+        session.turn(prompt, &mut Discard).await.unwrap();
+        let mut received = server.requests.lock().unwrap();
+        requests += received.len();
+        received.clear();
     }
     assert_eq!(session.messages().len(), TURNS * 4);
-    assert_eq!(server.requests.lock().unwrap().len(), TURNS * 2);
+    assert_eq!(requests, TURNS * 2);
 
     if let Some(peak) = peak_rss_kib() {
         eprintln!("peak rss after {TURNS} turns: {peak} KiB");
@@ -65,6 +75,20 @@ async fn fifty_turns_stay_within_the_memory_budget() {
             "peak rss {peak} KiB is over {BUDGET_KIB} KiB"
         );
     }
+}
+
+fn noise(seed: u32) -> Result<Vec<u8>, ::image::ImageError> {
+    let mut state = seed.wrapping_mul(2_654_435_761) | 1;
+    let pixels = ::image::RgbImage::from_fn(IMAGE_EDGE, IMAGE_EDGE, |_, _| {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        let [r, g, b, _] = state.to_le_bytes();
+        ::image::Rgb([r, g, b])
+    });
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    pixels.write_to(&mut bytes, ::image::ImageFormat::Png)?;
+    Ok(bytes.into_inner())
 }
 
 fn peak_rss_kib() -> Option<u64> {

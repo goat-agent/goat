@@ -1,7 +1,9 @@
 mod ask;
+mod attach;
 mod chat;
 mod command;
 mod input;
+mod kitty;
 mod login;
 mod markdown;
 mod paths;

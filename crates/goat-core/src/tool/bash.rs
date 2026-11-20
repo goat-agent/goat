@@ -21,11 +21,14 @@ pub(crate) struct Ran {
     pub(crate) file: Option<PathBuf>,
 }
 
+struct Decoder(Vec<u8>);
+
 pub(crate) async fn run(
     command: &str,
     cwd: &Path,
     timeout: Duration,
     spill_dir: &Path,
+    on_output: &mut dyn FnMut(&str),
 ) -> std::io::Result<Ran> {
     let mut capture = Capture::create(spill_dir)?;
     let mut child = Command::new("bash")
@@ -43,6 +46,8 @@ pub(crate) async fn run(
     let mut stderr = child.stderr.take();
     let mut out_buf = vec![0; READ_BUFFER];
     let mut err_buf = vec![0; READ_BUFFER];
+    let mut out_text = Decoder(Vec::new());
+    let mut err_text = Decoder(Vec::new());
     let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
     let mut status: Option<ExitStatus> = None;
@@ -53,13 +58,19 @@ pub(crate) async fn run(
             read = read_some(stdout.as_mut(), &mut out_buf), if stdout.is_some() => {
                 match read? {
                     0 => stdout = None,
-                    n => capture.push(&out_buf[..n])?,
+                    n => {
+                        capture.push(&out_buf[..n])?;
+                        out_text.feed(&out_buf[..n], on_output);
+                    }
                 }
             }
             read = read_some(stderr.as_mut(), &mut err_buf), if stderr.is_some() => {
                 match read? {
                     0 => stderr = None,
-                    n => capture.push(&err_buf[..n])?,
+                    n => {
+                        capture.push(&err_buf[..n])?;
+                        err_text.feed(&err_buf[..n], on_output);
+                    }
                 }
             }
             exited = child.wait(), if status.is_none() => {
@@ -78,6 +89,8 @@ pub(crate) async fn run(
         }
     }
 
+    out_text.finish(on_output);
+    err_text.finish(on_output);
     let kept = capture.finish()?;
     let mut output = kept.text;
     let code = status.and_then(|status| status.code());
@@ -123,6 +136,38 @@ fn describe(status: ExitStatus) -> String {
     }
 }
 
+impl Decoder {
+    fn feed(&mut self, bytes: &[u8], on_output: &mut dyn FnMut(&str)) {
+        self.0.extend_from_slice(bytes);
+        let mut start = 0;
+        loop {
+            let rest = &self.0[start..];
+            let (valid, skip) = match std::str::from_utf8(rest) {
+                Ok(_) => (rest.len(), None),
+                Err(err) => (err.valid_up_to(), err.error_len()),
+            };
+            let text = std::str::from_utf8(&rest[..valid]).unwrap_or_default();
+            if !text.is_empty() {
+                on_output(text);
+            }
+            start += valid;
+            let Some(skip) = skip else {
+                break;
+            };
+            on_output("\u{fffd}");
+            start += skip;
+        }
+        self.0.drain(..start);
+    }
+
+    fn finish(&mut self, on_output: &mut dyn FnMut(&str)) {
+        if !self.0.is_empty() {
+            on_output(&String::from_utf8_lossy(&self.0));
+            self.0.clear();
+        }
+    }
+}
+
 struct Group(Option<Pid>);
 
 impl Group {
@@ -152,9 +197,15 @@ mod tests {
 
     async fn bash(command: &str, timeout: Duration) -> (Ran, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let ran = run(command, dir.path(), timeout, &dir.path().join("spill"))
-            .await
-            .unwrap();
+        let ran = run(
+            command,
+            dir.path(),
+            timeout,
+            &dir.path().join("spill"),
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
         (ran, dir)
     }
 
@@ -164,6 +215,40 @@ mod tests {
         assert_eq!(ran.code, Some(3));
         assert!(ran.output.contains("out\n"));
         assert!(ran.output.contains("err\n"));
+    }
+
+    #[tokio::test]
+    async fn output_is_streamed_as_it_arrives() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut streamed = String::new();
+        run(
+            "echo one; echo two",
+            dir.path(),
+            Duration::from_secs(5),
+            &dir.path().join("spill"),
+            &mut |chunk| streamed.push_str(chunk),
+        )
+        .await
+        .unwrap();
+        assert_eq!(streamed, "one\ntwo\n");
+    }
+
+    #[test]
+    fn a_character_split_across_reads_is_streamed_whole() {
+        let mut decoder = Decoder(Vec::new());
+        let mut streamed = Vec::new();
+        let bytes = "가나".as_bytes();
+        decoder.feed(&bytes[..4], &mut |chunk| streamed.push(chunk.to_owned()));
+        decoder.feed(&bytes[4..], &mut |chunk| streamed.push(chunk.to_owned()));
+        assert_eq!(streamed, ["가", "나"]);
+    }
+
+    #[test]
+    fn invalid_bytes_become_replacement_characters() {
+        let mut decoder = Decoder(Vec::new());
+        let mut streamed = String::new();
+        decoder.feed(b"a\xffb", &mut |chunk| streamed.push_str(chunk));
+        assert_eq!(streamed, "a\u{fffd}b");
     }
 
     #[tokio::test]

@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::{Chunk, Error, Flow, Reply, Request, Usage};
+use super::{Chunk, Error, Flow, Images, OMITTED_IMAGE, Reply, Request, Usage};
 use crate::account::codex;
+use crate::image::{Image, Media};
 use crate::message::{Message, Native, Part, Role};
 
 pub const BASE_URL: &str = "https://api.openai.com/v1";
@@ -54,14 +55,14 @@ impl Client {
         bearer: &str,
         on_chunk: &mut dyn FnMut(Chunk<'_>),
     ) -> Result<Reply, Error> {
-        let body = serde_json::to_string(&Body::new(request))?;
+        let body = super::json(&Body::new(request), request.images)?;
         let url = format!("{}/responses", self.base);
-        let response = super::post(|| {
+        let response = super::post(
             self.authorize(self.http.post(&url), bearer, request.cache_key)
                 .header(reqwest::header::ACCEPT, "text/event-stream")
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(body.clone())
-        })
+                .body(body),
+        )
         .await?;
 
         let mut parts = Vec::new();
@@ -132,7 +133,12 @@ impl<'a> Body<'a> {
     fn new(request: &Request<'a>) -> Self {
         let mut input = Vec::new();
         for message in request.all_messages() {
-            push_input(&mut input, message, message.from_origin(request.origin));
+            push_input(
+                &mut input,
+                message,
+                message.from_origin(request.origin),
+                request.images,
+            );
         }
         Self {
             model: request.model,
@@ -163,7 +169,12 @@ impl<'a> Body<'a> {
     }
 }
 
-fn push_input<'a>(input: &mut Vec<Input<'a>>, message: &'a Message, native: bool) {
+fn push_input<'a>(
+    input: &mut Vec<Input<'a>>,
+    message: &'a Message,
+    native: bool,
+    images: &'a Images,
+) {
     for part in &message.parts {
         let item = match (part, message.role) {
             (
@@ -181,15 +192,19 @@ fn push_input<'a>(input: &mut Vec<Input<'a>>, message: &'a Message, native: bool
             ) if native => Input::Raw(raw.get()),
             (Part::Text { text, .. }, Role::Assistant) => Input::Message {
                 role: "assistant",
-                content: text,
+                content: InputContent::Text(text),
             },
             (Part::Text { text, .. }, _) => Input::Message {
                 role: "user",
-                content: text,
+                content: InputContent::Text(text),
             },
             (Part::Summary { text, .. }, _) => Input::Message {
                 role: "developer",
-                content: text,
+                content: InputContent::Text(text),
+            },
+            (Part::Image(image), _) => Input::Message {
+                role: "user",
+                content: InputContent::Parts(vec![picture(image, images)]),
             },
             (
                 Part::ToolCall {
@@ -204,13 +219,24 @@ fn push_input<'a>(input: &mut Vec<Input<'a>>, message: &'a Message, native: bool
             },
             (
                 Part::ToolResult {
-                    call_id, output, ..
+                    call_id,
+                    output,
+                    images: shown,
+                    ..
                 },
                 _,
             ) => Input::Output {
                 r#type: "function_call_output",
                 call_id,
-                output,
+                output: if shown.is_empty() {
+                    InputContent::Text(output)
+                } else {
+                    InputContent::Parts(
+                        std::iter::once(InputPart::InputText { text: output })
+                            .chain(shown.iter().map(|image| picture(image, images)))
+                            .collect(),
+                    )
+                },
             },
             (Part::Reasoning { .. }, _) => continue,
         };
@@ -224,7 +250,7 @@ enum Input<'a> {
     Raw(&'a RawValue),
     Message {
         role: &'static str,
-        content: &'a str,
+        content: InputContent<'a>,
     },
     Call {
         r#type: &'static str,
@@ -235,8 +261,37 @@ enum Input<'a> {
     Output {
         r#type: &'static str,
         call_id: &'a str,
-        output: &'a str,
+        output: InputContent<'a>,
     },
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum InputContent<'a> {
+    Text(&'a str),
+    Parts(Vec<InputPart<'a>>),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum InputPart<'a> {
+    InputText { text: &'a str },
+    InputImage { image_url: DataUrl<'a> },
+}
+
+struct DataUrl<'a> {
+    media: Media,
+    base64: &'a str,
+}
+
+impl Serialize for DataUrl<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&format_args!(
+            "data:{};base64,{}",
+            self.media.as_str(),
+            self.base64
+        ))
+    }
 }
 
 #[derive(Serialize)]
@@ -306,6 +361,20 @@ enum Content {
 #[derive(Deserialize)]
 struct SummaryText {
     text: String,
+}
+
+fn picture<'a>(image: &'a Image, images: &'a Images) -> InputPart<'a> {
+    match images.get(&image.id) {
+        Some(base64) => InputPart::InputImage {
+            image_url: DataUrl {
+                media: image.media,
+                base64,
+            },
+        },
+        None => InputPart::InputText {
+            text: OMITTED_IMAGE,
+        },
+    }
 }
 
 fn part(raw: Box<RawValue>) -> Result<Option<Part>, Error> {
@@ -453,7 +522,8 @@ mod tests {
             }],
         );
         let mut input = Vec::new();
-        push_input(&mut input, &message, message.from_origin(&origin));
+        let images = Images::default();
+        push_input(&mut input, &message, message.from_origin(&origin), &images);
         let json = serde_json::to_string(&input).unwrap();
         assert!(json.contains(r#""phase":"final_answer""#));
     }
@@ -479,11 +549,69 @@ mod tests {
             ],
         );
         let mut input = Vec::new();
-        push_input(&mut input, &message, false);
+        let images = Images::default();
+        push_input(&mut input, &message, false, &images);
         let json = serde_json::to_string(&input).unwrap();
         assert_eq!(
             json,
             r#"[{"type":"function_call","call_id":"toolu_1","name":"read","arguments":"{\"path\":\"a\"}"}]"#
+        );
+    }
+
+    fn png() -> (Image, Images) {
+        let image = Image {
+            id: crate::image::Id::of(b"png"),
+            media: Media::Png,
+        };
+        let mut images = Images::default();
+        images.insert(image.id.clone(), "iVBO".to_owned());
+        (image, images)
+    }
+
+    #[test]
+    fn an_attached_image_is_a_user_input_image() {
+        let (image, images) = png();
+        let message = Message::new(Role::User, None, vec![Part::Image(image)]);
+        let mut input = Vec::new();
+        push_input(&mut input, &message, false, &images);
+        assert_eq!(
+            serde_json::to_string(&input).unwrap(),
+            r#"[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,iVBO"}]}]"#
+        );
+    }
+
+    #[test]
+    fn a_tool_result_with_an_image_sends_text_and_image_parts() {
+        let (image, images) = png();
+        let message = Message::new(
+            Role::Tool,
+            None,
+            vec![Part::ToolResult {
+                call_id: "call_1".into(),
+                output: "{}".into(),
+                is_error: false,
+                images: vec![image],
+            }],
+        );
+        let mut input = Vec::new();
+        push_input(&mut input, &message, false, &images);
+        assert_eq!(
+            serde_json::to_string(&input).unwrap(),
+            r#"[{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_text","text":"{}"},{"type":"input_image","image_url":"data:image/png;base64,iVBO"}]}]"#
+        );
+    }
+
+    #[test]
+    fn an_image_left_out_of_the_request_becomes_a_note() {
+        let (image, _) = png();
+        let message = Message::new(Role::User, None, vec![Part::Image(image)]);
+        let mut input = Vec::new();
+        let none = Images::default();
+        push_input(&mut input, &message, false, &none);
+        assert!(
+            serde_json::to_string(&input)
+                .unwrap()
+                .contains(r#""text":"[image omitted]""#)
         );
     }
 

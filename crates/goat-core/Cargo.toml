@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 base64.workspace = true
 getrandom.workspace = true
+image.workspace = true
 reqwest.workspace = true
 rquickjs.workspace = true
 rusqlite.workspace = true

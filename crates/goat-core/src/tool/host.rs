@@ -5,8 +5,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::{Call, Kind, Step, bash, danger, files, hashline};
+use crate::image;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
+const NO_TIMEOUT: Duration = Duration::MAX;
 
 #[derive(Debug)]
 pub(crate) struct Host {
@@ -37,6 +39,13 @@ enum Op {
         path: String,
         content: String,
     },
+}
+
+#[derive(Debug, Serialize)]
+struct Shown {
+    image: String,
+    width: u32,
+    height: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,7 +109,13 @@ impl Host {
                 path,
                 offset,
                 limit,
-            } => to_value(files::read(&self.resolve(&path), &path, offset, limit)?),
+            } => {
+                let resolved = self.resolve(&path);
+                match files::image(&resolved, &path)? {
+                    Some(bytes) => to_value(self.show(bytes, &path).await?),
+                    None => to_value(files::read(&resolved, &path, offset, limit)?),
+                }
+            }
             Op::Edit { path, edits } => to_value(files::edit(&self.resolve(&path), &path, edits)?),
             Op::Write { path, content } => {
                 to_value(files::write(&self.resolve(&path), &path, &content)?)
@@ -115,9 +130,34 @@ impl Host {
             ));
         }
         let timeout = Duration::from_secs(timeout.unwrap_or(DEFAULT_TIMEOUT_SECS).max(1));
-        bash::run(command, &self.workspace, timeout, &self.spill)
+        bash::run(command, &self.workspace, timeout, &self.spill, &mut |_| {})
             .await
             .map_err(|err| format!("could not run the command: {err}"))
+    }
+
+    pub(crate) async fn shell(
+        &self,
+        command: &str,
+        on_output: &mut dyn FnMut(&str),
+    ) -> Result<bash::Ran, String> {
+        if let Some(reason) = self.danger.check(command, &self.workspace, &self.home) {
+            return Err(format!("blocked: {reason}"));
+        }
+        bash::run(command, &self.workspace, NO_TIMEOUT, &self.spill, on_output)
+            .await
+            .map_err(|err| format!("could not run the command: {err}"))
+    }
+
+    async fn show(&self, bytes: Vec<u8>, path: &str) -> Result<Shown, String> {
+        let picture =
+            image::prepare(bytes).map_err(|err| format!("could not read {path}: {err}"))?;
+        let shown = Shown {
+            image: path.to_owned(),
+            width: picture.width,
+            height: picture.height,
+        };
+        self.steps.send(Step::Shown(picture)).await.ok();
+        Ok(shown)
     }
 
     fn resolve(&self, raw: &str) -> PathBuf {
@@ -156,6 +196,23 @@ mod tests {
         let (tx, rx) = mpsc::channel(16);
         let host = Host::new(dir, Path::new("/home/me"), &dir.join(".spill"), tx).unwrap();
         (host, rx)
+    }
+
+    #[tokio::test]
+    async fn reading_an_image_shows_it_and_returns_its_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, mut rx) = host(dir.path());
+        ::image::RgbImage::new(6, 4)
+            .save(dir.path().join("shot.png"))
+            .unwrap();
+
+        let reply = host
+            .call(r#"{"op":"read","path":"shot.png","offset":null,"limit":null}"#)
+            .await;
+
+        assert_eq!(reply, r#"{"ok":{"height":4,"image":"shot.png","width":6}}"#);
+        assert!(matches!(rx.recv().await, Some(Step::Started(_))));
+        assert!(matches!(rx.recv().await, Some(Step::Shown(picture)) if picture.width == 6));
     }
 
     #[tokio::test]
