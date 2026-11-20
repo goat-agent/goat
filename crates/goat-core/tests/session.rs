@@ -28,7 +28,9 @@ impl Sink for Recorder {
             Event::Text(text) => self.text.push_str(text),
             Event::Reasoning(text) => self.reasoning.push_str(text),
             Event::RunStarted { description } => self.tools.push(description.to_owned()),
-            Event::Call { summary } => self.tools.push(summary.to_owned()),
+            Event::Call(call) => self
+                .tools
+                .push(format!("{} {}", call.kind.as_str(), call.target)),
             _ => {}
         }
     }

@@ -1,9 +1,12 @@
 mod ask;
 mod chat;
+mod command;
 mod input;
 mod login;
+mod markdown;
 mod paths;
 mod render;
+mod target;
 
 use clap::{Parser, Subcommand};
 
@@ -18,23 +21,9 @@ struct Cli {
         short,
         long,
         global = true,
-        help = "Model to use, for example gpt-6.2-astra"
+        help = "Model to use, for example gpt-6.2-sol:high or openai:codex/gpt-6.2-sol"
     )]
     model: Option<String>,
-    #[arg(
-        short,
-        long,
-        global = true,
-        help = "Account to use, for example openai/work"
-    )]
-    account: Option<String>,
-    #[arg(
-        short,
-        long,
-        global = true,
-        help = "Reasoning effort, for example high"
-    )]
-    effort: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -56,11 +45,7 @@ async fn main() -> anyhow::Result<()> {
     restore_terminal_on_panic();
     let cli = Cli::parse();
     let paths = paths::Paths::detect()?;
-    let choice = chat::Choice {
-        model: cli.model,
-        account: cli.account,
-        effort: cli.effort,
-    };
+    let choice = chat::Choice { model: cli.model };
     match cli.command {
         None => chat::start(&paths, choice).await,
         Some(Command::Resume { session }) => chat::resume(&paths, choice, session.as_deref()).await,

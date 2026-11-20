@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::{Chunk, Error, Flow, Model, Reply, Request, Usage};
+use super::{Chunk, Error, Flow, Reply, Request, Usage};
 use crate::message::{Message, Native, Part, Role};
 
 pub const BASE_URL: &str = "https://api.anthropic.com/v1";
@@ -102,18 +102,6 @@ impl Client {
             .map(Building::finish)
             .collect::<Result<_, _>>()?;
         Ok(Reply { parts, usage })
-    }
-
-    pub(super) async fn models(&self, key: &str) -> Result<Vec<Model>, Error> {
-        let body = super::get(
-            self.http
-                .get(format!("{}/models?limit=1000", self.base))
-                .header("x-api-key", key)
-                .header("anthropic-version", VERSION),
-        )
-        .await?;
-        let listing: Listing = serde_json::from_str(&body)?;
-        Ok(listing.data.into_iter().map(Model::from).collect())
     }
 }
 
@@ -487,93 +475,11 @@ struct StreamErrorDetail {
     message: String,
 }
 
-#[derive(Deserialize)]
-struct Listing {
-    data: Vec<ListedModel>,
-}
-
-#[derive(Deserialize)]
-struct ListedModel {
-    id: String,
-    capabilities: Option<Capabilities>,
-}
-
-#[derive(Deserialize)]
-struct Capabilities {
-    effort: EffortCapability,
-}
-
-#[derive(Deserialize)]
-struct EffortCapability {
-    supported: bool,
-    low: Option<Support>,
-    medium: Option<Support>,
-    high: Option<Support>,
-    xhigh: Option<Support>,
-    max: Option<Support>,
-}
-
-#[derive(Deserialize)]
-struct Support {
-    supported: bool,
-}
-
-impl From<ListedModel> for Model {
-    fn from(listed: ListedModel) -> Self {
-        Self {
-            id: listed.id.into(),
-            efforts: listed.capabilities.map(|c| c.effort.levels()),
-            default_effort: None,
-        }
-    }
-}
-
-impl EffortCapability {
-    fn levels(&self) -> Vec<Box<str>> {
-        if !self.supported {
-            return Vec::new();
-        }
-        [
-            ("low", &self.low),
-            ("medium", &self.medium),
-            ("high", &self.high),
-            ("xhigh", &self.xhigh),
-            ("max", &self.max),
-        ]
-        .into_iter()
-        .filter(|(_, support)| support.as_ref().is_some_and(|s| s.supported))
-        .map(|(name, _)| name.into())
-        .collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::account;
     use crate::message::Origin;
-
-    #[test]
-    fn listing_reads_supported_effort_levels() {
-        let listing: Listing = serde_json::from_str(
-            r#"{"data":[{"id":"claude-haiku-5-5","capabilities":{"effort":{"supported":true,"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true},"xhigh":null,"max":{"supported":false}}}}]}"#,
-        )
-        .unwrap();
-        let model = Model::from(listing.data.into_iter().next().unwrap());
-        assert_eq!(
-            model.efforts,
-            Some(vec!["low".into(), "medium".into(), "high".into()])
-        );
-    }
-
-    #[test]
-    fn listing_without_capabilities_has_unknown_efforts() {
-        let listing: Listing =
-            serde_json::from_str(r#"{"data":[{"id":"claude-opus-5-5","capabilities":null}]}"#)
-                .unwrap();
-        let model = Model::from(listing.data.into_iter().next().unwrap());
-        assert_eq!(model.efforts, None);
-    }
 
     #[test]
     fn effort_goes_into_output_config() {
