@@ -268,14 +268,22 @@ mod tests {
     #[tokio::test]
     async fn detached_descendants_holding_the_pipe_do_not_hang_the_call() {
         let started = std::time::Instant::now();
-        let (ran, _dir) = bash(
-            r#"perl -MPOSIX -e 'POSIX::setsid(); exec "sleep", 30' & sleep 0.5; echo done"#,
+        let (ran, dir) = bash(
+            r#"perl -MPOSIX -e 'POSIX::setsid(); open(my $f, ">", "pid.tmp") or die; print $f $$; close $f; rename "pid.tmp", "pid"; exec "sleep", 30' &
+while [ ! -e pid ]; do sleep 0.05; done; echo done"#,
             Duration::from_secs(10),
         )
         .await;
+        let took = started.elapsed();
+        let pid: i32 = std::fs::read_to_string(dir.path().join("pid"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        rustix::process::kill_process(Pid::from_raw(pid).unwrap(), Signal::KILL).ok();
+
         assert!(ran.output.contains("done"));
-        assert!(started.elapsed() >= DRAIN_GRACE);
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(took >= DRAIN_GRACE);
+        assert!(took < Duration::from_secs(5));
     }
 
     #[tokio::test]

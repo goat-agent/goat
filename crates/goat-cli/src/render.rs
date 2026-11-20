@@ -475,6 +475,16 @@ impl<W: Write> Sink for Terminal<W> {
                 self.enter(Section::Run);
                 self.put(&format!("{INDENT}{}\n", first_line(&outcome.output).red()));
             }
+            Event::Truncated => {
+                self.close_section();
+                self.note("The reply hit the output limit and was cut off");
+            }
+            Event::Refused => {
+                self.close_section();
+                self.error(
+                    "The model declined to answer; rephrase, or try another model with /model",
+                );
+            }
             Event::ShellOutput(chunk) => self.shell_output(chunk),
             Event::ShellFinished { code, problem } => self.shell_finished(code, problem),
             Event::RunFinished { .. } | Event::Usage(_) => {}
@@ -907,6 +917,30 @@ mod tests {
             "exit 1".red()
         );
         assert_eq!(screen, expected);
+    }
+
+    #[test]
+    fn a_cut_off_reply_says_so_below_its_text() {
+        let screen = screen(&[Event::Text("Half"), Event::Truncated]);
+
+        let expected = format!(
+            "Half\n\n  {}\n\n",
+            "The reply hit the output limit and was cut off".dim()
+        );
+        assert_eq!(screen, expected);
+    }
+
+    #[test]
+    fn a_refusal_is_shown_as_an_error() {
+        let screen = screen(&[Event::Refused]);
+
+        assert!(
+            screen.contains(
+                &"The model declined to answer; rephrase, or try another model with /model"
+                    .red()
+                    .to_string()
+            )
+        );
     }
 
     #[test]

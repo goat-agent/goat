@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::{Chunk, Error, Flow, Images, OMITTED_IMAGE, Reply, Request, Usage};
+use super::{Chunk, Error, Flow, Images, OMITTED_IMAGE, Reply, Request, Stop, Usage};
 use crate::image::Image;
 use crate::message::{Message, Native, Part, Role};
 
@@ -45,6 +45,7 @@ impl Client {
 
         let mut blocks: Vec<Option<Building>> = Vec::new();
         let mut usage = Usage::default();
+        let mut stop = Stop::Finished;
         super::read_events(response, |event| {
             let envelope: Envelope = serde_json::from_str(&event.data)?;
             match envelope.r#type.as_str() {
@@ -82,14 +83,18 @@ impl Client {
                     if let Some(output) = delta.usage.and_then(|u| u.output_tokens) {
                         usage.output = output;
                     }
+                    if let Some(reason) = delta.delta.and_then(|d| d.stop_reason) {
+                        stop = stop_of(&reason);
+                    }
                 }
                 "message_stop" => return Ok(Flow::Done),
                 "error" => {
                     let error: StreamError = serde_json::from_str(&event.data)?;
-                    return Err(Error::Stream(format!(
-                        "{}: {}",
-                        error.error.r#type, error.error.message
-                    )));
+                    let text = format!("{}: {}", error.error.r#type, error.error.message);
+                    return Err(match error.error.r#type.as_str() {
+                        "overloaded_error" | "api_error" => Error::Busy(text),
+                        _ => Error::Stream(text),
+                    });
                 }
                 _ => {}
             }
@@ -97,12 +102,18 @@ impl Client {
         })
         .await?;
 
+        if stop == Stop::Truncated
+            && let Some(last) = blocks.iter_mut().rev().find(|block| block.is_some())
+            && last.as_ref().is_some_and(Building::is_unfinished_call)
+        {
+            *last = None;
+        }
         let parts = blocks
             .into_iter()
             .flatten()
             .map(Building::finish)
             .collect::<Result<_, _>>()?;
-        Ok(Reply { parts, usage })
+        Ok(Reply { parts, usage, stop })
     }
 }
 
@@ -231,6 +242,14 @@ fn picture<'a>(image: &'a Image, images: &'a Images) -> Block<'a> {
             r#type: "text",
             text: OMITTED_IMAGE,
         }),
+    }
+}
+
+fn stop_of(reason: &str) -> Stop {
+    match reason {
+        "max_tokens" | "model_context_window_exceeded" => Stop::Truncated,
+        "refusal" => Stop::Refused,
+        _ => Stop::Finished,
     }
 }
 
@@ -374,6 +393,10 @@ impl Building {
         }
     }
 
+    fn is_unfinished_call(&self) -> bool {
+        matches!(self, Self::ToolUse { json, .. } if serde_json::from_str::<&RawValue>(json).is_err())
+    }
+
     fn finish(self) -> Result<Part, Error> {
         Ok(match self {
             Self::Text(text) => Part::Text {
@@ -508,6 +531,12 @@ enum Delta {
 #[derive(Deserialize)]
 struct MessageDelta {
     usage: Option<DeltaUsage>,
+    delta: Option<StopDelta>,
+}
+
+#[derive(Deserialize)]
+struct StopDelta {
+    stop_reason: Option<String>,
 }
 
 #[derive(Deserialize)]

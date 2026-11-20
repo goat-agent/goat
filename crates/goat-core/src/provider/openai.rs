@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::{Chunk, Error, Flow, Images, OMITTED_IMAGE, Reply, Request, Usage};
+use super::{Chunk, Error, Flow, Images, OMITTED_IMAGE, Reply, Request, Stop, Usage};
 use crate::account::codex;
 use crate::image::{Image, Media};
 use crate::message::{Message, Native, Part, Role};
@@ -67,6 +67,7 @@ impl Client {
 
         let mut parts = Vec::new();
         let mut usage = Usage::default();
+        let mut stop = Stop::Finished;
         super::read_events(response, |event| {
             let envelope: Envelope = serde_json::from_str(&event.data)?;
             match envelope.r#type.as_str() {
@@ -90,18 +91,20 @@ impl Client {
                 }
                 "response.failed" => {
                     let failed: Failed = serde_json::from_str(&event.data)?;
-                    return Err(Error::Stream(failed.response.error.describe()));
+                    return Err(failed.response.error.into_error());
                 }
                 "response.incomplete" => {
                     let incomplete: Incomplete = serde_json::from_str(&event.data)?;
-                    return Err(Error::Stream(format!(
-                        "incomplete: {}",
-                        incomplete.response.incomplete_details.reason
-                    )));
+                    stop = match incomplete.response.incomplete_details.reason.as_str() {
+                        "max_output_tokens" => Stop::Truncated,
+                        "content_filter" => Stop::Refused,
+                        reason => return Err(Error::Stream(format!("incomplete: {reason}"))),
+                    };
+                    return Ok(Flow::Done);
                 }
                 "error" => {
                     let error: ErrorDetail = serde_json::from_str(&event.data)?;
-                    return Err(Error::Stream(error.describe()));
+                    return Err(error.into_error());
                 }
                 _ => {}
             }
@@ -109,7 +112,7 @@ impl Client {
         })
         .await?;
 
-        Ok(Reply { parts, usage })
+        Ok(Reply { parts, usage, stop })
     }
 }
 
@@ -489,6 +492,14 @@ impl ErrorDetail {
         match &self.code {
             Some(code) => format!("{code}: {}", self.message),
             None => self.message.clone(),
+        }
+    }
+
+    fn into_error(self) -> Error {
+        let text = self.describe();
+        match self.code.as_deref() {
+            Some("server_error" | "server_is_overloaded") => Error::Busy(text),
+            _ => Error::Stream(text),
         }
     }
 }

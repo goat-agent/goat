@@ -12,7 +12,7 @@ use crate::image;
 use crate::message::{Message, Origin, Part};
 use crate::tool;
 
-const MAX_RETRIES: u32 = 3;
+pub(crate) const MAX_RETRIES: u32 = 3;
 const ERROR_BODY_LIMIT: usize = 2000;
 
 #[derive(Debug, thiserror::Error)]
@@ -23,10 +23,18 @@ pub enum Error {
     Status { status: u16, message: String },
     #[error("stream: {0}")]
     Stream(String),
+    #[error("busy: {0}")]
+    Busy(String),
     #[error("stream ended before the response completed")]
     Interrupted,
     #[error("malformed response")]
     Json(#[from] serde_json::Error),
+}
+
+impl Error {
+    pub(crate) fn is_transient(&self) -> bool {
+        matches!(self, Self::Http(_) | Self::Busy(_) | Self::Interrupted)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +111,14 @@ pub enum Chunk<'a> {
 pub struct Reply {
     pub parts: Vec<Part>,
     pub usage: Usage,
+    pub stop: Stop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    Finished,
+    Truncated,
+    Refused,
 }
 
 #[derive(Debug)]
@@ -175,9 +191,13 @@ async fn post(request: reqwest::RequestBuilder) -> Result<reqwest::Response, Err
         if !retryable || attempt == MAX_RETRIES {
             return Err(status_error(response).await);
         }
-        tokio::time::sleep(Duration::from_secs(retry_after.unwrap_or(1 << attempt))).await;
+        tokio::time::sleep(retry_after.map_or_else(|| backoff(attempt), Duration::from_secs)).await;
         attempt += 1;
     }
+}
+
+pub(crate) fn backoff(attempt: u32) -> Duration {
+    Duration::from_secs(1 << attempt)
 }
 
 fn json(body: &impl serde::Serialize, images: &Images) -> Result<Vec<u8>, Error> {
