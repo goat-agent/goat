@@ -11,6 +11,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::input::fit;
+use crate::kitty::{self, Cell};
 use crate::markdown::{Markdown, Style};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -26,6 +27,8 @@ pub(crate) struct Terminal<W: Write = BufWriter<Stdout>> {
     columns: fn() -> usize,
     pending: String,
     composer: Option<Frame>,
+    graphics: Option<Cell>,
+    placed: Vec<u8>,
     live: Option<usize>,
     is_updating: bool,
     has_output: bool,
@@ -60,6 +63,15 @@ pub(crate) enum Work {
 pub(crate) struct Frame {
     pub(crate) rows: Vec<String>,
     pub(crate) cursor: Spot,
+    pub(crate) images: Vec<Placement>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Placement {
+    pub(crate) row: usize,
+    pub(crate) column: u16,
+    pub(crate) id: u8,
+    pub(crate) columns: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +104,8 @@ impl<W: Write> Terminal<W> {
             columns,
             pending: String::new(),
             composer: None,
+            graphics: None,
+            placed: Vec::new(),
             live: None,
             is_updating: false,
             has_output: false,
@@ -104,6 +118,18 @@ impl<W: Write> Terminal<W> {
 
     pub(crate) fn columns(&self) -> usize {
         (self.columns)()
+    }
+
+    pub(crate) fn graphics(&self) -> Option<Cell> {
+        self.graphics
+    }
+
+    pub(crate) fn set_graphics(&mut self, cell: Option<Cell>) {
+        self.graphics = cell;
+    }
+
+    pub(crate) fn write_raw(&mut self, text: &str) {
+        self.out.write_all(text.as_bytes()).ok();
     }
 
     pub(crate) fn show(&mut self, composer: Frame) {
@@ -357,6 +383,9 @@ impl<W: Write> Terminal<W> {
             queue!(self.out, terminal::BeginSynchronizedUpdate).ok();
             self.is_updating = true;
         }
+        for id in mem::take(&mut self.placed) {
+            write!(self.out, "{}", kitty::remove(id)).ok();
+        }
         queue!(self.out, cursor::MoveToColumn(0)).ok();
         if row > 0 {
             queue!(self.out, cursor::MoveUp(cells(row))).ok();
@@ -381,10 +410,17 @@ impl<W: Write> Terminal<W> {
             .chain(&spinner)
             .chain(composer)
             .map(String::as_str);
+        let images = self.composer.iter().flat_map(|frame| &frame.images);
         let mut count = 0;
         for (index, row) in shown.enumerate() {
             if index > 0 {
                 write!(self.out, "\r\n").ok();
+            }
+            for image in images.clone().filter(|image| above + image.row == index) {
+                queue!(self.out, cursor::MoveToColumn(image.column)).ok();
+                write!(self.out, "{}", kitty::place(image.id, image.columns)).ok();
+                queue!(self.out, cursor::MoveToColumn(0)).ok();
+                self.placed.push(image.id);
             }
             write!(self.out, "{row}").ok();
             count += 1;
@@ -565,6 +601,11 @@ mod tests {
         let mut row = 0;
         let mut rest = text.as_str();
         while let Some(c) = rest.chars().next() {
+            if let Some(graphics) = rest.strip_prefix("\x1b_") {
+                let end = graphics.find("\x1b\\").unwrap();
+                rest = &graphics[end + 2..];
+                continue;
+            }
             if let Some(code) = escape(rest) {
                 let kind = code.chars().last().unwrap();
                 let count = code[2..code.len() - 1].parse::<usize>().unwrap_or(1);
@@ -602,6 +643,7 @@ mod tests {
                 row: 0,
                 column: 2 + text.len(),
             },
+            images: Vec::new(),
         }
     }
 
@@ -802,6 +844,32 @@ mod tests {
         terminal.show(composer(""));
 
         assert_eq!(visible(&terminal.out), "› hi\n› ");
+    }
+
+    fn with_thumbnail() -> Frame {
+        Frame {
+            rows: vec![String::new(), "› ".to_owned()],
+            cursor: Spot { row: 1, column: 2 },
+            images: vec![Placement {
+                row: 0,
+                column: 2,
+                id: 9,
+                columns: 6,
+            }],
+        }
+    }
+
+    #[test]
+    fn a_thumbnail_is_placed_and_moved_on_each_draw() {
+        let mut terminal = Terminal::with_writer(Vec::new(), || 40);
+        terminal.show(with_thumbnail());
+        terminal.show(with_thumbnail());
+        terminal.close();
+
+        let out = String::from_utf8(terminal.out).unwrap();
+        assert_eq!(out.matches(&kitty::place(9, 6)).count(), 2);
+        assert_eq!(out.matches(&kitty::remove(9)).count(), 2);
+        assert_eq!(visible(out.as_bytes()), "");
     }
 
     #[test]

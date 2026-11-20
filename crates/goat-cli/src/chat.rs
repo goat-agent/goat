@@ -7,11 +7,12 @@ use anyhow::{Context, bail};
 use goat_core::account::{self, Account};
 use goat_core::catalog::{self, Model};
 use goat_core::provider::{Endpoints, Provider};
-use goat_core::session::{self, Environment, Event, Session, Sink};
+use goat_core::session::{self, Environment, Event, Prompt, Session, Sink};
 use goat_core::store::Store;
 
 use crate::command::{self, Name};
 use crate::input::{Editor, Entry, Input, Keys, Mode, RawMode, TurnKeys};
+use crate::kitty;
 use crate::paths::Paths;
 use crate::render::{Banner, Ending, Terminal, Work};
 use crate::target::{self, Choices, Current, DEFAULT_EFFORT, Effort, Offer};
@@ -85,7 +86,8 @@ impl Chat {
                 effort: effort.as_deref(),
             },
         };
-        let text = input.text.trim();
+        let plain = input.plain();
+        let text = plain.trim();
         terminal.begin_turn(match input.mode {
             Mode::Agent => Work::Turn,
             Mode::Shell => Work::Shell,
@@ -95,7 +97,13 @@ impl Chat {
             let mut sink = Live(&shared);
             let mut turn = pin!(async {
                 match input.mode {
-                    Mode::Agent => session.turn(text, &mut sink).await,
+                    Mode::Agent => {
+                        let prompt = Prompt {
+                            text,
+                            images: &input.images,
+                        };
+                        session.turn(prompt, &mut sink).await
+                    }
                     Mode::Shell => session.shell(text, &mut sink).await,
                 }
             });
@@ -270,7 +278,7 @@ pub(crate) async fn start(paths: &Paths, choice: Choice) -> anyhow::Result<()> {
         &opening.model,
     )?;
     session.set_effort(opening.effort.as_deref());
-    run(session, offers, catalog, &paths.home).await
+    run(session, offers, catalog, paths).await
 }
 
 pub(crate) async fn resume(paths: &Paths, choice: Choice, id: Option<&str>) -> anyhow::Result<()> {
@@ -311,7 +319,7 @@ pub(crate) async fn resume(paths: &Paths, choice: Choice, id: Option<&str>) -> a
         &opening.model,
     )?;
     session.set_effort(opening.effort.as_deref());
-    run(session, offers, catalog, &paths.home).await
+    run(session, offers, catalog, paths).await
 }
 
 fn offers(store: &Store) -> anyhow::Result<Vec<Offer>> {
@@ -369,19 +377,21 @@ async fn run(
     session: Session,
     offers: Vec<Offer>,
     catalog: Vec<Model>,
-    home: &Path,
+    paths: &Paths,
 ) -> anyhow::Result<()> {
     let _raw = RawMode::enable()?;
+    let mut terminal = Terminal::new();
+    terminal.set_graphics(kitty::detect(std::env::var_os("TMUX").is_some()));
     let mut chat = Chat {
         session,
-        terminal: Terminal::new(),
-        editor: Editor::default(),
+        terminal,
+        editor: Editor::new(Store::open(&paths.database)?),
         keys: Keys::start(),
         offers,
         catalog,
     };
     let model = chat.status();
-    let directory = directory(chat.session.workspace(), home);
+    let directory = directory(chat.session.workspace(), &paths.home);
     chat.terminal.banner(&Banner {
         model: &model,
         directory: &directory,

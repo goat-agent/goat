@@ -36,6 +36,8 @@ A model is written `provider:account/model:effort`, and the account and the effo
 
 After `/model` or `/effort` and a space, the choices are listed under the prompt by their ids, in catalog order. What you type matches the start of an id or of a part after `-`, `.`, `:` or `/`, so `sol` finds `gpt-6.2-sol`; an exact id comes first. Results name the model as its provider shows it, such as Claude Opus 5.5. Once you type, the first entry is picked and marked with `›`. Up and Down move the pick, and Enter or Tab takes it. On a model picked with Up or Down, Left and Right lower and raise its effort. When no list is shown, Up and Down recall earlier input, and Left and Right move the cursor.
 
+To attach an image, drop its file on the terminal, paste its path, or press Ctrl+V with an image in the clipboard. It shows as `[Image #1]` in the prompt, with a thumbnail above it in terminals that support kitty graphics placeholders, such as kitty and Ghostty. The model sees images it reads with `read`, too. Images are scaled to at most 2048 px on the long edge and kept in `goat.db`, and a request carries at most the 20 most recent ones.
+
 The model's summary of its reasoning is shown dimmed while it thinks, and replies are styled from their Markdown.
 
 ## How it works
