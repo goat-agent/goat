@@ -132,6 +132,15 @@ impl<W: Write> Terminal<W> {
         self.flush();
     }
 
+    pub(crate) fn farewell(&mut self, command: &str) {
+        self.put(&format!(
+            "{}\n{INDENT}{}\n",
+            "Resume this session with:".dim(),
+            command.cyan()
+        ));
+        self.flush();
+    }
+
     pub(crate) fn note(&mut self, text: &str) {
         self.enter(Section::Note);
         for line in text.lines() {
@@ -652,9 +661,10 @@ mod tests {
             directory: "~/goat",
         });
         terminal.settle();
+        terminal.show(composer(""));
 
         let expected = format!(
-            "{}   {} {}\n{}   {}\n{}   {}\n\n",
+            "{}   {} {}\n{}   {}\n{}   {}\n\n› ",
             GOAT[0].with(PRIMARY),
             "Goat".bold(),
             format!("v{VERSION}").dim(),
@@ -662,6 +672,23 @@ mod tests {
             "GPT-6.2 Sol on openai:c…".dim(),
             GOAT[2].with(PRIMARY),
             "~/goat".dim()
+        );
+        assert_eq!(visible(&terminal.out), expected);
+    }
+
+    #[test]
+    fn farewell_shows_how_to_resume_below_the_transcript() {
+        let mut terminal = Terminal::with_writer(Vec::new(), || 40);
+        terminal.emit(Event::Text("Done.\n"));
+        terminal.settle();
+        terminal.show(composer(""));
+        terminal.close();
+        terminal.farewell("goat --resume 0193");
+
+        let expected = format!(
+            "Done.\n\n{}\n  {}\n",
+            "Resume this session with:".dim(),
+            "goat --resume 0193".cyan()
         );
         assert_eq!(visible(&terminal.out), expected);
     }

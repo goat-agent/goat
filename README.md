@@ -15,7 +15,8 @@ This installs `goat` to `~/.local/bin` on macOS or Linux, x86_64 or arm64.
 ```sh
 goat login                 # ChatGPT (Sign in with ChatGPT or Codex login), or an OpenAI or Anthropic API key
 goat                       # start a session in the current directory
-goat resume                # continue the latest session in this directory
+goat --continue            # continue the latest session in this directory
+goat --resume <id>         # continue the given session
 goat accounts              # list accounts
 goat -m gpt-6.2-sol:high   # start with a model and a reasoning effort
 goat -m anthropic:api/claude-opus-5-5

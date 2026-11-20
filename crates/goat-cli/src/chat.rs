@@ -197,6 +197,15 @@ impl Chat {
         !is_supported
     }
 
+    fn leave(&mut self) {
+        self.terminal.close();
+        if self.session.messages().is_empty() {
+            return;
+        }
+        self.terminal
+            .farewell(&format!("goat --resume {}", self.session.id()));
+    }
+
     fn status(&self) -> String {
         let session = &self.session;
         let name = choices(session, &self.offers, &self.catalog)
@@ -371,12 +380,16 @@ async fn run(
     loop {
         chat.terminal.settle();
         let Entry::Line(line) = chat.read().await? else {
+            chat.leave();
             return Ok(());
         };
         if let Some(run) = command::parse(&line) {
             match chat.command(run.name, run.argument) {
                 Ok(Flow::Continue) => {}
-                Ok(Flow::Exit) => return Ok(()),
+                Ok(Flow::Exit) => {
+                    chat.leave();
+                    return Ok(());
+                }
                 Err(err) => chat.terminal.outcome(Err(&format!("{err:#}"))),
             }
             continue;
