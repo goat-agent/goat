@@ -21,7 +21,7 @@ goat -m gpt-6.2-sol:high   # start with a model and a reasoning effort
 goat -m anthropic:api/claude-opus-5-5
 ```
 
-A session opens with a goat, the version, the model and the working directory. In a session, Enter sends and Alt+Enter or Ctrl+J starts a new line. Esc or Ctrl+C stops the running turn, and Ctrl+D quits. What you type while a turn runs is kept for the next prompt. Typing `/` lists the commands under the prompt: `/model`, `/effort`, `/help` and `/exit`. The first one is picked, so Enter on `/` opens `/model`. A command that changes something shows its result on one line below it, such as `└ Set effort to high`.
+A session opens with a goat, the version, the model and the working directory. In a session, Enter sends and Alt+Enter or Ctrl+J starts a new line. Esc or Ctrl+C stops the running turn, and Ctrl+D quits. The prompt stays below the output while a turn runs. Enter there queues the message, and queued messages are sent one at a time after the turn ends. If the turn is stopped or fails, they go back into the prompt. Typing `/` lists the commands under the prompt: `/model`, `/effort`, `/help` and `/exit`. The first one is picked, so Enter on `/` opens `/model`. A command that changes something shows its result on one line below it, such as `└ Set effort to high`.
 
 A model is written `provider:account/model:effort`, and the account and the effort can be left out:
 

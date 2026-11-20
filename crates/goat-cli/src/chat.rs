@@ -55,14 +55,14 @@ impl Chat {
     async fn read(&mut self) -> anyhow::Result<Entry> {
         let Self {
             session,
+            terminal,
             editor,
             keys,
             offers,
             catalog,
-            ..
         } = self;
         let choices = choices(session, offers, catalog);
-        Ok(editor.read(keys, &choices).await?)
+        Ok(editor.read(keys, &choices, terminal).await?)
     }
 
     async fn turn(&mut self, line: &str) -> anyhow::Result<()> {
@@ -71,8 +71,20 @@ impl Chat {
             terminal,
             editor,
             keys,
-            ..
+            offers,
+            catalog,
         } = self;
+        let model = session.model().to_owned();
+        let effort = session.effort().map(str::to_owned);
+        let choices = Choices {
+            offers,
+            catalog,
+            current: Current {
+                account: session.account().id,
+                model: &model,
+                effort: effort.as_deref(),
+            },
+        };
         terminal.begin_turn();
         let shared = RefCell::new(terminal);
         let ending = {
@@ -86,7 +98,8 @@ impl Chat {
                         Err(err) => Ending::Failed(format!("{:#}", anyhow::Error::new(err))),
                     },
                     event = keys.next() => {
-                        if let TurnKeys::Interrupt = editor.during_turn(event?) {
+                        let mut terminal = shared.borrow_mut();
+                        if let TurnKeys::Interrupt = editor.during_turn(event?, &choices, &mut terminal) {
                             break Ending::Interrupted;
                         }
                     }
@@ -94,6 +107,9 @@ impl Chat {
                 }
             }
         };
+        if !matches!(ending, Ending::Complete) {
+            editor.unqueue();
+        }
         shared.into_inner().finish_turn(ending);
         Ok(())
     }

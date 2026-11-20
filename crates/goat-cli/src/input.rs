@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::mem;
 use std::thread::{self, JoinHandle};
@@ -7,14 +8,15 @@ use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers,
 };
-use crossterm::style::{Print, Stylize};
-use crossterm::terminal::{self, ClearType};
-use crossterm::{cursor, execute, queue};
+use crossterm::execute;
+use crossterm::style::Stylize;
+use crossterm::terminal;
 use tokio::sync::mpsc;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::command::{self, Name, Typing};
+use crate::render::{Frame, Spot, Terminal};
 use crate::target::Choices;
 
 const PROMPT: &str = "› ";
@@ -42,6 +44,7 @@ pub(crate) struct Keys {
 #[derive(Default)]
 pub(crate) struct Editor {
     history: Vec<String>,
+    queue: VecDeque<String>,
     line: Line,
 }
 
@@ -61,7 +64,6 @@ struct Pick {
 struct Line {
     text: String,
     cursor: usize,
-    cursor_row: usize,
     recall: usize,
     draft: String,
     selected: Option<usize>,
@@ -109,9 +111,12 @@ impl Editor {
         &mut self,
         keys: &mut Keys,
         choices: &Choices<'_>,
+        terminal: &mut Terminal<impl Write>,
     ) -> io::Result<Entry> {
-        let mut out = io::stdout();
-        self.line.render(&mut out, Some(choices))?;
+        if let Some(text) = self.queue.pop_front() {
+            return Ok(self.send(text, choices, terminal));
+        }
+        terminal.show(self.frame(terminal.columns(), choices));
         loop {
             let action = match keys.next().await? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
@@ -125,46 +130,92 @@ impl Editor {
                 _ => continue,
             };
             match action {
-                Action::Edit => self.line.render(&mut out, Some(choices))?,
+                Action::Edit => terminal.show(self.frame(terminal.columns(), choices)),
                 Action::Submit => {
-                    let text = self.finish(&mut out)?;
-                    if self.history.last() != Some(&text) {
-                        self.history.push(text.clone());
-                    }
-                    self.line.recall = self.history.len();
-                    return Ok(Entry::Line(text));
+                    let text = self.take();
+                    return Ok(self.send(text, choices, terminal));
                 }
                 Action::Exit => {
-                    self.finish(&mut out)?;
+                    terminal.close();
                     return Ok(Entry::Exit);
                 }
             }
         }
     }
 
-    pub(crate) fn during_turn(&mut self, event: Event) -> TurnKeys {
+    pub(crate) fn during_turn(
+        &mut self,
+        event: Event,
+        choices: &Choices<'_>,
+        terminal: &mut Terminal<impl Write>,
+    ) -> TurnKeys {
         match event {
             Event::Paste(text) => self.line.insert(&clean_paste(&text)),
             Event::Key(key) if key.kind != KeyEventKind::Release => {
-                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                match key.code {
-                    KeyCode::Esc => return TurnKeys::Interrupt,
-                    KeyCode::Char('c') if ctrl => return TurnKeys::Interrupt,
-                    KeyCode::Char(c) if !ctrl => self.line.insert(c.encode_utf8(&mut [0; 4])),
-                    KeyCode::Backspace => self.line.backspace(),
-                    _ => {}
+                if is_interrupt(key) {
+                    return TurnKeys::Interrupt;
+                }
+                if let Action::Submit = self.line.key(key, &self.history, choices) {
+                    let text = self.take();
+                    self.queue.push_back(text);
                 }
             }
-            _ => {}
+            Event::Resize(..) => {}
+            _ => return TurnKeys::Continue,
         }
+        terminal.show(self.frame(terminal.columns(), choices));
         TurnKeys::Continue
     }
 
-    fn finish(&mut self, out: &mut impl Write) -> io::Result<String> {
+    pub(crate) fn unqueue(&mut self) {
+        if self.queue.is_empty() {
+            return;
+        }
+        let mut texts: Vec<String> = self.queue.drain(..).collect();
+        if !self.line.text.is_empty() {
+            texts.push(mem::take(&mut self.line.text));
+        }
+        self.line.text = texts.join("\n");
         self.line.cursor = self.line.text.len();
-        self.line.render(out, None)?;
-        execute!(out, Print("\r\n"))?;
-        Ok(mem::take(&mut self.line).text)
+    }
+
+    fn take(&mut self) -> String {
+        let text = mem::take(&mut self.line).text;
+        if self.history.last() != Some(&text) {
+            self.history.push(text.clone());
+        }
+        self.line.recall = self.history.len();
+        text
+    }
+
+    fn send(
+        &mut self,
+        text: String,
+        choices: &Choices<'_>,
+        terminal: &mut Terminal<impl Write>,
+    ) -> Entry {
+        let columns = terminal.columns();
+        terminal.echo(&echo(&text, columns));
+        terminal.show(self.frame(columns, choices));
+        Entry::Line(text)
+    }
+
+    fn frame(&self, columns: usize, choices: &Choices<'_>) -> Frame {
+        let items = palette(&self.line.text, choices);
+        let rows = self.line.rows(&items);
+        let selected = self
+            .line
+            .selected
+            .or(preselected(&self.line.text, rows.len()));
+        let mut frame = self.line.frame(columns, &rows, selected);
+        let room = width(columns) - 1 - PROMPT.width();
+        let queued = self.queue.iter().map(|text| {
+            let first = text.lines().next().unwrap_or_default();
+            format!("{}{}", PROMPT.dim(), fit(first, room).dim())
+        });
+        frame.rows.splice(0..0, queued);
+        frame.cursor.row += self.queue.len();
+        frame
     }
 }
 
@@ -366,18 +417,6 @@ impl Line {
         self.cursor = self.text.len();
     }
 
-    fn render(&mut self, out: &mut impl Write, choices: Option<&Choices<'_>>) -> io::Result<()> {
-        let columns = terminal::size()
-            .ok()
-            .map(|(columns, _)| columns)
-            .filter(|columns| *columns > 0)
-            .unwrap_or(80);
-        let items = choices.map_or_else(Vec::new, |choices| palette(&self.text, choices));
-        let rows = self.rows(&items);
-        let selected = self.selected.or(preselected(&self.text, rows.len()));
-        self.draw(out, usize::from(columns), &rows, selected)
-    }
-
     fn rows(&self, items: &[Item]) -> Vec<String> {
         let shown: Vec<String> = items
             .iter()
@@ -410,82 +449,59 @@ impl Line {
             .collect()
     }
 
-    fn draw(
-        &mut self,
-        out: &mut impl Write,
-        columns: usize,
-        palette: &[String],
-        selected: Option<usize>,
-    ) -> io::Result<()> {
-        let width = columns.max(PROMPT.width() + 2);
-        queue!(out, cursor::MoveToColumn(0))?;
-        if self.cursor_row > 0 {
-            queue!(
-                out,
-                cursor::MoveUp(u16::try_from(self.cursor_row).unwrap_or(u16::MAX))
-            )?;
-        }
-        queue!(
-            out,
-            terminal::Clear(ClearType::FromCursorDown),
-            Print(PROMPT.dim())
-        )?;
-
+    fn frame(&self, columns: usize, palette: &[String], selected: Option<usize>) -> Frame {
+        let width = width(columns);
         let command = command::parse(&self.text).map(|run| run.span);
-        let (mut row, mut col) = (0, PROMPT.width());
+        let mut rows = Vec::new();
+        let mut row = format!("{}", PROMPT.dim());
+        let mut col = PROMPT.width();
         let mut at_cursor = None;
         for (index, grapheme) in self.text.grapheme_indices(true) {
             if grapheme == "\n" {
                 if index == self.cursor {
-                    at_cursor = Some((row, col));
+                    at_cursor = Some((rows.len(), col));
                 }
-                queue!(out, Print("\r\n"), Print(INDENT))?;
-                (row, col) = (row + 1, INDENT.width());
+                rows.push(mem::replace(&mut row, INDENT.to_owned()));
+                col = INDENT.width();
                 continue;
             }
             let grapheme_width = grapheme.width();
             if col + grapheme_width > width {
-                queue!(out, Print("\r\n"), Print(INDENT))?;
-                (row, col) = (row + 1, INDENT.width());
+                rows.push(mem::replace(&mut row, INDENT.to_owned()));
+                col = INDENT.width();
             }
             if index == self.cursor {
-                at_cursor = Some((row, col));
+                at_cursor = Some((rows.len(), col));
             }
             if command.as_ref().is_some_and(|span| span.contains(&index)) {
-                queue!(out, Print(grapheme.cyan()))?;
+                row.push_str(&grapheme.cyan().to_string());
             } else {
-                queue!(out, Print(grapheme))?;
+                row.push_str(grapheme);
             }
             col += grapheme_width;
         }
-        let (mut cursor_row, mut cursor_col) = at_cursor.unwrap_or((row, col));
+        let (mut cursor_row, mut cursor_col) = at_cursor.unwrap_or((rows.len(), col));
         if cursor_col >= width {
-            queue!(out, Print("\r\n"), Print(INDENT))?;
-            row += 1;
-            (cursor_row, cursor_col) = (row, INDENT.width());
+            rows.push(mem::replace(&mut row, INDENT.to_owned()));
+            (cursor_row, cursor_col) = (rows.len(), INDENT.width());
         }
+        rows.push(row);
         for (index, row_text) in palette.iter().enumerate() {
             if selected == Some(index) {
                 let text = row_text.strip_prefix(INDENT).unwrap_or(row_text);
                 let shown = fit(text, width - 1 - PROMPT.width());
-                queue!(out, Print("\r\n"), Print(PROMPT.dim()), Print(shown))?;
+                rows.push(format!("{}{shown}", PROMPT.dim()));
             } else {
-                queue!(out, Print("\r\n"), Print(fit(row_text, width - 1).dim()))?;
+                rows.push(format!("{}", fit(row_text, width - 1).dim()));
             }
         }
-        let below = row - cursor_row + palette.len();
-        if below > 0 {
-            queue!(
-                out,
-                cursor::MoveUp(u16::try_from(below).unwrap_or(u16::MAX))
-            )?;
+        Frame {
+            rows,
+            cursor: Spot {
+                row: cursor_row,
+                column: cursor_col,
+            },
         }
-        queue!(
-            out,
-            cursor::MoveToColumn(u16::try_from(cursor_col).unwrap_or(u16::MAX))
-        )?;
-        self.cursor_row = cursor_row;
-        out.flush()
     }
 }
 
@@ -559,6 +575,24 @@ fn shared_start<'a>(options: impl Iterator<Item = &'a str>, typed: &str) -> Opti
         shared = &shared[..end];
     }
     Some((shared.to_owned(), is_unique))
+}
+
+fn echo(text: &str, columns: usize) -> Vec<String> {
+    let line = Line {
+        text: text.to_owned(),
+        cursor: text.len(),
+        ..Line::default()
+    };
+    line.frame(columns, &[], None).rows
+}
+
+fn width(columns: usize) -> usize {
+    columns.max(PROMPT.width() + 2)
+}
+
+fn is_interrupt(key: KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    matches!(key.code, KeyCode::Esc) || ctrl && matches!(key.code, KeyCode::Char('c'))
 }
 
 pub(crate) fn fit(text: &str, width: usize) -> &str {
@@ -690,11 +724,17 @@ mod tests {
     }
 
     fn screen(text: &str) -> String {
-        let mut out = Vec::new();
-        line(text, text.len())
-            .draw(&mut out, 80, &[], None)
-            .unwrap();
-        String::from_utf8(out).unwrap()
+        line(text, text.len()).frame(80, &[], None).rows.join("\n")
+    }
+
+    fn cursor(text: &str, at: usize, columns: usize) -> Spot {
+        line(text, at).frame(columns, &[], None).cursor
+    }
+
+    fn during_turn(editor: &mut Editor, code: KeyCode) -> TurnKeys {
+        let mut terminal = Terminal::with_writer(Vec::new(), || 40);
+        let event = Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        with_choices(|choices| editor.during_turn(event, choices, &mut terminal))
     }
 
     #[test]
@@ -733,45 +773,58 @@ mod tests {
     }
 
     #[test]
-    fn render_wraps_and_places_the_cursor_on_the_right_row() {
-        let mut line = line("hello\nworld", 3);
-        line.draw(&mut Vec::new(), 80, &[], None).unwrap();
-        assert_eq!(line.cursor_row, 0);
-        let mut end = Line { cursor: 11, ..line };
-        end.draw(&mut Vec::new(), 80, &[], None).unwrap();
-        assert_eq!(end.cursor_row, 1);
-        let mut narrow = Line {
-            text: "abcdefghij".to_owned(),
-            cursor: 10,
-            ..Line::default()
-        };
-        narrow.draw(&mut Vec::new(), 6, &[], None).unwrap();
-        assert_eq!(narrow.cursor_row, 2);
-        let mut boundary = Line {
-            cursor: 4,
-            ..narrow
-        };
-        boundary.draw(&mut Vec::new(), 6, &[], None).unwrap();
-        assert_eq!(boundary.cursor_row, 1);
+    fn the_cursor_sits_on_the_row_of_its_line() {
+        assert_eq!(cursor("hello\nworld", 3, 80), Spot { row: 0, column: 5 });
+        assert_eq!(cursor("hello\nworld", 11, 80), Spot { row: 1, column: 7 });
+    }
+
+    #[test]
+    fn the_cursor_follows_wrapped_rows() {
+        assert_eq!(cursor("abcdefghij", 10, 6), Spot { row: 2, column: 4 });
+        assert_eq!(cursor("abcdefghij", 4, 6), Spot { row: 1, column: 2 });
     }
 
     #[test]
     fn wrapped_rows_line_up_under_the_text() {
-        let mut out = Vec::new();
-        line("abcdefgh", 8).draw(&mut out, 6, &[], None).unwrap();
-        let screen = String::from_utf8(out).unwrap();
-        assert!(screen.contains("abcd\r\n  efgh"));
+        let rows = line("abcdefgh", 8).frame(6, &[], None).rows;
+        assert_eq!(rows[1..], ["  efgh", "  "]);
     }
 
     #[test]
-    fn palette_rows_are_not_left_below_the_cursor() {
-        let mut out = Vec::new();
-        let mut line = line("/ex", 3);
-        line.draw(&mut out, 80, &["  /exit".to_owned()], None)
-            .unwrap();
-        let screen = String::from_utf8(out).unwrap();
-        assert!(screen.contains(&format!("{}", cursor::MoveUp(1))));
-        assert_eq!(line.cursor_row, 0);
+    fn enter_during_a_turn_queues_the_line_above_the_prompt() {
+        let mut editor = Editor {
+            line: line("next", 4),
+            ..Editor::default()
+        };
+
+        during_turn(&mut editor, KeyCode::Enter);
+
+        let rows = with_choices(|choices| editor.frame(40, choices).rows);
+        let queued = format!("{}{}", PROMPT.dim(), "next".dim());
+        assert_eq!(rows, [queued, format!("{}", PROMPT.dim())]);
+    }
+
+    #[test]
+    fn esc_during_a_turn_interrupts_it() {
+        let mut editor = Editor::default();
+
+        let keys = during_turn(&mut editor, KeyCode::Esc);
+
+        assert!(matches!(keys, TurnKeys::Interrupt));
+    }
+
+    #[test]
+    fn unqueueing_puts_queued_lines_back_before_the_draft() {
+        let mut editor = Editor {
+            queue: ["first".to_owned(), "second".to_owned()].into(),
+            line: line("draft", 5),
+            ..Editor::default()
+        };
+
+        editor.unqueue();
+
+        assert_eq!(editor.line.text, "first\nsecond\ndraft");
+        assert!(editor.queue.is_empty());
     }
 
     #[test]
@@ -870,12 +923,10 @@ mod tests {
 
     #[test]
     fn the_picked_row_is_marked_with_the_prompt_sign() {
-        let mut out = Vec::new();
         let rows = ["  /model".to_owned(), "  /help".to_owned()];
-        line("/", 1).draw(&mut out, 80, &rows, Some(1)).unwrap();
-        let screen = String::from_utf8(out).unwrap();
-        assert!(screen.contains(&format!("{}/help", PROMPT.dim())));
-        assert!(screen.contains(&format!("{}", "  /model".dim())));
+        let shown = line("/", 1).frame(80, &rows, Some(1)).rows;
+        assert_eq!(shown[1], format!("{}", "  /model".dim()));
+        assert_eq!(shown[2], format!("{}/help", PROMPT.dim()));
     }
 
     #[test]
