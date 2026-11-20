@@ -1,5 +1,8 @@
 use std::cell::Cell;
+use std::future::{Future, poll_fn};
+use std::pin::pin;
 use std::rc::Rc;
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use rquickjs::prelude::Async;
@@ -13,13 +16,17 @@ use super::host::Host;
 const PRELUDE: &str = include_str!("script/prelude.js");
 const HEAP_BYTES: usize = 32 * 1024 * 1024;
 const BUSY_LIMIT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 30 });
+const STUCK: &str = "stopped: the script awaits something that can never finish, because no call is running and no JavaScript is left to run";
 
 pub(crate) struct Script {
     finish: Persistent<Function<'static>>,
     context: AsyncContext,
     runtime: AsyncRuntime,
     busy: Rc<Busy>,
+    calls: Rc<Cell<usize>>,
 }
+
+struct Running(Rc<Cell<usize>>);
 
 struct Busy {
     since: Cell<Instant>,
@@ -58,6 +65,8 @@ impl Script {
             .await;
         let context = AsyncContext::full(&runtime).await?;
         let pulse = Rc::clone(&busy);
+        let calls = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&calls);
         let finish = context
             .with(|ctx| {
                 let call = Function::new(
@@ -65,9 +74,11 @@ impl Script {
                     Async(move |request: String| {
                         let host = Rc::clone(&host);
                         let pulse = Rc::clone(&pulse);
+                        let running = Running::start(&counted);
                         async move {
                             let reply = host.call(&request).await;
                             pulse.rest();
+                            drop(running);
                             rquickjs::Result::Ok(reply)
                         }
                     }),
@@ -82,6 +93,7 @@ impl Script {
             context,
             runtime,
             busy,
+            calls,
         })
     }
 
@@ -90,13 +102,14 @@ impl Script {
         self.busy.tripped.set(false);
         let finish = self.finish.clone();
         let busy = Rc::clone(&self.busy);
+        let calls = Rc::clone(&self.calls);
         let outcome = self
             .context
             .async_with(async |ctx| {
                 let Ok(finish) = finish.restore(&ctx) else {
                     return Outcome::error("the sandbox lost its output function");
                 };
-                match evaluate(&ctx, code).await {
+                match evaluate(&ctx, code, &calls).await {
                     Ok(value) => Outcome::ok(render(&ctx, &finish, value)),
                     Err(problem) => {
                         let logged = render(&ctx, &finish, Value::new_undefined(ctx.clone()));
@@ -118,20 +131,59 @@ impl Script {
     }
 }
 
-async fn evaluate<'js>(ctx: &Ctx<'js>, code: &str) -> Result<Value<'js>, String> {
+impl Running {
+    fn start(calls: &Rc<Cell<usize>>) -> Self {
+        calls.set(calls.get() + 1);
+        Self(Rc::clone(calls))
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() - 1);
+    }
+}
+
+async fn evaluate<'js>(
+    ctx: &Ctx<'js>,
+    code: &str,
+    calls: &Cell<usize>,
+) -> Result<Value<'js>, String> {
     let promise = ctx
         .eval_promise(code)
         .catch(ctx)
         .map_err(|e| e.to_string())?;
-    let completion: Object = promise
-        .into_future()
+    let completion: Object = settle(ctx, promise.into_future(), calls)
         .await
+        .ok_or_else(|| STUCK.to_owned())?
         .catch(ctx)
         .map_err(|e| e.to_string())?;
     completion
         .get("value")
         .catch(ctx)
         .map_err(|e| e.to_string())
+}
+
+async fn settle<T>(
+    ctx: &Ctx<'_>,
+    future: impl Future<Output = T>,
+    calls: &Cell<usize>,
+) -> Option<T> {
+    let mut future = pin!(future);
+    poll_fn(|cx| {
+        loop {
+            if let Poll::Ready(value) = future.as_mut().poll(cx) {
+                return Poll::Ready(Some(value));
+            }
+            if calls.get() > 0 {
+                return Poll::Pending;
+            }
+            if !ctx.execute_pending_job() {
+                return Poll::Ready(None);
+            }
+        }
+    })
+    .await
 }
 
 fn render<'js>(ctx: &Ctx<'js>, finish: &Function<'js>, value: Value<'js>) -> String {
@@ -161,6 +213,38 @@ mod tests {
         let (tx, _) = mpsc::channel(1);
         let host = Host::new(dir, dir, &dir.join(".spill"), tx).unwrap();
         Script::new(Rc::new(host)).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn awaiting_what_can_never_finish_stops_the_run_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = script(dir.path()).await;
+
+        let outcome = script.eval("await new Promise(() => {}); 'done'").await;
+
+        assert!(outcome.is_error);
+        assert!(outcome.output.contains("can never finish"));
+        assert_eq!(script.eval("1 + 1").await, Outcome::ok("2"));
+    }
+
+    #[tokio::test]
+    async fn promise_chains_without_calls_still_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        let outcome = script(dir.path())
+            .await
+            .eval("await Promise.resolve(); await null; await (async () => 'ok')()")
+            .await;
+        assert_eq!(outcome, Outcome::ok("ok"));
+    }
+
+    #[tokio::test]
+    async fn a_running_call_is_waited_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let outcome = script(dir.path())
+            .await
+            .eval("await new Promise((done) => bash('sleep 1').then(done)); 'ok'")
+            .await;
+        assert_eq!(outcome, Outcome::ok("ok"));
     }
 
     #[tokio::test]

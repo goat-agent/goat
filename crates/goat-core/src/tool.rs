@@ -8,7 +8,6 @@ mod spill;
 
 use std::path::Path;
 use std::rc::Rc;
-use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::value::RawValue;
@@ -18,7 +17,6 @@ use self::host::Host;
 use self::script::Script;
 
 const NAME: &str = "run";
-const SCRIPT_LIMIT: Duration = Duration::from_mins(10);
 const STEP_BACKLOG: usize = 64;
 const NEW_SANDBOX: &str = "[this run started a new sandbox; variables from earlier runs are gone]";
 
@@ -176,12 +174,12 @@ impl Runner {
             },
         };
         self.had_sandbox = true;
-        let finished = {
-            let eval = tokio::time::timeout(SCRIPT_LIMIT, script.eval(&run.code));
+        let outcome = {
+            let eval = script.eval(&run.code);
             tokio::pin!(eval);
             loop {
                 tokio::select! {
-                    finished = &mut eval => break finished,
+                    outcome = &mut eval => break outcome,
                     Some(step) = self.steps.recv() => on_step(step),
                 }
             }
@@ -189,16 +187,7 @@ impl Runner {
         while let Ok(step) = self.steps.try_recv() {
             on_step(step);
         }
-        let outcome = match finished {
-            Ok(outcome) => {
-                self.script = Some(script);
-                outcome
-            }
-            Err(_) => Outcome::error(format!(
-                "stopped: the run took over {} minutes, and its calls were killed",
-                SCRIPT_LIMIT.as_secs() / 60
-            )),
-        };
+        self.script = Some(script);
         let text = match note {
             Some(note) => format!("{note}\n{}", outcome.output),
             None => outcome.output.into(),
@@ -230,6 +219,8 @@ pub fn spec() -> Spec {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn runner(dir: &Path) -> Runner {
