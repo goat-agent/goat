@@ -8,7 +8,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use crate::account::Account;
 use crate::image::{Image, Picture};
 use crate::message::{self, Message, Origin, Part, Role};
-use crate::provider::{self, Chunk, Endpoints, Images, Provider, Request, Usage};
+use crate::provider::{self, Chunk, Endpoints, Images, Provider, Request, Stop, Usage};
 use crate::store::{self, Store};
 use crate::tool::{self, Outcome, Runner, Step};
 
@@ -48,6 +48,8 @@ pub enum Event<'a> {
     RunFinished {
         outcome: &'a Outcome,
     },
+    Truncated,
+    Refused,
     ShellOutput(&'a str),
     ShellFinished {
         code: Option<i32>,
@@ -234,6 +236,13 @@ impl Session {
                 .await?;
             self.last_input = reply.usage.input;
             sink.emit(Event::Usage(reply.usage));
+            if reply.stop == Stop::Refused {
+                sink.emit(Event::Refused);
+                return Ok(());
+            }
+            if reply.stop == Stop::Truncated {
+                sink.emit(Event::Truncated);
+            }
             let message = Message::new(Role::Assistant, Some(self.origin()), reply.parts);
             let calls: Vec<(Box<str>, Box<str>, Box<str>)> = message
                 .tool_calls()

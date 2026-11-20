@@ -103,6 +103,14 @@ pub enum Chunk<'a> {
 pub struct Reply {
     pub parts: Vec<Part>,
     pub usage: Usage,
+    pub stop: Stop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    Finished,
+    Truncated,
+    Refused,
 }
 
 #[derive(Debug)]

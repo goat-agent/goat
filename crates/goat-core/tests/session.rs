@@ -15,6 +15,8 @@ const OPENAI_TOOL_CALL: &str = include_str!("fixtures/openai/tool_call.sse");
 const OPENAI_ANSWER: &str = include_str!("fixtures/openai/answer.sse");
 const ANTHROPIC_TOOL_USE: &str = include_str!("fixtures/anthropic/tool_use.sse");
 const ANTHROPIC_ANSWER: &str = include_str!("fixtures/anthropic/answer.sse");
+const ANTHROPIC_TRUNCATED_CALL: &str = include_str!("fixtures/anthropic/truncated_call.sse");
+const ANTHROPIC_REFUSAL: &str = include_str!("fixtures/anthropic/refusal.sse");
 
 #[derive(Default)]
 struct Recorder {
@@ -23,6 +25,7 @@ struct Recorder {
     tools: Vec<String>,
     shell: String,
     shell_ends: Vec<(Option<i32>, Option<String>)>,
+    stops: Vec<&'static str>,
 }
 
 impl Sink for Recorder {
@@ -35,6 +38,8 @@ impl Sink for Recorder {
                 .tools
                 .push(format!("{} {}", call.kind.as_str(), call.target)),
             Event::ShellOutput(chunk) => self.shell.push_str(chunk),
+            Event::Truncated => self.stops.push("truncated"),
+            Event::Refused => self.stops.push("refused"),
             Event::ShellFinished { code, problem } => {
                 self.shell_ends.push((code, problem.map(str::to_owned)));
             }
@@ -67,6 +72,16 @@ fn openai_session(env: &Environment) -> Result<Session, session::Error> {
         env,
         account(Kind::OpenAi),
         "gpt-6.2-astra",
+    )
+}
+
+fn anthropic_session(env: &Environment) -> Result<Session, session::Error> {
+    Session::create(
+        Store::open_in_memory()?,
+        reqwest::Client::new(),
+        env,
+        account(Kind::Anthropic),
+        "claude-opus-5-5",
     )
 }
 
@@ -514,4 +529,56 @@ async fn attached_images_are_sent_again_after_resume() {
     assert_eq!(stored, &picture.image);
     let requests = server.requests.lock().unwrap();
     assert!(requests[1].contains("data:image/png;base64,"));
+}
+
+#[tokio::test]
+async fn a_reply_cut_off_in_a_tool_call_keeps_its_text_and_drops_the_call() {
+    let server = server::replay(vec![ANTHROPIC_TRUNCATED_CALL]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = anthropic_session(&env).unwrap();
+    let mut recorder = Recorder::default();
+
+    session.turn("write it", &mut recorder).await.unwrap();
+
+    assert_eq!(recorder.stops, ["truncated"]);
+    let roles: Vec<Role> = session.messages().iter().map(|m| m.role).collect();
+    assert_eq!(roles, [Role::User, Role::Assistant]);
+    assert_eq!(text_of(&session, 1), "Writing the file.");
+    assert_eq!(session.messages()[1].parts.len(), 1);
+}
+
+#[tokio::test]
+async fn a_refused_reply_is_not_kept() {
+    let server = server::replay(vec![ANTHROPIC_REFUSAL]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = anthropic_session(&env).unwrap();
+    let mut recorder = Recorder::default();
+
+    session.turn("do it", &mut recorder).await.unwrap();
+
+    assert_eq!(recorder.stops, ["refused"]);
+    let roles: Vec<Role> = session.messages().iter().map(|m| m.role).collect();
+    assert_eq!(roles, [Role::User]);
+}
+
+#[tokio::test]
+async fn an_openai_reply_cut_off_at_the_limit_is_kept() {
+    let incomplete = leak(OPENAI_ANSWER.replace(
+        r#"event: response.completed
+data: {"type":"response.completed","sequence_number":4,"response":{"id":"resp_2","status":"completed""#,
+        r#"event: response.incomplete
+data: {"type":"response.incomplete","sequence_number":4,"response":{"id":"resp_2","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}"#,
+    ));
+    let server = server::replay(vec![incomplete]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+    let mut recorder = Recorder::default();
+
+    session.turn("go", &mut recorder).await.unwrap();
+
+    assert_eq!(recorder.stops, ["truncated"]);
+    assert_eq!(text_of(&session, 1), "Done.");
 }

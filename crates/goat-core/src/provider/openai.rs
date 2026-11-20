@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::{Chunk, Error, Flow, Images, OMITTED_IMAGE, Reply, Request, Usage};
+use super::{Chunk, Error, Flow, Images, OMITTED_IMAGE, Reply, Request, Stop, Usage};
 use crate::account::codex;
 use crate::image::{Image, Media};
 use crate::message::{Message, Native, Part, Role};
@@ -67,6 +67,7 @@ impl Client {
 
         let mut parts = Vec::new();
         let mut usage = Usage::default();
+        let mut stop = Stop::Finished;
         super::read_events(response, |event| {
             let envelope: Envelope = serde_json::from_str(&event.data)?;
             match envelope.r#type.as_str() {
@@ -94,10 +95,12 @@ impl Client {
                 }
                 "response.incomplete" => {
                     let incomplete: Incomplete = serde_json::from_str(&event.data)?;
-                    return Err(Error::Stream(format!(
-                        "incomplete: {}",
-                        incomplete.response.incomplete_details.reason
-                    )));
+                    stop = match incomplete.response.incomplete_details.reason.as_str() {
+                        "max_output_tokens" => Stop::Truncated,
+                        "content_filter" => Stop::Refused,
+                        reason => return Err(Error::Stream(format!("incomplete: {reason}"))),
+                    };
+                    return Ok(Flow::Done);
                 }
                 "error" => {
                     let error: ErrorDetail = serde_json::from_str(&event.data)?;
@@ -109,7 +112,7 @@ impl Client {
         })
         .await?;
 
-        Ok(Reply { parts, usage })
+        Ok(Reply { parts, usage, stop })
     }
 }
 
