@@ -11,9 +11,9 @@ use goat_core::session::{self, Environment, Event, Session, Sink};
 use goat_core::store::Store;
 
 use crate::command::{self, Name};
-use crate::input::{Editor, Entry, Keys, RawMode, TurnKeys};
+use crate::input::{Editor, Entry, Input, Keys, Mode, RawMode, TurnKeys};
 use crate::paths::Paths;
-use crate::render::{Banner, Ending, Terminal};
+use crate::render::{Banner, Ending, Terminal, Work};
 use crate::target::{self, Choices, Current, DEFAULT_EFFORT, Effort, Offer};
 
 const USER_AGENT: &str = concat!("goat/", env!("CARGO_PKG_VERSION"));
@@ -65,7 +65,7 @@ impl Chat {
         Ok(editor.read(keys, &choices, terminal).await?)
     }
 
-    async fn turn(&mut self, line: &str) -> anyhow::Result<()> {
+    async fn work(&mut self, input: &Input) -> anyhow::Result<()> {
         let Self {
             session,
             terminal,
@@ -85,11 +85,20 @@ impl Chat {
                 effort: effort.as_deref(),
             },
         };
-        terminal.begin_turn();
+        let text = input.text.trim();
+        terminal.begin_turn(match input.mode {
+            Mode::Agent => Work::Turn,
+            Mode::Shell => Work::Shell,
+        });
         let shared = RefCell::new(terminal);
         let ending = {
             let mut sink = Live(&shared);
-            let mut turn = pin!(session.turn(line, &mut sink));
+            let mut turn = pin!(async {
+                match input.mode {
+                    Mode::Agent => session.turn(text, &mut sink).await,
+                    Mode::Shell => session.shell(text, &mut sink).await,
+                }
+            });
             let mut ticks = tokio::time::interval(TICK);
             loop {
                 tokio::select! {
@@ -379,11 +388,13 @@ async fn run(
     });
     loop {
         chat.terminal.settle();
-        let Entry::Line(line) = chat.read().await? else {
+        let Entry::Input(input) = chat.read().await? else {
             chat.leave();
             return Ok(());
         };
-        if let Some(run) = command::parse(&line) {
+        if input.mode == Mode::Agent
+            && let Some(run) = command::parse(&input.text)
+        {
             match chat.command(run.name, run.argument) {
                 Ok(Flow::Continue) => {}
                 Ok(Flow::Exit) => {
@@ -394,7 +405,7 @@ async fn run(
             }
             continue;
         }
-        chat.turn(line.trim()).await?;
+        chat.work(&input).await?;
     }
 }
 

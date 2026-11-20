@@ -32,10 +32,21 @@ pub enum Error {
 pub enum Event<'a> {
     Text(&'a str),
     Reasoning(&'a str),
-    RunStarted { description: &'a str },
+    RunStarted {
+        description: &'a str,
+    },
     Call(&'a tool::Call),
-    CallFailed { problem: &'a str },
-    RunFinished { outcome: &'a Outcome },
+    CallFailed {
+        problem: &'a str,
+    },
+    RunFinished {
+        outcome: &'a Outcome,
+    },
+    ShellOutput(&'a str),
+    ShellFinished {
+        code: Option<i32>,
+        problem: Option<&'a str>,
+    },
     Usage(Usage),
     Compacting,
 }
@@ -225,6 +236,30 @@ impl Session {
             let results = std::mem::take(&mut self.finished);
             self.push(Message::new(Role::Tool, None, results))?;
         }
+    }
+
+    pub async fn shell(&mut self, command: &str, sink: &mut impl Sink) -> Result<(), Error> {
+        self.close_interrupted_calls()?;
+        let shelled = self
+            .runner
+            .shell(command, &mut |chunk| sink.emit(Event::ShellOutput(chunk)))
+            .await;
+        let shelled = match shelled {
+            Ok(shelled) => shelled,
+            Err(problem) => {
+                sink.emit(Event::ShellFinished {
+                    code: None,
+                    problem: Some(&problem),
+                });
+                return Ok(());
+            }
+        };
+        sink.emit(Event::ShellFinished {
+            code: shelled.code,
+            problem: None,
+        });
+        let text = prompt::shell(command, &shelled.output, shelled.code);
+        self.push(Message::user(&text))
     }
 
     async fn run(&mut self, name: &str, input: &str, sink: &mut impl Sink) -> Outcome {

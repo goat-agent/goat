@@ -55,6 +55,12 @@ pub struct Outcome {
     pub is_error: bool,
 }
 
+#[derive(Debug)]
+pub(crate) struct Shelled {
+    pub(crate) code: Option<i32>,
+    pub(crate) output: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Bash,
@@ -146,6 +152,18 @@ impl Runner {
 
     pub(crate) fn workspace(&self) -> &Path {
         self.host.workspace()
+    }
+
+    pub(crate) async fn shell(
+        &self,
+        command: &str,
+        on_output: &mut dyn FnMut(&str),
+    ) -> Result<Shelled, String> {
+        let ran = self.host.shell(command, on_output).await?;
+        Ok(Shelled {
+            code: ran.code,
+            output: ran.output,
+        })
     }
 
     pub(crate) async fn run(&mut self, run: &Run, on_step: &mut dyn FnMut(Step)) -> Outcome {

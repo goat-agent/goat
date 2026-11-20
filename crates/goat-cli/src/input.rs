@@ -20,14 +20,28 @@ use crate::render::{Frame, Spot, Terminal};
 use crate::target::Choices;
 
 const PROMPT: &str = "› ";
+const SHELL_PROMPT: &str = "! ";
 const INDENT: &str = "  ";
 const TAB: &str = "    ";
 const PALETTE_ROWS: usize = 12;
 const KEY_POLL: Duration = Duration::from_millis(100);
 const KEY_BACKLOG: usize = 64;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Mode {
+    #[default]
+    Agent,
+    Shell,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct Input {
+    pub(crate) mode: Mode,
+    pub(crate) text: String,
+}
+
 pub(crate) enum Entry {
-    Line(String),
+    Input(Input),
     Exit,
 }
 
@@ -43,8 +57,8 @@ pub(crate) struct Keys {
 
 #[derive(Default)]
 pub(crate) struct Editor {
-    history: Vec<String>,
-    queue: VecDeque<String>,
+    history: Vec<Input>,
+    queue: VecDeque<Input>,
     line: Line,
 }
 
@@ -62,10 +76,11 @@ struct Pick {
 
 #[derive(Default)]
 struct Line {
+    mode: Mode,
     text: String,
     cursor: usize,
     recall: usize,
-    draft: String,
+    draft: Input,
     selected: Option<usize>,
     effort: Option<usize>,
 }
@@ -113,8 +128,8 @@ impl Editor {
         choices: &Choices<'_>,
         terminal: &mut Terminal<impl Write>,
     ) -> io::Result<Entry> {
-        if let Some(text) = self.queue.pop_front() {
-            return Ok(self.send(text, choices, terminal));
+        if let Some(input) = self.queue.pop_front() {
+            return Ok(self.send(input, choices, terminal));
         }
         terminal.show(self.frame(terminal.columns(), choices));
         loop {
@@ -132,8 +147,8 @@ impl Editor {
             match action {
                 Action::Edit => terminal.show(self.frame(terminal.columns(), choices)),
                 Action::Submit => {
-                    let text = self.take();
-                    return Ok(self.send(text, choices, terminal));
+                    let input = self.take();
+                    return Ok(self.send(input, choices, terminal));
                 }
                 Action::Exit => {
                     terminal.close();
@@ -156,8 +171,8 @@ impl Editor {
                     return TurnKeys::Interrupt;
                 }
                 if let Action::Submit = self.line.key(key, &self.history, choices) {
-                    let text = self.take();
-                    self.queue.push_back(text);
+                    let input = self.take();
+                    self.queue.push_back(input);
                 }
             }
             Event::Resize(..) => {}
@@ -171,37 +186,56 @@ impl Editor {
         if self.queue.is_empty() {
             return;
         }
-        let mut texts: Vec<String> = self.queue.drain(..).collect();
+        let mut inputs: Vec<Input> = self.queue.drain(..).collect();
         if !self.line.text.is_empty() {
-            texts.push(mem::take(&mut self.line.text));
+            inputs.push(Input {
+                mode: self.line.mode,
+                text: mem::take(&mut self.line.text),
+            });
         }
-        self.line.text = texts.join("\n");
+        let is_shell = inputs.iter().all(|input| input.mode == Mode::Shell);
+        let lines: Vec<String> = inputs
+            .into_iter()
+            .map(|input| match (is_shell, input.mode) {
+                (false, Mode::Shell) => format!("!{}", input.text),
+                _ => input.text,
+            })
+            .collect();
+        self.line.mode = if is_shell { Mode::Shell } else { Mode::Agent };
+        self.line.text = lines.join("\n");
         self.line.cursor = self.line.text.len();
     }
 
-    fn take(&mut self) -> String {
-        let text = mem::take(&mut self.line).text;
-        if self.history.last() != Some(&text) {
-            self.history.push(text.clone());
+    fn take(&mut self) -> Input {
+        let line = mem::take(&mut self.line);
+        let input = Input {
+            mode: line.mode,
+            text: line.text,
+        };
+        if self.history.last() != Some(&input) {
+            self.history.push(input.clone());
         }
         self.line.recall = self.history.len();
-        text
+        input
     }
 
     fn send(
         &mut self,
-        text: String,
+        input: Input,
         choices: &Choices<'_>,
         terminal: &mut Terminal<impl Write>,
     ) -> Entry {
         let columns = terminal.columns();
-        terminal.echo(&echo(&text, columns));
+        terminal.echo(&echo(&input, columns));
         terminal.show(self.frame(columns, choices));
-        Entry::Line(text)
+        Entry::Input(input)
     }
 
     fn frame(&self, columns: usize, choices: &Choices<'_>) -> Frame {
-        let items = palette(&self.line.text, choices);
+        let items = match self.line.mode {
+            Mode::Agent => palette(&self.line.text, choices),
+            Mode::Shell => Vec::new(),
+        };
         let rows = self.line.rows(&items);
         let selected = self
             .line
@@ -209,9 +243,9 @@ impl Editor {
             .or(preselected(&self.line.text, rows.len()));
         let mut frame = self.line.frame(columns, &rows, selected);
         let room = width(columns) - 1 - PROMPT.width();
-        let queued = self.queue.iter().map(|text| {
-            let first = text.lines().next().unwrap_or_default();
-            format!("{}{}", PROMPT.dim(), fit(first, room).dim())
+        let queued = self.queue.iter().map(|input| {
+            let first = input.text.lines().next().unwrap_or_default();
+            format!("{}{}", sign(input.mode).dim(), fit(first, room).dim())
         });
         frame.rows.splice(0..0, queued);
         frame.cursor.row += self.queue.len();
@@ -220,7 +254,7 @@ impl Editor {
 }
 
 impl Line {
-    fn key(&mut self, key: KeyEvent, history: &[String], choices: &Choices<'_>) -> Action {
+    fn key(&mut self, key: KeyEvent, history: &[Input], choices: &Choices<'_>) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key
             .modifiers
@@ -231,11 +265,21 @@ impl Line {
         if let Some(action) = self.choose(key.code, alt, pick, history, choices) {
             return action;
         }
+        let is_shell = self.mode == Mode::Shell;
         match key.code {
+            KeyCode::Char('!') if !ctrl && !is_shell && self.text.is_empty() => {
+                self.mode = Mode::Shell;
+            }
+            KeyCode::Backspace | KeyCode::Esc if is_shell && self.text.is_empty() => {
+                self.mode = Mode::Agent;
+            }
             KeyCode::Enter if alt => self.insert("\n"),
             KeyCode::Char('j') if ctrl => self.insert("\n"),
             KeyCode::Enter if self.text.trim().is_empty() => {}
             KeyCode::Enter => return Action::Submit,
+            KeyCode::Char('c') if ctrl && self.text.is_empty() && is_shell => {
+                self.mode = Mode::Agent;
+            }
             KeyCode::Char('c') if ctrl => {
                 if self.text.is_empty() {
                     return Action::Exit;
@@ -252,7 +296,7 @@ impl Line {
             }
             KeyCode::Char('w') if ctrl => self.delete_word(),
             KeyCode::Tab => {
-                if !self.complete() {
+                if is_shell || !self.complete() {
                     self.insert(TAB);
                 }
             }
@@ -323,9 +367,12 @@ impl Line {
         code: KeyCode,
         alt: bool,
         pick: Pick,
-        history: &[String],
+        history: &[Input],
         choices: &Choices<'_>,
     ) -> Option<Action> {
+        if self.mode == Mode::Shell {
+            return None;
+        }
         let is_moving = matches!(code, KeyCode::Up | KeyCode::Down);
         let is_turning = matches!(code, KeyCode::Left | KeyCode::Right) && pick.selected.is_some();
         let is_taking = match code {
@@ -402,7 +449,7 @@ impl Line {
         true
     }
 
-    fn recall(&mut self, history: &[String], step: isize) {
+    fn recall(&mut self, history: &[Input], step: isize) {
         let Some(next) = self.recall.checked_add_signed(step) else {
             return;
         };
@@ -410,10 +457,15 @@ impl Line {
             return;
         }
         if self.recall == history.len() {
-            self.draft.clone_from(&self.text);
+            self.draft = Input {
+                mode: self.mode,
+                text: self.text.clone(),
+            };
         }
         self.recall = next;
-        self.text = history.get(next).unwrap_or(&self.draft).clone();
+        let recalled = history.get(next).unwrap_or(&self.draft).clone();
+        self.mode = recalled.mode;
+        self.text = recalled.text;
         self.cursor = self.text.len();
     }
 
@@ -451,9 +503,15 @@ impl Line {
 
     fn frame(&self, columns: usize, palette: &[String], selected: Option<usize>) -> Frame {
         let width = width(columns);
-        let command = command::parse(&self.text).map(|run| run.span);
+        let command = match self.mode {
+            Mode::Agent => command::parse(&self.text).map(|run| run.span),
+            Mode::Shell => None,
+        };
         let mut rows = Vec::new();
-        let mut row = format!("{}", PROMPT.dim());
+        let mut row = match self.mode {
+            Mode::Agent => format!("{}", PROMPT.dim()),
+            Mode::Shell => format!("{}", SHELL_PROMPT.red()),
+        };
         let mut col = PROMPT.width();
         let mut at_cursor = None;
         for (index, grapheme) in self.text.grapheme_indices(true) {
@@ -577,13 +635,21 @@ fn shared_start<'a>(options: impl Iterator<Item = &'a str>, typed: &str) -> Opti
     Some((shared.to_owned(), is_unique))
 }
 
-fn echo(text: &str, columns: usize) -> Vec<String> {
+fn echo(input: &Input, columns: usize) -> Vec<String> {
     let line = Line {
-        text: text.to_owned(),
-        cursor: text.len(),
+        mode: input.mode,
+        text: input.text.clone(),
+        cursor: input.text.len(),
         ..Line::default()
     };
     line.frame(columns, &[], None).rows
+}
+
+fn sign(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Agent => PROMPT,
+        Mode::Shell => SHELL_PROMPT,
+    }
 }
 
 fn width(columns: usize) -> usize {
@@ -699,7 +765,28 @@ mod tests {
         })
     }
 
-    fn key(line: &mut Line, code: KeyCode, modifiers: KeyModifiers, history: &[String]) {
+    fn message(text: &str) -> Input {
+        Input {
+            mode: Mode::Agent,
+            text: text.to_owned(),
+        }
+    }
+
+    fn shell(text: &str) -> Input {
+        Input {
+            mode: Mode::Shell,
+            text: text.to_owned(),
+        }
+    }
+
+    fn shell_line(text: &str) -> Line {
+        Line {
+            mode: Mode::Shell,
+            ..line(text, text.len())
+        }
+    }
+
+    fn key(line: &mut Line, code: KeyCode, modifiers: KeyModifiers, history: &[Input]) {
         with_choices(|choices| line.key(KeyEvent::new(code, modifiers), history, choices));
     }
 
@@ -761,7 +848,7 @@ mod tests {
 
     #[test]
     fn history_recall_keeps_the_draft() {
-        let history = ["first".to_owned(), "second".to_owned()];
+        let history = [message("first"), message("second")];
         let mut line = Line {
             recall: history.len(),
             ..line("draft", 5)
@@ -816,7 +903,7 @@ mod tests {
     #[test]
     fn unqueueing_puts_queued_lines_back_before_the_draft() {
         let mut editor = Editor {
-            queue: ["first".to_owned(), "second".to_owned()].into(),
+            queue: [message("first"), message("second")].into(),
             line: line("draft", 5),
             ..Editor::default()
         };
@@ -825,6 +912,97 @@ mod tests {
 
         assert_eq!(editor.line.text, "first\nsecond\ndraft");
         assert!(editor.queue.is_empty());
+    }
+
+    #[test]
+    fn bang_on_an_empty_line_enters_shell_mode() {
+        let mut line = line("", 0);
+        press(&mut line, &[KeyCode::Char('!')]);
+        assert_eq!((line.mode, line.text.as_str()), (Mode::Shell, ""));
+    }
+
+    #[test]
+    fn bang_after_text_is_typed() {
+        let mut line = line("hi", 2);
+        press(&mut line, &[KeyCode::Char('!')]);
+        assert_eq!((line.mode, line.text.as_str()), (Mode::Agent, "hi!"));
+    }
+
+    #[test]
+    fn backspace_on_an_empty_shell_line_returns_to_agent_mode() {
+        let mut line = shell_line("");
+        press(&mut line, &[KeyCode::Backspace]);
+        assert_eq!(line.mode, Mode::Agent);
+    }
+
+    #[test]
+    fn the_shell_prompt_is_a_red_bang() {
+        let rows = shell_line("ls").frame(80, &[], None).rows;
+        assert_eq!(rows, [format!("{}ls", SHELL_PROMPT.red())]);
+    }
+
+    #[test]
+    fn shell_mode_lists_no_commands() {
+        let editor = Editor {
+            line: shell_line("/mo"),
+            ..Editor::default()
+        };
+        let rows = with_choices(|choices| editor.frame(80, choices).rows);
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn a_sent_shell_line_is_queued_as_shell_and_the_prompt_returns_to_agent_mode() {
+        let mut editor = Editor {
+            line: shell_line("ls"),
+            ..Editor::default()
+        };
+
+        during_turn(&mut editor, KeyCode::Enter);
+
+        assert_eq!(editor.queue, [shell("ls")]);
+        assert_eq!(editor.line.mode, Mode::Agent);
+    }
+
+    #[test]
+    fn history_recall_brings_back_shell_mode() {
+        let history = [shell("ls")];
+        let mut line = Line {
+            recall: history.len(),
+            ..line("", 0)
+        };
+        key(&mut line, KeyCode::Up, KeyModifiers::NONE, &history);
+        assert_eq!((line.mode, line.text.as_str()), (Mode::Shell, "ls"));
+    }
+
+    #[test]
+    fn unqueueing_shell_lines_only_stays_in_shell_mode() {
+        let mut editor = Editor {
+            queue: [shell("ls"), shell("pwd")].into(),
+            ..Editor::default()
+        };
+
+        editor.unqueue();
+
+        assert_eq!(
+            (editor.line.mode, editor.line.text.as_str()),
+            (Mode::Shell, "ls\npwd")
+        );
+    }
+
+    #[test]
+    fn unqueueing_mixed_lines_keeps_shell_lines_as_text() {
+        let mut editor = Editor {
+            queue: [shell("ls"), message("fix it")].into(),
+            ..Editor::default()
+        };
+
+        editor.unqueue();
+
+        assert_eq!(
+            (editor.line.mode, editor.line.text.as_str()),
+            (Mode::Agent, "!ls\nfix it")
+        );
     }
 
     #[test]
@@ -954,7 +1132,7 @@ mod tests {
 
     #[test]
     fn arrows_outside_a_list_recall_history() {
-        let history = ["first".to_owned()];
+        let history = [message("first")];
         let mut line = Line {
             recall: history.len(),
             ..line("draft", 5)

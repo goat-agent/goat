@@ -15,6 +15,7 @@ use crate::markdown::{Markdown, Style};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const INDENT: &str = "  ";
+const TAB: &str = "    ";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GOAT: [&str; 3] = ["▀▀▄▄      ▄▄▀▀", "  ▄▄▀████▀▄▄  ", "     ▀██▀     "];
 const GAP: &str = "   ";
@@ -36,6 +37,7 @@ pub(crate) struct Terminal<W: Write = BufWriter<Stdout>> {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
+    Shell,
     Reply,
     Note,
     Reasoning,
@@ -44,8 +46,15 @@ enum Section {
 }
 
 struct Activity {
+    work: Work,
     started: Instant,
     frame: usize,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum Work {
+    Turn,
+    Shell,
 }
 
 pub(crate) struct Frame {
@@ -190,9 +199,10 @@ impl<W: Write> Terminal<W> {
         self.has_output = true;
     }
 
-    pub(crate) fn begin_turn(&mut self) {
+    pub(crate) fn begin_turn(&mut self, work: Work) {
         self.erase();
         self.activity = Some(Activity {
+            work,
             started: Instant::now(),
             frame: 0,
         });
@@ -300,6 +310,30 @@ impl<W: Write> Terminal<W> {
         ));
     }
 
+    fn shell_output(&mut self, chunk: &str) {
+        self.enter(Section::Shell);
+        for piece in printable(chunk).split_inclusive('\n') {
+            if self.pending.is_empty() {
+                self.put(INDENT);
+            }
+            self.put(piece);
+        }
+    }
+
+    fn shell_finished(&mut self, code: Option<i32>, problem: Option<&str>) {
+        self.enter(Section::Shell);
+        if !self.pending.is_empty() {
+            self.put("\n");
+        }
+        let status = match (problem, code) {
+            (Some(problem), _) => format!("{}", problem.red()),
+            (None, Some(0)) => format!("{}", "exit 0".dim()),
+            (None, Some(code)) => format!("{}", format!("exit {code}").red()),
+            (None, None) => format!("{}", "killed".red()),
+        };
+        self.put(&format!("{INDENT}{} {status}\n", "└".dim()));
+    }
+
     fn put(&mut self, text: &str) {
         if text.is_empty() {
             return;
@@ -334,7 +368,11 @@ impl<W: Write> Terminal<W> {
         let wrapped = wrap(&self.pending, (self.columns)());
         let spinner = self.activity.as_ref().map(|activity| {
             let took = format!("({})", elapsed(activity.started.elapsed()));
-            format!("{} Working {}", SPINNER[activity.frame], took.dim())
+            let doing = match activity.work {
+                Work::Turn => "Working",
+                Work::Shell => "Running",
+            };
+            format!("{} {doing} {}", SPINNER[activity.frame], took.dim())
         });
         let above = wrapped.len() + usize::from(spinner.is_some());
         let composer = self.composer.iter().flat_map(|frame| &frame.rows);
@@ -401,6 +439,8 @@ impl<W: Write> Sink for Terminal<W> {
                 self.enter(Section::Run);
                 self.put(&format!("{INDENT}{}\n", first_line(&outcome.output).red()));
             }
+            Event::ShellOutput(chunk) => self.shell_output(chunk),
+            Event::ShellFinished { code, problem } => self.shell_finished(code, problem),
             Event::RunFinished { .. } | Event::Usage(_) => {}
             Event::Compacting => {
                 self.open(Section::Note);
@@ -445,6 +485,29 @@ fn wrap(text: &str, columns: usize) -> Vec<String> {
     }
     rows.push(row);
     rows
+}
+
+fn printable(text: &str) -> String {
+    let mut shown = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        if c == '\x1b' {
+            let skip = escape(rest).map_or_else(
+                || 1 + rest[1..].chars().next().map_or(0, char::len_utf8),
+                str::len,
+            );
+            rest = &rest[skip..];
+            continue;
+        }
+        match c {
+            '\n' => shown.push('\n'),
+            '\t' => shown.push_str(TAB),
+            c if c.is_control() => {}
+            c => shown.push(c),
+        }
+        rest = &rest[c.len_utf8()..];
+    }
+    shown
 }
 
 fn escape(text: &str) -> Option<&str> {
@@ -697,7 +760,7 @@ mod tests {
     fn the_prompt_stays_below_streaming_output() {
         let mut terminal = Terminal::with_writer(Vec::new(), || 40);
         terminal.show(composer("next"));
-        terminal.begin_turn();
+        terminal.begin_turn(Work::Turn);
         terminal.emit(Event::Text("Hello\nwor"));
 
         let expected = format!("Hello\nwor\n⠋ Working {}\n› next", "(0s)".dim());
@@ -708,7 +771,7 @@ mod tests {
     fn a_finished_turn_leaves_only_the_prompt_below() {
         let mut terminal = Terminal::with_writer(Vec::new(), || 40);
         terminal.show(composer(""));
-        terminal.begin_turn();
+        terminal.begin_turn(Work::Turn);
         terminal.emit(Event::Text("Done."));
         terminal.finish_turn(Ending::Complete);
         terminal.settle();
@@ -720,7 +783,7 @@ mod tests {
     fn the_prompt_keeps_its_row_when_a_turn_ends() {
         let mut terminal = Terminal::with_writer(Vec::new(), || 40);
         terminal.show(composer(""));
-        terminal.begin_turn();
+        terminal.begin_turn(Work::Turn);
         terminal.emit(Event::Text("Done.\n"));
         let working = visible(&terminal.out).lines().count();
 
@@ -756,6 +819,50 @@ mod tests {
         let rows = wrap(&text, 5);
 
         assert_eq!(rows, ["abc\u{1b}[2mde", "fg\u{1b}[0m"]);
+    }
+
+    #[test]
+    fn shell_output_is_indented_cleaned_and_ends_with_its_exit() {
+        let screen = screen(&[
+            Event::ShellOutput("a\u{1b}[31mb\u{1b}[0m\tc\r\n"),
+            Event::ShellOutput("partial"),
+            Event::ShellFinished {
+                code: Some(1),
+                problem: None,
+            },
+        ]);
+
+        let expected = format!(
+            "  ab    c\n  partial\n  {} {}\n\n",
+            "└".dim(),
+            "exit 1".red()
+        );
+        assert_eq!(screen, expected);
+    }
+
+    #[test]
+    fn a_blocked_shell_command_shows_why() {
+        let screen = screen(&[Event::ShellFinished {
+            code: None,
+            problem: Some("blocked: `rm -rf ~` deletes home"),
+        }]);
+
+        let expected = format!(
+            "  {} {}\n\n",
+            "└".dim(),
+            "blocked: `rm -rf ~` deletes home".red()
+        );
+        assert_eq!(screen, expected);
+    }
+
+    #[test]
+    fn a_running_command_shows_running() {
+        let mut terminal = Terminal::with_writer(Vec::new(), || 40);
+        terminal.show(composer(""));
+        terminal.begin_turn(Work::Shell);
+
+        let expected = format!("⠋ Running {}\n› ", "(0s)".dim());
+        assert_eq!(visible(&terminal.out), expected);
     }
 
     #[test]

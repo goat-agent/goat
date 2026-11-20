@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use super::{Call, Kind, Step, bash, danger, files, hashline};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
+const NO_TIMEOUT: Duration = Duration::MAX;
 
 #[derive(Debug)]
 pub(crate) struct Host {
@@ -115,7 +116,20 @@ impl Host {
             ));
         }
         let timeout = Duration::from_secs(timeout.unwrap_or(DEFAULT_TIMEOUT_SECS).max(1));
-        bash::run(command, &self.workspace, timeout, &self.spill)
+        bash::run(command, &self.workspace, timeout, &self.spill, &mut |_| {})
+            .await
+            .map_err(|err| format!("could not run the command: {err}"))
+    }
+
+    pub(crate) async fn shell(
+        &self,
+        command: &str,
+        on_output: &mut dyn FnMut(&str),
+    ) -> Result<bash::Ran, String> {
+        if let Some(reason) = self.danger.check(command, &self.workspace, &self.home) {
+            return Err(format!("blocked: {reason}"));
+        }
+        bash::run(command, &self.workspace, NO_TIMEOUT, &self.spill, on_output)
             .await
             .map_err(|err| format!("could not run the command: {err}"))
     }
