@@ -70,7 +70,7 @@ async fn openai_turn_runs_the_tool_and_replays_reasoning() {
     session.turn("say hi", &mut recorder).await.unwrap();
 
     assert_eq!(recorder.text, "Done.");
-    assert_eq!(recorder.reasoning, "\nRun a command.\nThen answer.");
+    assert_eq!(recorder.reasoning, "Run a command.\nThen answer.\n");
     assert_eq!(recorder.tools, ["Say hi", "bash echo hi"]);
     let roles: Vec<Role> = session.messages().iter().map(|m| m.role).collect();
     assert_eq!(
@@ -113,7 +113,7 @@ async fn anthropic_turn_echoes_thinking_with_its_signature() {
     session.turn("say hi", &mut recorder).await.unwrap();
 
     assert_eq!(recorder.text, "Done.");
-    assert_eq!(recorder.reasoning, "Run a command.");
+    assert_eq!(recorder.reasoning, "Run a command.\n");
     let requests = server.requests.lock().unwrap();
     assert!(
         requests[0].contains(r#""tool_choice":{"type":"auto","disable_parallel_tool_use":true}"#)

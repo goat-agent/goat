@@ -74,11 +74,11 @@ impl Client {
                     let delta: TextDelta = serde_json::from_str(&event.data)?;
                     on_chunk(Chunk::Text(&delta.delta));
                 }
-                "response.reasoning_summary_part.added" => on_chunk(Chunk::Reasoning("\n")),
                 "response.reasoning_summary_text.delta" => {
                     let delta: TextDelta = serde_json::from_str(&event.data)?;
                     on_chunk(Chunk::Reasoning(&delta.delta));
                 }
+                "response.reasoning_summary_part.done" => on_chunk(Chunk::Reasoning("\n")),
                 "response.output_item.done" => {
                     let done: ItemDone = serde_json::from_str(&event.data)?;
                     parts.extend(part(done.item)?);

@@ -70,6 +70,12 @@ impl Client {
                         block.apply(delta.delta, on_chunk);
                     }
                 }
+                "content_block_stop" => {
+                    let stop: BlockStop = serde_json::from_str(&event.data)?;
+                    if let Some(Some(Building::Thinking { .. })) = blocks.get(stop.index) {
+                        on_chunk(Chunk::Reasoning("\n"));
+                    }
+                }
                 "message_delta" => {
                     let delta: MessageDelta = serde_json::from_str(&event.data)?;
                     if let Some(output) = delta.usage.and_then(|u| u.output_tokens) {
@@ -438,6 +444,11 @@ enum StartBlock {
 struct BlockDelta {
     index: usize,
     delta: Delta,
+}
+
+#[derive(Deserialize)]
+struct BlockStop {
+    index: usize,
 }
 
 #[derive(Deserialize)]
