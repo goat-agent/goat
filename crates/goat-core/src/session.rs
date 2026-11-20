@@ -2,9 +2,13 @@ mod prompt;
 
 use std::path::Path;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+
 use crate::account::Account;
+use crate::image::{Image, Picture};
 use crate::message::{self, Message, Origin, Part, Role};
-use crate::provider::{self, Chunk, Endpoints, Provider, Request, Usage};
+use crate::provider::{self, Chunk, Endpoints, Images, Provider, Request, Usage};
 use crate::store::{self, Store};
 use crate::tool::{self, Outcome, Runner, Step};
 
@@ -13,6 +17,8 @@ crate::id::define!(Id);
 const COMPACT_AT_TOKENS: u64 = 200_000;
 const INTERRUPTED: &str = "interrupted by the user before this run finished";
 const CALL_CHARS: usize = 100;
+const IMAGES_PER_REQUEST: usize = 20;
+const IMAGE_BATCH: usize = 10;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -49,6 +55,12 @@ pub enum Event<'a> {
     },
     Usage(Usage),
     Compacting,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Prompt<'a> {
+    pub text: &'a str,
+    pub images: &'a [Picture],
 }
 
 pub trait Sink {
@@ -201,9 +213,16 @@ impl Session {
         self.model = model.into();
     }
 
-    pub async fn turn(&mut self, input: &str, sink: &mut impl Sink) -> Result<(), Error> {
+    pub async fn turn<'p>(
+        &mut self,
+        prompt: impl Into<Prompt<'p>>,
+        sink: &mut impl Sink,
+    ) -> Result<(), Error> {
+        let prompt = prompt.into();
         self.close_interrupted_calls()?;
-        let message = Message::user(input);
+        let mut parts = vec![Part::text(prompt.text)];
+        parts.extend(self.keep(prompt.images)?.into_iter().map(Part::Image));
+        let message = Message::new(Role::User, None, parts);
         if self.last_input > COMPACT_AT_TOKENS {
             sink.emit(Event::Compacting);
             self.compact(message.id).await?;
@@ -227,10 +246,12 @@ impl Session {
 
             for (id, name, input) in calls {
                 let outcome = self.run(&name, &input, sink).await;
+                let images = self.keep(&outcome.images)?;
                 self.finished.push(Part::ToolResult {
                     call_id: id,
                     output: outcome.output,
                     is_error: outcome.is_error,
+                    images,
                 });
             }
             let results = std::mem::take(&mut self.finished);
@@ -284,6 +305,7 @@ impl Session {
                     started.push(call);
                 }
                 Step::Failed(problem) => sink.emit(Event::CallFailed { problem: &problem }),
+                Step::Shown(_) => {}
             })
             .await;
         sink.emit(Event::RunFinished { outcome: &outcome });
@@ -296,6 +318,7 @@ impl Session {
         use_tools: bool,
         on_chunk: &mut dyn FnMut(Chunk<'_>),
     ) -> Result<provider::Reply, Error> {
+        let images = self.images(trailing)?;
         let mut refreshed = false;
         loop {
             let bearer = self.bearer(refreshed).await?;
@@ -305,6 +328,7 @@ impl Session {
                 model: &self.model,
                 instructions: &self.instructions,
                 messages: &self.messages,
+                images: &images,
                 trailing,
                 tools: std::slice::from_ref(&self.tool),
                 use_tools,
@@ -370,6 +394,7 @@ impl Session {
                         call_id: id.into(),
                         output: interrupted(&started.take().unwrap_or_default()).into(),
                         is_error: true,
+                        images: Vec::new(),
                     })
             })
             .collect();
@@ -377,6 +402,40 @@ impl Session {
             return Ok(());
         }
         self.push(Message::new(Role::Tool, None, results))
+    }
+
+    fn keep(&self, pictures: &[Picture]) -> Result<Vec<Image>, Error> {
+        pictures
+            .iter()
+            .map(|picture| {
+                self.store.put_image(picture)?;
+                Ok(picture.image.clone())
+            })
+            .collect()
+    }
+
+    fn images(&self, trailing: Option<&Message>) -> Result<Images, Error> {
+        let shown: Vec<&Image> = self
+            .messages
+            .iter()
+            .chain(trailing)
+            .flat_map(|message| &message.parts)
+            .flat_map(|part| match part {
+                Part::Image(image) => std::slice::from_ref(image),
+                Part::ToolResult { images, .. } => images.as_slice(),
+                _ => &[],
+            })
+            .collect();
+        let mut images = Images::default();
+        for image in &shown[shown.len() - sent(shown.len())..] {
+            if images.get(&image.id).is_some() {
+                continue;
+            }
+            if let Some(bytes) = self.store.image(&image.id)? {
+                images.insert(image.id.clone(), BASE64.encode(bytes));
+            }
+        }
+        Ok(images)
     }
 
     fn push(&mut self, message: Message) -> Result<(), Error> {
@@ -430,6 +489,19 @@ async fn bearer(
     Ok(account.credential.secret().into())
 }
 
+impl<'a> From<&'a str> for Prompt<'a> {
+    fn from(text: &'a str) -> Self {
+        Self { text, images: &[] }
+    }
+}
+
+fn sent(shown: usize) -> usize {
+    if shown <= IMAGES_PER_REQUEST {
+        return shown;
+    }
+    IMAGE_BATCH + shown % IMAGE_BATCH
+}
+
 fn interrupted(started: &[tool::Call]) -> String {
     if started.is_empty() {
         return INTERRUPTED.to_owned();
@@ -449,4 +521,23 @@ fn interrupted(started: &[tool::Call]) -> String {
         text.push_str(&line);
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn up_to_twenty_images_are_all_sent() {
+        assert_eq!(sent(5), 5);
+        assert_eq!(sent(20), 20);
+    }
+
+    #[test]
+    fn past_twenty_the_oldest_images_leave_in_batches_of_ten() {
+        assert_eq!(sent(21), 11);
+        assert_eq!(sent(29), 19);
+        assert_eq!(sent(30), 10);
+        assert_eq!(sent(31), 11);
+    }
 }

@@ -6,6 +6,7 @@ mod host;
 mod script;
 mod spill;
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -13,10 +14,13 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 use tokio::sync::mpsc;
 
+use crate::image::Picture;
+
 use self::host::Host;
 use self::script::Script;
 
 const NAME: &str = "run";
+const IMAGES_PER_RUN: usize = 4;
 const STEP_BACKLOG: usize = 64;
 const NEW_SANDBOX: &str = "[this run started a new sandbox; variables from earlier runs are gone]";
 
@@ -27,7 +31,7 @@ Do steps that belong together in one run, such as search, read, edit and test, a
 
 The sandbox reaches the system only through these async functions:
 - bash`cmd ${value}` or bash(command, {timeout}) runs bash -c in the working directory. Template values are shell-quoted. Returns {code, output, file}: code is null when the command was killed or timed out (default 120 seconds), output holds stdout and stderr cut to their first and last 20 KB, and file names the full output when it was cut. A non-zero exit is returned, not thrown.
-- read(path, {offset, limit}) returns {lines, total, next}. Each line is `N:hhh|text`, where `N:hhh` is its anchor. It gives up to 2000 lines from offset (1-based); next is the offset to continue from, or null.
+- read(path, {offset, limit}) returns {lines, total, next}. Each line is `N:hhh|text`, where `N:hhh` is its anchor. It gives up to 2000 lines from offset (1-based); next is the offset to continue from, or null. On a PNG, JPEG, GIF or WebP file it returns {image, width, height} instead, and you see the image after the run's result; a run shows at most 4 images.
 - edit(path, edits) changes lines of an existing file. Each edit is {op: \"replace\" | \"insert_after\" | \"delete\", from, to, lines}. from and to are lines or anchors from your latest read or edit of that file; to defaults to from; lines are the new lines; insert_after without from inserts at the top. Edits apply together or not at all, and a line that changed since it was read rejects them. Returns {total, preview}, where preview shows the changed lines with their new anchors.
 - write(path, content) creates a file or replaces a whole file. Returns {created, lines}.
 - console.log(...) adds lines to what you see, before the result.
@@ -51,6 +55,7 @@ pub struct Spec {
 pub struct Outcome {
     pub output: Box<str>,
     pub is_error: bool,
+    pub images: Vec<Picture>,
 }
 
 #[derive(Debug)]
@@ -77,6 +82,7 @@ pub struct Call {
 pub(crate) enum Step {
     Started(Call),
     Failed(Box<str>),
+    Shown(Picture),
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,6 +103,7 @@ impl Outcome {
         Self {
             output: output.into(),
             is_error: false,
+            images: Vec::new(),
         }
     }
 
@@ -104,6 +111,7 @@ impl Outcome {
         Self {
             output: output.into(),
             is_error: true,
+            images: Vec::new(),
         }
     }
 }
@@ -174,27 +182,42 @@ impl Runner {
             },
         };
         self.had_sandbox = true;
+        let mut images = Vec::new();
+        let mut take = |step| match step {
+            Step::Shown(picture) => images.push(picture),
+            step => on_step(step),
+        };
         let outcome = {
             let eval = script.eval(&run.code);
             tokio::pin!(eval);
             loop {
                 tokio::select! {
                     outcome = &mut eval => break outcome,
-                    Some(step) = self.steps.recv() => on_step(step),
+                    Some(step) = self.steps.recv() => take(step),
                 }
             }
         };
         while let Ok(step) = self.steps.try_recv() {
-            on_step(step);
+            take(step);
         }
         self.script = Some(script);
-        let text = match note {
+        let dropped = images.len().saturating_sub(IMAGES_PER_RUN);
+        images.truncate(IMAGES_PER_RUN);
+        let mut text = match note {
             Some(note) => format!("{note}\n{}", outcome.output),
             None => outcome.output.into(),
         };
+        if dropped > 0 {
+            write!(
+                text,
+                "\n[{dropped} more images were read; a run shows at most {IMAGES_PER_RUN}]"
+            )
+            .ok();
+        }
         Outcome {
             output: spill::fit(text, self.host.spill()).into(),
             is_error: outcome.is_error,
+            images,
         }
     }
 }

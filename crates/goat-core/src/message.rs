@@ -3,6 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 
 use crate::account;
+use crate::image::Image;
 
 crate::id::define!(Id);
 
@@ -100,7 +101,10 @@ pub enum Part {
         call_id: Box<str>,
         output: Box<str>,
         is_error: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<Image>,
     },
+    Image(Image),
     Summary {
         text: Box<str>,
         tail: Id,

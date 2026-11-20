@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::{Chunk, Error, Flow, Reply, Request, Usage};
+use super::{Chunk, Error, Flow, Images, OMITTED_IMAGE, Reply, Request, Usage};
+use crate::image::Image;
 use crate::message::{Message, Native, Part, Role};
 
 pub const BASE_URL: &str = "https://api.anthropic.com/v1";
@@ -30,16 +31,16 @@ impl Client {
         key: &str,
         on_chunk: &mut dyn FnMut(Chunk<'_>),
     ) -> Result<Reply, Error> {
-        let body = serde_json::to_string(&Body::new(request))?;
+        let body = super::json(&Body::new(request), request.images)?;
         let url = format!("{}/messages", self.base);
-        let response = super::post(|| {
+        let response = super::post(
             self.http
                 .post(&url)
                 .header("x-api-key", key)
                 .header("anthropic-version", VERSION)
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(body.clone())
-        })
+                .body(body),
+        )
         .await?;
 
         let mut blocks: Vec<Option<Building>> = Vec::new();
@@ -124,7 +125,9 @@ impl<'a> Body<'a> {
     fn new(request: &Request<'a>) -> Self {
         let messages = request
             .all_messages()
-            .filter_map(|message| turn(message, message.from_origin(request.origin)))
+            .filter_map(|message| {
+                turn(message, message.from_origin(request.origin), request.images)
+            })
             .collect();
         Self {
             model: request.model,
@@ -163,7 +166,7 @@ impl<'a> Body<'a> {
     }
 }
 
-fn turn(message: &Message, native: bool) -> Option<Turn<'_>> {
+fn turn<'a>(message: &'a Message, native: bool, images: &'a Images) -> Option<Turn<'a>> {
     let role = match message.role {
         Role::Assistant => "assistant",
         Role::User | Role::Tool | Role::Summary => "user",
@@ -190,15 +193,45 @@ fn turn(message: &Message, native: bool) -> Option<Turn<'_>> {
                 call_id,
                 output,
                 is_error,
+                images: shown,
             } => Some(Block::ToolResult {
                 r#type: "tool_result",
                 tool_use_id: call_id,
-                content: output,
+                content: if shown.is_empty() {
+                    ResultContent::Text(output)
+                } else {
+                    ResultContent::Blocks(
+                        std::iter::once(Block::Text(TextBlock {
+                            r#type: "text",
+                            text: output,
+                        }))
+                        .chain(shown.iter().map(|image| picture(image, images)))
+                        .collect(),
+                    )
+                },
                 is_error: *is_error,
             }),
+            Part::Image(image) => Some(picture(image, images)),
         })
         .collect();
     (!content.is_empty()).then_some(Turn { role, content })
+}
+
+fn picture<'a>(image: &'a Image, images: &'a Images) -> Block<'a> {
+    match images.get(&image.id) {
+        Some(data) => Block::Image {
+            r#type: "image",
+            source: Source {
+                r#type: "base64",
+                media_type: image.media.as_str(),
+                data,
+            },
+        },
+        None => Block::Text(TextBlock {
+            r#type: "text",
+            text: OMITTED_IMAGE,
+        }),
+    }
 }
 
 fn empty_input() -> &'static RawValue {
@@ -226,9 +259,27 @@ enum Block<'a> {
     ToolResult {
         r#type: &'static str,
         tool_use_id: &'a str,
-        content: &'a str,
+        content: ResultContent<'a>,
         is_error: bool,
     },
+    Image {
+        r#type: &'static str,
+        source: Source<'a>,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ResultContent<'a> {
+    Text(&'a str),
+    Blocks(Vec<Block<'a>>),
+}
+
+#[derive(Serialize)]
+struct Source<'a> {
+    r#type: &'static str,
+    media_type: &'static str,
+    data: &'a str,
 }
 
 #[derive(Serialize)]
@@ -499,12 +550,51 @@ mod tests {
                 call_id: "toolu_1".into(),
                 output: "done".into(),
                 is_error: false,
+                images: Vec::new(),
             }],
         );
-        let json = serde_json::to_string(&turn(&message, false)).unwrap();
+        let json = serde_json::to_string(&turn(&message, false, &Images::default())).unwrap();
         assert_eq!(
             json,
             r#"{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"done","is_error":false}]}"#
+        );
+    }
+
+    #[test]
+    fn images_become_base64_image_blocks_in_prompts_and_tool_results() {
+        let image = Image {
+            id: crate::image::Id::of(b"png"),
+            media: crate::image::Media::Png,
+        };
+        let mut images = Images::default();
+        images.insert(image.id.clone(), "iVBO".to_owned());
+        let prompt = Message::new(
+            Role::User,
+            None,
+            vec![Part::text("look"), Part::Image(image.clone())],
+        );
+        let result = Message::new(
+            Role::Tool,
+            None,
+            vec![Part::ToolResult {
+                call_id: "toolu_1".into(),
+                output: "{}".into(),
+                is_error: false,
+                images: vec![image],
+            }],
+        );
+        let block =
+            r#"{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBO"}}"#;
+
+        assert_eq!(
+            serde_json::to_string(&turn(&prompt, false, &images)).unwrap(),
+            format!(r#"{{"role":"user","content":[{{"type":"text","text":"look"}},{block}]}}"#)
+        );
+        assert_eq!(
+            serde_json::to_string(&turn(&result, false, &images)).unwrap(),
+            format!(
+                r#"{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_1","content":[{{"type":"text","text":"{{}}"}},{block}],"is_error":false}}]}}"#
+            )
         );
     }
 
@@ -530,8 +620,8 @@ mod tests {
                 Part::text("answer"),
             ],
         );
-        let same = serde_json::to_string(&turn(&message, true)).unwrap();
-        let other = serde_json::to_string(&turn(&message, false)).unwrap();
+        let same = serde_json::to_string(&turn(&message, true, &Images::default())).unwrap();
+        let other = serde_json::to_string(&turn(&message, false, &Images::default())).unwrap();
         assert!(same.contains(r#""signature":"s""#));
         assert!(!other.contains("thinking"));
     }
@@ -548,7 +638,7 @@ mod tests {
                 ),
             }],
         );
-        assert!(turn(&message, false).is_none());
+        assert!(turn(&message, false, &Images::default()).is_none());
     }
 
     #[test]

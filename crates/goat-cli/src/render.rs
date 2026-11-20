@@ -673,6 +673,7 @@ mod tests {
         let outcome = Outcome {
             output: "\nSyntaxError: unexpected token\n  at line 3".into(),
             is_error: true,
+            images: Vec::new(),
         };
         let screen = screen(&[Event::RunFinished { outcome: &outcome }]);
 

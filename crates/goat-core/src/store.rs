@@ -4,10 +4,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::account::{self, Account, Credential};
+use crate::image::{self, Picture};
 use crate::message::{self, Message, Origin, Part, Role};
 use crate::session;
 
-const MIGRATIONS: &[&str] = &["
+const MIGRATIONS: &[&str] = &[
+    "
     create table sessions (
         id blob primary key,
         cwd text not null,
@@ -33,7 +35,14 @@ const MIGRATIONS: &[&str] = &["
         credential text not null,
         unique (provider, name)
     ) strict;
-"];
+",
+    "
+    create table images (
+        id text primary key,
+        data blob not null
+    ) strict;
+",
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -140,6 +149,25 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn put_image(&self, picture: &Picture) -> Result<(), Error> {
+        self.conn.execute(
+            "insert or ignore into images (id, data) values (?1, ?2)",
+            params![picture.image.id.as_str(), picture.bytes],
+        )?;
+        Ok(())
+    }
+
+    pub fn image(&self, id: &image::Id) -> Result<Option<Vec<u8>>, Error> {
+        Ok(self
+            .conn
+            .query_row(
+                "select data from images where id = ?1",
+                [id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     pub fn context(&self, session: session::Id) -> Result<Vec<Message>, Error> {
@@ -330,6 +358,28 @@ fn now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_image_is_stored_once_and_read_back() {
+        let store = Store::open_in_memory().unwrap();
+        let picture = crate::image::Picture {
+            image: crate::image::Image {
+                id: crate::image::Id::of(b"bytes"),
+                media: crate::image::Media::Png,
+            },
+            width: 1,
+            height: 1,
+            bytes: b"bytes".to_vec(),
+        };
+
+        store.put_image(&picture).unwrap();
+        store.put_image(&picture).unwrap();
+
+        assert_eq!(
+            store.image(&picture.image.id).unwrap(),
+            Some(b"bytes".to_vec())
+        );
+    }
 
     fn origin() -> Origin {
         Origin {
