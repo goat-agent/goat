@@ -329,6 +329,7 @@ impl Session {
     ) -> Result<provider::Reply, Error> {
         let images = self.images(trailing)?;
         let mut refreshed = false;
+        let mut attempt = 0;
         loop {
             let bearer = self.bearer(refreshed).await?;
             let origin = self.origin();
@@ -345,11 +346,23 @@ impl Session {
                 cache_key: &cache_key,
                 effort: self.effort.as_deref(),
             };
-            match self.provider.send(&request, &bearer, on_chunk).await {
+            let mut is_shown = false;
+            let result = {
+                let mut watch = |chunk: Chunk<'_>| {
+                    is_shown = true;
+                    on_chunk(chunk);
+                };
+                self.provider.send(&request, &bearer, &mut watch).await
+            };
+            match result {
                 Err(provider::Error::Status { status: 401, .. })
                     if !refreshed && self.account.credential.expires_at().is_some() =>
                 {
                     refreshed = true;
+                }
+                Err(err) if err.is_transient() && !is_shown && attempt < provider::MAX_RETRIES => {
+                    tokio::time::sleep(provider::backoff(attempt)).await;
+                    attempt += 1;
                 }
                 result => return Ok(result?),
             }

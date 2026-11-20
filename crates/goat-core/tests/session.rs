@@ -17,6 +17,7 @@ const ANTHROPIC_TOOL_USE: &str = include_str!("fixtures/anthropic/tool_use.sse")
 const ANTHROPIC_ANSWER: &str = include_str!("fixtures/anthropic/answer.sse");
 const ANTHROPIC_TRUNCATED_CALL: &str = include_str!("fixtures/anthropic/truncated_call.sse");
 const ANTHROPIC_REFUSAL: &str = include_str!("fixtures/anthropic/refusal.sse");
+const ANTHROPIC_OVERLOADED: &str = include_str!("fixtures/anthropic/overloaded.sse");
 
 #[derive(Default)]
 struct Recorder {
@@ -561,6 +562,38 @@ async fn a_refused_reply_is_not_kept() {
     assert_eq!(recorder.stops, ["refused"]);
     let roles: Vec<Role> = session.messages().iter().map(|m| m.role).collect();
     assert_eq!(roles, [Role::User]);
+}
+
+#[tokio::test]
+async fn an_overload_before_any_output_is_retried() {
+    let server = server::replay(vec![ANTHROPIC_OVERLOADED, ANTHROPIC_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = anthropic_session(&env).unwrap();
+    let mut recorder = Recorder::default();
+
+    session.turn("hi", &mut recorder).await.unwrap();
+
+    assert_eq!(recorder.text, "Done.");
+    assert_eq!(server.requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn an_overload_after_output_is_not_retried() {
+    let shown_then_overloaded = leak(ANTHROPIC_ANSWER.replacen(
+        "event: content_block_stop",
+        "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\nevent: content_block_stop",
+        1,
+    ));
+    let server = server::replay(vec![shown_then_overloaded, ANTHROPIC_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = anthropic_session(&env).unwrap();
+
+    let result = session.turn("hi", &mut Recorder::default()).await;
+
+    assert!(result.is_err());
+    assert_eq!(server.requests.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

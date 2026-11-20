@@ -90,10 +90,11 @@ impl Client {
                 "message_stop" => return Ok(Flow::Done),
                 "error" => {
                     let error: StreamError = serde_json::from_str(&event.data)?;
-                    return Err(Error::Stream(format!(
-                        "{}: {}",
-                        error.error.r#type, error.error.message
-                    )));
+                    let text = format!("{}: {}", error.error.r#type, error.error.message);
+                    return Err(match error.error.r#type.as_str() {
+                        "overloaded_error" | "api_error" => Error::Busy(text),
+                        _ => Error::Stream(text),
+                    });
                 }
                 _ => {}
             }

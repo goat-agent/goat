@@ -91,7 +91,7 @@ impl Client {
                 }
                 "response.failed" => {
                     let failed: Failed = serde_json::from_str(&event.data)?;
-                    return Err(Error::Stream(failed.response.error.describe()));
+                    return Err(failed.response.error.into_error());
                 }
                 "response.incomplete" => {
                     let incomplete: Incomplete = serde_json::from_str(&event.data)?;
@@ -104,7 +104,7 @@ impl Client {
                 }
                 "error" => {
                     let error: ErrorDetail = serde_json::from_str(&event.data)?;
-                    return Err(Error::Stream(error.describe()));
+                    return Err(error.into_error());
                 }
                 _ => {}
             }
@@ -492,6 +492,14 @@ impl ErrorDetail {
         match &self.code {
             Some(code) => format!("{code}: {}", self.message),
             None => self.message.clone(),
+        }
+    }
+
+    fn into_error(self) -> Error {
+        let text = self.describe();
+        match self.code.as_deref() {
+            Some("server_error" | "server_is_overloaded") => Error::Busy(text),
+            _ => Error::Stream(text),
         }
     }
 }
