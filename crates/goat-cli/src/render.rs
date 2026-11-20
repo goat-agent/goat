@@ -661,9 +661,10 @@ mod tests {
             directory: "~/goat",
         });
         terminal.settle();
+        terminal.show(composer(""));
 
         let expected = format!(
-            "{}   {} {}\n{}   {}\n{}   {}\n\n",
+            "{}   {} {}\n{}   {}\n{}   {}\n\n› ",
             GOAT[0].with(PRIMARY),
             "Goat".bold(),
             format!("v{VERSION}").dim(),
