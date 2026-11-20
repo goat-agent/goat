@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::path::Path;
 use std::pin::pin;
 use std::time::Duration;
 
@@ -12,7 +13,7 @@ use goat_core::store::Store;
 use crate::command::{self, Name};
 use crate::input::{Editor, Entry, Keys, RawMode, TurnKeys};
 use crate::paths::Paths;
-use crate::render::{Ending, Terminal};
+use crate::render::{Banner, Ending, Terminal};
 use crate::target::{self, Choices, Current, DEFAULT_EFFORT, Effort, Offer};
 
 const USER_AGENT: &str = concat!("goat/", env!("CARGO_PKG_VERSION"));
@@ -227,14 +228,15 @@ pub(crate) async fn start(paths: &Paths, choice: Choice) -> anyhow::Result<()> {
         model,
         choice.model.as_deref(),
     )?;
-    let session = Session::create(
+    let mut session = Session::create(
         store,
         http()?,
         &environment(paths),
         opening.account,
         &opening.model,
     )?;
-    run(session, opening.effort.as_deref(), offers, catalog).await
+    session.set_effort(opening.effort.as_deref());
+    run(session, offers, catalog, &paths.home).await
 }
 
 pub(crate) async fn resume(paths: &Paths, choice: Choice, id: Option<&str>) -> anyhow::Result<()> {
@@ -266,7 +268,7 @@ pub(crate) async fn resume(paths: &Paths, choice: Choice, id: Option<&str>) -> a
         model,
         choice.model.as_deref(),
     )?;
-    let session = Session::resume(
+    let mut session = Session::resume(
         store,
         http()?,
         &environment(paths),
@@ -274,7 +276,8 @@ pub(crate) async fn resume(paths: &Paths, choice: Choice, id: Option<&str>) -> a
         opening.account,
         &opening.model,
     )?;
-    run(session, opening.effort.as_deref(), offers, catalog).await
+    session.set_effort(opening.effort.as_deref());
+    run(session, offers, catalog, &paths.home).await
 }
 
 fn offers(store: &Store) -> anyhow::Result<Vec<Offer>> {
@@ -329,12 +332,11 @@ fn open(
 }
 
 async fn run(
-    mut session: Session,
-    effort: Option<&str>,
+    session: Session,
     offers: Vec<Offer>,
     catalog: Vec<Model>,
+    home: &Path,
 ) -> anyhow::Result<()> {
-    session.set_effort(effort);
     let _raw = RawMode::enable()?;
     let mut chat = Chat {
         session,
@@ -344,6 +346,12 @@ async fn run(
         offers,
         catalog,
     };
+    let model = chat.status();
+    let directory = directory(chat.session.workspace(), home);
+    chat.terminal.banner(&Banner {
+        model: &model,
+        directory: &directory,
+    });
     loop {
         chat.terminal.settle();
         let Entry::Line(line) = chat.read().await? else {
@@ -358,6 +366,14 @@ async fn run(
             continue;
         }
         chat.turn(line.trim()).await?;
+    }
+}
+
+fn directory(workspace: &Path, home: &Path) -> String {
+    match workspace.strip_prefix(home) {
+        Ok(inside) if inside.as_os_str().is_empty() => "~".to_owned(),
+        Ok(inside) => format!("~/{}", inside.display()),
+        Err(_) => workspace.display().to_string(),
     }
 }
 
@@ -419,4 +435,30 @@ pub(crate) fn http() -> anyhow::Result<reqwest::Client> {
         .user_agent(USER_AGENT)
         .connect_timeout(CONNECT_TIMEOUT)
         .build()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_directory_under_home_starts_with_a_tilde() {
+        let shown = directory(Path::new("/home/me/work/goat"), Path::new("/home/me"));
+
+        assert_eq!(shown, "~/work/goat");
+    }
+
+    #[test]
+    fn home_itself_is_a_tilde() {
+        let shown = directory(Path::new("/home/me"), Path::new("/home/me"));
+
+        assert_eq!(shown, "~");
+    }
+
+    #[test]
+    fn a_directory_outside_home_is_shown_in_full() {
+        let shown = directory(Path::new("/srv/goat"), Path::new("/home/me"));
+
+        assert_eq!(shown, "/srv/goat");
+    }
 }

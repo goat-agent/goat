@@ -3,7 +3,7 @@ use std::mem;
 use std::time::{Duration, Instant};
 
 use crossterm::queue;
-use crossterm::style::Stylize;
+use crossterm::style::{Color, Stylize};
 use crossterm::terminal::{self, ClearType};
 use goat_core::session::{Event, Sink};
 use goat_core::tool::{self, Kind};
@@ -13,6 +13,10 @@ use crate::markdown::{Markdown, Style};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const INDENT: &str = "  ";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const GOAT: [&str; 3] = ["▀▀▄▄      ▄▄▀▀", "  ▄▄▀████▀▄▄  ", "     ▀██▀     "];
+const GAP: &str = "   ";
+const PRIMARY: Color = Color::AnsiValue(141);
 
 pub(crate) struct Terminal<W: Write = Stdout> {
     out: W,
@@ -40,6 +44,11 @@ struct Activity {
     is_shown: bool,
 }
 
+pub(crate) struct Banner<'a> {
+    pub(crate) model: &'a str,
+    pub(crate) directory: &'a str,
+}
+
 pub(crate) enum Ending {
     Complete,
     Interrupted,
@@ -64,6 +73,20 @@ impl<W: Write> Terminal<W> {
             calls: 0,
             activity: None,
         }
+    }
+
+    pub(crate) fn banner(&mut self, banner: &Banner<'_>) {
+        self.enter(Section::Note);
+        let room = (self.columns)().saturating_sub(GOAT[0].chars().count() + GAP.len());
+        let lines = [
+            format!("{} {}", "Goat".bold(), format!("v{VERSION}").dim()),
+            format!("{}", shorten(banner.model, room).dim()),
+            format!("{}", shorten(banner.directory, room).dim()),
+        ];
+        for (art, line) in GOAT.iter().zip(lines) {
+            self.put(&format!("{}{GAP}{line}\n", art.with(PRIMARY)));
+        }
+        self.flush();
     }
 
     pub(crate) fn note(&mut self, text: &str) {
@@ -224,16 +247,10 @@ impl<W: Write> Terminal<W> {
             target.push_str(" …");
         }
         let room = (self.columns)().saturating_sub(verb.len() + 7);
-        let shown = fit(&target, room);
-        let cut = if shown.len() < target.len() {
-            "…"
-        } else {
-            ""
-        };
         self.put(&format!(
             "{INDENT}{} {verb} {}\n",
             branch.dim(),
-            format!("{shown}{cut}").dim()
+            shorten(&target, room).dim()
         ));
     }
 
@@ -305,6 +322,15 @@ impl<W: Write> Sink for Terminal<W> {
 
 fn terminal_columns() -> usize {
     terminal::size().map_or(80, |(columns, _)| usize::from(columns))
+}
+
+fn shorten(text: &str, width: usize) -> String {
+    let shown = fit(text, width);
+    if shown.len() < text.len() {
+        format!("{shown}…")
+    } else {
+        shown.to_owned()
+    }
 }
 
 fn first_line(text: &str) -> &str {
@@ -444,6 +470,28 @@ mod tests {
             "no account offers gpt-6.3".red(),
             " ".dim(),
             "retry later".red()
+        );
+        assert_eq!(String::from_utf8(terminal.out).unwrap(), expected);
+    }
+
+    #[test]
+    fn the_banner_puts_the_version_model_and_directory_beside_the_goat() {
+        let mut terminal = Terminal::with_writer(Vec::new(), || 40);
+        terminal.banner(&Banner {
+            model: "GPT-6.2 Sol on openai:codex with high effort",
+            directory: "~/goat",
+        });
+        terminal.settle();
+
+        let expected = format!(
+            "{}   {} {}\r\n{}   {}\r\n{}   {}\r\n\r\n",
+            GOAT[0].with(PRIMARY),
+            "Goat".bold(),
+            format!("v{VERSION}").dim(),
+            GOAT[1].with(PRIMARY),
+            "GPT-6.2 Sol on openai:c…".dim(),
+            GOAT[2].with(PRIMARY),
+            "~/goat".dim()
         );
         assert_eq!(String::from_utf8(terminal.out).unwrap(), expected);
     }
