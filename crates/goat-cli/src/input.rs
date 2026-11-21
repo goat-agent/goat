@@ -774,7 +774,8 @@ fn palette(text: &str, choices: &Choices<'_>) -> Vec<Item> {
                 .iter()
                 .filter(|spec| spec.word.starts_with(typed))
                 .map(|spec| {
-                    let takes_value = matches!(spec.name, Name::Model | Name::Effort);
+                    let takes_value =
+                        matches!(spec.name, Name::Model | Name::Effort | Name::Resume);
                     Item {
                         label: format!("/{:<10}{}", spec.word, spec.about),
                         is_current: false,
@@ -797,6 +798,7 @@ fn palette(text: &str, choices: &Choices<'_>) -> Vec<Item> {
     let candidates = match name {
         Name::Model => choices.models(typed),
         Name::Effort => choices.efforts(typed),
+        Name::Resume => choices.sessions(typed, now()),
         Name::Help | Name::Exit => Vec::new(),
     };
     candidates
@@ -811,6 +813,12 @@ fn palette(text: &str, choices: &Choices<'_>) -> Vec<Item> {
             effort: candidate.effort,
         })
         .collect()
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
 }
 
 fn preselected(text: &str, count: usize) -> Option<usize> {
@@ -838,7 +846,7 @@ fn shared_start<'a>(options: impl Iterator<Item = &'a str>, typed: &str) -> Opti
     Some((shared.to_owned(), is_unique))
 }
 
-fn echo(input: &Input, columns: usize) -> Vec<String> {
+pub(crate) fn echo(input: &Input, columns: usize) -> Vec<String> {
     let line = Line {
         mode: input.mode,
         text: input.text.clone(),
@@ -1019,6 +1027,7 @@ mod tests {
         use_choices(&Choices {
             offers: &offers,
             catalog: &catalog,
+            sessions: &[],
             current: Current {
                 account: account.id,
                 model: "gpt-6.2-sol",
@@ -1517,7 +1526,8 @@ mod tests {
     #[test]
     fn arrows_pick_a_command_and_enter_runs_it() {
         let mut line = line("/", 1);
-        let action = press(&mut line, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
+        let keys = [KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Enter];
+        let action = press(&mut line, &keys);
         assert!(matches!(action, Action::Submit));
         assert_eq!(line.text, "/help");
     }

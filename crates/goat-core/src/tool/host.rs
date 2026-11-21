@@ -1,9 +1,11 @@
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use super::web::{self, Web};
 use super::{Call, Kind, Step, bash, danger, files, hashline};
 use crate::image;
 
@@ -17,6 +19,7 @@ pub(crate) struct Host {
     spill: PathBuf,
     danger: danger::Checker,
     steps: mpsc::Sender<Step>,
+    web: RefCell<Option<Web>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,6 +41,12 @@ enum Op {
     Write {
         path: String,
         content: String,
+    },
+    Fetch {
+        url: String,
+    },
+    Search {
+        query: String,
     },
 }
 
@@ -68,7 +77,12 @@ impl Host {
             spill: spill.to_owned(),
             danger: danger::Checker::new()?,
             steps,
+            web: RefCell::new(None),
         })
+    }
+
+    pub(crate) fn set_web(&self, web: Web) {
+        self.web.replace(Some(web));
     }
 
     pub(crate) fn workspace(&self) -> &Path {
@@ -120,6 +134,17 @@ impl Host {
             Op::Write { path, content } => {
                 to_value(files::write(&self.resolve(&path), &path, &content)?)
             }
+            Op::Fetch { url } => {
+                let web = self.web()?;
+                to_value(web::fetch(&web.http, &url, &self.spill).await?)
+            }
+            Op::Search { query } => {
+                let searcher = self
+                    .web()?
+                    .search
+                    .ok_or("web search needs a signed-in account")?;
+                to_value(web::search(&searcher, &query).await?)
+            }
         }
     }
 
@@ -160,6 +185,13 @@ impl Host {
         Ok(shown)
     }
 
+    fn web(&self) -> Result<Web, String> {
+        self.web
+            .borrow()
+            .clone()
+            .ok_or_else(|| "the web is not available here".to_owned())
+    }
+
     fn resolve(&self, raw: &str) -> PathBuf {
         match raw.strip_prefix('~') {
             Some("") => self.home.clone(),
@@ -176,6 +208,8 @@ impl Op {
             Self::Read { path, .. } => (Kind::Read, path),
             Self::Edit { path, .. } => (Kind::Edit, path),
             Self::Write { path, .. } => (Kind::Write, path),
+            Self::Fetch { url } => (Kind::Fetch, url),
+            Self::Search { query } => (Kind::Search, query),
         };
         Call {
             kind,

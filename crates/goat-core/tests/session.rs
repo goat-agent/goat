@@ -18,6 +18,8 @@ const ANTHROPIC_ANSWER: &str = include_str!("fixtures/anthropic/answer.sse");
 const ANTHROPIC_TRUNCATED_CALL: &str = include_str!("fixtures/anthropic/truncated_call.sse");
 const ANTHROPIC_REFUSAL: &str = include_str!("fixtures/anthropic/refusal.sse");
 const ANTHROPIC_OVERLOADED: &str = include_str!("fixtures/anthropic/overloaded.sse");
+const ANTHROPIC_SEARCH: &str = include_str!("fixtures/anthropic/search.sse");
+const OPENAI_SEARCH: &str = include_str!("fixtures/openai/search.sse");
 
 #[derive(Default)]
 struct Recorder {
@@ -27,10 +29,12 @@ struct Recorder {
     shell: String,
     shell_ends: Vec<(Option<i32>, Option<String>)>,
     stops: Vec<&'static str>,
+    order: Vec<String>,
 }
 
 impl Sink for Recorder {
     fn emit(&mut self, event: Event<'_>) {
+        self.order.push(name(&event));
         match event {
             Event::Text(text) => self.text.push_str(text),
             Event::Reasoning(text) => self.reasoning.push_str(text),
@@ -410,7 +414,15 @@ async fn shell_output_streams_and_reaches_the_next_request() {
 
     assert_eq!(recorder.shell, "hi\n");
     assert_eq!(recorder.shell_ends, [(Some(0), None)]);
-    assert!(text_of(&session, 0).ends_with("$ echo hi\nhi\n[exit 0]"));
+    let Part::Shell {
+        command,
+        output,
+        code,
+    } = &session.messages()[0].parts[0]
+    else {
+        panic!("expected a shell part");
+    };
+    assert_eq!((&**command, &**output, *code), ("echo hi", "hi\n", Some(0)));
     let requests = server.requests.lock().unwrap();
     assert!(requests[0].contains("$ echo hi\\nhi\\n[exit 0]"));
 }
@@ -614,4 +626,199 @@ data: {"type":"response.incomplete","sequence_number":4,"response":{"id":"resp_2
 
     assert_eq!(recorder.stops, ["truncated"]);
     assert_eq!(text_of(&session, 1), "Done.");
+}
+
+fn has_hits(output: &str) -> bool {
+    let cited = output.find(r#""url": "https://tokio.rs"#);
+    let listed = output.find(r#""url": "https://docs.rs/tokio""#);
+    output.contains(r#""snippet": "Tokio is an async runtime for Rust.""#)
+        && cited
+            .zip(listed)
+            .is_some_and(|(cited, listed)| cited < listed)
+}
+
+fn result_of(session: &Session) -> &str {
+    let Part::ToolResult { output, .. } = &session.messages()[2].parts[0] else {
+        panic!("expected a tool result");
+    };
+    output
+}
+
+#[tokio::test]
+async fn openai_search_asks_the_provider_and_returns_its_citations() {
+    let search_call = leak(
+        OPENAI_TOOL_CALL.replace("(await bash('echo hi')).output", "await webSearch('tokio')"),
+    );
+    let server = server::replay(vec![search_call, OPENAI_SEARCH, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    session
+        .turn("find tokio", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    assert!(has_hits(result_of(&session)), "{}", result_of(&session));
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[1].contains(r#""tools":[{"type":"web_search"}]"#));
+    assert!(requests[1].contains(r#""content":"tokio""#));
+}
+
+#[tokio::test]
+async fn anthropic_search_uses_the_web_search_server_tool() {
+    let search_call = leak(
+        ANTHROPIC_TOOL_USE.replace("(await bash('echo hi')).output", "await webSearch('tokio')"),
+    );
+    let server = server::replay(vec![search_call, ANTHROPIC_SEARCH, ANTHROPIC_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = anthropic_session(&env).unwrap();
+
+    session
+        .turn("find tokio", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    assert!(has_hits(result_of(&session)), "{}", result_of(&session));
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[1].contains(r#""type":"web_search_20250305","name":"web_search""#));
+}
+
+fn name(event: &Event<'_>) -> String {
+    match event {
+        Event::Prompt(text) => format!("prompt {text}"),
+        Event::ShellCommand(command) => format!("shell {command}"),
+        Event::Text(text) => format!("text {text}"),
+        Event::Reasoning(text) => format!("reasoning {}", text.trim_end()),
+        Event::RunStarted { description } => format!("run {description}"),
+        Event::Call(call) => format!("call {} {}", call.kind.as_str(), call.target),
+        Event::CallFailed { problem } => format!("failed {problem}"),
+        Event::RunFinished { outcome } => format!("finished {}", outcome.is_error),
+        Event::ShellOutput(output) => format!("output {}", output.trim_end()),
+        Event::ShellFinished { code, .. } => format!("exit {code:?}"),
+        Event::Truncated => "truncated".to_owned(),
+        Event::Refused => "refused".to_owned(),
+        Event::Compacting => "compacting".to_owned(),
+        Event::Usage(_) => "usage".to_owned(),
+    }
+}
+
+fn shown(order: &[String]) -> Vec<String> {
+    let mut merged: Vec<String> = Vec::new();
+    for event in order {
+        if event == "usage" || event.starts_with("reasoning") {
+            continue;
+        }
+        match (merged.last_mut(), event.strip_prefix("text ")) {
+            (Some(last), Some(more)) if last.starts_with("text ") => last.push_str(more),
+            _ => merged.push(event.clone()),
+        }
+    }
+    merged
+}
+
+#[tokio::test]
+async fn a_resumed_session_replays_what_was_shown() {
+    let server = server::replay(vec![OPENAI_TOOL_CALL, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let db = dir.path().join("goat.db");
+    let account = account(Kind::OpenAi);
+    let mut session = Session::create(
+        Store::open(&db).unwrap(),
+        reqwest::Client::new(),
+        &env,
+        account.clone(),
+        "gpt-6.2-astra",
+    )
+    .unwrap();
+    let mut live = Recorder::default();
+    session.shell("echo hi", &mut live).await.unwrap();
+    session.turn("say hi", &mut live).await.unwrap();
+    let id = session.id();
+    drop(session);
+
+    let resumed = Session::resume(
+        Store::open(&db).unwrap(),
+        reqwest::Client::new(),
+        &env,
+        id,
+        account,
+        "gpt-6.2-astra",
+    )
+    .unwrap();
+    let mut replayed = Recorder::default();
+    resumed.replay(&mut replayed).unwrap();
+
+    assert_eq!(
+        shown(&replayed.order),
+        [
+            "shell echo hi",
+            "output hi",
+            "exit Some(0)",
+            "prompt say hi",
+            "run Say hi",
+            "call bash echo hi",
+            "finished false",
+            "text Done.",
+        ]
+    );
+    let live = shown(&live.order);
+    assert_eq!(
+        live,
+        shown(&replayed.order)[1..]
+            .iter()
+            .filter(|event| !event.starts_with("prompt"))
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn the_first_answer_gets_a_title_from_the_model() {
+    let server = server::replay(vec![OPENAI_ANSWER, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+    assert!(session.naming().await.unwrap().is_none());
+
+    session.turn("hi", &mut Recorder::default()).await.unwrap();
+    let title = session.naming().await.unwrap().unwrap().run().await;
+    session.set_title(title.as_deref().unwrap()).unwrap();
+
+    assert_eq!(title.as_deref(), Some("Done"));
+    assert!(session.naming().await.unwrap().is_none());
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[1].contains("Name this conversation in 3 to 6 words"));
+}
+
+#[tokio::test]
+async fn compaction_renames_the_session() {
+    let big_answer =
+        leak(OPENAI_ANSWER.replace(r#""input_tokens":1300"#, r#""input_tokens":250000"#));
+    let summary =
+        leak(OPENAI_ANSWER.replace("Done.", "Goal: ship it\\nTitle: Shipping the release"));
+    let server = server::replay(vec![big_answer, summary, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    session
+        .turn("first", &mut Recorder::default())
+        .await
+        .unwrap();
+    session
+        .turn("second", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        session.title().unwrap().as_deref(),
+        Some("Shipping the release")
+    );
+    let Part::Summary { text, .. } = &session.messages()[0].parts[0] else {
+        panic!("expected a summary");
+    };
+    assert!(text.ends_with("Goal: ship it"));
 }

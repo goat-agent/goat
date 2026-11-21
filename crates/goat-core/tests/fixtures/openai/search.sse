@@ -1,0 +1,12 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_s","status":"in_progress"}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":1,"output_index":0,"item":{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"tokio","sources":[{"type":"url","url":"https://docs.rs/tokio"},{"type":"url","url":"https://tokio.rs"}]}}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":2,"output_index":1,"item":{"type":"message","id":"msg_s","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Tokio is an async runtime for Rust. ([tokio.rs](https://tokio.rs/?utm_source=openai))","annotations":[{"type":"url_citation","start_index":36,"end_index":82,"url":"https://tokio.rs/?utm_source=openai","title":"Tokio"}]}]}}
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":3,"response":{"id":"resp_s","status":"completed","usage":{"input_tokens":50,"input_tokens_details":{"cached_tokens":0},"output_tokens":20,"total_tokens":70}}}
+

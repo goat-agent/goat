@@ -1,17 +1,21 @@
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::{Chunk, Error, Flow, Images, OMITTED_IMAGE, Reply, Request, Stop, Usage};
+use super::{Chunk, Error, Flow, Hit, Images, OMITTED_IMAGE, Reply, Request, Stop, Usage};
 use crate::image::Image;
-use crate::message::{Message, Native, Part, Role};
+use crate::message::{self, Message, Native, Part, Role};
 
 pub const BASE_URL: &str = "https://api.anthropic.com/v1";
 pub const DEFAULT_MODEL: &str = "claude-opus-5-5";
 const VERSION: &str = "2026-10-21";
 const MAX_TOKENS: u32 = 64_000;
 const EMPTY_INPUT: &str = "{}";
+const SEARCH_TOKENS: u32 = 4096;
+const SEARCH_USES: u32 = 2;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Client {
     http: reqwest::Client,
     base: Box<str>,
@@ -90,11 +94,7 @@ impl Client {
                 "message_stop" => return Ok(Flow::Done),
                 "error" => {
                     let error: StreamError = serde_json::from_str(&event.data)?;
-                    let text = format!("{}: {}", error.error.r#type, error.error.message);
-                    return Err(match error.error.r#type.as_str() {
-                        "overloaded_error" | "api_error" => Error::Busy(text),
-                        _ => Error::Stream(text),
-                    });
+                    return Err(error.into_error());
                 }
                 _ => {}
             }
@@ -114,6 +114,89 @@ impl Client {
             .map(Building::finish)
             .collect::<Result<_, _>>()?;
         Ok(Reply { parts, usage, stop })
+    }
+
+    pub(super) async fn search(
+        &self,
+        query: &str,
+        model: &str,
+        key: &str,
+    ) -> Result<Vec<Hit>, Error> {
+        let body = serde_json::to_vec(&SearchBody {
+            model,
+            max_tokens: SEARCH_TOKENS,
+            stream: true,
+            system: [TextBlock {
+                r#type: "text",
+                text: Cow::Borrowed(super::SEARCH_INSTRUCTIONS),
+            }],
+            messages: [SearchMessage {
+                role: "user",
+                content: query,
+            }],
+            tools: [ServerTool {
+                r#type: "web_search_20250305",
+                name: "web_search",
+                max_uses: SEARCH_USES,
+            }],
+        })?;
+        let url = format!("{}/messages", self.base);
+        let response = super::post(
+            self.http
+                .post(&url)
+                .header("x-api-key", key)
+                .header("anthropic-version", VERSION)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body),
+        )
+        .await?;
+        let mut found = Vec::new();
+        let mut quotes = Vec::new();
+        super::read_events(response, |event| {
+            let envelope: Envelope = serde_json::from_str(&event.data)?;
+            match envelope.r#type.as_str() {
+                "content_block_start" => {
+                    let start: SearchBlockStart = serde_json::from_str(&event.data)?;
+                    if let SearchBlock::WebSearchToolResult { content } = start.content_block {
+                        match content {
+                            SearchResults::Found(results) => found.extend(
+                                results
+                                    .into_iter()
+                                    .filter_map(|result| Some((result.url?, result.title))),
+                            ),
+                            SearchResults::Failed { error_code } => {
+                                return Err(Error::Stream(format!("web search: {error_code}")));
+                            }
+                        }
+                    }
+                }
+                "content_block_delta" => {
+                    let delta: SearchDelta = serde_json::from_str(&event.data)?;
+                    if let SearchDeltaKind::CitationsDelta { citation } = delta.delta {
+                        quotes.push(citation);
+                    }
+                }
+                "message_stop" => return Ok(Flow::Done),
+                "error" => {
+                    let error: StreamError = serde_json::from_str(&event.data)?;
+                    return Err(error.into_error());
+                }
+                _ => {}
+            }
+            Ok(Flow::Continue)
+        })
+        .await?;
+        Ok(found
+            .into_iter()
+            .map(|(url, title)| Hit {
+                snippet: quotes
+                    .iter()
+                    .find(|quote| quote.url == url)
+                    .map_or_default(|quote| quote.cited_text.clone()),
+                title,
+                url,
+            })
+            .collect())
     }
 }
 
@@ -146,7 +229,7 @@ impl<'a> Body<'a> {
             stream: true,
             system: [TextBlock {
                 r#type: "text",
-                text: request.instructions,
+                text: Cow::Borrowed(request.instructions),
             }],
             tools: request
                 .tools
@@ -189,7 +272,7 @@ fn turn<'a>(message: &'a Message, native: bool, images: &'a Images) -> Option<Tu
             Part::Text { text, .. } | Part::Summary { text, .. } => (!text.trim().is_empty())
                 .then_some(Block::Text(TextBlock {
                     r#type: "text",
-                    text,
+                    text: Cow::Borrowed(text),
                 })),
             Part::Reasoning { native: raw, .. } => native.then_some(Block::Raw(raw.get())),
             Part::ToolCall {
@@ -205,6 +288,7 @@ fn turn<'a>(message: &'a Message, native: bool, images: &'a Images) -> Option<Tu
                 output,
                 is_error,
                 images: shown,
+                ..
             } => Some(Block::ToolResult {
                 r#type: "tool_result",
                 tool_use_id: call_id,
@@ -214,7 +298,7 @@ fn turn<'a>(message: &'a Message, native: bool, images: &'a Images) -> Option<Tu
                     ResultContent::Blocks(
                         std::iter::once(Block::Text(TextBlock {
                             r#type: "text",
-                            text: output,
+                            text: Cow::Borrowed(output),
                         }))
                         .chain(shown.iter().map(|image| picture(image, images)))
                         .collect(),
@@ -223,6 +307,14 @@ fn turn<'a>(message: &'a Message, native: bool, images: &'a Images) -> Option<Tu
                 is_error: *is_error,
             }),
             Part::Image(image) => Some(picture(image, images)),
+            Part::Shell {
+                command,
+                output,
+                code,
+            } => Some(Block::Text(TextBlock {
+                r#type: "text",
+                text: Cow::Owned(message::shell(command, output, *code)),
+            })),
         })
         .collect();
     (!content.is_empty()).then_some(Turn { role, content })
@@ -240,7 +332,7 @@ fn picture<'a>(image: &'a Image, images: &'a Images) -> Block<'a> {
         },
         None => Block::Text(TextBlock {
             r#type: "text",
-            text: OMITTED_IMAGE,
+            text: Cow::Borrowed(OMITTED_IMAGE),
         }),
     }
 }
@@ -304,7 +396,7 @@ struct Source<'a> {
 #[derive(Serialize)]
 struct TextBlock<'a> {
     r#type: &'static str,
-    text: &'a str,
+    text: Cow<'a, str>,
 }
 
 #[derive(Serialize)]
@@ -549,6 +641,91 @@ struct StreamError {
     error: StreamErrorDetail,
 }
 
+impl StreamError {
+    fn into_error(self) -> Error {
+        let text = format!("{}: {}", self.error.r#type, self.error.message);
+        match self.error.r#type.as_str() {
+            "overloaded_error" | "api_error" => Error::Busy(text),
+            _ => Error::Stream(text),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct SearchBody<'a> {
+    model: &'a str,
+    max_tokens: u32,
+    stream: bool,
+    system: [TextBlock<'a>; 1],
+    messages: [SearchMessage<'a>; 1],
+    tools: [ServerTool; 1],
+}
+
+#[derive(Serialize)]
+struct SearchMessage<'a> {
+    role: &'static str,
+    content: &'a str,
+}
+
+#[derive(Serialize)]
+struct ServerTool {
+    r#type: &'static str,
+    name: &'static str,
+    max_uses: u32,
+}
+
+#[derive(Deserialize)]
+struct SearchBlockStart {
+    content_block: SearchBlock,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SearchBlock {
+    WebSearchToolResult {
+        content: SearchResults,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SearchResults {
+    Found(Vec<SearchResult>),
+    Failed { error_code: String },
+}
+
+#[derive(Deserialize)]
+struct SearchResult {
+    url: Option<String>,
+    #[serde(default)]
+    title: String,
+}
+
+#[derive(Deserialize)]
+struct SearchDelta {
+    delta: SearchDeltaKind,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SearchDeltaKind {
+    CitationsDelta {
+        citation: Citation,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+struct Citation {
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    cited_text: String,
+}
+
 #[derive(Deserialize)]
 struct StreamErrorDetail {
     r#type: String,
@@ -580,6 +757,7 @@ mod tests {
                 output: "done".into(),
                 is_error: false,
                 images: Vec::new(),
+                trace: Vec::new(),
             }],
         );
         let json = serde_json::to_string(&turn(&message, false, &Images::default())).unwrap();
@@ -610,6 +788,7 @@ mod tests {
                 output: "{}".into(),
                 is_error: false,
                 images: vec![image],
+                trace: Vec::new(),
             }],
         );
         let block =

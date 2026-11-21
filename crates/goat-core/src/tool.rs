@@ -5,6 +5,7 @@ mod hashline;
 mod host;
 mod script;
 mod spill;
+mod web;
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -15,6 +16,8 @@ use serde_json::value::RawValue;
 use tokio::sync::mpsc;
 
 use crate::image::Picture;
+
+pub(crate) use self::web::{Searcher, Web};
 
 use self::host::Host;
 use self::script::Script;
@@ -34,6 +37,8 @@ The sandbox reaches the system only through these async functions:
 - read(path, {offset, limit}) returns {lines, total, next}. Each line is `N:hhh|text`, where `N:hhh` is its anchor. It gives up to 2000 lines from offset (1-based); next is the offset to continue from, or null. On a PNG, JPEG, GIF or WebP file it returns {image, width, height} instead, and you see the image after the run's result; a run shows at most 4 images.
 - edit(path, edits) changes lines of an existing file. Each edit is {op: \"replace\" | \"insert_after\" | \"delete\", from, to, lines}. from and to are lines or anchors from your latest read or edit of that file; to defaults to from; lines are the new lines; insert_after without from inserts at the top. Edits apply together or not at all, and a line that changed since it was read rejects them. Returns {total, preview}, where preview shows the changed lines with their new anchors.
 - write(path, content) creates a file or replaces a whole file. Returns {created, lines}.
+- webFetch(url) gets a web page like the standard fetch and returns {ok, status, url, text(), json()}, where text() of an HTML page is markdown. The text is cut to its first and last 20 KB with the full text in a file. Only http and https URLs without credentials are fetched; use bash and curl for anything else.
+- webSearch(query) searches the web and returns up to 8 results as [{title, url, snippet}].
 - console.log(...) adds lines to what you see, before the result.
 
 A failed read, edit or write, and a blocked command, throw an Error. A run returns only after all its calls finish, so await the calls whose results you use. Paths are relative to the working directory, and ~ is the home directory.";
@@ -64,12 +69,15 @@ pub(crate) struct Shelled {
     pub(crate) output: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Kind {
     Bash,
     Read,
     Edit,
     Write,
+    Fetch,
+    Search,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +131,8 @@ impl Kind {
             Self::Read => "read",
             Self::Edit => "edit",
             Self::Write => "write",
+            Self::Fetch => "fetch",
+            Self::Search => "search",
         }
     }
 }
@@ -172,8 +182,14 @@ impl Runner {
         })
     }
 
-    pub(crate) async fn run(&mut self, run: &Run, on_step: &mut dyn FnMut(Step)) -> Outcome {
+    pub(crate) async fn run(
+        &mut self,
+        run: &Run,
+        web: Web,
+        on_step: &mut dyn FnMut(Step),
+    ) -> Outcome {
         while self.steps.try_recv().is_ok() {}
+        self.host.set_web(web);
         let (script, note) = match self.script.take() {
             Some(script) => (script, None),
             None => match Script::new(Rc::clone(&self.host)).await {
@@ -246,6 +262,13 @@ mod tests {
 
     use super::*;
 
+    fn offline() -> Web {
+        Web {
+            http: reqwest::Client::new(),
+            search: None,
+        }
+    }
+
     fn runner(dir: &Path) -> Runner {
         Runner::new(dir, dir, &dir.join(".spill"), false).unwrap()
     }
@@ -271,12 +294,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetch_works_like_the_standard_one_and_returns_markdown() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            assert!(stream.read(&mut [0; 1024]).await.unwrap() > 0);
+            let body = "<h2>Hi</h2>";
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(head.as_bytes()).await.unwrap();
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let code = format!("const page = await webFetch('{url}'); [page.ok, await page.text()]");
+
+        let outcome = runner(dir.path())
+            .run(&run(&code), offline(), &mut |_| {})
+            .await;
+
+        assert_eq!(&*outcome.output, "[\n  true,\n  \"## Hi\"\n]");
+    }
+
+    #[tokio::test]
+    async fn search_without_an_account_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let outcome = runner(dir.path())
+            .run(&run("await webSearch('x')"), offline(), &mut |_| {})
+            .await;
+
+        assert!(outcome.is_error);
+        assert!(
+            outcome
+                .output
+                .contains("web search needs a signed-in account")
+        );
+    }
+
+    #[tokio::test]
     async fn steps_are_reported_while_the_script_runs() {
         let dir = tempfile::tempdir().unwrap();
         let mut steps = Vec::new();
         runner(dir.path())
             .run(
                 &run("await bash`true`; await write('a.txt', 'x')"),
+                offline(),
                 &mut |step| {
                     steps.push(step);
                 },
@@ -301,15 +369,19 @@ mod tests {
     async fn sandbox_lost_to_a_cancel_is_announced_in_the_next_run() {
         let dir = tempfile::tempdir().unwrap();
         let mut runner = runner(dir.path());
-        runner.run(&run("let kept = 1"), &mut |_| {}).await;
+        runner
+            .run(&run("let kept = 1"), offline(), &mut |_| {})
+            .await;
         let cancelled = tokio::time::timeout(
             Duration::from_millis(300),
-            runner.run(&run("await bash`sleep 5`"), &mut |_| {}),
+            runner.run(&run("await bash`sleep 5`"), offline(), &mut |_| {}),
         )
         .await;
         assert!(cancelled.is_err());
 
-        let outcome = runner.run(&run("typeof kept"), &mut |_| {}).await;
+        let outcome = runner
+            .run(&run("typeof kept"), offline(), &mut |_| {})
+            .await;
         assert_eq!(outcome, Outcome::ok(format!("{NEW_SANDBOX}\nundefined")));
     }
 
@@ -319,7 +391,11 @@ mod tests {
         let mut runner = runner(dir.path());
         let cancelled = tokio::time::timeout(
             Duration::from_millis(500),
-            runner.run(&run("await bash`sleep 1; touch late`"), &mut |_| {}),
+            runner.run(
+                &run("await bash`sleep 1; touch late`"),
+                offline(),
+                &mut |_| {},
+            ),
         )
         .await;
         assert!(cancelled.is_err());
@@ -331,7 +407,7 @@ mod tests {
     async fn long_result_is_cut_and_spilled() {
         let dir = tempfile::tempdir().unwrap();
         let outcome = runner(dir.path())
-            .run(&run("'x'.repeat(100000)"), &mut |_| {})
+            .run(&run("'x'.repeat(100000)"), offline(), &mut |_| {})
             .await;
         assert!(outcome.output.contains("bytes omitted"));
         assert_eq!(

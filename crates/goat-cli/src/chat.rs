@@ -1,6 +1,6 @@
 use std::cell::RefCell;
-use std::path::Path;
-use std::pin::pin;
+use std::path::{Path, PathBuf};
+use std::pin::{Pin, pin};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -8,7 +8,7 @@ use goat_core::account::{self, Account};
 use goat_core::catalog::{self, Model};
 use goat_core::provider::{Endpoints, Provider};
 use goat_core::session::{self, Environment, Event, Prompt, Session, Sink};
-use goat_core::store::Store;
+use goat_core::store::{Recent, Store};
 
 use crate::command::{self, Name};
 use crate::input::{Editor, Entry, Input, Keys, Mode, RawMode, TurnKeys};
@@ -20,6 +20,7 @@ use crate::target::{self, Choices, Current, DEFAULT_EFFORT, Effort, Offer};
 const USER_AGENT: &str = concat!("goat/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const TICK: Duration = Duration::from_millis(80);
+const RECENT: u32 = 30;
 
 const KEYS: &str = "\
 Enter sends, and Alt+Enter or Ctrl+J adds a line
@@ -43,6 +44,15 @@ struct Chat {
     keys: Keys,
     offers: Vec<Offer>,
     catalog: Vec<Model>,
+    recent: Vec<Recent>,
+    environment: Environment,
+    database: PathBuf,
+    naming: Option<Naming>,
+}
+
+struct Naming {
+    session: session::Id,
+    job: Pin<Box<dyn Future<Output = Option<String>>>>,
 }
 
 struct Live<'a, 'b>(&'a RefCell<&'b mut Terminal>);
@@ -54,16 +64,50 @@ enum Flow {
 
 impl Chat {
     async fn read(&mut self) -> anyhow::Result<Entry> {
-        let Self {
-            session,
-            terminal,
-            editor,
-            keys,
-            offers,
-            catalog,
-        } = self;
-        let choices = choices(session, offers, catalog);
-        Ok(editor.read(keys, &choices, terminal).await?)
+        loop {
+            let Self {
+                session,
+                terminal,
+                editor,
+                keys,
+                offers,
+                catalog,
+                recent,
+                naming,
+                ..
+            } = self;
+            *recent = session
+                .store()
+                .recent_sessions(session.workspace(), RECENT)?
+                .into_iter()
+                .filter(|past| past.id != session.id())
+                .collect();
+            let choices = choices(session, offers, catalog, recent);
+            let Some(pending) = naming else {
+                return Ok(editor.read(keys, &choices, terminal).await?);
+            };
+            tokio::select! {
+                entry = editor.read(keys, &choices, terminal) => return Ok(entry?),
+                title = &mut pending.job => {
+                    if let Some(title) = title {
+                        session.store().set_title(pending.session, &title)?;
+                    }
+                    *naming = None;
+                }
+            }
+        }
+    }
+
+    async fn name(&mut self) {
+        if self.naming.is_some() {
+            return;
+        }
+        if let Ok(Some(naming)) = self.session.naming().await {
+            self.naming = Some(Naming {
+                session: self.session.id(),
+                job: Box::pin(naming.run()),
+            });
+        }
     }
 
     async fn work(&mut self, input: &Input) -> anyhow::Result<()> {
@@ -74,12 +118,15 @@ impl Chat {
             keys,
             offers,
             catalog,
+            recent,
+            ..
         } = self;
         let model = session.model().to_owned();
         let effort = session.effort().map(str::to_owned);
         let choices = Choices {
             offers,
             catalog,
+            sessions: recent,
             current: Current {
                 account: session.account().id,
                 model: &model,
@@ -145,12 +192,16 @@ impl Chat {
                 self.terminal.reply(&effort);
             }
             (Name::Effort, level) => self.set_effort(level)?,
+            (Name::Resume, "") => self
+                .terminal
+                .reply("Type /resume and pick a session from the list"),
+            (Name::Resume, id) => self.resume(id)?,
         }
         Ok(Flow::Continue)
     }
 
     fn switch(&mut self, spec: &str) -> anyhow::Result<()> {
-        let choices = choices(&self.session, &self.offers, &self.catalog);
+        let choices = choices(&self.session, &self.offers, &self.catalog, &self.recent);
         let selection = choices.resolve(spec).map_err(anyhow::Error::msg)?;
         let name = choices.name(selection.account, &selection.model);
         let is_new_account = selection.account != self.session.account().id;
@@ -189,7 +240,7 @@ impl Chat {
     }
 
     fn set_effort(&mut self, level: &str) -> anyhow::Result<()> {
-        let effort = choices(&self.session, &self.offers, &self.catalog)
+        let effort = choices(&self.session, &self.offers, &self.catalog, &self.recent)
             .effort(level)
             .map_err(anyhow::Error::msg)?;
         match effort {
@@ -204,7 +255,7 @@ impl Chat {
         let Some(effort) = self.session.effort() else {
             return false;
         };
-        let choices = choices(&self.session, &self.offers, &self.catalog);
+        let choices = choices(&self.session, &self.offers, &self.catalog, &self.recent);
         let is_supported = choices
             .current_model()
             .is_none_or(|model| model.accepts(effort));
@@ -223,9 +274,41 @@ impl Chat {
             .farewell(&format!("goat --resume {}", self.session.id()));
     }
 
+    fn resume(&mut self, raw: &str) -> anyhow::Result<()> {
+        let id: session::Id = raw
+            .parse()
+            .with_context(|| format!("{raw} is not a session id"))?;
+        if id == self.session.id() {
+            self.terminal.outcome(Ok("This is the current session"));
+            return Ok(());
+        }
+        let store = Store::open(&self.database)?;
+        let opening = reopen(&store, &self.offers, &self.catalog, id, None)?;
+        let before = self.status();
+        let mut session = Session::resume(
+            store,
+            http()?,
+            &self.environment,
+            id,
+            opening.account,
+            &opening.model,
+        )?;
+        session.set_effort(opening.effort.as_deref());
+        self.session = session;
+        let after = self.status();
+        let note = if after == before {
+            "Resumed the session".to_owned()
+        } else {
+            format!("Resumed the session on {after}")
+        };
+        self.terminal.outcome(Ok(&note));
+        self.session.replay(&mut self.terminal)?;
+        Ok(())
+    }
+
     fn status(&self) -> String {
         let session = &self.session;
-        let name = choices(session, &self.offers, &self.catalog)
+        let name = choices(session, &self.offers, &self.catalog, &self.recent)
             .name(session.account().id, session.model());
         let effort = session
             .effort()
@@ -234,7 +317,7 @@ impl Chat {
     }
 
     fn describe_effort(&self) -> String {
-        let choices = choices(&self.session, &self.offers, &self.catalog);
+        let choices = choices(&self.session, &self.offers, &self.catalog, &self.recent);
         let effort = self.session.effort().unwrap_or(DEFAULT_EFFORT);
         match choices
             .current_model()
@@ -296,20 +379,7 @@ pub(crate) async fn resume(paths: &Paths, choice: Choice, id: Option<&str>) -> a
     };
     let catalog = catalog::models()?;
     let offers = offers(&store)?;
-    let last = store.last_origin(id)?;
-    let account = pick_account(&store, last.as_ref().map(|origin| origin.account))?;
-    let model = match last {
-        Some(origin) if origin.account == account.id => origin.model.into(),
-        _ => pick_model(&store, &account)?,
-    };
-    let opening = open(
-        &store,
-        &offers,
-        &catalog,
-        account,
-        model,
-        choice.model.as_deref(),
-    )?;
+    let opening = reopen(&store, &offers, &catalog, id, choice.model.as_deref())?;
     let mut session = Session::resume(
         store,
         http()?,
@@ -320,6 +390,22 @@ pub(crate) async fn resume(paths: &Paths, choice: Choice, id: Option<&str>) -> a
     )?;
     session.set_effort(opening.effort.as_deref());
     run(session, offers, catalog, paths).await
+}
+
+fn reopen(
+    store: &Store,
+    offers: &[Offer],
+    catalog: &[Model],
+    id: session::Id,
+    spec: Option<&str>,
+) -> anyhow::Result<Opening> {
+    let last = store.last_origin(id)?;
+    let account = pick_account(store, last.as_ref().map(|origin| origin.account))?;
+    let model = match last {
+        Some(origin) if origin.account == account.id => origin.model.into(),
+        _ => pick_model(store, &account)?,
+    };
+    open(store, offers, catalog, account, model, spec)
 }
 
 fn offers(store: &Store) -> anyhow::Result<Vec<Offer>> {
@@ -352,6 +438,7 @@ fn open(
     let choices = Choices {
         offers,
         catalog,
+        sessions: &[],
         current: Current {
             account: account.id,
             model: &model,
@@ -389,6 +476,10 @@ async fn run(
         keys: Keys::start(),
         offers,
         catalog,
+        recent: Vec::new(),
+        environment: environment(paths),
+        database: paths.database.clone(),
+        naming: None,
     };
     let model = chat.status();
     let directory = directory(chat.session.workspace(), &paths.home);
@@ -396,6 +487,7 @@ async fn run(
         model: &model,
         directory: &directory,
     });
+    chat.session.replay(&mut chat.terminal)?;
     loop {
         chat.terminal.settle();
         let Entry::Input(input) = chat.read().await? else {
@@ -416,6 +508,9 @@ async fn run(
             continue;
         }
         chat.work(&input).await?;
+        if input.mode == Mode::Agent {
+            chat.name().await;
+        }
     }
 }
 
@@ -427,10 +522,16 @@ fn directory(workspace: &Path, home: &Path) -> String {
     }
 }
 
-fn choices<'a>(session: &'a Session, offers: &'a [Offer], catalog: &'a [Model]) -> Choices<'a> {
+fn choices<'a>(
+    session: &'a Session,
+    offers: &'a [Offer],
+    catalog: &'a [Model],
+    sessions: &'a [Recent],
+) -> Choices<'a> {
     Choices {
         offers,
         catalog,
+        sessions,
         current: Current {
             account: session.account().id,
             model: session.model(),

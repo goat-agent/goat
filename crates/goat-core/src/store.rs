@@ -42,6 +42,9 @@ const MIGRATIONS: &[&str] = &[
         data blob not null
     ) strict;
 ",
+    "
+    alter table sessions add column title text;
+",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -59,6 +62,14 @@ pub enum Error {
 #[derive(Debug)]
 pub struct Store {
     conn: Connection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recent {
+    pub id: session::Id,
+    pub title: String,
+    pub messages: u64,
+    pub active_at: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -197,6 +208,92 @@ impl Store {
         Ok(messages)
     }
 
+    pub fn set_title(&self, session: session::Id, title: &str) -> Result<(), Error> {
+        self.conn.execute(
+            "update sessions set title = ?2 where id = ?1",
+            params![session, title],
+        )?;
+        Ok(())
+    }
+
+    pub fn title(&self, session: session::Id) -> Result<Option<String>, Error> {
+        Ok(self
+            .conn
+            .query_row(
+                "select title from sessions where id = ?1",
+                [session],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    pub fn recent_sessions(&self, cwd: &Path, limit: u32) -> Result<Vec<Recent>, Error> {
+        let mut statement = self.conn.prepare(
+            "select s.id, s.title,
+                (select count(*) from messages m where m.session_id = s.id),
+                (select m.parts from messages m where m.session_id = s.id and m.role = 'user' order by m.id limit 1),
+                (select max(m.id) from messages m where m.session_id = s.id) as last
+             from sessions s
+             where s.cwd = ?1 and exists (select 1 from messages m where m.session_id = s.id)
+             order by last desc limit ?2",
+        )?;
+        let rows = statement.query_map(params![cwd.to_string_lossy(), limit], |row| {
+            Ok((
+                row.get::<_, session::Id>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<message::Id>>(4)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, named, messages, first, last) = row?;
+            Ok(Recent {
+                id,
+                title: named.unwrap_or_else(|| first.as_deref().map_or_default(title)),
+                messages: u64::try_from(messages).unwrap_or(0),
+                active_at: last.and_then(|last| last.unix_seconds()),
+            })
+        })
+        .collect()
+    }
+
+    pub fn each_message(
+        &self,
+        session: session::Id,
+        mut visit: impl FnMut(Message),
+    ) -> Result<(), Error> {
+        let mut statement = self.conn.prepare(
+            "select id, role, model, account_id, parts from messages
+             where session_id = ?1 order by id",
+        )?;
+        let mut rows = statement.query([session])?;
+        while let Some(row) = rows.next()? {
+            let role: String = row.get(1)?;
+            let Some(role) = Role::parse(&role) else {
+                continue;
+            };
+            let Ok(parts) = serde_json::from_str(&row.get::<_, String>(4)?) else {
+                continue;
+            };
+            let origin = row
+                .get::<_, Option<String>>(2)?
+                .zip(row.get::<_, Option<account::Id>>(3)?)
+                .map(|(model, account)| Origin {
+                    model: model.into(),
+                    account,
+                });
+            visit(Message {
+                id: row.get(0)?,
+                role,
+                origin,
+                parts,
+            });
+        }
+        Ok(())
+    }
+
     fn messages(
         &self,
         session: session::Id,
@@ -324,6 +421,25 @@ impl Store {
             .execute("delete from accounts where id = ?1", [id])?
             > 0)
     }
+}
+
+fn title(parts: &str) -> String {
+    let parts: Vec<Part> = serde_json::from_str(parts).unwrap_or_default();
+    parts
+        .iter()
+        .find_map(|part| match part {
+            Part::Text { text, .. } => Some(first_line(text).to_owned()),
+            Part::Shell { command, .. } => Some(format!("!{}", first_line(command))),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
 }
 
 fn session_info(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionInfo> {
@@ -459,6 +575,33 @@ mod tests {
         let accounts = store.accounts().unwrap();
         assert_eq!(accounts.len(), 1);
         assert!(matches!(&accounts[0].credential, Credential::ApiKey { key } if &**key == "b"));
+    }
+
+    #[test]
+    fn a_named_session_is_listed_by_its_title() {
+        let store = Store::open_in_memory().unwrap();
+        let cwd = Path::new("/work");
+        let id = store.create_session(cwd, "be brief").unwrap();
+        store
+            .append(id, &Message::user("first line\nmore"))
+            .unwrap();
+
+        let unnamed = store.recent_sessions(cwd, 10).unwrap();
+        store.set_title(id, "Startup banner").unwrap();
+        let named = store.recent_sessions(cwd, 10).unwrap();
+
+        assert_eq!(unnamed[0].title, "first line");
+        assert_eq!(named[0].title, "Startup banner");
+        assert_eq!(store.title(id).unwrap().as_deref(), Some("Startup banner"));
+    }
+
+    #[test]
+    fn empty_sessions_are_not_listed() {
+        let store = Store::open_in_memory().unwrap();
+        let cwd = Path::new("/work");
+        store.create_session(cwd, "be brief").unwrap();
+
+        assert_eq!(store.recent_sessions(cwd, 10).unwrap(), Vec::new());
     }
 
     #[test]

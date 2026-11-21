@@ -10,7 +10,7 @@ use goat_core::tool::{self, Kind};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::input::fit;
+use crate::input::{Input, Mode, echo, fit};
 use crate::kitty::{self, Cell};
 use crate::markdown::{Markdown, Style};
 
@@ -250,7 +250,7 @@ impl<W: Write> Terminal<W> {
         self.activity = None;
         match ending {
             Ending::Complete => {}
-            Ending::Interrupted => self.note("Interrupted"),
+            Ending::Interrupted => self.error("Interrupted"),
             Ending::Failed(problem) => self.error(&problem),
         }
         self.flush();
@@ -322,6 +322,8 @@ impl<W: Write> Terminal<W> {
             Kind::Read => "Read",
             Kind::Edit => "Edit",
             Kind::Write => "Write",
+            Kind::Fetch => "WebFetch",
+            Kind::Search => "WebSearch",
         };
         let mut lines = call.target.lines();
         let mut target = lines.next().unwrap_or_default().to_owned();
@@ -334,6 +336,17 @@ impl<W: Write> Terminal<W> {
             branch.dim(),
             shorten(&target, room).dim()
         ));
+    }
+
+    fn prompt(&mut self, mode: Mode, text: &str) {
+        self.settle();
+        let input = Input {
+            mode,
+            text: text.to_owned(),
+            images: Vec::new(),
+        };
+        let rows = echo(&input, self.columns());
+        self.echo(&rows);
     }
 
     fn shell_output(&mut self, chunk: &str) {
@@ -456,6 +469,8 @@ impl<W: Write> Terminal<W> {
 impl<W: Write> Sink for Terminal<W> {
     fn emit(&mut self, event: Event<'_>) {
         match event {
+            Event::Prompt(text) => self.prompt(Mode::Agent, text),
+            Event::ShellCommand(command) => self.prompt(Mode::Shell, command),
             Event::Text(text) => self.stream(Section::Text, text),
             Event::Reasoning(chunk) => self.stream(Section::Reasoning, chunk),
             Event::RunStarted { description } => {
@@ -708,6 +723,22 @@ mod tests {
     }
 
     #[test]
+    fn web_calls_show_their_function_names() {
+        let search = call(Kind::Search, "tokio");
+        let fetch = call(Kind::Fetch, "https://tokio.rs");
+        let screen = screen(&[Event::Call(&search), Event::Call(&fetch)]);
+
+        let expected = format!(
+            "  {} WebSearch {}\n  {} WebFetch {}\n\n",
+            "└".dim(),
+            "tokio".dim(),
+            " ".dim(),
+            "https://tokio.rs".dim()
+        );
+        assert_eq!(screen, expected);
+    }
+
+    #[test]
     fn long_call_targets_are_cut_to_the_width() {
         let bash = call(Kind::Bash, &"x".repeat(100));
         let screen = screen(&[Event::Call(&bash)]);
@@ -941,6 +972,36 @@ mod tests {
                     .to_string()
             )
         );
+    }
+
+    #[test]
+    fn a_replayed_prompt_looks_like_a_sent_one() {
+        let screen = screen(&[Event::Prompt("fix it"), Event::Text("Done.\n")]);
+
+        assert_eq!(screen, format!("{}fix it\n\nDone.\n\n", "› ".dim()));
+    }
+
+    #[test]
+    fn a_replayed_shell_command_has_its_red_bang() {
+        let screen = screen(&[
+            Event::ShellCommand("ls"),
+            Event::ShellOutput("a\n"),
+            Event::ShellFinished {
+                code: Some(0),
+                problem: None,
+            },
+        ]);
+
+        assert!(screen.starts_with(&format!("{}ls\n\n  a\n", "! ".red())));
+    }
+
+    #[test]
+    fn an_interrupted_turn_says_so_in_red() {
+        let mut terminal = Terminal::with_writer(Vec::new(), || 40);
+        terminal.begin_turn(Work::Turn);
+        terminal.finish_turn(Ending::Interrupted);
+
+        assert!(visible(&terminal.out).contains(&"Interrupted".red().to_string()));
     }
 
     #[test]

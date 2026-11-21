@@ -76,6 +76,9 @@ pub struct Request<'a> {
 }
 
 const OMITTED_IMAGE: &str = "[image omitted]";
+const HITS: usize = 8;
+const SEARCH_INSTRUCTIONS: &str =
+    "Search the web for the user's query and answer in a few sentences, citing the pages you used.";
 const BODY_TEXT_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Default)]
@@ -114,6 +117,13 @@ pub struct Reply {
     pub stop: Stop,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Hit {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stop {
     Finished,
@@ -121,7 +131,7 @@ pub enum Stop {
     Refused,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Provider {
     OpenAi(openai::Client),
     Anthropic(anthropic::Client),
@@ -161,6 +171,21 @@ impl Provider {
             Self::OpenAi(client) => client.send(request, bearer, on_chunk).await,
             Self::Anthropic(client) => client.send(request, bearer, on_chunk).await,
         }
+    }
+
+    pub async fn search(&self, query: &str, model: &str, bearer: &str) -> Result<Vec<Hit>, Error> {
+        let mut hits = match self {
+            Self::OpenAi(client) => client.search(query, model, bearer).await?,
+            Self::Anthropic(client) => client.search(query, model, bearer).await?,
+        };
+        let mut seen = Vec::new();
+        hits.retain(|hit| {
+            let is_new = !seen.contains(&hit.url);
+            seen.push(hit.url.clone());
+            is_new
+        });
+        hits.truncate(HITS);
+        Ok(hits)
     }
 }
 

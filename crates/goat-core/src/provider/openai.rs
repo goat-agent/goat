@@ -1,16 +1,19 @@
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::{Chunk, Error, Flow, Images, OMITTED_IMAGE, Reply, Request, Stop, Usage};
+use super::{Chunk, Error, Flow, Hit, Images, OMITTED_IMAGE, Reply, Request, Stop, Usage};
 use crate::account::codex;
 use crate::image::{Image, Media};
-use crate::message::{Message, Native, Part, Role};
+use crate::message::{self, Message, Native, Part, Role};
 
 pub const BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MODEL: &str = "gpt-6.2-astra";
 pub const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const SEARCH_SESSION: &str = "goat-search";
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Client {
     http: reqwest::Client,
     base: Box<str>,
@@ -114,6 +117,75 @@ impl Client {
 
         Ok(Reply { parts, usage, stop })
     }
+
+    pub(super) async fn search(
+        &self,
+        query: &str,
+        model: &str,
+        bearer: &str,
+    ) -> Result<Vec<Hit>, Error> {
+        let body = serde_json::to_vec(&SearchBody {
+            model,
+            instructions: super::SEARCH_INSTRUCTIONS,
+            input: [SearchInput {
+                role: "user",
+                content: query,
+            }],
+            tools: [HostedTool {
+                r#type: "web_search",
+            }],
+            store: false,
+            stream: true,
+            include: ["web_search_call.action.sources"],
+        })?;
+        let url = format!("{}/responses", self.base);
+        let response = super::post(
+            self.authorize(self.http.post(&url), bearer, SEARCH_SESSION)
+                .header(reqwest::header::ACCEPT, "text/event-stream")
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body),
+        )
+        .await?;
+        let mut cited = Vec::new();
+        let mut sources = Vec::new();
+        super::read_events(response, |event| {
+            let envelope: Envelope = serde_json::from_str(&event.data)?;
+            match envelope.r#type.as_str() {
+                "response.output_item.done" => {
+                    let done: SearchItemDone = serde_json::from_str(&event.data)?;
+                    match done.item {
+                        SearchItem::Message { content } => cited.extend(citations(content)),
+                        SearchItem::WebSearchCall { action } => sources.extend(
+                            action
+                                .into_iter()
+                                .flat_map(|action| action.sources)
+                                .filter_map(|source| source.url)
+                                .map(|url| without_tracking(&url)),
+                        ),
+                        SearchItem::Other => {}
+                    }
+                }
+                "response.completed" | "response.incomplete" => return Ok(Flow::Done),
+                "response.failed" => {
+                    let failed: Failed = serde_json::from_str(&event.data)?;
+                    return Err(failed.response.error.into_error());
+                }
+                "error" => {
+                    let error: ErrorDetail = serde_json::from_str(&event.data)?;
+                    return Err(error.into_error());
+                }
+                _ => {}
+            }
+            Ok(Flow::Continue)
+        })
+        .await?;
+        cited.extend(sources.into_iter().map(|url| Hit {
+            title: url.clone(),
+            url,
+            snippet: String::new(),
+        }));
+        Ok(cited)
+    }
 }
 
 #[derive(Serialize)]
@@ -195,15 +267,26 @@ fn push_input<'a>(
             ) if native => Input::Raw(raw.get()),
             (Part::Text { text, .. }, Role::Assistant) => Input::Message {
                 role: "assistant",
-                content: InputContent::Text(text),
+                content: InputContent::Text(Cow::Borrowed(text)),
             },
             (Part::Text { text, .. }, _) => Input::Message {
                 role: "user",
-                content: InputContent::Text(text),
+                content: InputContent::Text(Cow::Borrowed(text)),
             },
             (Part::Summary { text, .. }, _) => Input::Message {
                 role: "developer",
-                content: InputContent::Text(text),
+                content: InputContent::Text(Cow::Borrowed(text)),
+            },
+            (
+                Part::Shell {
+                    command,
+                    output,
+                    code,
+                },
+                _,
+            ) => Input::Message {
+                role: "user",
+                content: InputContent::Text(Cow::Owned(message::shell(command, output, *code))),
             },
             (Part::Image(image), _) => Input::Message {
                 role: "user",
@@ -232,7 +315,7 @@ fn push_input<'a>(
                 r#type: "function_call_output",
                 call_id,
                 output: if shown.is_empty() {
-                    InputContent::Text(output)
+                    InputContent::Text(Cow::Borrowed(output))
                 } else {
                     InputContent::Parts(
                         std::iter::once(InputPart::InputText { text: output })
@@ -271,7 +354,7 @@ enum Input<'a> {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum InputContent<'a> {
-    Text(&'a str),
+    Text(Cow<'a, str>),
     Parts(Vec<InputPart<'a>>),
 }
 
@@ -295,6 +378,79 @@ impl Serialize for DataUrl<'_> {
             self.base64
         ))
     }
+}
+
+#[derive(Serialize)]
+struct SearchBody<'a> {
+    model: &'a str,
+    instructions: &'a str,
+    input: [SearchInput<'a>; 1],
+    tools: [HostedTool; 1],
+    store: bool,
+    stream: bool,
+    include: [&'static str; 1],
+}
+
+#[derive(Serialize)]
+struct SearchInput<'a> {
+    role: &'static str,
+    content: &'a str,
+}
+
+#[derive(Serialize)]
+struct HostedTool {
+    r#type: &'static str,
+}
+
+#[derive(Deserialize)]
+struct SearchItemDone {
+    item: SearchItem,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SearchItem {
+    Message {
+        #[serde(default)]
+        content: Vec<CitedText>,
+    },
+    WebSearchCall {
+        action: Option<SearchAction>,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+struct CitedText {
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    annotations: Vec<Annotation>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Annotation {
+    UrlCitation {
+        url: String,
+        #[serde(default)]
+        title: String,
+        start_index: usize,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+struct SearchAction {
+    #[serde(default)]
+    sources: Vec<SearchSource>,
+}
+
+#[derive(Deserialize)]
+struct SearchSource {
+    url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -378,6 +534,79 @@ fn picture<'a>(image: &'a Image, images: &'a Images) -> InputPart<'a> {
             text: OMITTED_IMAGE,
         },
     }
+}
+
+fn citations(content: Vec<CitedText>) -> impl Iterator<Item = Hit> {
+    content.into_iter().flat_map(|part| {
+        let text: Vec<char> = part.text.chars().collect();
+        part.annotations
+            .into_iter()
+            .filter_map(move |annotation| match annotation {
+                Annotation::UrlCitation {
+                    url,
+                    title,
+                    start_index,
+                    ..
+                } => Some(Hit {
+                    title,
+                    url: without_tracking(&url),
+                    snippet: sentence_before(&text, start_index),
+                }),
+                Annotation::Other => None,
+            })
+            .collect::<Vec<_>>()
+    })
+}
+
+fn sentence_before(text: &[char], at: usize) -> String {
+    let mut end = at.min(text.len());
+    loop {
+        while end > 0 && text[end - 1].is_whitespace() {
+            end -= 1;
+        }
+        let marker = (end > 1 && text[end - 1] == ')')
+            .then(|| {
+                (0..end - 1)
+                    .rev()
+                    .find(|&at| text[at] == '(' && text[at + 1] == '[')
+            })
+            .flatten();
+        match marker {
+            Some(start) => end = start,
+            None => break,
+        }
+    }
+    let line = text[..end]
+        .iter()
+        .rposition(|c| *c == '\n')
+        .map_or(0, |at| at + 1);
+    let start = text[line..end]
+        .windows(2)
+        .rposition(|pair| matches!(pair[0], '.' | '!' | '?') && pair[1].is_whitespace())
+        .filter(|at| line + at + 2 < end)
+        .map_or(line, |at| line + at + 2);
+    text[start..end]
+        .iter()
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
+fn without_tracking(url: &str) -> String {
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return url.to_owned();
+    };
+    let kept: Vec<(String, String)> = parsed
+        .query_pairs()
+        .filter(|(key, _)| !key.starts_with("utm_"))
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    if kept.is_empty() {
+        parsed.set_query(None);
+    } else {
+        parsed.query_pairs_mut().clear().extend_pairs(kept);
+    }
+    parsed.to_string()
 }
 
 fn part(raw: Box<RawValue>) -> Result<Option<Part>, Error> {
@@ -507,6 +736,40 @@ impl ErrorDetail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_citation_snippet_is_the_sentence_it_backs() {
+        let text: Vec<char> = "Tokio is a runtime. spawn_blocking runs blocking code on a thread pool. ([docs.rs](https://docs.rs))"
+            .chars()
+            .collect();
+        let at = text.iter().position(|c| *c == '(').unwrap();
+
+        assert_eq!(
+            sentence_before(&text, at),
+            "spawn_blocking runs blocking code on a thread pool."
+        );
+    }
+
+    #[test]
+    fn a_second_citation_in_a_row_backs_the_same_sentence() {
+        let source = "It runs on a pool. ([a](https://a)) ([b](https://b))";
+        let text: Vec<char> = source.chars().collect();
+        let at = source[..source.find("([b").unwrap()].chars().count();
+
+        assert_eq!(sentence_before(&text, at), "It runs on a pool.");
+    }
+
+    #[test]
+    fn tracking_parameters_are_dropped_from_urls() {
+        assert_eq!(
+            without_tracking("https://docs.rs/tokio/?utm_source=openai"),
+            "https://docs.rs/tokio/"
+        );
+        assert_eq!(
+            without_tracking("https://example.com/a?q=1&utm_source=openai"),
+            "https://example.com/a?q=1"
+        );
+    }
     use crate::account;
     use crate::message::Origin;
 
@@ -602,6 +865,7 @@ mod tests {
                 output: "{}".into(),
                 is_error: false,
                 images: vec![image],
+                trace: Vec::new(),
             }],
         );
         let mut input = Vec::new();
