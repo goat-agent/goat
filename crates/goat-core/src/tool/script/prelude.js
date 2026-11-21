@@ -17,6 +17,17 @@
     call({ op: "read", path: String(path), offset, limit });
   const edit = (path, edits) => call({ op: "edit", path: String(path), edits });
   const write = (path, content) => call({ op: "write", path: String(path), content: String(content) });
+  const webFetch = async (url) => {
+    const page = await call({ op: "fetch", url: String(url) });
+    return {
+      ok: page.status >= 200 && page.status < 300,
+      status: page.status,
+      url: page.url,
+      text: async () => page.text,
+      json: async () => JSON.parse(page.text),
+    };
+  };
+  const webSearch = (query) => call({ op: "search", query: String(query) });
 
   const show = (value) => {
     if (typeof value === "string") return value;
@@ -28,7 +39,7 @@
     logged.push(values.map(show).join(" "));
   };
   globalThis.console = { log, info: log, warn: log, error: log, debug: log };
-  Object.assign(globalThis, { bash, read, edit, write });
+  Object.assign(globalThis, { bash, read, edit, write, webFetch, webSearch });
 
   return (value) => {
     const parts = logged.splice(0);

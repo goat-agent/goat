@@ -18,6 +18,8 @@ const ANTHROPIC_ANSWER: &str = include_str!("fixtures/anthropic/answer.sse");
 const ANTHROPIC_TRUNCATED_CALL: &str = include_str!("fixtures/anthropic/truncated_call.sse");
 const ANTHROPIC_REFUSAL: &str = include_str!("fixtures/anthropic/refusal.sse");
 const ANTHROPIC_OVERLOADED: &str = include_str!("fixtures/anthropic/overloaded.sse");
+const ANTHROPIC_SEARCH: &str = include_str!("fixtures/anthropic/search.sse");
+const OPENAI_SEARCH: &str = include_str!("fixtures/openai/search.sse");
 
 #[derive(Default)]
 struct Recorder {
@@ -614,4 +616,61 @@ data: {"type":"response.incomplete","sequence_number":4,"response":{"id":"resp_2
 
     assert_eq!(recorder.stops, ["truncated"]);
     assert_eq!(text_of(&session, 1), "Done.");
+}
+
+fn has_hits(output: &str) -> bool {
+    let cited = output.find(r#""url": "https://tokio.rs"#);
+    let listed = output.find(r#""url": "https://docs.rs/tokio""#);
+    output.contains(r#""snippet": "Tokio is an async runtime for Rust.""#)
+        && cited
+            .zip(listed)
+            .is_some_and(|(cited, listed)| cited < listed)
+}
+
+fn result_of(session: &Session) -> &str {
+    let Part::ToolResult { output, .. } = &session.messages()[2].parts[0] else {
+        panic!("expected a tool result");
+    };
+    output
+}
+
+#[tokio::test]
+async fn openai_search_asks_the_provider_and_returns_its_citations() {
+    let search_call = leak(
+        OPENAI_TOOL_CALL.replace("(await bash('echo hi')).output", "await webSearch('tokio')"),
+    );
+    let server = server::replay(vec![search_call, OPENAI_SEARCH, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    session
+        .turn("find tokio", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    assert!(has_hits(result_of(&session)), "{}", result_of(&session));
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[1].contains(r#""tools":[{"type":"web_search"}]"#));
+    assert!(requests[1].contains(r#""content":"tokio""#));
+}
+
+#[tokio::test]
+async fn anthropic_search_uses_the_web_search_server_tool() {
+    let search_call = leak(
+        ANTHROPIC_TOOL_USE.replace("(await bash('echo hi')).output", "await webSearch('tokio')"),
+    );
+    let server = server::replay(vec![search_call, ANTHROPIC_SEARCH, ANTHROPIC_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = anthropic_session(&env).unwrap();
+
+    session
+        .turn("find tokio", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    assert!(has_hits(result_of(&session)), "{}", result_of(&session));
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[1].contains(r#""type":"web_search_20250305","name":"web_search""#));
 }

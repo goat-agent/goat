@@ -30,7 +30,7 @@ Run the first three and `cargo deny check` before you finish. The toolchain is p
 
 - `message::Native` holds provider data that must be replayed byte for byte: OpenAI reasoning items and `phase`, Claude thinking signatures. It is sent back only when the message's model and account equal the current ones. Never edit it.
 - Claude rejects edited thinking blocks and any text placed before `tool_result` blocks. History is append-only.
-- On the ChatGPT plan, OpenAI requires `store:false` and `stream:true`, and rejects `temperature`, `max_output_tokens` and hosted tools.
+- On the ChatGPT plan, OpenAI requires `store:false` and `stream:true`, and rejects `temperature` and `max_output_tokens`. The Codex login accepts the hosted `web_search` tool (checked live); `webSearch()` uses it in a separate request, so the conversation itself never carries hosted tools.
 - The Codex login (`account::codex`) calls `chatgpt.com/backend-api/codex` with `chatgpt-account-id`, `originator: goat` and `session-id` headers. It is undocumented; keep its differences inside `provider/openai.rs` and `account/codex.rs`.
 - Models come from the built-in catalog `crates/goat-core/src/catalog.toml`, not from provider model lists. Add a model there when a provider releases one; each entry has an id, a provider, and optionally a name, effort levels and a default effort. A test checks that each provider's default model is in it.
 - Tool schemas are strict JSON Schema for OpenAI: every property is listed in `required`, and optional ones are nullable.

@@ -322,6 +322,8 @@ impl<W: Write> Terminal<W> {
             Kind::Read => "Read",
             Kind::Edit => "Edit",
             Kind::Write => "Write",
+            Kind::Fetch => "WebFetch",
+            Kind::Search => "WebSearch",
         };
         let mut lines = call.target.lines();
         let mut target = lines.next().unwrap_or_default().to_owned();
@@ -703,6 +705,22 @@ mod tests {
             "Cargo.toml".dim(),
             " ".dim(),
             "cargo test …".dim()
+        );
+        assert_eq!(screen, expected);
+    }
+
+    #[test]
+    fn web_calls_show_their_function_names() {
+        let search = call(Kind::Search, "tokio");
+        let fetch = call(Kind::Fetch, "https://tokio.rs");
+        let screen = screen(&[Event::Call(&search), Event::Call(&fetch)]);
+
+        let expected = format!(
+            "  {} WebSearch {}\n  {} WebFetch {}\n\n",
+            "└".dim(),
+            "tokio".dim(),
+            " ".dim(),
+            "https://tokio.rs".dim()
         );
         assert_eq!(screen, expected);
     }

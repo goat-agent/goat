@@ -10,7 +10,7 @@ use crate::image::{Image, Picture};
 use crate::message::{self, Message, Origin, Part, Role};
 use crate::provider::{self, Chunk, Endpoints, Images, Provider, Request, Stop, Usage};
 use crate::store::{self, Store};
-use crate::tool::{self, Outcome, Runner, Step};
+use crate::tool::{self, Outcome, Runner, Searcher, Step, Web};
 
 crate::id::define!(Id);
 
@@ -304,11 +304,19 @@ impl Session {
         sink.emit(Event::RunStarted {
             description: run.description(),
         });
+        let web = Web {
+            http: self.http.clone(),
+            search: self.bearer(false).await.ok().map(|bearer| Searcher {
+                provider: self.provider.clone(),
+                model: self.model.clone(),
+                bearer,
+            }),
+        };
         self.started.clear();
         let started = &mut self.started;
         let outcome = self
             .runner
-            .run(&run, &mut |step| match step {
+            .run(&run, web, &mut |step| match step {
                 Step::Started(call) => {
                     sink.emit(Event::Call(&call));
                     started.push(call);
