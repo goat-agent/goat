@@ -1,9 +1,11 @@
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 use super::{Chunk, Error, Flow, Hit, Images, OMITTED_IMAGE, Reply, Request, Stop, Usage};
 use crate::image::Image;
-use crate::message::{Message, Native, Part, Role};
+use crate::message::{self, Message, Native, Part, Role};
 
 pub const BASE_URL: &str = "https://api.anthropic.com/v1";
 pub const DEFAULT_MODEL: &str = "claude-opus-5-5";
@@ -126,7 +128,7 @@ impl Client {
             stream: true,
             system: [TextBlock {
                 r#type: "text",
-                text: super::SEARCH_INSTRUCTIONS,
+                text: Cow::Borrowed(super::SEARCH_INSTRUCTIONS),
             }],
             messages: [SearchMessage {
                 role: "user",
@@ -227,7 +229,7 @@ impl<'a> Body<'a> {
             stream: true,
             system: [TextBlock {
                 r#type: "text",
-                text: request.instructions,
+                text: Cow::Borrowed(request.instructions),
             }],
             tools: request
                 .tools
@@ -270,7 +272,7 @@ fn turn<'a>(message: &'a Message, native: bool, images: &'a Images) -> Option<Tu
             Part::Text { text, .. } | Part::Summary { text, .. } => (!text.trim().is_empty())
                 .then_some(Block::Text(TextBlock {
                     r#type: "text",
-                    text,
+                    text: Cow::Borrowed(text),
                 })),
             Part::Reasoning { native: raw, .. } => native.then_some(Block::Raw(raw.get())),
             Part::ToolCall {
@@ -296,7 +298,7 @@ fn turn<'a>(message: &'a Message, native: bool, images: &'a Images) -> Option<Tu
                     ResultContent::Blocks(
                         std::iter::once(Block::Text(TextBlock {
                             r#type: "text",
-                            text: output,
+                            text: Cow::Borrowed(output),
                         }))
                         .chain(shown.iter().map(|image| picture(image, images)))
                         .collect(),
@@ -305,6 +307,14 @@ fn turn<'a>(message: &'a Message, native: bool, images: &'a Images) -> Option<Tu
                 is_error: *is_error,
             }),
             Part::Image(image) => Some(picture(image, images)),
+            Part::Shell {
+                command,
+                output,
+                code,
+            } => Some(Block::Text(TextBlock {
+                r#type: "text",
+                text: Cow::Owned(message::shell(command, output, *code)),
+            })),
         })
         .collect();
     (!content.is_empty()).then_some(Turn { role, content })
@@ -322,7 +332,7 @@ fn picture<'a>(image: &'a Image, images: &'a Images) -> Block<'a> {
         },
         None => Block::Text(TextBlock {
             r#type: "text",
-            text: OMITTED_IMAGE,
+            text: Cow::Borrowed(OMITTED_IMAGE),
         }),
     }
 }
@@ -386,7 +396,7 @@ struct Source<'a> {
 #[derive(Serialize)]
 struct TextBlock<'a> {
     r#type: &'static str,
-    text: &'a str,
+    text: Cow<'a, str>,
 }
 
 #[derive(Serialize)]
@@ -747,6 +757,7 @@ mod tests {
                 output: "done".into(),
                 is_error: false,
                 images: Vec::new(),
+                trace: Vec::new(),
             }],
         );
         let json = serde_json::to_string(&turn(&message, false, &Images::default())).unwrap();
@@ -777,6 +788,7 @@ mod tests {
                 output: "{}".into(),
                 is_error: false,
                 images: vec![image],
+                trace: Vec::new(),
             }],
         );
         let block =

@@ -4,6 +4,7 @@ use std::ops::Range;
 pub(crate) enum Name {
     Model,
     Effort,
+    Resume,
     Help,
     Exit,
 }
@@ -24,6 +25,11 @@ pub(crate) const SPECS: &[Spec] = &[
         name: Name::Effort,
         word: "effort",
         about: "Set the reasoning effort",
+    },
+    Spec {
+        name: Name::Resume,
+        word: "resume",
+        about: "Continue an earlier session in this directory",
     },
     Spec {
         name: Name::Help,

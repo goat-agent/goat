@@ -19,6 +19,10 @@ macro_rules! define {
             pub fn generate() -> Self {
                 Self(uuid::Uuid::now_v7())
             }
+
+            pub fn unix_seconds(&self) -> Option<u64> {
+                self.0.get_timestamp().map(|stamp| stamp.to_unix().0)
+            }
         }
 
         impl std::fmt::Display for $name {

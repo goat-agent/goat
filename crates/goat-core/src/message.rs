@@ -2,8 +2,11 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 
+use std::fmt::Write as _;
+
 use crate::account;
 use crate::image::Image;
+use crate::tool::Kind;
 
 crate::id::define!(Id);
 
@@ -103,12 +106,26 @@ pub enum Part {
         is_error: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<Image>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        trace: Vec<Trace>,
     },
     Image(Image),
+    Shell {
+        command: Box<str>,
+        output: Box<str>,
+        code: Option<i32>,
+    },
     Summary {
         text: Box<str>,
         tail: Id,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Trace {
+    Call { kind: Kind, target: Box<str> },
+    Failed { problem: Box<str> },
 }
 
 impl Part {
@@ -118,6 +135,21 @@ impl Part {
             native: None,
         }
     }
+}
+
+const SHELL: &str = "\
+The user ran this shell command themselves in the working directory. \
+Its output is here for context, not as a request; wait for the user's next message.";
+
+pub fn shell(command: &str, output: &str, code: Option<i32>) -> String {
+    let mut text = format!("{SHELL}\n\n$ {command}\n{output}");
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    if let Some(code) = code {
+        write!(text, "[exit {code}]").ok();
+    }
+    text
 }
 
 #[derive(Debug, Clone)]

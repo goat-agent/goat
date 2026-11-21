@@ -1,10 +1,12 @@
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 use super::{Chunk, Error, Flow, Hit, Images, OMITTED_IMAGE, Reply, Request, Stop, Usage};
 use crate::account::codex;
 use crate::image::{Image, Media};
-use crate::message::{Message, Native, Part, Role};
+use crate::message::{self, Message, Native, Part, Role};
 
 pub const BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MODEL: &str = "gpt-6.2-astra";
@@ -265,15 +267,26 @@ fn push_input<'a>(
             ) if native => Input::Raw(raw.get()),
             (Part::Text { text, .. }, Role::Assistant) => Input::Message {
                 role: "assistant",
-                content: InputContent::Text(text),
+                content: InputContent::Text(Cow::Borrowed(text)),
             },
             (Part::Text { text, .. }, _) => Input::Message {
                 role: "user",
-                content: InputContent::Text(text),
+                content: InputContent::Text(Cow::Borrowed(text)),
             },
             (Part::Summary { text, .. }, _) => Input::Message {
                 role: "developer",
-                content: InputContent::Text(text),
+                content: InputContent::Text(Cow::Borrowed(text)),
+            },
+            (
+                Part::Shell {
+                    command,
+                    output,
+                    code,
+                },
+                _,
+            ) => Input::Message {
+                role: "user",
+                content: InputContent::Text(Cow::Owned(message::shell(command, output, *code))),
             },
             (Part::Image(image), _) => Input::Message {
                 role: "user",
@@ -302,7 +315,7 @@ fn push_input<'a>(
                 r#type: "function_call_output",
                 call_id,
                 output: if shown.is_empty() {
-                    InputContent::Text(output)
+                    InputContent::Text(Cow::Borrowed(output))
                 } else {
                     InputContent::Parts(
                         std::iter::once(InputPart::InputText { text: output })
@@ -341,7 +354,7 @@ enum Input<'a> {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum InputContent<'a> {
-    Text(&'a str),
+    Text(Cow<'a, str>),
     Parts(Vec<InputPart<'a>>),
 }
 
@@ -852,6 +865,7 @@ mod tests {
                 output: "{}".into(),
                 is_error: false,
                 images: vec![image],
+                trace: Vec::new(),
             }],
         );
         let mut input = Vec::new();

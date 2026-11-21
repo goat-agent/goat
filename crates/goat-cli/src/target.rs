@@ -1,5 +1,6 @@
 use goat_core::account;
 use goat_core::catalog::Model;
+use goat_core::store::Recent;
 
 pub(crate) const DEFAULT_EFFORT: &str = "default";
 
@@ -18,6 +19,7 @@ pub(crate) struct Current<'a> {
 pub(crate) struct Choices<'a> {
     pub(crate) offers: &'a [Offer],
     pub(crate) catalog: &'a [Model],
+    pub(crate) sessions: &'a [Recent],
     pub(crate) current: Current<'a>,
 }
 
@@ -45,6 +47,34 @@ pub(crate) enum Effort {
 }
 
 impl Choices<'_> {
+    pub(crate) fn sessions(&self, typed: &str, now: u64) -> Vec<Candidate> {
+        let wanted = typed.to_lowercase();
+        self.sessions
+            .iter()
+            .filter(|recent| {
+                recent.id.to_string().starts_with(typed)
+                    || recent.title.to_lowercase().contains(&wanted)
+            })
+            .map(|recent| {
+                let title = if recent.title.is_empty() {
+                    "(no text)"
+                } else {
+                    &recent.title
+                };
+                let when = recent.active_at.map_or_else(String::new, |at| {
+                    format!("{}, ", ago(now.saturating_sub(at)))
+                });
+                Candidate {
+                    value: recent.id.to_string(),
+                    label: format!("{title} ({when}{})", plural(recent.messages, "message")),
+                    is_current: false,
+                    efforts: Vec::new(),
+                    effort: 0,
+                }
+            })
+            .collect()
+    }
+
     pub(crate) fn models(&self, typed: &str) -> Vec<Candidate> {
         let mut found = Vec::new();
         match typed.split_once('/') {
@@ -282,11 +312,58 @@ fn joined(labels: &[&str]) -> String {
     }
 }
 
+fn ago(seconds: u64) -> String {
+    match seconds {
+        0..60 => "just now".to_owned(),
+        60..3600 => format!("{} ago", plural(seconds / 60, "minute")),
+        3600..86_400 => format!("{} ago", plural(seconds / 3600, "hour")),
+        _ => format!("{} ago", plural(seconds / 86_400, "day")),
+    }
+}
+
+fn plural(count: u64, word: &str) -> String {
+    if count == 1 {
+        format!("1 {word}")
+    } else {
+        format!("{count} {word}s")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use goat_core::account::{Account, Credential, Kind};
 
     use super::*;
+
+    #[test]
+    fn earlier_sessions_are_listed_by_title_age_and_size() {
+        let recent = [Recent {
+            id: goat_core::session::Id::generate(),
+            title: "fix the failing test".to_owned(),
+            messages: 14,
+            active_at: Some(1_000),
+        }];
+        let choices = Choices {
+            offers: &[],
+            catalog: &[],
+            sessions: &recent,
+            current: Current {
+                account: goat_core::account::Id::generate(),
+                model: "gpt-6.2-sol",
+                effort: None,
+            },
+        };
+
+        let found = choices.sessions("fail", 1_000 + 2 * 3600);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].label,
+            "fix the failing test (2 hours ago, 14 messages)"
+        );
+        assert_eq!(found[0].value, recent[0].id.to_string());
+        assert_eq!(choices.sessions("nothing", 0), Vec::new());
+    }
 
     fn model(kind: Kind, id: &str, name: Option<&str>, efforts: &[&str]) -> Model {
         Model {
@@ -337,6 +414,7 @@ mod tests {
         Choices {
             offers,
             catalog,
+            sessions: &[],
             current: Current {
                 account: offers[0].account,
                 model: "gpt-6.2-sol",
@@ -474,6 +552,7 @@ mod tests {
         let choices = Choices {
             offers: &offers,
             catalog: &catalog,
+            sessions: &[],
             current: Current {
                 account: offers[0].account,
                 model: "claude-opus-5-5",

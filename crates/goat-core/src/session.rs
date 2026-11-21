@@ -1,4 +1,5 @@
 mod prompt;
+mod replay;
 
 use std::path::Path;
 
@@ -7,7 +8,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 
 use crate::account::Account;
 use crate::image::{Image, Picture};
-use crate::message::{self, Message, Origin, Part, Role};
+use crate::message::{self, Message, Origin, Part, Role, Trace};
 use crate::provider::{self, Chunk, Endpoints, Images, Provider, Request, Stop, Usage};
 use crate::store::{self, Store};
 use crate::tool::{self, Outcome, Runner, Searcher, Step, Web};
@@ -36,6 +37,8 @@ pub enum Error {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Event<'a> {
+    Prompt(&'a str),
+    ShellCommand(&'a str),
     Text(&'a str),
     Reasoning(&'a str),
     RunStarted {
@@ -254,18 +257,26 @@ impl Session {
             }
 
             for (id, name, input) in calls {
-                let outcome = self.run(&name, &input, sink).await;
+                let (outcome, trace) = self.run(&name, &input, sink).await;
                 let images = self.keep(&outcome.images)?;
                 self.finished.push(Part::ToolResult {
                     call_id: id,
                     output: outcome.output,
                     is_error: outcome.is_error,
                     images,
+                    trace,
                 });
             }
             let results = std::mem::take(&mut self.finished);
             self.push(Message::new(Role::Tool, None, results))?;
         }
+    }
+
+    pub fn replay(&self, sink: &mut impl Sink) -> Result<(), Error> {
+        let mut replay = replay::Replay::default();
+        Ok(self
+            .store
+            .each_message(self.id, |message| replay.message(&message, sink))?)
     }
 
     pub async fn shell(&mut self, command: &str, sink: &mut impl Sink) -> Result<(), Error> {
@@ -288,17 +299,26 @@ impl Session {
             code: shelled.code,
             problem: None,
         });
-        let text = prompt::shell(command, &shelled.output, shelled.code);
-        self.push(Message::user(&text))
+        let part = Part::Shell {
+            command: command.into(),
+            output: shelled.output.into(),
+            code: shelled.code,
+        };
+        self.push(Message::new(Role::User, None, vec![part]))
     }
 
-    async fn run(&mut self, name: &str, input: &str, sink: &mut impl Sink) -> Outcome {
+    async fn run(
+        &mut self,
+        name: &str,
+        input: &str,
+        sink: &mut impl Sink,
+    ) -> (Outcome, Vec<Trace>) {
         let run = match tool::Run::parse(name, input) {
             Ok(run) => run,
             Err(problem) => {
                 let outcome = Outcome::error(problem);
                 sink.emit(Event::RunFinished { outcome: &outcome });
-                return outcome;
+                return (outcome, Vec::new());
             }
         };
         sink.emit(Event::RunStarted {
@@ -314,19 +334,27 @@ impl Session {
         };
         self.started.clear();
         let started = &mut self.started;
+        let mut trace = Vec::new();
         let outcome = self
             .runner
             .run(&run, web, &mut |step| match step {
                 Step::Started(call) => {
                     sink.emit(Event::Call(&call));
+                    trace.push(Trace::Call {
+                        kind: call.kind,
+                        target: call.target.clone(),
+                    });
                     started.push(call);
                 }
-                Step::Failed(problem) => sink.emit(Event::CallFailed { problem: &problem }),
+                Step::Failed(problem) => {
+                    sink.emit(Event::CallFailed { problem: &problem });
+                    trace.push(Trace::Failed { problem });
+                }
                 Step::Shown(_) => {}
             })
             .await;
         sink.emit(Event::RunFinished { outcome: &outcome });
-        outcome
+        (outcome, trace)
     }
 
     async fn request(
@@ -420,11 +448,21 @@ impl Session {
                         |part| matches!(part, Part::ToolResult { call_id, .. } if &**call_id == id),
                     )
                     .cloned()
-                    .unwrap_or_else(|| Part::ToolResult {
-                        call_id: id.into(),
-                        output: interrupted(&started.take().unwrap_or_default()).into(),
-                        is_error: true,
-                        images: Vec::new(),
+                    .unwrap_or_else(|| {
+                        let started = started.take().unwrap_or_default();
+                        Part::ToolResult {
+                            call_id: id.into(),
+                            output: interrupted(&started).into(),
+                            is_error: true,
+                            images: Vec::new(),
+                            trace: started
+                                .into_iter()
+                                .map(|call| Trace::Call {
+                                    kind: call.kind,
+                                    target: call.target,
+                                })
+                                .collect(),
+                        }
                     })
             })
             .collect();
