@@ -20,6 +20,8 @@ const INTERRUPTED: &str = "interrupted by the user before this run finished";
 const CALL_CHARS: usize = 100;
 const IMAGES_PER_REQUEST: usize = 20;
 const IMAGE_BATCH: usize = 10;
+const TITLE_CHARS: usize = 80;
+const NAMING_CHARS: usize = 2000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -60,6 +62,14 @@ pub enum Event<'a> {
     },
     Usage(Usage),
     Compacting,
+}
+
+#[derive(Debug)]
+pub struct Naming {
+    provider: Provider,
+    bearer: Box<str>,
+    origin: Origin,
+    conversation: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -272,6 +282,45 @@ impl Session {
         }
     }
 
+    pub fn title(&self) -> Result<Option<String>, Error> {
+        Ok(self.store.title(self.id)?)
+    }
+
+    pub fn set_title(&self, title: &str) -> Result<(), Error> {
+        Ok(self.store.set_title(self.id, title)?)
+    }
+
+    pub async fn naming(&mut self) -> Result<Option<Naming>, Error> {
+        if self.title()?.is_some() {
+            return Ok(None);
+        }
+        let first = |role: Role| {
+            self.messages
+                .iter()
+                .filter(|message| message.role == role)
+                .flat_map(|message| &message.parts)
+                .find_map(|part| match part {
+                    Part::Text { text, .. } if !text.trim().is_empty() => Some(text.clone()),
+                    _ => None,
+                })
+        };
+        let (Some(asked), Some(answered)) = (first(Role::User), first(Role::Assistant)) else {
+            return Ok(None);
+        };
+        let conversation = format!(
+            "{}\n\nUser: {}\n\nAssistant: {}",
+            prompt::NAMING,
+            clip(&asked),
+            clip(&answered)
+        );
+        Ok(Some(Naming {
+            provider: self.provider.clone(),
+            bearer: self.bearer(false).await?,
+            origin: self.origin(),
+            conversation,
+        }))
+    }
+
     pub fn replay(&self, sink: &mut impl Sink) -> Result<(), Error> {
         let mut replay = replay::Replay::default();
         Ok(self
@@ -417,6 +466,10 @@ impl Session {
                 _ => None,
             })
             .collect();
+        let (text, title) = split_title(&text);
+        if let Some(title) = title {
+            self.store.set_title(self.id, &title)?;
+        }
         if text.trim().is_empty() {
             return Ok(());
         }
@@ -557,10 +610,66 @@ async fn bearer(
     Ok(account.credential.secret().into())
 }
 
+impl Naming {
+    pub async fn run(self) -> Option<String> {
+        let question = Message::user(&self.conversation);
+        let tool = tool::spec();
+        let request = Request {
+            model: &self.origin.model,
+            instructions: prompt::NAMING,
+            messages: std::slice::from_ref(&question),
+            images: &Images::default(),
+            trailing: None,
+            tools: std::slice::from_ref(&tool),
+            use_tools: false,
+            origin: &self.origin,
+            cache_key: "goat-title",
+            effort: None,
+        };
+        let reply = self
+            .provider
+            .send(&request, &self.bearer, &mut |_| {})
+            .await
+            .ok()?;
+        let text: String = reply
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::Text { text, .. } => Some(&**text),
+                _ => None,
+            })
+            .collect();
+        tidy(&text)
+    }
+}
+
 impl<'a> From<&'a str> for Prompt<'a> {
     fn from(text: &'a str) -> Self {
         Self { text, images: &[] }
     }
+}
+
+fn split_title(text: &str) -> (String, Option<String>) {
+    let trimmed = text.trim_end();
+    let Some((body, last)) = trimmed.rsplit_once('\n') else {
+        return (text.to_owned(), None);
+    };
+    match last.trim().strip_prefix(prompt::TITLE_LINE) {
+        Some(title) => (body.trim_end().to_owned(), tidy(title)),
+        None => (text.to_owned(), None),
+    }
+}
+
+fn tidy(raw: &str) -> Option<String> {
+    let line = raw.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let line = line.strip_prefix(prompt::TITLE_LINE).unwrap_or(line).trim();
+    let line = line.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '*' | '“' | '”'));
+    let line = line.trim_end_matches('.').trim();
+    (!line.is_empty()).then(|| line.chars().take(TITLE_CHARS).collect())
+}
+
+fn clip(text: &str) -> String {
+    text.chars().take(NAMING_CHARS).collect()
 }
 
 fn sent(shown: usize) -> usize {
@@ -594,6 +703,32 @@ fn interrupted(started: &[tool::Call]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_title_is_tidied() {
+        assert_eq!(
+            tidy("\"Fix the flaky test.\"\n"),
+            Some("Fix the flaky test".to_owned())
+        );
+        assert_eq!(tidy("Title: Shell mode"), Some("Shell mode".to_owned()));
+        assert_eq!(tidy("  \n"), None);
+    }
+
+    #[test]
+    fn the_title_line_is_taken_off_a_summary() {
+        let (summary, title) = split_title("Goal: x\nNext: y\nTitle: Image support");
+
+        assert_eq!(summary, "Goal: x\nNext: y");
+        assert_eq!(title.as_deref(), Some("Image support"));
+    }
+
+    #[test]
+    fn a_summary_without_a_title_line_is_kept_whole() {
+        assert_eq!(
+            split_title("Goal: x\nNext: y"),
+            ("Goal: x\nNext: y".to_owned(), None)
+        );
+    }
 
     #[test]
     fn up_to_twenty_images_are_all_sent() {

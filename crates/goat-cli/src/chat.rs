@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -47,6 +47,12 @@ struct Chat {
     recent: Vec<Recent>,
     environment: Environment,
     database: PathBuf,
+    naming: Option<Naming>,
+}
+
+struct Naming {
+    session: session::Id,
+    job: Pin<Box<dyn Future<Output = Option<String>>>>,
 }
 
 struct Live<'a, 'b>(&'a RefCell<&'b mut Terminal>);
@@ -58,24 +64,50 @@ enum Flow {
 
 impl Chat {
     async fn read(&mut self) -> anyhow::Result<Entry> {
-        let Self {
-            session,
-            terminal,
-            editor,
-            keys,
-            offers,
-            catalog,
-            recent,
-            ..
-        } = self;
-        *recent = session
-            .store()
-            .recent_sessions(session.workspace(), RECENT)?
-            .into_iter()
-            .filter(|past| past.id != session.id())
-            .collect();
-        let choices = choices(session, offers, catalog, recent);
-        Ok(editor.read(keys, &choices, terminal).await?)
+        loop {
+            let Self {
+                session,
+                terminal,
+                editor,
+                keys,
+                offers,
+                catalog,
+                recent,
+                naming,
+                ..
+            } = self;
+            *recent = session
+                .store()
+                .recent_sessions(session.workspace(), RECENT)?
+                .into_iter()
+                .filter(|past| past.id != session.id())
+                .collect();
+            let choices = choices(session, offers, catalog, recent);
+            let Some(pending) = naming else {
+                return Ok(editor.read(keys, &choices, terminal).await?);
+            };
+            tokio::select! {
+                entry = editor.read(keys, &choices, terminal) => return Ok(entry?),
+                title = &mut pending.job => {
+                    if let Some(title) = title {
+                        session.store().set_title(pending.session, &title)?;
+                    }
+                    *naming = None;
+                }
+            }
+        }
+    }
+
+    async fn name(&mut self) {
+        if self.naming.is_some() {
+            return;
+        }
+        if let Ok(Some(naming)) = self.session.naming().await {
+            self.naming = Some(Naming {
+                session: self.session.id(),
+                job: Box::pin(naming.run()),
+            });
+        }
     }
 
     async fn work(&mut self, input: &Input) -> anyhow::Result<()> {
@@ -447,6 +479,7 @@ async fn run(
         recent: Vec::new(),
         environment: environment(paths),
         database: paths.database.clone(),
+        naming: None,
     };
     let model = chat.status();
     let directory = directory(chat.session.workspace(), &paths.home);
@@ -475,6 +508,9 @@ async fn run(
             continue;
         }
         chat.work(&input).await?;
+        if input.mode == Mode::Agent {
+            chat.name().await;
+        }
     }
 }
 

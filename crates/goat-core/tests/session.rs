@@ -774,3 +774,51 @@ async fn a_resumed_session_replays_what_was_shown() {
             .collect::<Vec<_>>()
     );
 }
+
+#[tokio::test]
+async fn the_first_answer_gets_a_title_from_the_model() {
+    let server = server::replay(vec![OPENAI_ANSWER, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+    assert!(session.naming().await.unwrap().is_none());
+
+    session.turn("hi", &mut Recorder::default()).await.unwrap();
+    let title = session.naming().await.unwrap().unwrap().run().await;
+    session.set_title(title.as_deref().unwrap()).unwrap();
+
+    assert_eq!(title.as_deref(), Some("Done"));
+    assert!(session.naming().await.unwrap().is_none());
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[1].contains("Name this conversation in 3 to 6 words"));
+}
+
+#[tokio::test]
+async fn compaction_renames_the_session() {
+    let big_answer =
+        leak(OPENAI_ANSWER.replace(r#""input_tokens":1300"#, r#""input_tokens":250000"#));
+    let summary =
+        leak(OPENAI_ANSWER.replace("Done.", "Goal: ship it\\nTitle: Shipping the release"));
+    let server = server::replay(vec![big_answer, summary, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    session
+        .turn("first", &mut Recorder::default())
+        .await
+        .unwrap();
+    session
+        .turn("second", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        session.title().unwrap().as_deref(),
+        Some("Shipping the release")
+    );
+    let Part::Summary { text, .. } = &session.messages()[0].parts[0] else {
+        panic!("expected a summary");
+    };
+    assert!(text.ends_with("Goal: ship it"));
+}
