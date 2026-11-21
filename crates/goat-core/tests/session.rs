@@ -256,6 +256,199 @@ async fn large_context_is_compacted_at_the_start_of_the_next_turn() {
 }
 
 #[tokio::test]
+async fn compacting_on_request_keeps_only_the_summary() {
+    let summary = leak(OPENAI_ANSWER.replace("Done.", "Summary text."));
+    let server = server::replay(vec![OPENAI_ANSWER, summary, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let db = dir.path().join("goat.db");
+    let mut session = Session::create(
+        Store::open(&db).unwrap(),
+        reqwest::Client::new(),
+        &env,
+        account(Kind::OpenAi),
+        "gpt-6.2-astra",
+    )
+    .unwrap();
+    session
+        .turn("first", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let mut recorder = Recorder::default();
+    let compacted = session
+        .compact("the test plan", &mut recorder)
+        .await
+        .unwrap();
+    session
+        .turn("second", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    assert!(compacted);
+    assert_eq!(recorder.order, ["compacting"]);
+    let roles: Vec<Role> = session.messages().iter().map(|m| m.role).collect();
+    assert_eq!(roles, [Role::Summary, Role::User, Role::Assistant]);
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[1].contains("focus on: the test plan"));
+    assert!(requests[2].contains("Summary text."));
+    assert!(!requests[2].contains(r#""content":"first""#));
+    let stored: Vec<Role> = Store::open(&db)
+        .unwrap()
+        .context(session.id())
+        .unwrap()
+        .iter()
+        .map(|m| m.role)
+        .collect();
+    assert_eq!(stored, roles);
+}
+
+#[tokio::test]
+async fn an_empty_conversation_is_not_compacted() {
+    let server = server::replay(Vec::new()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    let compacted = session.compact("", &mut Recorder::default()).await.unwrap();
+
+    assert!(!compacted);
+    assert!(server.requests.lock().unwrap().is_empty());
+}
+
+fn writing(path: &str, content: &str) -> &'static str {
+    leak(OPENAI_TOOL_CALL.replace(
+        "(await bash('echo hi')).output",
+        &format!("await write('{path}', '{content}')"),
+    ))
+}
+
+#[tokio::test]
+async fn restoring_code_brings_files_back_to_how_they_were_before_a_prompt() {
+    let server = server::replay(vec![
+        writing("a.txt", "v1"),
+        OPENAI_ANSWER,
+        writing("a.txt", "v2"),
+        OPENAI_ANSWER,
+        writing("b.txt", "b1"),
+        OPENAI_ANSWER,
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+    std::fs::write(dir.path().join("a.txt"), "v0").unwrap();
+    for prompt in ["one", "two", "three"] {
+        session
+            .turn(prompt, &mut Recorder::default())
+            .await
+            .unwrap();
+    }
+    let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).ok();
+    let sent = session.sent().unwrap();
+    let changed: Vec<u64> = sent.iter().map(|sent| sent.changed).collect();
+    assert_eq!(changed, [2, 2, 1]);
+
+    session.restore(sent[1].id).unwrap();
+    assert_eq!(read("a.txt").as_deref(), Some("v1"));
+    assert_eq!(read("b.txt"), None);
+
+    session.restore(sent[2].id).unwrap();
+    assert_eq!(read("a.txt").as_deref(), Some("v2"));
+    assert_eq!(read("b.txt"), None);
+
+    session.restore(sent[0].id).unwrap();
+    assert_eq!(read("a.txt").as_deref(), Some("v0"));
+}
+
+#[tokio::test]
+async fn rewinding_drops_the_prompt_and_everything_after_it() {
+    let server = server::replay(vec![OPENAI_ANSWER, OPENAI_ANSWER, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let db = dir.path().join("goat.db");
+    let mut session = Session::create(
+        Store::open(&db).unwrap(),
+        reqwest::Client::new(),
+        &env,
+        account(Kind::OpenAi),
+        "gpt-6.2-astra",
+    )
+    .unwrap();
+    session
+        .turn("first", &mut Recorder::default())
+        .await
+        .unwrap();
+    session
+        .turn("quokka", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let second = session.sent().unwrap()[1].clone();
+    assert_eq!(second.text, "quokka");
+    session.rewind(second.id).unwrap();
+    session
+        .turn("again", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let texts: Vec<String> = session
+        .sent()
+        .unwrap()
+        .into_iter()
+        .map(|sent| sent.text)
+        .collect();
+    assert_eq!(texts, ["first", "again"]);
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[1].contains("quokka"));
+    assert!(!requests[2].contains("quokka"));
+    let stored = Store::open(&db)
+        .unwrap()
+        .context(session.id())
+        .unwrap()
+        .len();
+    assert_eq!(stored, session.messages().len());
+}
+
+#[tokio::test]
+async fn a_change_shows_its_diff_live_and_on_resume() {
+    let server = server::replay(vec![writing("a.txt", "new"), OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+    std::fs::write(dir.path().join("a.txt"), "old").unwrap();
+
+    let mut live = Recorder::default();
+    session.turn("change it", &mut live).await.unwrap();
+    let mut replayed = Recorder::default();
+    session.replay(&mut replayed).unwrap();
+
+    assert!(live.order.contains(&"changed +1 -1".to_owned()));
+    assert!(replayed.order.contains(&"changed +1 -1".to_owned()));
+}
+
+#[tokio::test]
+async fn a_mentioned_file_is_sent_with_the_prompt() {
+    let server = server::replay(vec![OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+    std::fs::write(dir.path().join("notes.md"), "kiwi line\n").unwrap();
+
+    session
+        .turn("summarize @notes.md please", &mut Recorder::default())
+        .await
+        .unwrap();
+    let mut replayed = Recorder::default();
+    session.replay(&mut replayed).unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].contains("The user attached notes.md to their message"));
+    assert!(requests[0].contains("kiwi line"));
+    assert_eq!(replayed.order[0], "prompt summarize @notes.md please");
+}
+
+#[tokio::test]
 async fn cancelled_tool_call_is_closed_before_the_next_turn() {
     let slow_tool_call = leak(OPENAI_TOOL_CALL.replace("echo hi", "sleep 5"));
     let server = server::replay(vec![slow_tool_call, OPENAI_ANSWER]).await;
@@ -694,6 +887,7 @@ fn name(event: &Event<'_>) -> String {
         Event::RunStarted { description } => format!("run {description}"),
         Event::Call(call) => format!("call {} {}", call.kind.as_str(), call.target),
         Event::CallFailed { problem } => format!("failed {problem}"),
+        Event::Changed(diff) => format!("changed +{} -{}", diff.added, diff.removed),
         Event::RunFinished { outcome } => format!("finished {}", outcome.is_error),
         Event::ShellOutput(output) => format!("output {}", output.trim_end()),
         Event::ShellFinished { code, .. } => format!("exit {code:?}"),

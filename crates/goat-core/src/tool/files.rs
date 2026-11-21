@@ -5,13 +5,18 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use super::diff;
 use super::hashline::{self, Document, RawOp};
 use crate::image::Media;
+use crate::message::Diff;
 
 const DEFAULT_LIMIT: usize = 2000;
 const MAX_LINE_CHARS: usize = 2000;
 const SNIFF_BYTES: usize = 8 * 1024;
 const IMAGE_FILE_BYTES: u64 = 50 * 1024 * 1024;
+pub(crate) const TRACKED_BYTES: u64 = 10 * 1024 * 1024;
+
+pub(crate) type Record<'a> = &'a dyn Fn(Option<&[u8]>) -> Result<(), String>;
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct Page {
@@ -110,31 +115,66 @@ fn display_line(number: usize, line: &str) -> String {
     tagged
 }
 
-pub(crate) fn write(path: &Path, shown: &str, content: &str) -> Result<Written, String> {
-    let existed = path.exists();
+pub(crate) fn write(
+    path: &Path,
+    shown: &str,
+    content: &str,
+    record: Record<'_>,
+) -> Result<(Written, Option<Diff>), String> {
+    let io = |err: std::io::Error| format!("could not write {shown}: {err}");
+    let before = match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() && meta.len() <= TRACKED_BYTES => {
+            Some(Some(std::fs::read(path).map_err(io)?))
+        }
+        Ok(_) => None,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(None),
+        Err(err) => return Err(io(err)),
+    };
+    if let Some(before) = &before {
+        record(before.as_deref())?;
+    }
+    let existed = !matches!(before, Some(None));
     path.parent()
         .map_or(Ok(()), std::fs::create_dir_all)
         .and_then(|()| std::fs::write(path, content))
-        .map_err(|err| format!("could not write {shown}: {err}"))?;
-    Ok(Written {
-        created: !existed,
-        lines: content.lines().count(),
-    })
+        .map_err(io)?;
+    let diff = before.map(|before| {
+        diff::between(
+            &String::from_utf8_lossy(before.as_deref().unwrap_or_default()),
+            content,
+        )
+    });
+    Ok((
+        Written {
+            created: !existed,
+            lines: content.lines().count(),
+        },
+        diff,
+    ))
 }
 
-pub(crate) fn edit(path: &Path, shown: &str, ops: Vec<RawOp>) -> Result<Edited, String> {
+pub(crate) fn edit(
+    path: &Path,
+    shown: &str,
+    ops: Vec<RawOp>,
+    record: Record<'_>,
+) -> Result<(Edited, Diff), String> {
     let text =
         std::fs::read_to_string(path).map_err(|err| format!("could not read {shown}: {err}"))?;
     let mut document = Document::parse(&text);
     let preview = document
         .apply(ops)
         .map_err(|problem| format!("{shown}: {problem}"))?;
-    std::fs::write(path, document.render())
-        .map_err(|err| format!("could not write {shown}: {err}"))?;
-    Ok(Edited {
-        total: document.len(),
-        preview,
-    })
+    let after = document.render();
+    record(Some(text.as_bytes()))?;
+    std::fs::write(path, &after).map_err(|err| format!("could not write {shown}: {err}"))?;
+    Ok((
+        Edited {
+            total: document.len(),
+            preview,
+        },
+        diff::between(&text, &after),
+    ))
 }
 
 #[cfg(test)]
@@ -171,14 +211,60 @@ mod tests {
     fn write_creates_parent_directories() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x/y/z.txt");
+        let (written, diff) = write(&path, "x/y/z.txt", "hi\n", &|_| Ok(())).unwrap();
         assert_eq!(
-            write(&path, "x/y/z.txt", "hi\n").unwrap(),
+            written,
             Written {
                 created: true,
                 lines: 1
             }
         );
+        assert_eq!(diff.map(|diff| diff.added), Some(1));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "hi\n");
+    }
+
+    #[test]
+    fn the_old_content_is_recorded_before_it_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "old\n").unwrap();
+        let seen = std::cell::RefCell::new(Vec::new());
+
+        write(&path, "a.txt", "new\n", &|before| {
+            seen.borrow_mut().push(before.map(<[u8]>::to_vec));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(*seen.borrow(), [Some(b"old\n".to_vec())]);
+    }
+
+    #[test]
+    fn a_new_file_is_recorded_as_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        let seen = std::cell::RefCell::new(Vec::new());
+
+        write(&path, "a.txt", "new\n", &|before| {
+            seen.borrow_mut().push(before.map(<[u8]>::to_vec));
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(*seen.borrow(), [None]);
+    }
+
+    #[test]
+    fn nothing_is_written_when_recording_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "old\n").unwrap();
+
+        let problem = write(&path, "a.txt", "new\n", &|_| Err("disk full".to_owned())).unwrap_err();
+
+        assert_eq!(problem, "disk full");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
     }
 
     #[test]

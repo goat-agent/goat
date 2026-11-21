@@ -37,6 +37,7 @@ Run the first three and `cargo deny check` before you finish. The toolchain is p
 - The SSE fixtures in `crates/goat-core/tests/fixtures` follow the documented event shapes. They are not recordings of real responses.
 - The model has one tool, `run`: JavaScript in an embedded QuickJS sandbox (`tool/script.rs`). The sandbox reaches the system only through `tool/host.rs`, so every shell command passes `danger.rs`. Do not give it other ways out.
 - `Script` declares `finish` before `context` and `runtime`. Fields drop in order, and QuickJS aborts the process when a runtime is freed while a saved value is still alive.
+- Before `edit` or `write` changes a file, `host.rs` records its old content through `tool::Journal` into the `changes` table, synchronously, so an interrupted turn cannot lose the record. `changes` is append-only and keyed by time, not by message: rewinding the code to a prompt takes, for each path, the earliest row after that prompt, and restoring is itself recorded. Rewinding the conversation deletes the messages from that prompt on; keep the cut at a user prompt so both providers accept what remains.
 - `~/.goat/goat.db` stores credentials with mode 0600. Tests use `Store::open_in_memory` or a temporary directory, never the real home.
 
 ## Boundaries

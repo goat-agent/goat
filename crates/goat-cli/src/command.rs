@@ -4,6 +4,9 @@ use std::ops::Range;
 pub(crate) enum Name {
     Model,
     Effort,
+    Compact,
+    Clear,
+    Rewind,
     Resume,
     Help,
     Exit,
@@ -25,6 +28,21 @@ pub(crate) const SPECS: &[Spec] = &[
         name: Name::Effort,
         word: "effort",
         about: "Set the reasoning effort",
+    },
+    Spec {
+        name: Name::Compact,
+        word: "compact",
+        about: "Summarize the conversation to free up context",
+    },
+    Spec {
+        name: Name::Clear,
+        word: "clear",
+        about: "Start a new session and clear the screen",
+    },
+    Spec {
+        name: Name::Rewind,
+        word: "rewind",
+        about: "Go back to an earlier prompt",
     },
     Spec {
         name: Name::Resume,
@@ -113,6 +131,13 @@ mod tests {
                 span: 2..8,
             })
         );
+    }
+
+    #[test]
+    fn compact_takes_what_to_focus_on() {
+        let run = parse("/compact keep the test plan").unwrap();
+        assert_eq!(run.name, Name::Compact);
+        assert_eq!(run.argument, "keep the test plan");
     }
 
     #[test]

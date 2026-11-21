@@ -1,8 +1,17 @@
+use std::cell::OnceCell;
+use std::path::PathBuf;
+
 use goat_core::account;
 use goat_core::catalog::Model;
-use goat_core::store::Recent;
+use goat_core::store::{Recent, Sent};
 
 pub(crate) const DEFAULT_EFFORT: &str = "default";
+const FILE_LIMIT: usize = 20_000;
+const ACTIONS: [(&str, &str); 3] = [
+    ("both", "Restore the conversation and the code"),
+    ("conversation", "Restore the conversation only"),
+    ("code", "Restore the code only"),
+];
 
 pub(crate) struct Offer {
     pub(crate) account: account::Id,
@@ -20,7 +29,14 @@ pub(crate) struct Choices<'a> {
     pub(crate) offers: &'a [Offer],
     pub(crate) catalog: &'a [Model],
     pub(crate) sessions: &'a [Recent],
+    pub(crate) sent: &'a [Sent],
+    pub(crate) files: &'a Files,
     pub(crate) current: Current<'a>,
+}
+
+pub(crate) struct Files {
+    root: PathBuf,
+    list: OnceCell<Vec<String>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -46,7 +62,141 @@ pub(crate) enum Effort {
     Level(String),
 }
 
+impl Files {
+    pub(crate) fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            list: OnceCell::new(),
+        }
+    }
+
+    pub(crate) fn listed(list: Vec<String>) -> Self {
+        Self {
+            root: PathBuf::new(),
+            list: OnceCell::from(list),
+        }
+    }
+
+    fn list(&self) -> &[String] {
+        self.list
+            .get_or_init(|| goat_core::tool::workspace_files(&self.root, FILE_LIMIT))
+    }
+}
+
 impl Choices<'_> {
+    pub(crate) fn mentions(&self, typed: &str) -> Vec<Candidate> {
+        let is_browsing = typed.is_empty() || typed.ends_with('/');
+        let wanted = typed.rsplit('/').next().unwrap_or(typed).to_lowercase();
+        let mut found: Vec<&String> = self
+            .files
+            .list()
+            .iter()
+            .filter(|path| {
+                if is_browsing {
+                    path.strip_prefix(typed).is_some_and(|rest| {
+                        !rest.is_empty() && !rest.trim_end_matches('/').contains('/')
+                    })
+                } else {
+                    matches(path, typed)
+                }
+            })
+            .collect();
+        if is_browsing {
+            found.sort_by_key(|path| (!path.ends_with('/'), path.to_lowercase()));
+        } else {
+            found.sort_by_key(|path| {
+                let name = path
+                    .trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(path);
+                (!name.to_lowercase().starts_with(&wanted), path.len())
+            });
+        }
+        found
+            .into_iter()
+            .map(|path| Candidate {
+                value: if path.ends_with('/') {
+                    path.clone()
+                } else {
+                    format!("{path} ")
+                },
+                label: path.clone(),
+                is_current: false,
+                efforts: Vec::new(),
+                effort: 0,
+            })
+            .collect()
+    }
+
+    pub(crate) fn rewinds(&self, typed: &str, now: u64) -> Vec<Candidate> {
+        if let Some((number, rest)) = typed.split_once(' ') {
+            let is_known = number
+                .parse::<usize>()
+                .ok()
+                .and_then(|number| number.checked_sub(1))
+                .is_some_and(|index| index < self.sent.len());
+            if !is_known {
+                return Vec::new();
+            }
+            return ACTIONS
+                .iter()
+                .filter(|(word, _)| word.starts_with(rest.trim()))
+                .map(|(word, label)| Candidate {
+                    value: format!("{number} {word}"),
+                    label: (*label).to_owned(),
+                    is_current: false,
+                    efforts: Vec::new(),
+                    effort: 0,
+                })
+                .collect();
+        }
+        let wanted = typed.to_lowercase();
+        self.sent
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(index, sent)| {
+                (index + 1).to_string().starts_with(typed)
+                    || sent.text.to_lowercase().contains(&wanted)
+            })
+            .map(|(index, sent)| {
+                let number = index + 1;
+                let first = sent
+                    .text
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .unwrap_or("(no text)");
+                let mut details: Vec<String> = sent
+                    .id
+                    .unix_seconds()
+                    .map(|at| ago(now.saturating_sub(at)))
+                    .into_iter()
+                    .collect();
+                if sent.changed > 0 {
+                    details.push(format!("{} changed", plural(sent.changed, "file")));
+                }
+                let label = if details.is_empty() {
+                    first.to_owned()
+                } else {
+                    format!("{first} ({})", details.join(", "))
+                };
+                Candidate {
+                    value: if sent.changed > 0 {
+                        format!("{number} ")
+                    } else {
+                        number.to_string()
+                    },
+                    label,
+                    is_current: false,
+                    efforts: Vec::new(),
+                    effort: 0,
+                }
+            })
+            .collect()
+    }
+
     pub(crate) fn sessions(&self, typed: &str, now: u64) -> Vec<Candidate> {
         let wanted = typed.to_lowercase();
         self.sessions
@@ -321,7 +471,7 @@ fn ago(seconds: u64) -> String {
     }
 }
 
-fn plural(count: u64, word: &str) -> String {
+pub(crate) fn plural(count: u64, word: &str) -> String {
     if count == 1 {
         format!("1 {word}")
     } else {
@@ -332,8 +482,77 @@ fn plural(count: u64, word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use goat_core::account::{Account, Credential, Kind};
+    use goat_core::store::Sent;
 
     use super::*;
+
+    fn with_sent<T>(
+        sent: &[Sent],
+        files: &[&str],
+        use_choices: impl FnOnce(&Choices<'_>) -> T,
+    ) -> T {
+        let files = Files::listed(files.iter().map(|path| (*path).to_owned()).collect());
+        use_choices(&Choices {
+            offers: &[],
+            catalog: &[],
+            sessions: &[],
+            sent,
+            files: &files,
+            current: Current {
+                account: goat_core::account::Id::generate(),
+                model: "gpt-6.2-sol",
+                effort: None,
+            },
+        })
+    }
+
+    fn sent(text: &str, changed: u64) -> Sent {
+        Sent {
+            id: goat_core::message::Id::generate(),
+            text: text.to_owned(),
+            images: Vec::new(),
+            changed,
+        }
+    }
+
+    #[test]
+    fn prompts_are_listed_newest_first_and_ask_what_to_restore_when_files_changed() {
+        let prompts = [sent("add tests\nmore", 0), sent("fix the bug", 2)];
+
+        let (first, second) = with_sent(&prompts, &[], |choices| {
+            (choices.rewinds("", 0), choices.rewinds("2 ", 0))
+        });
+
+        let listed: Vec<(&str, &str)> = first
+            .iter()
+            .map(|candidate| (candidate.value.as_str(), candidate.label.as_str()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("2 ", "fix the bug (just now, 2 files changed)"),
+                ("1", "add tests (just now)")
+            ]
+        );
+        let actions: Vec<&str> = second
+            .iter()
+            .map(|candidate| candidate.value.as_str())
+            .collect();
+        assert_eq!(actions, ["2 both", "2 conversation", "2 code"]);
+    }
+
+    #[test]
+    fn paths_whose_name_starts_with_the_typed_text_come_first() {
+        let files = ["docs/main-notes.md", "src/domain.rs", "src/main.rs"];
+
+        let found = with_sent(&[], &files, |choices| choices.mentions("ma"));
+
+        let values: Vec<&str> = found
+            .iter()
+            .map(|candidate| candidate.value.as_str())
+            .collect();
+        assert_eq!(values, ["src/main.rs ", "docs/main-notes.md "]);
+    }
 
     #[test]
     fn earlier_sessions_are_listed_by_title_age_and_size() {
@@ -347,6 +566,8 @@ mod tests {
             offers: &[],
             catalog: &[],
             sessions: &recent,
+            sent: &[],
+            files: Box::leak(Box::new(Files::listed(Vec::new()))),
             current: Current {
                 account: goat_core::account::Id::generate(),
                 model: "gpt-6.2-sol",
@@ -415,6 +636,8 @@ mod tests {
             offers,
             catalog,
             sessions: &[],
+            sent: &[],
+            files: Box::leak(Box::new(Files::listed(Vec::new()))),
             current: Current {
                 account: offers[0].account,
                 model: "gpt-6.2-sol",
@@ -553,6 +776,8 @@ mod tests {
             offers: &offers,
             catalog: &catalog,
             sessions: &[],
+            sent: &[],
+            files: Box::leak(Box::new(Files::listed(Vec::new()))),
             current: Current {
                 account: offers[0].account,
                 model: "claude-opus-5-5",

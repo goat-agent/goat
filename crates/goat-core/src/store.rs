@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::account::{self, Account, Credential};
-use crate::image::{self, Picture};
+use crate::image::{self, Image, Picture};
 use crate::message::{self, Message, Origin, Part, Role};
 use crate::session;
 
@@ -45,6 +45,16 @@ const MIGRATIONS: &[&str] = &[
     "
     alter table sessions add column title text;
 ",
+    "
+    create table changes (
+        id blob primary key,
+        session_id blob not null references sessions on delete cascade,
+        path text not null,
+        before blob
+    ) strict;
+
+    create index changes_by_path on changes (session_id, path, id);
+",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -70,6 +80,14 @@ pub struct Recent {
     pub title: String,
     pub messages: u64,
     pub active_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sent {
+    pub id: message::Id,
+    pub text: String,
+    pub images: Vec<Image>,
+    pub changed: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +224,104 @@ impl Store {
             messages.insert(0, summary);
         }
         Ok(messages)
+    }
+
+    pub fn sent(&self, session: session::Id) -> Result<Vec<Sent>, Error> {
+        let mut statement = self.conn.prepare(
+            "select m.id, m.parts,
+                (select count(distinct c.path) from changes c
+                 where c.session_id = m.session_id and c.id > m.id)
+             from messages m where m.session_id = ?1 and m.role = 'user' order by m.id",
+        )?;
+        let rows = statement.query_map([session], |row| {
+            Ok((
+                row.get::<_, message::Id>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        let mut sent = Vec::new();
+        for row in rows {
+            let (id, parts, changed) = row?;
+            let Ok(parts) = serde_json::from_str::<Vec<Part>>(&parts) else {
+                continue;
+            };
+            let Some(text) = parts.iter().find_map(|part| match part {
+                Part::Text { text, .. } => Some(text.to_string()),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let images = parts
+                .into_iter()
+                .filter_map(|part| match part {
+                    Part::Image(image) => Some(image),
+                    _ => None,
+                })
+                .collect();
+            sent.push(Sent {
+                id,
+                text,
+                images,
+                changed: u64::try_from(changed).unwrap_or(0),
+            });
+        }
+        Ok(sent)
+    }
+
+    pub fn truncate(&self, session: session::Id, from: message::Id) -> Result<(), Error> {
+        self.conn.execute(
+            "delete from messages where session_id = ?1 and id >= ?2",
+            params![session, from],
+        )?;
+        Ok(())
+    }
+
+    pub fn record_change(
+        &self,
+        session: session::Id,
+        path: &Path,
+        before: Option<&[u8]>,
+    ) -> Result<(), Error> {
+        self.conn.execute(
+            "insert into changes (id, session_id, path, before) values (?1, ?2, ?3, ?4)",
+            params![
+                uuid::Uuid::now_v7(),
+                session,
+                path.to_string_lossy(),
+                before
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn changed_files(
+        &self,
+        session: session::Id,
+        since: message::Id,
+    ) -> Result<Vec<PathBuf>, Error> {
+        let mut statement = self.conn.prepare(
+            "select distinct path from changes where session_id = ?1 and id > ?2 order by path",
+        )?;
+        let paths = statement.query_map(params![session, since], |row| row.get::<_, String>(0))?;
+        paths.map(|path| Ok(PathBuf::from(path?))).collect()
+    }
+
+    pub fn content_at(
+        &self,
+        session: session::Id,
+        path: &Path,
+        since: message::Id,
+    ) -> Result<Option<Option<Vec<u8>>>, Error> {
+        Ok(self
+            .conn
+            .query_row(
+                "select before from changes where session_id = ?1 and path = ?2 and id > ?3
+                 order by id limit 1",
+                params![session, path.to_string_lossy(), since],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     pub fn set_title(&self, session: session::Id, title: &str) -> Result<(), Error> {

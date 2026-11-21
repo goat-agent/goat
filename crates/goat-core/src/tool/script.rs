@@ -211,7 +211,7 @@ mod tests {
 
     async fn script(dir: &Path) -> Script {
         let (tx, _) = mpsc::channel(1);
-        let host = Host::new(dir, dir, &dir.join(".spill"), tx).unwrap();
+        let host = Host::new(dir, dir, &dir.join(".spill"), tx, None).unwrap();
         Script::new(Rc::new(host)).await.unwrap()
     }
 

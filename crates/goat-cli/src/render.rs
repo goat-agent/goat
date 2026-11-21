@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use crossterm::style::{Color, Stylize};
 use crossterm::terminal::{self, ClearType};
 use crossterm::{cursor, queue};
+use goat_core::message::{Diff, Sign};
 use goat_core::session::{Event, Sink};
 use goat_core::tool::{self, Kind};
 use unicode_segmentation::UnicodeSegmentation;
@@ -20,6 +21,7 @@ const TAB: &str = "    ";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GOAT: [&str; 3] = ["▀▀▄▄      ▄▄▀▀", "  ▄▄▀████▀▄▄  ", "     ▀██▀     "];
 const GAP: &str = "   ";
+const CLEAR: &str = "\x1b[H\x1b[2J\x1b[3J";
 const PRIMARY: Color = Color::AnsiValue(141);
 
 pub(crate) struct Terminal<W: Write = BufWriter<Stdout>> {
@@ -58,6 +60,7 @@ struct Activity {
 pub(crate) enum Work {
     Turn,
     Shell,
+    Compact,
 }
 
 pub(crate) struct Frame {
@@ -150,6 +153,17 @@ impl<W: Write> Terminal<W> {
     pub(crate) fn close(&mut self) {
         self.erase();
         self.composer = None;
+        self.flush();
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.erase();
+        self.pending.clear();
+        self.markdown = Markdown::default();
+        self.section = None;
+        self.has_output = false;
+        self.calls = 0;
+        write!(self.out, "{CLEAR}").ok();
         self.flush();
     }
 
@@ -338,6 +352,40 @@ impl<W: Write> Terminal<W> {
         ));
     }
 
+    fn changed(&mut self, diff: &Diff) {
+        self.enter(Section::Run);
+        let gutter = diff
+            .lines
+            .iter()
+            .map(|line| line.number.to_string().len())
+            .max()
+            .unwrap_or(1);
+        let lead = format!("{INDENT}{INDENT}");
+        self.put(&format!(
+            "{lead}{} {}\n",
+            format!("+{}", diff.added).green(),
+            format!("-{}", diff.removed).red()
+        ));
+        let room = (self.columns)().saturating_sub(lead.len() + gutter + 3);
+        for line in &diff.lines {
+            let text = shorten(&printable(&line.text.replace('\t', TAB)), room);
+            let number = format!("{:>gutter$}", line.number);
+            let shown = match line.sign {
+                Sign::Same => format!("{}", format!("{number}   {text}").dim()),
+                Sign::Added => format!("{}", format!("{number} + {text}").green()),
+                Sign::Removed => format!("{}", format!("{number} - {text}").red()),
+                Sign::Gap => format!("{}", format!("{:>gutter$}", "⋮").dim()),
+            };
+            self.put(&format!("{lead}{shown}\n"));
+        }
+        if diff.hidden > 0 {
+            self.put(&format!(
+                "{lead}{}\n",
+                format!("… {} more lines", diff.hidden).dim()
+            ));
+        }
+    }
+
     fn prompt(&mut self, mode: Mode, text: &str) {
         self.settle();
         let input = Input {
@@ -413,6 +461,7 @@ impl<W: Write> Terminal<W> {
             let doing = match activity.work {
                 Work::Turn => "Working",
                 Work::Shell => "Running",
+                Work::Compact => "Compacting",
             };
             format!("{} {doing} {}", SPINNER[activity.frame], took.dim())
         });
@@ -482,6 +531,7 @@ impl<W: Write> Sink for Terminal<W> {
                 self.put(&format!("{} {description}\n", "•".dim()));
             }
             Event::Call(call) => self.call(call),
+            Event::Changed(diff) => self.changed(diff),
             Event::CallFailed { problem } => {
                 self.enter(Section::Run);
                 self.put(&format!("{INDENT}{INDENT}{}\n", first_line(problem).red()));
@@ -607,6 +657,7 @@ fn elapsed(duration: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
+    use goat_core::message::DiffLine;
     use goat_core::tool::{Call, Outcome};
 
     use super::*;
@@ -677,6 +728,59 @@ mod tests {
             kind,
             target: target.into(),
         }
+    }
+
+    #[test]
+    fn a_change_shows_its_counts_and_lines_under_the_call() {
+        let edit = call(Kind::Edit, "src/a.rs");
+        let diff = Diff {
+            added: 1,
+            removed: 1,
+            lines: vec![
+                DiffLine {
+                    sign: Sign::Same,
+                    number: 9,
+                    text: "fn a() {".into(),
+                },
+                DiffLine {
+                    sign: Sign::Removed,
+                    number: 10,
+                    text: "    old();".into(),
+                },
+                DiffLine {
+                    sign: Sign::Added,
+                    number: 10,
+                    text: "    new();".into(),
+                },
+            ],
+            hidden: 3,
+        };
+
+        let screen = screen(&[Event::Call(&edit), Event::Changed(&diff)]);
+
+        let expected = [
+            format!("  {} Edit {}", "└".dim(), "src/a.rs".dim()),
+            format!("    {} {}", "+1".green(), "-1".red()),
+            format!("    {}", " 9   fn a() {".dim()),
+            format!("    {}", "10 -     old();".red()),
+            format!("    {}", "10 +     new();".green()),
+            format!("    {}", "… 3 more lines".dim()),
+        ];
+        assert!(screen.contains(&expected.join("\n")), "{screen:?}");
+    }
+
+    #[test]
+    fn clearing_wipes_the_screen_and_starts_without_a_gap() {
+        let mut terminal = Terminal::with_writer(Vec::new(), || 40);
+        terminal.emit(Event::Text("Done."));
+        terminal.settle();
+
+        terminal.clear();
+        terminal.note("Fresh");
+
+        let out = String::from_utf8(terminal.out.clone()).unwrap();
+        let (_, after) = out.rsplit_once(CLEAR).unwrap();
+        assert_eq!(visible(after.as_bytes()), format!("  {}\n", "Fresh".dim()));
     }
 
     #[test]
