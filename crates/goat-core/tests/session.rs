@@ -784,7 +784,7 @@ async fn an_overload_before_any_output_is_retried() {
 }
 
 #[tokio::test]
-async fn an_overload_after_output_is_not_retried() {
+async fn an_overload_after_output_starts_the_reply_over() {
     let shown_then_overloaded = leak(ANTHROPIC_ANSWER.replacen(
         "event: content_block_stop",
         "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\nevent: content_block_stop",
@@ -794,10 +794,64 @@ async fn an_overload_after_output_is_not_retried() {
     let dir = tempfile::tempdir().unwrap();
     let env = environment(dir.path(), &server.url);
     let mut session = anthropic_session(&env).unwrap();
+    let mut recorder = Recorder::default();
 
-    let result = session.turn("hi", &mut Recorder::default()).await;
+    session.turn("hi", &mut recorder).await.unwrap();
 
-    assert!(result.is_err());
+    assert_eq!(
+        shown(&recorder.order),
+        ["text Done.", "retrying 1 true", "text Done."]
+    );
+    let replies = session
+        .messages()
+        .iter()
+        .filter(|message| message.role == Role::Assistant)
+        .count();
+    assert_eq!(replies, 1);
+}
+
+#[tokio::test]
+async fn a_connection_dropped_mid_reply_is_tried_again() {
+    let cut = leak(format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 100000\r\nconnection: close\r\n\r\n{}",
+        &OPENAI_ANSWER[..OPENAI_ANSWER.len() / 2]
+    ));
+    let server = server::replay(vec![cut, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+    let mut recorder = Recorder::default();
+
+    session.turn("hi", &mut recorder).await.unwrap();
+
+    assert!(
+        recorder
+            .order
+            .iter()
+            .any(|event| event.starts_with("retrying 1"))
+    );
+    assert!(recorder.text.ends_with("Done."));
+    assert_eq!(server.requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_server_error_is_tried_again_and_a_bad_request_is_not() {
+    let unavailable =
+        "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+    let server = server::replay(vec![unavailable, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    session.turn("hi", &mut Recorder::default()).await.unwrap();
+    assert_eq!(server.requests.lock().unwrap().len(), 2);
+
+    let bad = "HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+    let server = server::replay(vec![bad]).await;
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    assert!(session.turn("hi", &mut Recorder::default()).await.is_err());
     assert_eq!(server.requests.lock().unwrap().len(), 1);
 }
 
@@ -888,6 +942,7 @@ fn name(event: &Event<'_>) -> String {
         Event::Call(call) => format!("call {} {}", call.kind.as_str(), call.target),
         Event::CallFailed { problem } => format!("failed {problem}"),
         Event::Changed(diff) => format!("changed +{} -{}", diff.added, diff.removed),
+        Event::Retrying { attempt, restarts } => format!("retrying {attempt} {restarts}"),
         Event::RunFinished { outcome } => format!("finished {}", outcome.is_error),
         Event::ShellOutput(output) => format!("output {}", output.trim_end()),
         Event::ShellFinished { code, .. } => format!("exit {code:?}"),

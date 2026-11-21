@@ -53,6 +53,7 @@ The model's summary of its reasoning is shown dimmed while it thinks, and replie
 - Edits point at lines by hash anchors, so an edit made against an outdated read is rejected and the file is left untouched.
 - The Codex login uses the backend of the Codex CLI with your ChatGPT plan. It is not a documented API, so OpenAI may change it.
 - There is no sandbox and no approval prompt. A built-in check blocks a few irreversible commands, such as `rm -rf ~` or formatting a disk.
+- When the connection drops or the server is busy, goat tries again until it works, waiting 1, 2, 4, 8 and 16 seconds and then 30 seconds between tries, with the attempt shown on the spinner line; Esc stops it. A reply that was cut off partway starts over below what was already shown. Errors that waiting cannot fix, such as a bad request, a usage limit or a failed sign-in, stop the turn at once.
 - The conversation is summarized once a request passes 200k input tokens.
 - Sessions, messages and accounts are stored in `~/.goat/goat.db` (SQLite, mode 0600). Long command output is kept in `~/.goat/outputs` for 7 days.
 - An `AGENTS.md` file in the working directory is added to the instructions.

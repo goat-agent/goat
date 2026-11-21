@@ -18,10 +18,14 @@ pub(crate) async fn replay(script: Vec<&'static str>) -> Server {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_request(&mut stream).await;
             seen.lock().unwrap().push(request);
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
+            let response = if body.starts_with("HTTP/") {
+                (*body).to_owned()
+            } else {
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            };
             stream.write_all(response.as_bytes()).await.unwrap();
             stream.shutdown().await.ok();
         }

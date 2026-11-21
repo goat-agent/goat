@@ -71,6 +71,10 @@ pub enum Event<'a> {
         problem: Option<&'a str>,
     },
     Usage(Usage),
+    Retrying {
+        attempt: u32,
+        restarts: bool,
+    },
     Compacting,
 }
 
@@ -267,7 +271,7 @@ impl Session {
         self.push(Message::new(Role::User, None, parts))?;
         loop {
             let reply = self
-                .request(None, true, &mut |chunk| sink.emit(chunk.into()))
+                .request(None, true, &mut |event| sink.emit(event))
                 .await?;
             self.last_input = reply.usage.input;
             sink.emit(Event::Usage(reply.usage));
@@ -478,7 +482,7 @@ impl Session {
         &mut self,
         trailing: Option<&Message>,
         use_tools: bool,
-        on_chunk: &mut dyn FnMut(Chunk<'_>),
+        on_event: &mut dyn FnMut(Event<'_>),
     ) -> Result<provider::Reply, Error> {
         let images = self.images(trailing)?;
         let mut refreshed = false;
@@ -503,7 +507,7 @@ impl Session {
             let result = {
                 let mut watch = |chunk: Chunk<'_>| {
                     is_shown = true;
-                    on_chunk(chunk);
+                    on_event(chunk.into());
                 };
                 self.provider.send(&request, &bearer, &mut watch).await
             };
@@ -513,9 +517,14 @@ impl Session {
                 {
                     refreshed = true;
                 }
-                Err(err) if err.is_transient() && !is_shown && attempt < provider::MAX_RETRIES => {
-                    tokio::time::sleep(provider::backoff(attempt)).await;
+                Err(err) if err.is_transient() => {
+                    let wait = err.wait(attempt);
                     attempt += 1;
+                    on_event(Event::Retrying {
+                        attempt,
+                        restarts: is_shown,
+                    });
+                    tokio::time::sleep(wait).await;
                 }
                 result => return Ok(result?),
             }

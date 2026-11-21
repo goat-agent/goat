@@ -12,20 +12,24 @@ use crate::image;
 use crate::message::{Message, Origin, Part};
 use crate::tool;
 
-pub(crate) const MAX_RETRIES: u32 = 3;
 const ERROR_BODY_LIMIT: usize = 2000;
+const LONGEST_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("request")]
     Http(#[from] reqwest::Error),
     #[error("{status}: {message}")]
-    Status { status: u16, message: String },
+    Status {
+        status: u16,
+        message: String,
+        retry_after: Option<Duration>,
+    },
     #[error("stream: {0}")]
     Stream(String),
     #[error("busy: {0}")]
     Busy(String),
-    #[error("stream ended before the response completed")]
+    #[error("the connection dropped before the reply finished")]
     Interrupted,
     #[error("malformed response")]
     Json(#[from] serde_json::Error),
@@ -33,7 +37,29 @@ pub enum Error {
 
 impl Error {
     pub(crate) fn is_transient(&self) -> bool {
-        matches!(self, Self::Http(_) | Self::Busy(_) | Self::Interrupted)
+        match self {
+            Self::Http(err) => err.is_connect() || err.is_timeout() || err.is_request(),
+            Self::Status {
+                status,
+                retry_after,
+                ..
+            } => {
+                matches!(status, 500 | 502 | 503 | 504 | 529)
+                    || *status == 429 && retry_after.is_some()
+            }
+            Self::Busy(_) | Self::Interrupted => true,
+            Self::Stream(_) | Self::Json(_) => false,
+        }
+    }
+
+    pub(crate) fn wait(&self, attempt: u32) -> Duration {
+        match self {
+            Self::Status {
+                retry_after: Some(wait),
+                ..
+            } => (*wait).min(LONGEST_WAIT),
+            _ => Duration::from_secs(1 << attempt.min(5)).min(LONGEST_WAIT),
+        }
     }
 }
 
@@ -196,33 +222,12 @@ enum Flow {
 }
 
 async fn post(request: reqwest::RequestBuilder) -> Result<reqwest::Response, Error> {
-    let mut attempt = 0;
-    loop {
-        let Some(this_attempt) = request.try_clone() else {
-            unreachable!("a request with an in-memory body can be cloned");
-        };
-        let response = this_attempt.send().await?;
-        let status = response.status();
-        if status.is_success() {
-            return Ok(response);
-        }
-        let retry_after = response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok());
-        let retryable = matches!(status.as_u16(), 500 | 502 | 503 | 504 | 529)
-            || (status.as_u16() == 429 && retry_after.is_some());
-        if !retryable || attempt == MAX_RETRIES {
-            return Err(status_error(response).await);
-        }
-        tokio::time::sleep(retry_after.map_or_else(|| backoff(attempt), Duration::from_secs)).await;
-        attempt += 1;
+    let response = request.send().await?;
+    if response.status().is_success() {
+        Ok(response)
+    } else {
+        Err(status_error(response).await)
     }
-}
-
-pub(crate) fn backoff(attempt: u32) -> Duration {
-    Duration::from_secs(1 << attempt)
 }
 
 fn json(body: &impl serde::Serialize, images: &Images) -> Result<Vec<u8>, Error> {
@@ -233,10 +238,17 @@ fn json(body: &impl serde::Serialize, images: &Images) -> Result<Vec<u8>, Error>
 
 async fn status_error(response: reqwest::Response) -> Error {
     let status = response.status().as_u16();
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs);
     let body = response.text().await.unwrap_or_default();
     Error::Status {
         status,
         message: error_message(&body),
+        retry_after,
     }
 }
 
@@ -287,7 +299,7 @@ async fn read_events(
     mut handle: impl FnMut(&sse::Event) -> Result<Flow, Error>,
 ) -> Result<(), Error> {
     let mut decoder = sse::Decoder::default();
-    while let Some(chunk) = response.chunk().await? {
+    while let Some(chunk) = response.chunk().await.map_err(|_| Error::Interrupted)? {
         decoder.feed(&chunk);
         while let Some(event) = decoder.next_event() {
             if handle(&event)? == Flow::Done {
@@ -301,6 +313,36 @@ async fn read_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn status(status: u16, retry_after: Option<u64>) -> Error {
+        Error::Status {
+            status,
+            message: String::new(),
+            retry_after: retry_after.map(Duration::from_secs),
+        }
+    }
+
+    #[test]
+    fn only_errors_that_can_pass_are_tried_again() {
+        assert!(status(503, None).is_transient());
+        assert!(status(529, None).is_transient());
+        assert!(status(429, Some(5)).is_transient());
+        assert!(!status(429, None).is_transient());
+        assert!(!status(400, None).is_transient());
+        assert!(!status(401, None).is_transient());
+        assert!(Error::Interrupted.is_transient());
+        assert!(!Error::Stream("bad".into()).is_transient());
+    }
+
+    #[test]
+    fn waits_double_up_to_thirty_seconds() {
+        let waits: Vec<u64> = (0..7)
+            .map(|attempt| Error::Interrupted.wait(attempt).as_secs())
+            .collect();
+        assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30]);
+        assert_eq!(status(429, Some(3)).wait(0), Duration::from_secs(3));
+        assert_eq!(status(429, Some(600)).wait(0), LONGEST_WAIT);
+    }
 
     #[test]
     fn openai_error_body_shows_code_and_message() {
