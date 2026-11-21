@@ -288,6 +288,10 @@ fn push_input<'a>(
                 role: "user",
                 content: InputContent::Text(Cow::Owned(message::shell(command, output, *code))),
             },
+            (Part::File { path, text }, _) => Input::Message {
+                role: "user",
+                content: InputContent::Text(Cow::Owned(message::file(path, text))),
+            },
             (Part::Image(image), _) => Input::Message {
                 role: "user",
                 content: InputContent::Parts(vec![picture(image, images)]),

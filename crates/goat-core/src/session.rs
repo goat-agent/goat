@@ -1,17 +1,21 @@
+mod ledger;
 mod prompt;
 mod replay;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 
 use crate::account::Account;
 use crate::image::{Image, Picture};
-use crate::message::{self, Message, Origin, Part, Role, Trace};
+use crate::message::{self, Diff, Message, Origin, Part, Role, Trace};
 use crate::provider::{self, Chunk, Endpoints, Images, Provider, Request, Stop, Usage};
-use crate::store::{self, Store};
+use crate::store::{self, Sent, Store};
 use crate::tool::{self, Outcome, Runner, Searcher, Step, Web};
+
+use self::ledger::Ledger;
 
 crate::id::define!(Id);
 
@@ -35,6 +39,11 @@ pub enum Error {
     Tool(#[from] tool::Error),
     #[error("session {0} not found")]
     NotFound(Id),
+    #[error("could not restore {path}")]
+    Restore {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -50,6 +59,7 @@ pub enum Event<'a> {
     CallFailed {
         problem: &'a str,
     },
+    Changed(&'a Diff),
     RunFinished {
         outcome: &'a Outcome,
     },
@@ -93,7 +103,8 @@ pub struct Environment {
 #[derive(Debug)]
 pub struct Session {
     id: Id,
-    store: Store,
+    store: Rc<Store>,
+    ledger: Rc<Ledger>,
     http: reqwest::Client,
     endpoints: Endpoints,
     provider: Provider,
@@ -105,7 +116,7 @@ pub struct Session {
     tool: tool::Spec,
     messages: Vec<Message>,
     finished: Vec<Part>,
-    started: Vec<tool::Call>,
+    trace: Vec<Trace>,
     last_input: u64,
 }
 
@@ -167,21 +178,31 @@ impl Session {
         instructions: Box<str>,
         messages: Vec<Message>,
     ) -> Result<Self, Error> {
+        let store = Rc::new(store);
+        let ledger = Rc::new(Ledger::new(Rc::clone(&store), id));
+        let journal: Rc<dyn tool::Journal> = Rc::<Ledger>::clone(&ledger);
         Ok(Self {
             id,
             provider: Provider::new(&account, http.clone(), &env.endpoints),
             store,
+            ledger,
             http,
             endpoints: env.endpoints.clone(),
             account,
             model: model.into(),
             effort: None,
             instructions,
-            runner: Runner::new(&env.workspace, &env.home, &env.spill, !messages.is_empty())?,
+            runner: Runner::new(
+                &env.workspace,
+                &env.home,
+                &env.spill,
+                !messages.is_empty(),
+                Some(journal),
+            )?,
             tool: tool::spec(),
             messages,
             finished: Vec::new(),
-            started: Vec::new(),
+            trace: Vec::new(),
             last_input: 0,
         })
     }
@@ -235,14 +256,15 @@ impl Session {
     ) -> Result<(), Error> {
         let prompt = prompt.into();
         self.close_interrupted_calls()?;
-        let mut parts = vec![Part::text(prompt.text)];
-        parts.extend(self.keep(prompt.images)?.into_iter().map(Part::Image));
-        let message = Message::new(Role::User, None, parts);
+        self.ledger.begin();
         if self.last_input > COMPACT_AT_TOKENS {
             sink.emit(Event::Compacting);
-            self.compact(message.id).await?;
+            self.summarize("").await?;
         }
-        self.push(message)?;
+        let mut parts = vec![Part::text(prompt.text)];
+        parts.extend(self.keep(prompt.images)?.into_iter().map(Part::Image));
+        parts.extend(self.mentions(prompt.text)?);
+        self.push(Message::new(Role::User, None, parts))?;
         loop {
             let reply = self
                 .request(None, true, &mut |chunk| sink.emit(chunk.into()))
@@ -280,6 +302,50 @@ impl Session {
             let results = std::mem::take(&mut self.finished);
             self.push(Message::new(Role::Tool, None, results))?;
         }
+    }
+
+    pub async fn compact(&mut self, focus: &str, sink: &mut impl Sink) -> Result<bool, Error> {
+        self.close_interrupted_calls()?;
+        if self
+            .messages
+            .iter()
+            .all(|message| message.role == Role::Summary)
+        {
+            return Ok(false);
+        }
+        sink.emit(Event::Compacting);
+        self.summarize(focus).await
+    }
+
+    pub fn sent(&self) -> Result<Vec<Sent>, Error> {
+        Ok(self.store.sent(self.id)?)
+    }
+
+    pub fn changed_files(&self, since: message::Id) -> Result<Vec<PathBuf>, Error> {
+        Ok(self.store.changed_files(self.id, since)?)
+    }
+
+    pub fn restore(&mut self, since: message::Id) -> Result<Vec<PathBuf>, Error> {
+        let paths = self.store.changed_files(self.id, since)?;
+        self.ledger.begin();
+        for path in &paths {
+            let Some(content) = self.store.content_at(self.id, path, since)? else {
+                continue;
+            };
+            self.ledger.restore(path, content.as_deref())?;
+        }
+        self.ledger.begin();
+        Ok(paths)
+    }
+
+    pub fn rewind(&mut self, to: message::Id) -> Result<(), Error> {
+        self.close_interrupted_calls()?;
+        self.store.truncate(self.id, to)?;
+        self.messages = self.store.context(self.id)?;
+        self.finished.clear();
+        self.trace.clear();
+        self.last_input = 0;
+        Ok(())
     }
 
     pub fn title(&self) -> Result<Option<String>, Error> {
@@ -381,9 +447,8 @@ impl Session {
                 bearer,
             }),
         };
-        self.started.clear();
-        let started = &mut self.started;
-        let mut trace = Vec::new();
+        self.trace.clear();
+        let trace = &mut self.trace;
         let outcome = self
             .runner
             .run(&run, web, &mut |step| match step {
@@ -391,19 +456,22 @@ impl Session {
                     sink.emit(Event::Call(&call));
                     trace.push(Trace::Call {
                         kind: call.kind,
-                        target: call.target.clone(),
+                        target: call.target,
                     });
-                    started.push(call);
                 }
                 Step::Failed(problem) => {
                     sink.emit(Event::CallFailed { problem: &problem });
                     trace.push(Trace::Failed { problem });
                 }
+                Step::Changed(diff) => {
+                    sink.emit(Event::Changed(&diff));
+                    trace.push(Trace::Changed { diff });
+                }
                 Step::Shown(_) => {}
             })
             .await;
         sink.emit(Event::RunFinished { outcome: &outcome });
-        (outcome, trace)
+        (outcome, std::mem::take(&mut self.trace))
     }
 
     async fn request(
@@ -454,8 +522,12 @@ impl Session {
         }
     }
 
-    async fn compact(&mut self, next: message::Id) -> Result<(), Error> {
-        let instruction = Message::user(prompt::COMPACTION);
+    async fn summarize(&mut self, focus: &str) -> Result<bool, Error> {
+        let tail = message::Id::generate();
+        let instruction = match focus.trim() {
+            "" => Message::user(prompt::COMPACTION),
+            focus => Message::user(&format!("{}{}{focus}", prompt::COMPACTION, prompt::FOCUS)),
+        };
         let reply = self.request(Some(&instruction), false, &mut |_| {}).await?;
         self.last_input = 0;
         let text: String = reply
@@ -471,19 +543,19 @@ impl Session {
             self.store.set_title(self.id, &title)?;
         }
         if text.trim().is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         let summary = Message::new(
             Role::Summary,
             None,
             vec![Part::Summary {
                 text: format!("{}{text}", prompt::SUMMARY_PREFIX).into(),
-                tail: next,
+                tail,
             }],
         );
         self.store.append(self.id, &summary)?;
         self.messages = vec![summary];
-        Ok(())
+        Ok(true)
     }
 
     fn close_interrupted_calls(&mut self) -> Result<(), Error> {
@@ -491,7 +563,7 @@ impl Session {
         let Some(last) = self.messages.last().filter(|m| m.role == Role::Assistant) else {
             return Ok(());
         };
-        let mut started = Some(std::mem::take(&mut self.started));
+        let mut trace = Some(std::mem::take(&mut self.trace));
         let results: Vec<Part> = last
             .tool_calls()
             .map(|(id, _, _)| {
@@ -502,19 +574,13 @@ impl Session {
                     )
                     .cloned()
                     .unwrap_or_else(|| {
-                        let started = started.take().unwrap_or_default();
+                        let trace = trace.take().unwrap_or_default();
                         Part::ToolResult {
                             call_id: id.into(),
-                            output: interrupted(&started).into(),
+                            output: interrupted(&trace).into(),
                             is_error: true,
                             images: Vec::new(),
-                            trace: started
-                                .into_iter()
-                                .map(|call| Trace::Call {
-                                    kind: call.kind,
-                                    target: call.target,
-                                })
-                                .collect(),
+                            trace,
                         }
                     })
             })
@@ -523,6 +589,20 @@ impl Session {
             return Ok(());
         }
         self.push(Message::new(Role::Tool, None, results))
+    }
+
+    fn mentions(&self, text: &str) -> Result<Vec<Part>, Error> {
+        let mut parts = Vec::new();
+        for raw in tool::mentioned(text) {
+            match self.runner.attach(raw) {
+                Some(tool::Attached::File { path, text }) => parts.push(Part::File { path, text }),
+                Some(tool::Attached::Image(picture)) => {
+                    parts.extend(self.keep(&[picture])?.into_iter().map(Part::Image));
+                }
+                None => {}
+            }
+        }
+        Ok(parts)
     }
 
     fn keep(&self, pictures: &[Picture]) -> Result<Vec<Image>, Error> {
@@ -679,16 +759,23 @@ fn sent(shown: usize) -> usize {
     IMAGE_BATCH + shown % IMAGE_BATCH
 }
 
-fn interrupted(started: &[tool::Call]) -> String {
-    if started.is_empty() {
+fn interrupted(trace: &[Trace]) -> String {
+    let calls: Vec<(tool::Kind, &str)> = trace
+        .iter()
+        .filter_map(|step| match step {
+            Trace::Call { kind, target } => Some((*kind, &**target)),
+            _ => None,
+        })
+        .collect();
+    if calls.is_empty() {
         return INTERRUPTED.to_owned();
     }
     let mut text = format!("{INTERRUPTED}. Calls it had started, which may have changed files:");
-    for call in started {
+    for (kind, target) in calls {
         let mut line = format!(
             "{} {}",
-            call.kind.as_str(),
-            call.target.lines().next().unwrap_or_default()
+            kind.as_str(),
+            target.lines().next().unwrap_or_default()
         );
         if let Some((cut, _)) = line.char_indices().nth(CALL_CHARS) {
             line.truncate(cut);

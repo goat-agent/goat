@@ -315,6 +315,10 @@ fn turn<'a>(message: &'a Message, native: bool, images: &'a Images) -> Option<Tu
                 r#type: "text",
                 text: Cow::Owned(message::shell(command, output, *code)),
             })),
+            Part::File { path, text } => Some(Block::Text(TextBlock {
+                r#type: "text",
+                text: Cow::Owned(message::file(path, text)),
+            })),
         })
         .collect();
     (!content.is_empty()).then_some(Turn { role, content })

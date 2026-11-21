@@ -110,6 +110,10 @@ pub enum Part {
         trace: Vec<Trace>,
     },
     Image(Image),
+    File {
+        path: Box<str>,
+        text: Box<str>,
+    },
     Shell {
         command: Box<str>,
         output: Box<str>,
@@ -126,6 +130,33 @@ pub enum Part {
 pub enum Trace {
     Call { kind: Kind, target: Box<str> },
     Failed { problem: Box<str> },
+    Changed { diff: Diff },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Diff {
+    pub added: u32,
+    pub removed: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<DiffLine>,
+    #[serde(default)]
+    pub hidden: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffLine {
+    pub sign: Sign,
+    pub number: u32,
+    pub text: Box<str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Sign {
+    Same,
+    Added,
+    Removed,
+    Gap,
 }
 
 impl Part {
@@ -150,6 +181,10 @@ pub fn shell(command: &str, output: &str, code: Option<i32>) -> String {
         write!(text, "[exit {code}]").ok();
     }
     text
+}
+
+pub fn file(path: &str, text: &str) -> String {
+    format!("The user attached {path} to their message:\n\n{text}")
 }
 
 #[derive(Debug, Clone)]

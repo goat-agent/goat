@@ -29,6 +29,7 @@ const SHELL_PROMPT: &str = "! ";
 const INDENT: &str = "  ";
 const TAB: &str = "    ";
 const PALETTE_ROWS: usize = 12;
+const REWIND_HINT: &str = "Esc again to go back to an earlier prompt";
 const KEY_POLL: Duration = Duration::from_millis(100);
 const KEY_BACKLOG: usize = 64;
 
@@ -101,6 +102,7 @@ struct Line {
     effort: Option<usize>,
     attachments: Vec<Attachment>,
     recalled: Vec<(usize, Image)>,
+    armed: bool,
 }
 
 struct Attachment {
@@ -113,6 +115,7 @@ struct Item {
     label: String,
     is_current: bool,
     text: String,
+    cursor: Option<usize>,
     is_final: bool,
     efforts: Vec<String>,
     effort: usize,
@@ -232,6 +235,45 @@ impl Editor {
         }
         self.show(choices, terminal);
         TurnKeys::Continue
+    }
+
+    pub(crate) fn prefill(&mut self, text: &str, images: &[Image]) {
+        let mut shown = String::with_capacity(text.len());
+        let mut numbers: Vec<(usize, usize)> = Vec::new();
+        let mut rest = text;
+        while let Some(at) = rest.find(IMAGE_LABEL) {
+            let tail = &rest[at + IMAGE_LABEL.len()..];
+            let old = tail
+                .find(']')
+                .and_then(|end| Some((tail[..end].parse::<usize>().ok()?, end)));
+            let Some((old, end)) = old else {
+                shown.push_str(&rest[..at + IMAGE_LABEL.len()]);
+                rest = tail;
+                continue;
+            };
+            let number = if let Some((_, number)) = numbers.iter().find(|(seen, _)| *seen == old) {
+                *number
+            } else {
+                self.images += 1;
+                numbers.push((old, self.images));
+                self.images
+            };
+            shown.push_str(&rest[..at]);
+            shown.push(marker(number));
+            rest = &tail[end + 1..];
+        }
+        shown.push_str(rest);
+        self.line = Line {
+            cursor: shown.len(),
+            text: shown,
+            recall: self.history.len(),
+            recalled: numbers
+                .iter()
+                .zip(images)
+                .map(|((_, number), image)| (*number, image.clone()))
+                .collect(),
+            ..Line::default()
+        };
     }
 
     pub(crate) fn unqueue(&mut self) {
@@ -393,14 +435,14 @@ impl Editor {
 
     fn frame(&self, columns: usize, choices: &Choices<'_>) -> Frame {
         let items = match self.line.mode {
-            Mode::Agent => palette(&self.line.text, choices),
+            Mode::Agent => palette(&self.line.text, self.line.cursor, choices),
             Mode::Shell => Vec::new(),
         };
         let rows = self.line.rows(&items);
-        let selected = self
-            .line
-            .selected
-            .or(preselected(&self.line.text, rows.len()));
+        let selected =
+            self.line
+                .selected
+                .or(preselected(&self.line.text, self.line.cursor, rows.len()));
         let mut frame = self.line.frame(columns, &rows, selected);
         let room = width(columns) - 1 - PROMPT.width();
         let queued: Vec<String> = self
@@ -460,6 +502,7 @@ impl Line {
         let selected = self.selected.take();
         let effort = self.effort.take();
         let pick = Pick { selected, effort };
+        let armed = mem::take(&mut self.armed);
         if let Some(action) = self.choose(key.code, alt, pick, history, choices) {
             return action;
         }
@@ -471,6 +514,11 @@ impl Line {
             KeyCode::Backspace | KeyCode::Esc if is_shell && self.text.is_empty() => {
                 self.mode = Mode::Agent;
             }
+            KeyCode::Esc if self.text.is_empty() && armed => {
+                "/rewind ".clone_into(&mut self.text);
+                self.cursor = self.text.len();
+            }
+            KeyCode::Esc if self.text.is_empty() => self.armed = true,
             KeyCode::Enter if alt => self.insert("\n"),
             KeyCode::Char('j') if ctrl => self.insert("\n"),
             KeyCode::Enter if self.text.trim().is_empty() => {}
@@ -580,7 +628,7 @@ impl Line {
         if !(is_moving && self.recall == history.len() || is_turning || is_taking) {
             return None;
         }
-        let mut items = palette(&self.text, choices);
+        let mut items = palette(&self.text, self.cursor, choices);
         let count = items.len();
         if count == 0 {
             return None;
@@ -599,7 +647,9 @@ impl Line {
             });
             return Some(Action::Edit);
         }
-        let selected = pick.selected.or(preselected(&self.text, count));
+        let selected = pick
+            .selected
+            .or(preselected(&self.text, self.cursor, count));
         if is_moving {
             self.selected = Some(match (code, selected) {
                 (KeyCode::Down, None) => 0,
@@ -618,7 +668,7 @@ impl Line {
             self.text.push(':');
             self.text.push_str(level);
         }
-        self.cursor = self.text.len();
+        self.cursor = item.cursor.unwrap_or(self.text.len());
         if code == KeyCode::Enter && item.is_final {
             return Some(Action::Submit);
         }
@@ -741,6 +791,10 @@ impl Line {
             col += cluster_width;
         }
         let (mut cursor_row, mut cursor_col) = at_cursor.unwrap_or((rows.len(), col));
+        if self.armed && self.text.is_empty() {
+            let hint = fit(REWIND_HINT, width.saturating_sub(col + 1));
+            row.push_str(&hint.dim().to_string());
+        }
         if cursor_col >= width {
             rows.push(mem::replace(&mut row, INDENT.to_owned()));
             (cursor_row, cursor_col) = (rows.len(), INDENT.width());
@@ -766,7 +820,24 @@ impl Line {
     }
 }
 
-fn palette(text: &str, choices: &Choices<'_>) -> Vec<Item> {
+fn palette(text: &str, cursor: usize, choices: &Choices<'_>) -> Vec<Item> {
+    if let Some((at, typed)) = mention_at(text, cursor) {
+        let (before, after) = (&text[..=at], &text[cursor..]);
+        return choices
+            .mentions(typed)
+            .into_iter()
+            .take(PALETTE_ROWS)
+            .map(|candidate| Item {
+                text: format!("{before}{}{after}", candidate.value),
+                cursor: Some(before.len() + candidate.value.len()),
+                is_final: false,
+                label: candidate.label,
+                is_current: false,
+                efforts: Vec::new(),
+                effort: 0,
+            })
+            .collect();
+    }
     let (name, typed) = match command::typing(text) {
         Typing::Name(typed) => {
             let head = &text[..text.len() - typed.len()];
@@ -774,8 +845,10 @@ fn palette(text: &str, choices: &Choices<'_>) -> Vec<Item> {
                 .iter()
                 .filter(|spec| spec.word.starts_with(typed))
                 .map(|spec| {
-                    let takes_value =
-                        matches!(spec.name, Name::Model | Name::Effort | Name::Resume);
+                    let takes_value = matches!(
+                        spec.name,
+                        Name::Model | Name::Effort | Name::Resume | Name::Rewind
+                    );
                     Item {
                         label: format!("/{:<10}{}", spec.word, spec.about),
                         is_current: false,
@@ -784,6 +857,7 @@ fn palette(text: &str, choices: &Choices<'_>) -> Vec<Item> {
                         } else {
                             format!("{head}{}", spec.word)
                         },
+                        cursor: None,
                         is_final: !takes_value,
                         efforts: Vec::new(),
                         effort: 0,
@@ -799,14 +873,16 @@ fn palette(text: &str, choices: &Choices<'_>) -> Vec<Item> {
         Name::Model => choices.models(typed),
         Name::Effort => choices.efforts(typed),
         Name::Resume => choices.sessions(typed, now()),
-        Name::Help | Name::Exit => Vec::new(),
+        Name::Rewind => choices.rewinds(typed, now()),
+        Name::Compact | Name::Clear | Name::Help | Name::Exit => Vec::new(),
     };
     candidates
         .into_iter()
         .take(PALETTE_ROWS)
         .map(|candidate| Item {
-            is_final: !candidate.value.ends_with('/'),
+            is_final: !candidate.value.ends_with(['/', ' ']),
             text: format!("{head}{}", candidate.value),
+            cursor: None,
             label: candidate.label,
             is_current: candidate.is_current,
             efforts: candidate.efforts,
@@ -821,9 +897,23 @@ fn now() -> u64 {
         .map_or(0, |since| since.as_secs())
 }
 
-fn preselected(text: &str, count: usize) -> Option<usize> {
+fn mention_at(text: &str, cursor: usize) -> Option<(usize, &str)> {
+    let before = text.get(..cursor)?;
+    let at = before.rfind('@')?;
+    let typed = &before[at + 1..];
+    let starts_word = before[..at]
+        .chars()
+        .next_back()
+        .is_none_or(char::is_whitespace);
+    (starts_word && !typed.contains(char::is_whitespace)).then_some((at, typed))
+}
+
+fn preselected(text: &str, cursor: usize, count: usize) -> Option<usize> {
+    if mention_at(text, cursor).is_some() {
+        return (count > 0).then_some(0);
+    }
     let has_query = match command::typing(text) {
-        Typing::Name(_) => true,
+        Typing::Name(_) | Typing::Argument(Name::Rewind, _) => true,
         Typing::Argument(_, typed) => !typed.is_empty(),
         Typing::Message => false,
     };
@@ -879,8 +969,10 @@ fn image_of(cluster: &str) -> Option<usize> {
         .and_then(image_of_char)
 }
 
+const IMAGE_LABEL: &str = "[Image #";
+
 fn label(number: usize) -> String {
-    format!("[Image #{number}]")
+    format!("{IMAGE_LABEL}{number}]")
 }
 
 fn images_in(text: &str) -> Vec<usize> {
@@ -993,7 +1085,7 @@ mod tests {
     use goat_core::catalog::Model;
 
     use super::*;
-    use crate::target::{Current, Offer};
+    use crate::target::{Current, Files, Offer};
 
     fn line(text: &str, cursor: usize) -> Line {
         Line {
@@ -1024,10 +1116,17 @@ mod tests {
             kind: Kind::OpenAi,
             label: account.label(),
         }];
+        let files = Files::listed(
+            ["README.md", "src/", "src/input.rs", "src/main.rs"]
+                .map(str::to_owned)
+                .to_vec(),
+        );
         use_choices(&Choices {
             offers: &offers,
             catalog: &catalog,
             sessions: &[],
+            sent: &[],
+            files: &files,
             current: Current {
                 account: account.id,
                 model: "gpt-6.2-sol",
@@ -1072,7 +1171,7 @@ mod tests {
     }
 
     fn rows(text: &str) -> Vec<String> {
-        with_choices(|choices| Line::default().rows(&palette(text, choices)))
+        with_choices(|choices| Line::default().rows(&palette(text, text.len(), choices)))
     }
 
     fn press(line: &mut Line, codes: &[KeyCode]) -> Action {
@@ -1179,6 +1278,84 @@ mod tests {
         let keys = during_turn(&mut editor, KeyCode::Esc);
 
         assert!(matches!(keys, TurnKeys::Interrupt));
+    }
+
+    #[test]
+    fn esc_twice_on_an_empty_prompt_opens_rewind() {
+        let mut line = line("", 0);
+
+        press(&mut line, &[KeyCode::Esc]);
+        let hint = line.frame(80, &[], None).rows[0].clone();
+        press(&mut line, &[KeyCode::Esc]);
+
+        assert!(hint.contains(REWIND_HINT));
+        assert_eq!(line.text, "/rewind ");
+    }
+
+    #[test]
+    fn the_latest_prompt_is_picked_when_rewind_opens() {
+        assert_eq!(preselected("/rewind ", 8, 3), Some(0));
+        assert_eq!(preselected("/resume ", 8, 3), None);
+    }
+
+    #[test]
+    fn another_key_between_two_escs_cancels_the_rewind() {
+        let mut line = line("", 0);
+
+        press(&mut line, &[KeyCode::Esc, KeyCode::Left, KeyCode::Esc]);
+
+        assert_eq!(line.text, "");
+        assert!(line.armed);
+    }
+
+    #[test]
+    fn a_picked_path_replaces_the_mention_and_keeps_the_rest() {
+        let mut line = line("see @ma and more", 7);
+
+        let action = press(&mut line, &[KeyCode::Enter]);
+
+        assert!(matches!(action, Action::Edit));
+        assert_eq!(line.text, "see @src/main.rs  and more");
+        assert_eq!(line.cursor, "see @src/main.rs ".len());
+    }
+
+    #[test]
+    fn a_picked_directory_keeps_listing_inside_it() {
+        let mut line = line("@sr", 3);
+
+        press(&mut line, &[KeyCode::Tab]);
+        let rows = with_choices(|choices| line.rows(&palette(&line.text, line.cursor, choices)));
+
+        assert_eq!(line.text, "@src/");
+        assert_eq!(rows, ["  src/input.rs", "  src/main.rs"]);
+    }
+
+    #[test]
+    fn an_at_sign_inside_a_word_is_not_a_mention() {
+        let rows = with_choices(|choices| palette("me@sr", 5, choices).len());
+
+        assert_eq!(rows, 0);
+    }
+
+    #[test]
+    fn a_rewound_prompt_comes_back_with_its_images() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = attach::load(&png_in(dir.path())).unwrap().image;
+        let mut editor = Editor {
+            images: 4,
+            ..Editor::default()
+        };
+
+        editor.prefill(
+            "compare [Image #2] with [Image #2]",
+            std::slice::from_ref(&image),
+        );
+
+        assert_eq!(
+            editor.line.text,
+            format!("compare {} with {}", marker(5), marker(5))
+        );
+        assert_eq!(editor.line.recalled, [(5, image)]);
     }
 
     #[test]
@@ -1526,7 +1703,8 @@ mod tests {
     #[test]
     fn arrows_pick_a_command_and_enter_runs_it() {
         let mut line = line("/", 1);
-        let keys = [KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Enter];
+        let mut keys = vec![KeyCode::Down; 6];
+        keys.push(KeyCode::Enter);
         let action = press(&mut line, &keys);
         assert!(matches!(action, Action::Submit));
         assert_eq!(line.text, "/help");
@@ -1617,7 +1795,7 @@ mod tests {
     fn the_picked_model_shows_its_effort() {
         let mut line = line("/model sol", 10);
         press(&mut line, &[KeyCode::Down, KeyCode::Right]);
-        let rows = with_choices(|choices| line.rows(&palette(&line.text, choices)));
+        let rows = with_choices(|choices| line.rows(&palette(&line.text, line.cursor, choices)));
         assert_eq!(rows, ["  gpt-6.2-sol (current)  ‹ low ›"]);
     }
 

@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::web::{self, Web};
-use super::{Call, Kind, Step, bash, danger, files, hashline};
+use std::rc::Rc;
+
+use super::{Call, Journal, Kind, Step, bash, danger, files, hashline};
 use crate::image;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -20,6 +22,7 @@ pub(crate) struct Host {
     danger: danger::Checker,
     steps: mpsc::Sender<Step>,
     web: RefCell<Option<Web>>,
+    journal: Option<Rc<dyn Journal>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,6 +73,7 @@ impl Host {
         home: &Path,
         spill: &Path,
         steps: mpsc::Sender<Step>,
+        journal: Option<Rc<dyn Journal>>,
     ) -> Result<Self, tree_sitter::LanguageError> {
         Ok(Self {
             workspace: workspace.to_owned(),
@@ -78,6 +82,7 @@ impl Host {
             danger: danger::Checker::new()?,
             steps,
             web: RefCell::new(None),
+            journal,
         })
     }
 
@@ -130,9 +135,21 @@ impl Host {
                     None => to_value(files::read(&resolved, &path, offset, limit)?),
                 }
             }
-            Op::Edit { path, edits } => to_value(files::edit(&self.resolve(&path), &path, edits)?),
+            Op::Edit { path, edits } => {
+                let resolved = self.resolve(&path);
+                let record = |before: Option<&[u8]>| self.record(&resolved, before);
+                let (edited, diff) = files::edit(&resolved, &path, edits, &record)?;
+                self.steps.send(Step::Changed(diff)).await.ok();
+                to_value(edited)
+            }
             Op::Write { path, content } => {
-                to_value(files::write(&self.resolve(&path), &path, &content)?)
+                let resolved = self.resolve(&path);
+                let record = |before: Option<&[u8]>| self.record(&resolved, before);
+                let (written, diff) = files::write(&resolved, &path, &content, &record)?;
+                if let Some(diff) = diff {
+                    self.steps.send(Step::Changed(diff)).await.ok();
+                }
+                to_value(written)
             }
             Op::Fetch { url } => {
                 let web = self.web()?;
@@ -146,6 +163,12 @@ impl Host {
                 to_value(web::search(&searcher, &query).await?)
             }
         }
+    }
+
+    fn record(&self, path: &Path, before: Option<&[u8]>) -> Result<(), String> {
+        self.journal
+            .as_ref()
+            .map_or(Ok(()), |journal| journal.record(path, before))
     }
 
     async fn bash(&self, command: &str, timeout: Option<u64>) -> Result<bash::Ran, String> {
@@ -192,7 +215,7 @@ impl Host {
             .ok_or_else(|| "the web is not available here".to_owned())
     }
 
-    fn resolve(&self, raw: &str) -> PathBuf {
+    pub(crate) fn resolve(&self, raw: &str) -> PathBuf {
         match raw.strip_prefix('~') {
             Some("") => self.home.clone(),
             Some(rest) if rest.starts_with('/') => self.home.join(rest.trim_start_matches('/')),
@@ -228,7 +251,7 @@ mod tests {
 
     fn host(dir: &Path) -> (Host, mpsc::Receiver<Step>) {
         let (tx, rx) = mpsc::channel(16);
-        let host = Host::new(dir, Path::new("/home/me"), &dir.join(".spill"), tx).unwrap();
+        let host = Host::new(dir, Path::new("/home/me"), &dir.join(".spill"), tx, None).unwrap();
         (host, rx)
     }
 

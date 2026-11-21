@@ -8,14 +8,14 @@ use goat_core::account::{self, Account};
 use goat_core::catalog::{self, Model};
 use goat_core::provider::{Endpoints, Provider};
 use goat_core::session::{self, Environment, Event, Prompt, Session, Sink};
-use goat_core::store::{Recent, Store};
+use goat_core::store::{Recent, Sent, Store};
 
 use crate::command::{self, Name};
 use crate::input::{Editor, Entry, Input, Keys, Mode, RawMode, TurnKeys};
 use crate::kitty;
 use crate::paths::Paths;
 use crate::render::{Banner, Ending, Terminal, Work};
-use crate::target::{self, Choices, Current, DEFAULT_EFFORT, Effort, Offer};
+use crate::target::{self, Choices, Current, DEFAULT_EFFORT, Effort, Files, Offer, plural};
 
 const USER_AGENT: &str = concat!("goat/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -24,8 +24,8 @@ const RECENT: u32 = 30;
 
 const KEYS: &str = "\
 Enter sends, and Alt+Enter or Ctrl+J adds a line
-Tab completes a command or its value
-Esc or Ctrl+C stops a turn, and Ctrl+D quits";
+Tab completes a command or its value, and @ completes a path
+Esc or Ctrl+C stops a turn, Esc twice goes back to an earlier prompt, and Ctrl+D quits";
 
 pub(crate) struct Choice {
     pub(crate) model: Option<String>,
@@ -45,6 +45,8 @@ struct Chat {
     offers: Vec<Offer>,
     catalog: Vec<Model>,
     recent: Vec<Recent>,
+    sent: Vec<Sent>,
+    files: Files,
     environment: Environment,
     database: PathBuf,
     naming: Option<Naming>,
@@ -62,6 +64,12 @@ enum Flow {
     Exit,
 }
 
+enum Job<'a> {
+    Turn(Prompt<'a>),
+    Shell(&'a str),
+    Compact(&'a str),
+}
+
 impl Chat {
     async fn read(&mut self) -> anyhow::Result<Entry> {
         loop {
@@ -73,6 +81,8 @@ impl Chat {
                 offers,
                 catalog,
                 recent,
+                sent,
+                files,
                 naming,
                 ..
             } = self;
@@ -82,7 +92,16 @@ impl Chat {
                 .into_iter()
                 .filter(|past| past.id != session.id())
                 .collect();
-            let choices = choices(session, offers, catalog, recent);
+            *sent = session.sent()?;
+            *files = Files::new(session.workspace().to_owned());
+            let choices = Choices {
+                offers,
+                catalog,
+                sessions: recent,
+                sent,
+                files,
+                current: current(session),
+            };
             let Some(pending) = naming else {
                 return Ok(editor.read(keys, &choices, terminal).await?);
             };
@@ -110,7 +129,7 @@ impl Chat {
         }
     }
 
-    async fn work(&mut self, input: &Input) -> anyhow::Result<()> {
+    async fn work(&mut self, job: Job<'_>) -> anyhow::Result<Option<bool>> {
         let Self {
             session,
             terminal,
@@ -119,6 +138,8 @@ impl Chat {
             offers,
             catalog,
             recent,
+            sent,
+            files,
             ..
         } = self;
         let model = session.model().to_owned();
@@ -127,38 +148,38 @@ impl Chat {
             offers,
             catalog,
             sessions: recent,
+            sent,
+            files,
             current: Current {
                 account: session.account().id,
                 model: &model,
                 effort: effort.as_deref(),
             },
         };
-        let plain = input.plain();
-        let text = plain.trim();
-        terminal.begin_turn(match input.mode {
-            Mode::Agent => Work::Turn,
-            Mode::Shell => Work::Shell,
+        terminal.begin_turn(match job {
+            Job::Turn(_) => Work::Turn,
+            Job::Shell(_) => Work::Shell,
+            Job::Compact(_) => Work::Compact,
         });
         let shared = RefCell::new(terminal);
+        let mut done = None;
         let ending = {
             let mut sink = Live(&shared);
             let mut turn = pin!(async {
-                match input.mode {
-                    Mode::Agent => {
-                        let prompt = Prompt {
-                            text,
-                            images: &input.images,
-                        };
-                        session.turn(prompt, &mut sink).await
-                    }
-                    Mode::Shell => session.shell(text, &mut sink).await,
+                match job {
+                    Job::Turn(prompt) => session.turn(prompt, &mut sink).await.map(|()| true),
+                    Job::Shell(command) => session.shell(command, &mut sink).await.map(|()| true),
+                    Job::Compact(focus) => session.compact(focus, &mut sink).await,
                 }
             });
             let mut ticks = tokio::time::interval(TICK);
             loop {
                 tokio::select! {
                     result = &mut turn => break match result {
-                        Ok(()) => Ending::Complete,
+                        Ok(changed) => {
+                            done = Some(changed);
+                            Ending::Complete
+                        }
                         Err(err) => Ending::Failed(format!("{:#}", anyhow::Error::new(err))),
                     },
                     event = keys.next() => {
@@ -175,12 +196,61 @@ impl Chat {
             editor.unqueue();
         }
         shared.into_inner().finish_turn(ending);
+        Ok(done)
+    }
+
+    async fn input(&mut self, input: &Input) -> anyhow::Result<()> {
+        let plain = input.plain();
+        let text = plain.trim();
+        let job = match input.mode {
+            Mode::Agent => Job::Turn(Prompt {
+                text,
+                images: &input.images,
+            }),
+            Mode::Shell => Job::Shell(text),
+        };
+        self.work(job).await?;
         Ok(())
     }
 
-    fn command(&mut self, name: Name, argument: &str) -> anyhow::Result<Flow> {
+    async fn compact(&mut self, focus: &str) -> anyhow::Result<()> {
+        match self.work(Job::Compact(focus)).await? {
+            Some(true) => self.terminal.outcome(Ok("Done")),
+            Some(false) => self.terminal.outcome(Ok("Nothing to compact yet")),
+            None => {}
+        }
+        Ok(())
+    }
+
+    fn clear(&mut self) -> anyhow::Result<()> {
+        let mut session = Session::create(
+            Store::open(&self.database)?,
+            http()?,
+            &self.environment,
+            self.session.account().clone(),
+            self.session.model(),
+        )?;
+        session.set_effort(self.session.effort());
+        self.session = session;
+        self.terminal.clear();
+        self.greet();
+        Ok(())
+    }
+
+    fn greet(&mut self) {
+        let model = self.status();
+        let directory = directory(self.session.workspace(), &self.environment.home);
+        self.terminal.banner(&Banner {
+            model: &model,
+            directory: &directory,
+        });
+    }
+
+    async fn command(&mut self, name: Name, argument: &str) -> anyhow::Result<Flow> {
         match (name, argument) {
             (Name::Exit, _) => return Ok(Flow::Exit),
+            (Name::Clear, _) => self.clear()?,
+            (Name::Compact, focus) => self.compact(focus).await?,
             (Name::Help, _) => self.terminal.reply(&help()),
             (Name::Model, "") => {
                 let status = self.status();
@@ -196,12 +266,13 @@ impl Chat {
                 .terminal
                 .reply("Type /resume and pick a session from the list"),
             (Name::Resume, id) => self.resume(id)?,
+            (Name::Rewind, picked) => self.rewind(picked)?,
         }
         Ok(Flow::Continue)
     }
 
     fn switch(&mut self, spec: &str) -> anyhow::Result<()> {
-        let choices = choices(&self.session, &self.offers, &self.catalog, &self.recent);
+        let choices = self.choices();
         let selection = choices.resolve(spec).map_err(anyhow::Error::msg)?;
         let name = choices.name(selection.account, &selection.model);
         let is_new_account = selection.account != self.session.account().id;
@@ -240,9 +311,7 @@ impl Chat {
     }
 
     fn set_effort(&mut self, level: &str) -> anyhow::Result<()> {
-        let effort = choices(&self.session, &self.offers, &self.catalog, &self.recent)
-            .effort(level)
-            .map_err(anyhow::Error::msg)?;
+        let effort = self.choices().effort(level).map_err(anyhow::Error::msg)?;
         match effort {
             Effort::Level(level) => self.session.set_effort(Some(&level)),
             Effort::Default | Effort::Keep => self.session.set_effort(None),
@@ -255,7 +324,7 @@ impl Chat {
         let Some(effort) = self.session.effort() else {
             return false;
         };
-        let choices = choices(&self.session, &self.offers, &self.catalog, &self.recent);
+        let choices = self.choices();
         let is_supported = choices
             .current_model()
             .is_none_or(|model| model.accepts(effort));
@@ -306,10 +375,67 @@ impl Chat {
         Ok(())
     }
 
+    fn rewind(&mut self, picked: &str) -> anyhow::Result<()> {
+        let sent = self.session.sent()?;
+        if picked.is_empty() {
+            self.terminal.reply(if sent.is_empty() {
+                "There is no earlier prompt to go back to"
+            } else {
+                "Type /rewind and pick a prompt from the list"
+            });
+            return Ok(());
+        }
+        let (number, what) = picked
+            .split_once(' ')
+            .map_or((picked, ""), |(number, what)| (number, what.trim()));
+        let target = number
+            .parse::<usize>()
+            .ok()
+            .and_then(|number| sent.get(number.checked_sub(1)?))
+            .with_context(|| format!("{number} is not one of your prompts"))?;
+        let (conversation, code) = match what {
+            "" | "both" => (true, true),
+            "conversation" => (true, false),
+            "code" => (false, true),
+            other => bail!("{other} is not both, conversation or code"),
+        };
+        let restored = if code {
+            self.session.restore(target.id)?
+        } else {
+            Vec::new()
+        };
+        if conversation {
+            self.session.rewind(target.id)?;
+            self.terminal.clear();
+            self.greet();
+            self.session.replay(&mut self.terminal)?;
+            self.editor.prefill(&target.text, &target.images);
+        }
+        let files = plural(u64::try_from(restored.len()).unwrap_or(0), "file");
+        let note = match (conversation, restored.is_empty()) {
+            (true, true) => "Went back to before this prompt".to_owned(),
+            (true, false) => format!("Went back to before this prompt and restored {files}"),
+            (false, true) => "There were no file changes to restore".to_owned(),
+            (false, false) => format!("Restored {files}"),
+        };
+        self.terminal.outcome(Ok(&note));
+        Ok(())
+    }
+
+    fn choices(&self) -> Choices<'_> {
+        Choices {
+            offers: &self.offers,
+            catalog: &self.catalog,
+            sessions: &self.recent,
+            sent: &self.sent,
+            files: &self.files,
+            current: current(&self.session),
+        }
+    }
+
     fn status(&self) -> String {
         let session = &self.session;
-        let name = choices(session, &self.offers, &self.catalog, &self.recent)
-            .name(session.account().id, session.model());
+        let name = self.choices().name(session.account().id, session.model());
         let effort = session
             .effort()
             .map_or_else(String::new, |effort| format!(" with {effort} effort"));
@@ -317,7 +443,7 @@ impl Chat {
     }
 
     fn describe_effort(&self) -> String {
-        let choices = choices(&self.session, &self.offers, &self.catalog, &self.recent);
+        let choices = self.choices();
         let effort = self.session.effort().unwrap_or(DEFAULT_EFFORT);
         match choices
             .current_model()
@@ -439,6 +565,8 @@ fn open(
         offers,
         catalog,
         sessions: &[],
+        sent: &[],
+        files: &Files::listed(Vec::new()),
         current: Current {
             account: account.id,
             model: &model,
@@ -477,16 +605,13 @@ async fn run(
         offers,
         catalog,
         recent: Vec::new(),
+        sent: Vec::new(),
+        files: Files::listed(Vec::new()),
         environment: environment(paths),
         database: paths.database.clone(),
         naming: None,
     };
-    let model = chat.status();
-    let directory = directory(chat.session.workspace(), &paths.home);
-    chat.terminal.banner(&Banner {
-        model: &model,
-        directory: &directory,
-    });
+    chat.greet();
     chat.session.replay(&mut chat.terminal)?;
     loop {
         chat.terminal.settle();
@@ -497,7 +622,7 @@ async fn run(
         if input.mode == Mode::Agent
             && let Some(run) = command::parse(&input.text)
         {
-            match chat.command(run.name, run.argument) {
+            match chat.command(run.name, run.argument).await {
                 Ok(Flow::Continue) => {}
                 Ok(Flow::Exit) => {
                     chat.leave();
@@ -507,7 +632,7 @@ async fn run(
             }
             continue;
         }
-        chat.work(&input).await?;
+        chat.input(&input).await?;
         if input.mode == Mode::Agent {
             chat.name().await;
         }
@@ -522,21 +647,11 @@ fn directory(workspace: &Path, home: &Path) -> String {
     }
 }
 
-fn choices<'a>(
-    session: &'a Session,
-    offers: &'a [Offer],
-    catalog: &'a [Model],
-    sessions: &'a [Recent],
-) -> Choices<'a> {
-    Choices {
-        offers,
-        catalog,
-        sessions,
-        current: Current {
-            account: session.account().id,
-            model: session.model(),
-            effort: session.effort(),
-        },
+fn current(session: &Session) -> Current<'_> {
+    Current {
+        account: session.account().id,
+        model: session.model(),
+        effort: session.effort(),
     }
 }
 

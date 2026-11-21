@@ -1,8 +1,10 @@
 mod bash;
 mod danger;
+mod diff;
 mod files;
 mod hashline;
 mod host;
+mod mention;
 mod script;
 mod spill;
 mod web;
@@ -16,10 +18,14 @@ use serde_json::value::RawValue;
 use tokio::sync::mpsc;
 
 use crate::image::Picture;
+use crate::message::Diff;
 
 pub(crate) use self::web::{Searcher, Web};
 
+pub(crate) use self::files::TRACKED_BYTES;
 use self::host::Host;
+pub use self::mention::workspace_files;
+pub(crate) use self::mention::{Attached, mentioned};
 use self::script::Script;
 
 const NAME: &str = "run";
@@ -90,7 +96,12 @@ pub struct Call {
 pub(crate) enum Step {
     Started(Call),
     Failed(Box<str>),
+    Changed(Diff),
     Shown(Picture),
+}
+
+pub(crate) trait Journal: std::fmt::Debug {
+    fn record(&self, path: &Path, before: Option<&[u8]>) -> Result<(), String>;
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,10 +167,11 @@ impl Runner {
         home: &Path,
         spill: &Path,
         resumed: bool,
+        journal: Option<Rc<dyn Journal>>,
     ) -> Result<Self, Error> {
         let (tx, steps) = mpsc::channel(STEP_BACKLOG);
         Ok(Self {
-            host: Rc::new(Host::new(workspace, home, spill, tx)?),
+            host: Rc::new(Host::new(workspace, home, spill, tx, journal)?),
             steps,
             script: None,
             had_sandbox: resumed,
@@ -168,6 +180,10 @@ impl Runner {
 
     pub(crate) fn workspace(&self) -> &Path {
         self.host.workspace()
+    }
+
+    pub(crate) fn attach(&self, raw: &str) -> Option<Attached> {
+        mention::attach(|raw| self.host.resolve(raw), self.host.spill(), raw)
     }
 
     pub(crate) async fn shell(
@@ -270,7 +286,7 @@ mod tests {
     }
 
     fn runner(dir: &Path) -> Runner {
-        Runner::new(dir, dir, &dir.join(".spill"), false).unwrap()
+        Runner::new(dir, dir, &dir.join(".spill"), false, None).unwrap()
     }
 
     fn run(code: &str) -> Run {
@@ -360,7 +376,17 @@ mod tests {
                 Step::Started(Call {
                     kind: Kind::Write,
                     target: "a.txt".into(),
-                })
+                }),
+                Step::Changed(Diff {
+                    added: 1,
+                    removed: 0,
+                    lines: vec![crate::message::DiffLine {
+                        sign: crate::message::Sign::Added,
+                        number: 1,
+                        text: "x".into(),
+                    }],
+                    hidden: 0,
+                }),
             ]
         );
     }

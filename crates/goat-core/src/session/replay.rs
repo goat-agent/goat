@@ -68,6 +68,7 @@ impl Replay {
                         target: target.clone(),
                     })),
                     Trace::Failed { problem } => sink.emit(Event::CallFailed { problem }),
+                    Trace::Changed { diff } => sink.emit(Event::Changed(diff)),
                 }
             }
             let outcome = Outcome {
