@@ -11,6 +11,7 @@ use goat_core::tool::{self, Kind};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use crate::highlight;
 use crate::input::{Input, Mode, echo, fit};
 use crate::kitty::{self, Cell};
 use crate::markdown::{Markdown, Style};
@@ -36,6 +37,7 @@ pub(crate) struct Terminal<W: Write = BufWriter<Stdout>> {
     has_output: bool,
     section: Option<Section>,
     markdown: Markdown,
+    code: Option<highlight::Block>,
     calls: usize,
     activity: Option<Activity>,
 }
@@ -115,6 +117,7 @@ impl<W: Write> Terminal<W> {
             has_output: false,
             section: None,
             markdown: Markdown::default(),
+            code: None,
             calls: 0,
             activity: None,
         }
@@ -291,6 +294,7 @@ impl<W: Write> Terminal<W> {
         if let Some(section @ (Section::Reasoning | Section::Text)) = self.section {
             let mut markdown = mem::take(&mut self.markdown);
             markdown.finish(&mut |style, text| self.paint(section, style, text));
+            self.code = None;
         }
         if !self.pending.is_empty() {
             self.put("\n");
@@ -310,8 +314,20 @@ impl<W: Write> Terminal<W> {
                 Style::Plain => self.put(text),
                 Style::Strong | Style::Heading => self.put(&format!("{}", text.bold())),
                 Style::Code => self.put(&format!("{}", text.cyan())),
-                Style::Fence | Style::Marker => self.put(&format!("{}", text.dim())),
+                Style::Marker => self.put(&format!("{}", text.dim())),
+                Style::Open => self.code = Some(highlight::Block::new(text)),
+                Style::Close => self.code = None,
+                Style::Block => {
+                    let painted = match &mut self.code {
+                        Some(block) => block.paint(text),
+                        None => text.to_owned(),
+                    };
+                    self.put(&painted);
+                }
             }
+            return;
+        }
+        if matches!(style, Style::Open | Style::Close) {
             return;
         }
         if text == "\n" {
@@ -806,6 +822,16 @@ mod tests {
         assert!(during.contains("Retrying (attempt 2), Esc to stop"));
         assert!(during.contains("The reply was cut off, so it starts over"));
         assert!(!after.contains("Retrying"));
+    }
+
+    #[test]
+    fn a_code_block_shows_colored_code_without_its_fences() {
+        let screen = screen(&[Event::Text("Run:\n```rust\nlet a = 1;\n```\nDone.")]);
+
+        assert!(!screen.contains("```"), "{screen:?}");
+        assert!(screen.contains(&"let".magenta().to_string()));
+        assert!(screen.contains("Run:\n"));
+        assert!(screen.contains("Done."));
     }
 
     #[test]

@@ -20,6 +20,7 @@ goat-core.workspace = true
 image.workspace = true
 reqwest.workspace = true
 rustix.workspace = true
+syntect.workspace = true
 tokio.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
