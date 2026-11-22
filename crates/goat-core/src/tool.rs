@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 use crate::image::Picture;
 use crate::instructions;
 use crate::message::Diff;
+use crate::skill::Skill;
 
 pub(crate) use self::web::{Searcher, Web};
 
@@ -47,6 +48,7 @@ The sandbox reaches the system only through these async functions:
 - write(path, content) creates a file or replaces a whole file. Returns {created, lines}.
 - webFetch(url) gets a web page like the standard fetch and returns {ok, status, url, text(), json()}, where text() of an HTML page is markdown. The text is cut to its first and last 20 KB with the full text in a file. Only http and https URLs without credentials are fetched; use bash and curl for anything else.
 - webSearch(query) searches the web and returns up to 8 results as [{title, url, snippet}].
+- skill(name, args) loads a skill listed in your instructions; its instructions come after the run's result. args is the user's text for it, or omitted.
 - console.log(...) adds lines to what you see, before the result.
 
 A failed read, edit or write, and a blocked command, throw an Error. A run returns only after all its calls finish, so await the calls whose results you use. Paths are relative to the working directory, and ~ is the home directory.";
@@ -86,6 +88,8 @@ pub enum Kind {
     Write,
     Fetch,
     Search,
+    Skill,
+    Mcp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +147,8 @@ impl Kind {
             Self::Write => "write",
             Self::Fetch => "fetch",
             Self::Search => "search",
+            Self::Skill => "skill",
+            Self::Mcp => "mcp",
         }
     }
 }
@@ -182,6 +188,22 @@ impl Runner {
 
     pub(crate) fn mark_loaded(&self, path: PathBuf) {
         self.host.mark_loaded(path);
+    }
+
+    pub(crate) fn set_skills(&self, skills: Vec<Skill>) {
+        self.host.set_skills(skills);
+    }
+
+    pub(crate) fn set_mcp(&self, clients: Rc<crate::mcp::Clients>) {
+        self.host.set_mcp(clients);
+    }
+
+    pub(crate) fn mark_skill(&self, name: &str) -> bool {
+        self.host.mark_skill(name)
+    }
+
+    pub(crate) fn active_skills(&self) -> Vec<String> {
+        self.host.active_skills()
     }
 
     pub(crate) fn loaded(&self) -> Vec<PathBuf> {
@@ -238,6 +260,7 @@ impl Runner {
         while let Ok(step) = self.steps.try_recv() {
             take(step);
         }
+        let skills = self.host.take_skills();
         let loaded = self.host.take_instructions();
         for (shown, _) in &loaded {
             on_step(Step::Loaded(shown.as_str().into()));
@@ -260,6 +283,10 @@ impl Runner {
         for (shown, found) in &loaded {
             output.push_str("\n\n");
             output.push_str(&instructions::block(shown, found));
+        }
+        for text in &skills {
+            output.push_str("\n\n");
+            output.push_str(text);
         }
         Outcome {
             output: output.into(),

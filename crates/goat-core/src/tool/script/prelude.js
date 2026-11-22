@@ -28,6 +28,28 @@
     };
   };
   const webSearch = (query) => call({ op: "search", query: String(query) });
+  const server = (name) =>
+    new Proxy(
+      {},
+      {
+        get: (_, tool) =>
+          typeof tool !== "string" || tool === "then"
+            ? undefined
+            : (args = {}) => call({ op: "mcp_call", server: name, tool, args }),
+      },
+    );
+  const mcp = new Proxy(
+    {
+      tools: (name) => call({ op: "mcp_tools", server: name == null ? null : String(name) }),
+      describe: (name) => call({ op: "mcp_describe", name: String(name) }),
+    },
+    {
+      get: (target, name) =>
+        name in target || typeof name !== "string" || name === "then" ? target[name] : server(name),
+    },
+  );
+  const skill = (name, args) =>
+    call({ op: "skill", name: String(name), args: args == null ? null : String(args) });
 
   const show = (value) => {
     if (typeof value === "string") return value;
@@ -39,7 +61,7 @@
     logged.push(values.map(show).join(" "));
   };
   globalThis.console = { log, info: log, warn: log, error: log, debug: log };
-  Object.assign(globalThis, { bash, read, edit, write, webFetch, webSearch });
+  Object.assign(globalThis, { bash, read, edit, write, webFetch, webSearch, skill, mcp });
 
   return (value) => {
     const parts = logged.splice(0);

@@ -277,7 +277,7 @@ fn push_input<'a>(
                 role: "assistant",
                 content: InputContent::Text(Cow::Borrowed(text)),
             },
-            (Part::Text { text, .. }, _) => Input::Message {
+            (Part::Text { text, .. } | Part::Skill { text, .. }, _) => Input::Message {
                 role: "user",
                 content: InputContent::Text(Cow::Borrowed(text)),
             },

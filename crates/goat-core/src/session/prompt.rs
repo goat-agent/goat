@@ -1,6 +1,8 @@
 use std::path::Path;
 
 use crate::instructions;
+use crate::mcp;
+use crate::skill::{self, Skill};
 
 const BASE: &str = "\
 You are goat, a coding agent working in the user's terminal.
@@ -38,7 +40,13 @@ pub(super) const TITLE_LINE: &str = "Title:";
 
 pub(super) const SUMMARY_PREFIX: &str = "Summary of the earlier conversation, written by you:\n\n";
 
-pub(super) fn instructions(workspace: &Path, personal: &Path, home: &Path) -> String {
+pub(super) fn instructions(
+    workspace: &Path,
+    personal: &Path,
+    home: &Path,
+    skills: &[Skill],
+    servers: &[mcp::Server],
+) -> String {
     let mut text = BASE
         .replace("{workspace}", &workspace.display().to_string())
         .replace("{os}", std::env::consts::OS);
@@ -54,6 +62,14 @@ pub(super) fn instructions(workspace: &Path, personal: &Path, home: &Path) -> St
         if room == 0 {
             break;
         }
+    }
+    if let Some(catalog) = skill::catalog(skills) {
+        text.push_str("\n\n");
+        text.push_str(&catalog);
+    }
+    if let Some(catalog) = mcp::catalog(servers) {
+        text.push_str("\n\n");
+        text.push_str(&catalog);
     }
     text
 }

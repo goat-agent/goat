@@ -1,13 +1,16 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
+use std::rc::Rc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::web::{self, Web};
-use super::{Call, Kind, Step, bash, danger, files, hashline};
+use super::{Call, Kind, Step, bash, danger, files, hashline, spill};
+use crate::mcp::Clients;
+use crate::skill::{self, Skill};
 use crate::{image, instructions};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -22,6 +25,15 @@ pub(crate) struct Host {
     steps: mpsc::Sender<Step>,
     web: RefCell<Option<Web>>,
     nested: RefCell<Nested>,
+    skills: RefCell<Skills>,
+    mcp: RefCell<Option<Rc<Clients>>>,
+}
+
+#[derive(Debug, Default)]
+struct Skills {
+    known: Vec<Skill>,
+    active: HashSet<String>,
+    pending: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -56,6 +68,21 @@ enum Op {
     Search {
         query: String,
     },
+    Skill {
+        name: String,
+        args: Option<String>,
+    },
+    McpTools {
+        server: Option<String>,
+    },
+    McpDescribe {
+        name: String,
+    },
+    McpCall {
+        server: String,
+        tool: String,
+        args: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -87,6 +114,8 @@ impl Host {
             steps,
             web: RefCell::new(None),
             nested: RefCell::new(Nested::default()),
+            skills: RefCell::new(Skills::default()),
+            mcp: RefCell::new(None),
         })
     }
 
@@ -168,6 +197,21 @@ impl Host {
                     .ok_or("web search needs a signed-in account")?;
                 to_value(web::search(&searcher, &query).await?)
             }
+            Op::McpTools { server } => to_value(self.mcp()?.tools(server.as_deref()).await?),
+            Op::McpDescribe { name } => to_value(self.mcp()?.describe(&name).await?),
+            Op::McpCall { server, tool, args } => {
+                let called = self.mcp()?.call(&server, &tool, args).await?;
+                for bytes in called.images {
+                    self.show(bytes, &format!("{server}.{tool}")).await?;
+                }
+                match called.value {
+                    serde_json::Value::String(text) => to_value(spill::fit(text, &self.spill)),
+                    value => Ok(value),
+                }
+            }
+            Op::Skill { name, args } => {
+                to_value(self.load_skill(&name, args.as_deref().unwrap_or_default())?)
+            }
         }
     }
 
@@ -213,6 +257,59 @@ impl Host {
             .borrow()
             .clone()
             .ok_or_else(|| "the web is not available here".to_owned())
+    }
+
+    pub(crate) fn set_mcp(&self, clients: Rc<Clients>) {
+        self.mcp.replace(Some(clients));
+    }
+
+    fn mcp(&self) -> Result<Rc<Clients>, String> {
+        self.mcp
+            .borrow()
+            .clone()
+            .ok_or_else(|| "no MCP servers are configured".to_owned())
+    }
+
+    pub(crate) fn set_skills(&self, known: Vec<Skill>) {
+        self.skills.borrow_mut().known = known;
+    }
+
+    pub(crate) fn mark_skill(&self, name: &str) -> bool {
+        self.skills.borrow_mut().active.insert(name.to_owned())
+    }
+
+    pub(crate) fn active_skills(&self) -> Vec<String> {
+        let mut active: Vec<String> = self.skills.borrow().active.iter().cloned().collect();
+        active.sort();
+        active
+    }
+
+    pub(crate) fn take_skills(&self) -> Vec<String> {
+        std::mem::take(&mut self.skills.borrow_mut().pending)
+    }
+
+    fn load_skill(&self, name: &str, args: &str) -> Result<String, String> {
+        let mut skills = self.skills.borrow_mut();
+        let skill = skills
+            .known
+            .iter()
+            .find(|skill| skill.name == name && skill.for_model)
+            .ok_or_else(|| format!("there is no skill named {name}"))?;
+        let text = if skills.active.contains(name) {
+            let mut text = format!("The {name} skill is already loaded above; follow it.");
+            if !args.is_empty() {
+                text.push_str("\n\nARGUMENTS: ");
+                text.push_str(args);
+            }
+            text
+        } else {
+            skill::activate(skill, args)?
+        };
+        skills.active.insert(name.to_owned());
+        skills.pending.push(text);
+        Ok(format!(
+            "The {name} skill's instructions come after this run's result."
+        ))
     }
 
     pub(crate) fn mark_loaded(&self, path: PathBuf) {
@@ -278,6 +375,22 @@ impl Op {
             Self::Write { path, .. } => (Kind::Write, path),
             Self::Fetch { url } => (Kind::Fetch, url),
             Self::Search { query } => (Kind::Search, query),
+            Self::Skill { name, .. } => (Kind::Skill, name),
+            Self::McpTools { server } => {
+                return Call {
+                    kind: Kind::Mcp,
+                    target: server
+                        .as_deref()
+                        .map_or("tools".into(), |server| format!("{server} tools").into()),
+                };
+            }
+            Self::McpDescribe { name } => (Kind::Mcp, name),
+            Self::McpCall { server, tool, .. } => {
+                return Call {
+                    kind: Kind::Mcp,
+                    target: format!("{server}.{tool}").into(),
+                };
+            }
         };
         Call {
             kind,

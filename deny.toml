@@ -8,6 +8,7 @@ targets = [
 
 [advisories]
 ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained but rmcp, the official MCP SDK, depends on it and goat uses no time zone parsing through it" },
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 is unmaintained but complete; syntect only uses it to load its bundled syntaxes" },
 ]
 

@@ -114,6 +114,10 @@ pub enum Part {
         path: Box<str>,
         text: Box<str>,
     },
+    Skill {
+        name: Box<str>,
+        text: Box<str>,
+    },
     Shell {
         command: Box<str>,
         output: Box<str>,

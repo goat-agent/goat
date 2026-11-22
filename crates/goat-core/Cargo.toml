@@ -13,6 +13,7 @@ htmd.workspace = true
 ignore.workspace = true
 image.workspace = true
 reqwest.workspace = true
+rmcp.workspace = true
 rquickjs.workspace = true
 rusqlite.workspace = true
 rustix.workspace = true

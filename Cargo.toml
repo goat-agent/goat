@@ -21,6 +21,7 @@ htmd = "0.6"
 ignore = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "form"] }
+rmcp = { version = "3.11", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 rquickjs = { version = "0.14", default-features = false, features = ["std", "futures"] }
 rusqlite = { version = "0.43", features = ["bundled", "uuid"] }
 rustix = { version = "1", features = ["process", "event", "stdio"] }

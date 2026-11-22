@@ -32,6 +32,7 @@ async fn fifty_turns_stay_within_the_memory_budget() {
         spill: dir.path().join(".spill"),
         snapshots: dir.path().join(".snapshots"),
         personal: dir.path().join(".goat/AGENTS.md"),
+        variable: |_| None,
         endpoints: Endpoints {
             openai: server.url.as_str().into(),
             codex: server.url.as_str().into(),

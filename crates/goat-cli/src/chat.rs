@@ -7,6 +7,7 @@ use anyhow::{Context, bail};
 use crossterm::style::Stylize;
 use goat_core::account::{self, Account};
 use goat_core::catalog::{self, Model};
+use goat_core::mcp::State;
 use goat_core::provider::{Endpoints, Provider};
 use goat_core::session::{self, Environment, Event, Prompt, Session, Sink};
 use goat_core::store::{Recent, Sent, Store};
@@ -103,6 +104,7 @@ impl Chat {
                 sessions: recent,
                 sent,
                 files,
+                skills: &session.skills().skills,
                 current: current(session),
             };
             let Some(pending) = naming else {
@@ -147,12 +149,14 @@ impl Chat {
         } = self;
         let model = session.model().to_owned();
         let effort = session.effort().map(str::to_owned);
+        let skills = session.skills().skills.clone();
         let choices = Choices {
             offers,
             catalog,
             sessions: recent,
             sent,
             files,
+            skills: &skills,
             current: Current {
                 account: session.account().id,
                 model: &model,
@@ -445,6 +449,7 @@ impl Chat {
             sessions: &self.recent,
             sent: &self.sent,
             files: &self.files,
+            skills: &self.session.skills().skills,
             current: current(&self.session),
         }
     }
@@ -461,6 +466,35 @@ impl Chat {
         } else {
             files.join(", ")
         };
+        let (states, problems) = self.session.servers();
+        let mut shown: Vec<String> = states
+            .iter()
+            .map(|(name, state)| match state {
+                State::Idle => name.clone(),
+                State::Connected => format!("{name} (connected)"),
+                State::Failed(problem) => format!("{name} (failed: {problem})"),
+            })
+            .collect();
+        shown.extend(problems.iter().cloned());
+        let servers = if shown.is_empty() {
+            "none".to_owned()
+        } else {
+            shown.join(", ")
+        };
+        let found = self.session.skills();
+        let mut skills = match found.skills.len() {
+            0 => "none".to_owned(),
+            count => count.to_string(),
+        };
+        if !found.skipped.is_empty() {
+            let skipped: Vec<String> = found
+                .skipped
+                .iter()
+                .map(|(path, problem)| format!("{} ({problem})", path.display()))
+                .collect();
+            skills.push_str("; skipped ");
+            skills.push_str(&skipped.join(", "));
+        }
         let snapshots = self
             .session
             .snapshots_off()
@@ -473,6 +507,8 @@ impl Chat {
                 directory(self.session.workspace(), &self.environment.home),
             ),
             ("Instructions", instructions),
+            ("Skills", skills),
+            ("MCP", servers),
             ("Snapshots", snapshots),
         ];
         let lines: Vec<String> = rows
@@ -641,6 +677,7 @@ fn open(
         sessions: &[],
         sent: &[],
         files: &Files::listed(Vec::new()),
+        skills: &[],
         current: Current {
             account: account.id,
             model: &model,
@@ -770,6 +807,7 @@ fn environment(paths: &Paths) -> Environment {
         spill: paths.spill.clone(),
         snapshots: paths.snapshots.clone(),
         personal: paths.personal.clone(),
+        variable: |name| std::env::var(name).ok(),
         endpoints: Endpoints::default(),
     }
 }
