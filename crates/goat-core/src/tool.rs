@@ -33,9 +33,9 @@ const STEP_BACKLOG: usize = 64;
 const NEW_SANDBOX: &str =
     "[this run started a new sandbox; values earlier runs kept on globalThis are gone]";
 
-const SCHEMA: &str = r#"{"type":"object","properties":{"code":{"type":"string","description":"JavaScript to run; top-level await works and the last expression is the result"},"description":{"type":"string","description":"What this run does in 3 to 8 words, shown to the user"}},"required":["code","description"],"additionalProperties":false}"#;
+const SCHEMA: &str = r#"{"type":"object","properties":{"code":{"type":"string","description":"JavaScript to run; top-level await works, and the result is the last expression or what a top-level return gives"},"description":{"type":"string","description":"What this run does in 3 to 8 words, shown to the user"}},"required":["code","description"],"additionalProperties":false}"#;
 const DESCRIPTION: &str = "\
-Run JavaScript in a sandbox to work in the workspace. Top-level await works, and the value of the last expression comes back to you. \
+Run JavaScript in a sandbox to work in the workspace. Top-level await works, and the value of the last expression, or what a top-level return gives, comes back to you. \
 let, const and class declarations belong to their run, so a later run can declare the same names. To keep a value for later runs, put it on globalThis, as in globalThis.files = await bash`ls`. \
 Do steps that belong together in one run, such as search, read, edit and test, and return only what you need to see; nothing else enters the conversation.
 

@@ -13,6 +13,7 @@ use rquickjs::{
 use super::Outcome;
 use super::host::Host;
 
+const RETURN_OUTSIDE: &str = "return not in a function";
 const PRELUDE: &str = include_str!("script/prelude.js");
 const HEAP_BYTES: usize = 32 * 1024 * 1024;
 const BUSY_LIMIT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 30 });
@@ -149,10 +150,13 @@ async fn evaluate<'js>(
     code: &str,
     calls: &Cell<usize>,
 ) -> Result<Value<'js>, String> {
-    let promise = ctx
-        .eval_promise(format!("{{{code}\n}}"))
-        .catch(ctx)
-        .map_err(|e| e.to_string())?;
+    let promise = match ctx.eval_promise(format!("{{{code}\n}}")).catch(ctx) {
+        Err(err) if err.to_string().contains(RETURN_OUTSIDE) => ctx
+            .eval_promise(format!("await (async () => {{{code}\n}})()"))
+            .catch(ctx),
+        compiled => compiled,
+    }
+    .map_err(|e| e.to_string())?;
     let completion: Object = settle(ctx, promise.into_future(), calls)
         .await
         .ok_or_else(|| STUCK.to_owned())?
@@ -252,6 +256,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let outcome = script(dir.path()).await.eval("const a = 2; a * 21").await;
         assert_eq!(outcome, Outcome::ok("42"));
+    }
+
+    #[tokio::test]
+    async fn a_top_level_return_gives_the_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = script(dir.path()).await;
+        assert_eq!(
+            script
+                .eval("const ran = await bash`echo hi`; return ran.output.trim()")
+                .await,
+            Outcome::ok("hi")
+        );
+        assert_eq!(
+            script.eval("if (true) { return 1 }\n2").await,
+            Outcome::ok("1")
+        );
+        assert_eq!(
+            script
+                .eval("[1, 2].map(x => { return x * 2 })")
+                .await
+                .output
+                .as_ref(),
+            "[\n  2,\n  4\n]"
+        );
     }
 
     #[tokio::test]
