@@ -1,9 +1,8 @@
-mod ledger;
 mod prompt;
 mod replay;
+mod snapshot;
 
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -15,7 +14,7 @@ use crate::provider::{self, Chunk, Endpoints, Images, Provider, Request, Stop, U
 use crate::store::{self, Sent, Store};
 use crate::tool::{self, Outcome, Runner, Searcher, Step, Web};
 
-use self::ledger::Ledger;
+use self::snapshot::Snapshots;
 
 crate::id::define!(Id);
 
@@ -39,11 +38,8 @@ pub enum Error {
     Tool(#[from] tool::Error),
     #[error("session {0} not found")]
     NotFound(Id),
-    #[error("could not restore {path}")]
-    Restore {
-        path: PathBuf,
-        source: std::io::Error,
-    },
+    #[error("could not restore the files: {0}")]
+    Restore(String),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -60,6 +56,9 @@ pub enum Event<'a> {
         problem: &'a str,
     },
     Changed(&'a Diff),
+    Untracked {
+        reason: &'a str,
+    },
     RunFinished {
         outcome: &'a Outcome,
     },
@@ -101,14 +100,15 @@ pub struct Environment {
     pub workspace: std::path::PathBuf,
     pub home: std::path::PathBuf,
     pub spill: std::path::PathBuf,
+    pub snapshots: std::path::PathBuf,
     pub endpoints: Endpoints,
 }
 
 #[derive(Debug)]
 pub struct Session {
     id: Id,
-    store: Rc<Store>,
-    ledger: Rc<Ledger>,
+    store: Store,
+    snapshots: Snapshots,
     http: reqwest::Client,
     endpoints: Endpoints,
     provider: Provider,
@@ -182,27 +182,18 @@ impl Session {
         instructions: Box<str>,
         messages: Vec<Message>,
     ) -> Result<Self, Error> {
-        let store = Rc::new(store);
-        let ledger = Rc::new(Ledger::new(Rc::clone(&store), id));
-        let journal: Rc<dyn tool::Journal> = Rc::<Ledger>::clone(&ledger);
         Ok(Self {
             id,
             provider: Provider::new(&account, http.clone(), &env.endpoints),
             store,
-            ledger,
+            snapshots: Snapshots::new(&env.snapshots, &env.workspace, &env.home, id),
             http,
             endpoints: env.endpoints.clone(),
             account,
             model: model.into(),
             effort: None,
             instructions,
-            runner: Runner::new(
-                &env.workspace,
-                &env.home,
-                &env.spill,
-                !messages.is_empty(),
-                Some(journal),
-            )?,
+            runner: Runner::new(&env.workspace, &env.home, &env.spill, !messages.is_empty())?,
             tool: tool::spec(),
             messages,
             finished: Vec::new(),
@@ -260,7 +251,6 @@ impl Session {
     ) -> Result<(), Error> {
         let prompt = prompt.into();
         self.close_interrupted_calls()?;
-        self.ledger.begin();
         if self.last_input > COMPACT_AT_TOKENS {
             sink.emit(Event::Compacting);
             self.summarize("").await?;
@@ -268,7 +258,16 @@ impl Session {
         let mut parts = vec![Part::text(prompt.text)];
         parts.extend(self.keep(prompt.images)?.into_iter().map(Part::Image));
         parts.extend(self.mentions(prompt.text)?);
-        self.push(Message::new(Role::User, None, parts))?;
+        let message = Message::new(Role::User, None, parts);
+        let tree = self.snapshots.take().await;
+        if let Some(reason) = self.snapshots.notice() {
+            sink.emit(Event::Untracked { reason: &reason });
+        }
+        let id = message.id;
+        self.push(message)?;
+        if let Some(tree) = tree {
+            self.store.put_snapshot(id, &tree)?;
+        }
         loop {
             let reply = self
                 .request(None, true, &mut |event| sink.emit(event))
@@ -325,21 +324,15 @@ impl Session {
         Ok(self.store.sent(self.id)?)
     }
 
-    pub fn changed_files(&self, since: message::Id) -> Result<Vec<PathBuf>, Error> {
-        Ok(self.store.changed_files(self.id, since)?)
-    }
-
-    pub fn restore(&mut self, since: message::Id) -> Result<Vec<PathBuf>, Error> {
-        let paths = self.store.changed_files(self.id, since)?;
-        self.ledger.begin();
-        for path in &paths {
-            let Some(content) = self.store.content_at(self.id, path, since)? else {
-                continue;
-            };
-            self.ledger.restore(path, content.as_deref())?;
-        }
-        self.ledger.begin();
-        Ok(paths)
+    pub async fn restore(&mut self, since: message::Id) -> Result<Option<Vec<PathBuf>>, Error> {
+        let Some(tree) = self.store.snapshot(since)? else {
+            return Ok(None);
+        };
+        self.snapshots
+            .restore(&tree)
+            .await
+            .map(Some)
+            .map_err(Error::Restore)
     }
 
     pub fn rewind(&mut self, to: message::Id) -> Result<(), Error> {

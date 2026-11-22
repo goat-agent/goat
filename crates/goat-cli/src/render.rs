@@ -542,6 +542,12 @@ impl<W: Write> Sink for Terminal<W> {
             }
             Event::Call(call) => self.call(call),
             Event::Changed(diff) => self.changed(diff),
+            Event::Untracked { reason } => {
+                self.close_section();
+                self.note(&format!(
+                    "/rewind cannot restore files here, because {reason}"
+                ));
+            }
             Event::CallFailed { problem } => {
                 self.enter(Section::Run);
                 self.put(&format!("{INDENT}{INDENT}{}\n", first_line(problem).red()));

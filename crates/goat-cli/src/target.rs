@@ -168,26 +168,12 @@ impl Choices<'_> {
                     .map(str::trim)
                     .find(|line| !line.is_empty())
                     .unwrap_or("(no text)");
-                let mut details: Vec<String> = sent
-                    .id
-                    .unix_seconds()
-                    .map(|at| ago(now.saturating_sub(at)))
-                    .into_iter()
-                    .collect();
-                if sent.changed > 0 {
-                    details.push(format!("{} changed", plural(sent.changed, "file")));
-                }
-                let label = if details.is_empty() {
-                    first.to_owned()
-                } else {
-                    format!("{first} ({})", details.join(", "))
+                let label = match sent.id.unix_seconds() {
+                    Some(at) => format!("{first} ({})", ago(now.saturating_sub(at))),
+                    None => first.to_owned(),
                 };
                 Candidate {
-                    value: if sent.changed > 0 {
-                        format!("{number} ")
-                    } else {
-                        number.to_string()
-                    },
+                    value: format!("{number} "),
                     label,
                     is_current: false,
                     efforts: Vec::new(),
@@ -506,18 +492,17 @@ mod tests {
         })
     }
 
-    fn sent(text: &str, changed: u64) -> Sent {
+    fn sent(text: &str) -> Sent {
         Sent {
             id: goat_core::message::Id::generate(),
             text: text.to_owned(),
             images: Vec::new(),
-            changed,
         }
     }
 
     #[test]
-    fn prompts_are_listed_newest_first_and_ask_what_to_restore_when_files_changed() {
-        let prompts = [sent("add tests\nmore", 0), sent("fix the bug", 2)];
+    fn prompts_are_listed_newest_first_and_ask_what_to_restore() {
+        let prompts = [sent("add tests\nmore"), sent("fix the bug")];
 
         let (first, second) = with_sent(&prompts, &[], |choices| {
             (choices.rewinds("", 0), choices.rewinds("2 ", 0))
@@ -530,8 +515,8 @@ mod tests {
         assert_eq!(
             listed,
             [
-                ("2 ", "fix the bug (just now, 2 files changed)"),
-                ("1", "add tests (just now)")
+                ("2 ", "fix the bug (just now)"),
+                ("1 ", "add tests (just now)")
             ]
         );
         let actions: Vec<&str> = second

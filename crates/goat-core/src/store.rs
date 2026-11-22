@@ -55,6 +55,14 @@ const MIGRATIONS: &[&str] = &[
 
     create index changes_by_path on changes (session_id, path, id);
 ",
+    "
+    drop table changes;
+
+    create table snapshots (
+        message_id blob primary key references messages on delete cascade,
+        tree text not null
+    ) strict;
+",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -87,7 +95,6 @@ pub struct Sent {
     pub id: message::Id,
     pub text: String,
     pub images: Vec<Image>,
-    pub changed: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -111,9 +118,9 @@ impl Store {
     }
 
     pub fn open_in_memory() -> Result<Self, Error> {
-        let store = Self {
-            conn: Connection::open_in_memory()?,
-        };
+        let conn = Connection::open_in_memory()?;
+        conn.pragma_update(None, "foreign_keys", true)?;
+        let store = Self { conn };
         store.migrate()?;
         Ok(store)
     }
@@ -228,21 +235,14 @@ impl Store {
 
     pub fn sent(&self, session: session::Id) -> Result<Vec<Sent>, Error> {
         let mut statement = self.conn.prepare(
-            "select m.id, m.parts,
-                (select count(distinct c.path) from changes c
-                 where c.session_id = m.session_id and c.id > m.id)
-             from messages m where m.session_id = ?1 and m.role = 'user' order by m.id",
+            "select id, parts from messages where session_id = ?1 and role = 'user' order by id",
         )?;
         let rows = statement.query_map([session], |row| {
-            Ok((
-                row.get::<_, message::Id>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
+            Ok((row.get::<_, message::Id>(0)?, row.get::<_, String>(1)?))
         })?;
         let mut sent = Vec::new();
         for row in rows {
-            let (id, parts, changed) = row?;
+            let (id, parts) = row?;
             let Ok(parts) = serde_json::from_str::<Vec<Part>>(&parts) else {
                 continue;
             };
@@ -259,12 +259,7 @@ impl Store {
                     _ => None,
                 })
                 .collect();
-            sent.push(Sent {
-                id,
-                text,
-                images,
-                changed: u64::try_from(changed).unwrap_or(0),
-            });
+            sent.push(Sent { id, text, images });
         }
         Ok(sent)
     }
@@ -277,48 +272,20 @@ impl Store {
         Ok(())
     }
 
-    pub fn record_change(
-        &self,
-        session: session::Id,
-        path: &Path,
-        before: Option<&[u8]>,
-    ) -> Result<(), Error> {
+    pub fn put_snapshot(&self, prompt: message::Id, tree: &str) -> Result<(), Error> {
         self.conn.execute(
-            "insert into changes (id, session_id, path, before) values (?1, ?2, ?3, ?4)",
-            params![
-                uuid::Uuid::now_v7(),
-                session,
-                path.to_string_lossy(),
-                before
-            ],
+            "insert or replace into snapshots (message_id, tree) values (?1, ?2)",
+            params![prompt, tree],
         )?;
         Ok(())
     }
 
-    pub fn changed_files(
-        &self,
-        session: session::Id,
-        since: message::Id,
-    ) -> Result<Vec<PathBuf>, Error> {
-        let mut statement = self.conn.prepare(
-            "select distinct path from changes where session_id = ?1 and id > ?2 order by path",
-        )?;
-        let paths = statement.query_map(params![session, since], |row| row.get::<_, String>(0))?;
-        paths.map(|path| Ok(PathBuf::from(path?))).collect()
-    }
-
-    pub fn content_at(
-        &self,
-        session: session::Id,
-        path: &Path,
-        since: message::Id,
-    ) -> Result<Option<Option<Vec<u8>>>, Error> {
+    pub fn snapshot(&self, prompt: message::Id) -> Result<Option<String>, Error> {
         Ok(self
             .conn
             .query_row(
-                "select before from changes where session_id = ?1 and path = ?2 and id > ?3
-                 order by id limit 1",
-                params![session, path.to_string_lossy(), since],
+                "select tree from snapshots where message_id = ?1",
+                [prompt],
                 |row| row.get(0),
             )
             .optional()?)
