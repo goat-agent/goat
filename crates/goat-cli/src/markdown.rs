@@ -9,8 +9,10 @@ pub(crate) enum Style {
     Strong,
     Code,
     Heading,
-    Fence,
     Marker,
+    Open,
+    Close,
+    Block,
 }
 
 #[derive(Default)]
@@ -87,18 +89,21 @@ impl Markdown {
             if !is_complete {
                 return None;
             }
-            out(Style::Fence, head);
-            self.block = match self.block {
-                Block::Prose => Block::Code,
-                Block::Code => Block::Prose,
-            };
-            return Some(match end {
-                Some(end) => {
-                    out(Style::Plain, "\n");
-                    end + 1
+            match self.block {
+                Block::Prose => {
+                    let info = body.trim_start_matches('`');
+                    out(
+                        Style::Open,
+                        info.split_whitespace().next().unwrap_or_default(),
+                    );
+                    self.block = Block::Code;
                 }
-                None => rest.len(),
-            });
+                Block::Code => {
+                    out(Style::Close, "");
+                    self.block = Block::Prose;
+                }
+            }
+            return Some(end.map_or(rest.len(), |end| end + 1));
         }
         if !is_complete && self.could_be_marker(body) {
             return None;
@@ -142,19 +147,17 @@ impl Markdown {
         out: &mut impl FnMut(Style, &str),
     ) -> Option<usize> {
         if self.block == Block::Code {
-            let end = rest.find('\n');
-            let text = &rest[..end.unwrap_or(rest.len())];
-            if !text.is_empty() {
-                out(Style::Plain, text);
-            }
-            return Some(match end {
-                Some(end) => {
-                    out(Style::Plain, "\n");
-                    self.end_line();
-                    end + 1
+            let Some(end) = rest.find('\n') else {
+                if input == Input::Streaming {
+                    return None;
                 }
-                None => rest.len(),
-            });
+                out(Style::Block, rest);
+                return Some(rest.len());
+            };
+            out(Style::Block, &rest[..end]);
+            out(Style::Plain, "\n");
+            self.end_line();
+            return Some(end + 1);
         }
         let mut run = 0;
         let mut chars = rest.char_indices().peekable();
@@ -274,14 +277,30 @@ mod tests {
     }
 
     #[test]
-    fn code_blocks_keep_markdown_characters() {
+    fn code_blocks_hide_their_fences_and_keep_markdown_characters() {
         assert_eq!(
-            render(&["``", "`rust\nlet a = **b;\n- c\n```\n"]),
+            render(&["``", "`rust\nlet a = **b;\n- c\n```\nafter"]),
             [
-                piece(Style::Fence, "```rust"),
-                piece(Style::Plain, "\nlet a = **b;\n- c\n"),
-                piece(Style::Fence, "```"),
+                piece(Style::Open, "rust"),
+                piece(Style::Block, "let a = **b;"),
                 piece(Style::Plain, "\n"),
+                piece(Style::Block, "- c"),
+                piece(Style::Plain, "\n"),
+                piece(Style::Close, ""),
+                piece(Style::Plain, "after"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_code_line_waits_for_its_end_while_streaming() {
+        assert_eq!(
+            render(&["```\nlet a", " = 1;\n```"]),
+            [
+                piece(Style::Open, ""),
+                piece(Style::Block, "let a = 1;"),
+                piece(Style::Plain, "\n"),
+                piece(Style::Close, ""),
             ]
         );
     }

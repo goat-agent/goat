@@ -2,6 +2,7 @@ mod ask;
 mod attach;
 mod chat;
 mod command;
+mod highlight;
 mod input;
 mod kitty;
 mod login;
