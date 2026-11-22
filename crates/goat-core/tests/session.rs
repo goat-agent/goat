@@ -59,6 +59,7 @@ fn environment(dir: &Path, url: &str) -> Environment {
         home: dir.to_owned(),
         spill: dir.join(".spill"),
         snapshots: dir.join(".snapshots"),
+        personal: dir.join(".goat/AGENTS.md"),
         endpoints: Endpoints {
             openai: url.into(),
             codex: url.into(),
@@ -505,6 +506,64 @@ async fn a_mentioned_file_is_sent_with_the_prompt() {
     assert!(requests[0].contains("The user attached notes.md to their message"));
     assert!(requests[0].contains("kiwi line"));
     assert_eq!(replayed.order[0], "prompt summarize @notes.md please");
+}
+
+fn reading(path: &str) -> &'static str {
+    leak(OPENAI_TOOL_CALL.replace(
+        "(await bash('echo hi')).output",
+        &format!("(await read('{path}')).total"),
+    ))
+}
+
+#[tokio::test]
+async fn a_nested_agents_file_comes_with_the_first_run_that_touches_its_folder() {
+    let server = server::replay(vec![
+        reading("src/app/main.rs"),
+        OPENAI_ANSWER,
+        reading("src/app/lib.rs"),
+        OPENAI_ANSWER,
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src/app")).unwrap();
+    std::fs::write(dir.path().join("src/app/AGENTS.md"), "Use tabs here.").unwrap();
+    std::fs::write(dir.path().join("src/app/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(dir.path().join("src/app/lib.rs"), "\n").unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    let mut first = Recorder::default();
+    session.turn("one", &mut first).await.unwrap();
+    session.turn("two", &mut Recorder::default()).await.unwrap();
+
+    assert!(first.order.contains(&"loaded src/app/AGENTS.md".to_owned()));
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[1].contains("Instructions from src/app/AGENTS.md:\\n\\nUse tabs here."));
+    let later = requests[3].matches("Use tabs here.").count();
+    assert_eq!(later, 1);
+    assert_eq!(session.instruction_files(), ["src/app/AGENTS.md"]);
+}
+
+#[tokio::test]
+async fn personal_and_project_instructions_open_the_session() {
+    let server = server::replay(vec![OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".goat")).unwrap();
+    std::fs::write(dir.path().join(".goat/AGENTS.md"), "Answer in Korean.").unwrap();
+    std::fs::write(dir.path().join("AGENTS.md"), "Run cargo test.").unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    session.turn("hi", &mut Recorder::default()).await.unwrap();
+
+    let request = &server.requests.lock().unwrap()[0];
+    let personal = request.find("Instructions from .goat/AGENTS.md:").unwrap();
+    let project = request.find("Instructions from AGENTS.md:").unwrap();
+    assert!(personal < project);
+    assert_eq!(
+        session.instruction_files(),
+        [".goat/AGENTS.md", "AGENTS.md"]
+    );
 }
 
 #[tokio::test]
@@ -1003,6 +1062,7 @@ fn name(event: &Event<'_>) -> String {
         Event::Changed(diff) => format!("changed +{} -{}", diff.added, diff.removed),
         Event::Retrying { attempt, restarts } => format!("retrying {attempt} {restarts}"),
         Event::Untracked { reason } => format!("untracked {reason}"),
+        Event::Loaded { path } => format!("loaded {path}"),
         Event::RunFinished { outcome } => format!("finished {}", outcome.is_error),
         Event::ShellOutput(output) => format!("output {}", output.trim_end()),
         Event::ShellFinished { code, .. } => format!("exit {code:?}"),

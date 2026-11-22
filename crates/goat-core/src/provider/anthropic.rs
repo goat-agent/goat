@@ -113,7 +113,12 @@ impl Client {
             .flatten()
             .map(Building::finish)
             .collect::<Result<_, _>>()?;
-        Ok(Reply { parts, usage, stop })
+        Ok(Reply {
+            parts,
+            usage,
+            stop,
+            limits: None,
+        })
     }
 
     pub(super) async fn search(

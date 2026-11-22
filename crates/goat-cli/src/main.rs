@@ -10,6 +10,7 @@ mod markdown;
 mod paths;
 mod render;
 mod target;
+mod usage;
 
 use clap::{Parser, Subcommand};
 

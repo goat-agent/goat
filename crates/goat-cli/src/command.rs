@@ -8,6 +8,8 @@ pub(crate) enum Name {
     Clear,
     Rewind,
     Resume,
+    Status,
+    Usage,
     Help,
     Exit,
 }
@@ -48,6 +50,16 @@ pub(crate) const SPECS: &[Spec] = &[
         name: Name::Resume,
         word: "resume",
         about: "Continue an earlier session in this directory",
+    },
+    Spec {
+        name: Name::Status,
+        word: "status",
+        about: "Show the session, model and instructions",
+    },
+    Spec {
+        name: Name::Usage,
+        word: "usage",
+        about: "Show how full the context and the plan are",
     },
     Spec {
         name: Name::Help,

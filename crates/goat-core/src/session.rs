@@ -9,8 +9,9 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 
 use crate::account::Account;
 use crate::image::{Image, Picture};
+use crate::instructions;
 use crate::message::{self, Diff, Message, Origin, Part, Role, Trace};
-use crate::provider::{self, Chunk, Endpoints, Images, Provider, Request, Stop, Usage};
+use crate::provider::{self, Chunk, Endpoints, Images, Limits, Provider, Request, Stop, Usage};
 use crate::store::{self, Sent, Store};
 use crate::tool::{self, Outcome, Runner, Searcher, Step, Web};
 
@@ -56,6 +57,9 @@ pub enum Event<'a> {
         problem: &'a str,
     },
     Changed(&'a Diff),
+    Loaded {
+        path: &'a str,
+    },
     Untracked {
         reason: &'a str,
     },
@@ -101,6 +105,7 @@ pub struct Environment {
     pub home: std::path::PathBuf,
     pub spill: std::path::PathBuf,
     pub snapshots: std::path::PathBuf,
+    pub personal: std::path::PathBuf,
     pub endpoints: Endpoints,
 }
 
@@ -122,6 +127,9 @@ pub struct Session {
     finished: Vec<Part>,
     trace: Vec<Trace>,
     last_input: u64,
+    limits: Option<Limits>,
+    personal: PathBuf,
+    home: PathBuf,
 }
 
 impl Session {
@@ -132,7 +140,7 @@ impl Session {
         account: Account,
         model: &str,
     ) -> Result<Self, Error> {
-        let instructions = prompt::instructions(&env.workspace);
+        let instructions = prompt::instructions(&env.workspace, &env.personal, &env.home);
         let id = store.create_session(&env.workspace, &instructions)?;
         Self::assemble(
             id,
@@ -156,7 +164,7 @@ impl Session {
     ) -> Result<Self, Error> {
         let info = store.session(id)?.ok_or(Error::NotFound(id))?;
         let messages = store.context(id)?;
-        Self::assemble(
+        let session = Self::assemble(
             id,
             store,
             http,
@@ -165,7 +173,24 @@ impl Session {
             model,
             info.instructions,
             messages,
-        )
+        )?;
+        let loaded = session
+            .messages
+            .iter()
+            .flat_map(|message| &message.parts)
+            .filter_map(|part| match part {
+                Part::ToolResult { trace, .. } => Some(trace),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|step| match step {
+                Trace::Loaded { path } => Some(env.workspace.join(&**path)),
+                _ => None,
+            });
+        for path in loaded {
+            session.runner.mark_loaded(path);
+        }
+        Ok(session)
     }
 
     #[expect(
@@ -199,6 +224,9 @@ impl Session {
             finished: Vec::new(),
             trace: Vec::new(),
             last_input: 0,
+            limits: None,
+            personal: env.personal.clone(),
+            home: env.home.clone(),
         })
     }
 
@@ -345,6 +373,27 @@ impl Session {
         Ok(())
     }
 
+    pub fn instruction_files(&self) -> Vec<String> {
+        let workspace = self.workspace();
+        instructions::sources(workspace, &self.personal)
+            .into_iter()
+            .chain(self.runner.loaded())
+            .map(|path| instructions::shown(&path, workspace, &self.home))
+            .collect()
+    }
+
+    pub fn snapshots_off(&self) -> Option<String> {
+        self.snapshots.off()
+    }
+
+    pub fn context(&self) -> (u64, u64) {
+        (self.last_input, COMPACT_AT_TOKENS)
+    }
+
+    pub fn limits(&self) -> Option<&Limits> {
+        self.limits.as_ref()
+    }
+
     pub fn title(&self) -> Result<Option<String>, Error> {
         Ok(self.store.title(self.id)?)
     }
@@ -464,6 +513,10 @@ impl Session {
                     sink.emit(Event::Changed(&diff));
                     trace.push(Trace::Changed { diff });
                 }
+                Step::Loaded(path) => {
+                    sink.emit(Event::Loaded { path: &path });
+                    trace.push(Trace::Loaded { path });
+                }
                 Step::Shown(_) => {}
             })
             .await;
@@ -519,7 +572,13 @@ impl Session {
                     });
                     tokio::time::sleep(wait).await;
                 }
-                result => return Ok(result?),
+                result => {
+                    let mut reply = result?;
+                    if let Some(limits) = reply.limits.take() {
+                        self.limits = Some(limits);
+                    }
+                    return Ok(reply);
+                }
             }
         }
     }

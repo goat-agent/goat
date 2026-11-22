@@ -72,6 +72,10 @@ impl Snapshots {
         }
     }
 
+    pub(super) fn off(&self) -> Option<String> {
+        self.off.borrow().clone()
+    }
+
     pub(super) fn notice(&self) -> Option<String> {
         if self.is_announced.get() {
             return None;

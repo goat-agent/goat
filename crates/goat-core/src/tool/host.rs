@@ -1,5 +1,6 @@
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -7,7 +8,7 @@ use tokio::sync::mpsc;
 
 use super::web::{self, Web};
 use super::{Call, Kind, Step, bash, danger, files, hashline};
-use crate::image;
+use crate::{image, instructions};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const NO_TIMEOUT: Duration = Duration::MAX;
@@ -20,6 +21,13 @@ pub(crate) struct Host {
     danger: danger::Checker,
     steps: mpsc::Sender<Step>,
     web: RefCell<Option<Web>>,
+    nested: RefCell<Nested>,
+}
+
+#[derive(Debug, Default)]
+struct Nested {
+    loaded: HashSet<PathBuf>,
+    pending: Vec<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +86,7 @@ impl Host {
             danger: danger::Checker::new()?,
             steps,
             web: RefCell::new(None),
+            nested: RefCell::new(Nested::default()),
         })
     }
 
@@ -125,18 +134,24 @@ impl Host {
                 limit,
             } => {
                 let resolved = self.resolve(&path);
-                match files::image(&resolved, &path)? {
+                let value = match files::image(&resolved, &path)? {
                     Some(bytes) => to_value(self.show(bytes, &path).await?),
                     None => to_value(files::read(&resolved, &path, offset, limit)?),
-                }
+                };
+                self.notice(&resolved);
+                value
             }
             Op::Edit { path, edits } => {
-                let (edited, diff) = files::edit(&self.resolve(&path), &path, edits)?;
+                let resolved = self.resolve(&path);
+                let (edited, diff) = files::edit(&resolved, &path, edits)?;
+                self.notice(&resolved);
                 self.steps.send(Step::Changed(diff)).await.ok();
                 to_value(edited)
             }
             Op::Write { path, content } => {
-                let (written, diff) = files::write(&self.resolve(&path), &path, &content)?;
+                let resolved = self.resolve(&path);
+                let (written, diff) = files::write(&resolved, &path, &content)?;
+                self.notice(&resolved);
                 if let Some(diff) = diff {
                     self.steps.send(Step::Changed(diff)).await.ok();
                 }
@@ -198,6 +213,51 @@ impl Host {
             .borrow()
             .clone()
             .ok_or_else(|| "the web is not available here".to_owned())
+    }
+
+    pub(crate) fn mark_loaded(&self, path: PathBuf) {
+        self.nested.borrow_mut().loaded.insert(path);
+    }
+
+    pub(crate) fn loaded(&self) -> Vec<PathBuf> {
+        let mut loaded: Vec<PathBuf> = self.nested.borrow().loaded.iter().cloned().collect();
+        loaded.sort();
+        loaded
+    }
+
+    pub(crate) fn take_instructions(&self) -> Vec<(String, String)> {
+        let pending = std::mem::take(&mut self.nested.borrow_mut().pending);
+        pending
+            .into_iter()
+            .filter_map(|path| {
+                let text = instructions::read(&path, instructions::BYTES);
+                let shown = instructions::shown(&path, &self.workspace, &self.home);
+                self.mark_loaded(path);
+                Some((shown, text?))
+            })
+            .collect()
+    }
+
+    fn notice(&self, path: &Path) {
+        let Some(relative) = path
+            .strip_prefix(&self.workspace)
+            .ok()
+            .and_then(Path::parent)
+        else {
+            return;
+        };
+        let mut dir = self.workspace.clone();
+        let mut nested = self.nested.borrow_mut();
+        for component in relative.components() {
+            let Component::Normal(part) = component else {
+                return;
+            };
+            dir.push(part);
+            let file = dir.join(instructions::FILE);
+            if !nested.loaded.contains(&file) && !nested.pending.contains(&file) && file.is_file() {
+                nested.pending.push(file);
+            }
+        }
     }
 
     pub(crate) fn resolve(&self, raw: &str) -> PathBuf {

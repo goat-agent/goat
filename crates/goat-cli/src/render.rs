@@ -210,6 +210,14 @@ impl<W: Write> Terminal<W> {
         self.flush();
     }
 
+    pub(crate) fn lines(&mut self, lines: &[String]) {
+        self.enter(Section::Reply);
+        for line in lines {
+            self.put(&format!("{INDENT}{line}\n"));
+        }
+        self.flush();
+    }
+
     pub(crate) fn outcome(&mut self, outcome: Result<&str, &str>) {
         self.enter(Section::Reply);
         let text = match outcome {
@@ -346,9 +354,6 @@ impl<W: Write> Terminal<W> {
     }
 
     fn call(&mut self, call: &tool::Call) {
-        self.enter(Section::Run);
-        let branch = if self.calls == 0 { "└" } else { " " };
-        self.calls += 1;
         let verb = match call.kind {
             Kind::Bash => "Bash",
             Kind::Read => "Read",
@@ -357,7 +362,14 @@ impl<W: Write> Terminal<W> {
             Kind::Fetch => "WebFetch",
             Kind::Search => "WebSearch",
         };
-        let mut lines = call.target.lines();
+        self.call_line(verb, &call.target);
+    }
+
+    fn call_line(&mut self, verb: &str, target: &str) {
+        self.enter(Section::Run);
+        let branch = if self.calls == 0 { "└" } else { " " };
+        self.calls += 1;
+        let mut lines = target.lines();
         let mut target = lines.next().unwrap_or_default().to_owned();
         if lines.next().is_some() {
             target.push_str(" …");
@@ -558,6 +570,7 @@ impl<W: Write> Sink for Terminal<W> {
             }
             Event::Call(call) => self.call(call),
             Event::Changed(diff) => self.changed(diff),
+            Event::Loaded { path } => self.call_line("Loaded", path),
             Event::Untracked { reason } => {
                 self.close_section();
                 self.note(&format!(
