@@ -874,7 +874,9 @@ fn palette(text: &str, cursor: usize, choices: &Choices<'_>) -> Vec<Item> {
         Name::Effort => choices.efforts(typed),
         Name::Resume => choices.sessions(typed, now()),
         Name::Rewind => choices.rewinds(typed, now()),
-        Name::Compact | Name::Clear | Name::Help | Name::Exit => Vec::new(),
+        Name::Compact | Name::Clear | Name::Status | Name::Usage | Name::Help | Name::Exit => {
+            Vec::new()
+        }
     };
     candidates
         .into_iter()
@@ -891,7 +893,7 @@ fn palette(text: &str, cursor: usize, choices: &Choices<'_>) -> Vec<Item> {
         .collect()
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs())
@@ -1703,7 +1705,7 @@ mod tests {
     #[test]
     fn arrows_pick_a_command_and_enter_runs_it() {
         let mut line = line("/", 1);
-        let mut keys = vec![KeyCode::Down; 6];
+        let mut keys = vec![KeyCode::Down; 8];
         keys.push(KeyCode::Enter);
         let action = press(&mut line, &keys);
         assert!(matches!(action, Action::Submit));

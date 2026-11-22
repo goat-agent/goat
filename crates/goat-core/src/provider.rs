@@ -141,6 +141,20 @@ pub struct Reply {
     pub parts: Vec<Part>,
     pub usage: Usage,
     pub stop: Stop,
+    pub limits: Option<Limits>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Limits {
+    pub plan: Option<String>,
+    pub windows: Vec<Window>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Window {
+    pub minutes: u64,
+    pub used_percent: u8,
+    pub resets_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]

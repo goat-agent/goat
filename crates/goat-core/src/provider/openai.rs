@@ -3,7 +3,9 @@ use std::borrow::Cow;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::{Chunk, Error, Flow, Hit, Images, OMITTED_IMAGE, Reply, Request, Stop, Usage};
+use super::{
+    Chunk, Error, Flow, Hit, Images, Limits, OMITTED_IMAGE, Reply, Request, Stop, Usage, Window,
+};
 use crate::account::codex;
 use crate::image::{Image, Media};
 use crate::message::{self, Message, Native, Part, Role};
@@ -67,6 +69,7 @@ impl Client {
                 .body(body),
         )
         .await?;
+        let limits = limits(response.headers());
 
         let mut parts = Vec::new();
         let mut usage = Usage::default();
@@ -115,7 +118,12 @@ impl Client {
         })
         .await?;
 
-        Ok(Reply { parts, usage, stop })
+        Ok(Reply {
+            parts,
+            usage,
+            stop,
+            limits,
+        })
     }
 
     pub(super) async fn search(
@@ -737,8 +745,78 @@ impl ErrorDetail {
     }
 }
 
+fn limits(headers: &reqwest::header::HeaderMap) -> Option<Limits> {
+    let text = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    let whole = |name: &str| -> Option<u64> { text(name)?.split('.').next()?.parse().ok() };
+    let mut windows: Vec<Window> = ["primary", "secondary"]
+        .iter()
+        .filter_map(|which| {
+            let minutes = whole(&format!("x-codex-{which}-window-minutes")).filter(|m| *m > 0)?;
+            let used = whole(&format!("x-codex-{which}-used-percent"))?.min(100);
+            Some(Window {
+                minutes,
+                used_percent: u8::try_from(used).unwrap_or(100),
+                resets_at: whole(&format!("x-codex-{which}-reset-at")),
+            })
+        })
+        .collect();
+    windows.sort_by_key(|window| window.minutes);
+    let plan = text("x-codex-plan-type").map(str::to_owned);
+    (plan.is_some() || !windows.is_empty()).then_some(Limits { plan, windows })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn plan_limits_come_from_the_codex_headers() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        for (name, value) in [
+            ("x-codex-plan-type", "pro"),
+            ("x-codex-primary-used-percent", "32"),
+            ("x-codex-primary-window-minutes", "10080"),
+            ("x-codex-primary-reset-at", "1795626187"),
+            ("x-codex-secondary-used-percent", "81.5"),
+            ("x-codex-secondary-window-minutes", "300"),
+            ("x-codex-secondary-reset-at", ""),
+        ] {
+            headers.insert(name, value.parse().unwrap());
+        }
+
+        assert_eq!(
+            limits(&headers),
+            Some(Limits {
+                plan: Some("pro".to_owned()),
+                windows: vec![
+                    Window {
+                        minutes: 300,
+                        used_percent: 81,
+                        resets_at: None,
+                    },
+                    Window {
+                        minutes: 10080,
+                        used_percent: 32,
+                        resets_at: Some(1_795_626_187),
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn a_window_of_zero_minutes_is_left_out() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-codex-secondary-window-minutes", "0".parse().unwrap());
+        headers.insert("x-codex-secondary-used-percent", "0".parse().unwrap());
+
+        assert_eq!(limits(&headers), None);
+    }
+
     use super::*;
 
     #[test]

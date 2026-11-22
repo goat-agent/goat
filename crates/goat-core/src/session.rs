@@ -11,7 +11,7 @@ use crate::account::Account;
 use crate::image::{Image, Picture};
 use crate::instructions;
 use crate::message::{self, Diff, Message, Origin, Part, Role, Trace};
-use crate::provider::{self, Chunk, Endpoints, Images, Provider, Request, Stop, Usage};
+use crate::provider::{self, Chunk, Endpoints, Images, Limits, Provider, Request, Stop, Usage};
 use crate::store::{self, Sent, Store};
 use crate::tool::{self, Outcome, Runner, Searcher, Step, Web};
 
@@ -127,6 +127,7 @@ pub struct Session {
     finished: Vec<Part>,
     trace: Vec<Trace>,
     last_input: u64,
+    limits: Option<Limits>,
     personal: PathBuf,
     home: PathBuf,
 }
@@ -223,6 +224,7 @@ impl Session {
             finished: Vec::new(),
             trace: Vec::new(),
             last_input: 0,
+            limits: None,
             personal: env.personal.clone(),
             home: env.home.clone(),
         })
@@ -378,6 +380,18 @@ impl Session {
             .chain(self.runner.loaded())
             .map(|path| instructions::shown(&path, workspace, &self.home))
             .collect()
+    }
+
+    pub fn snapshots_off(&self) -> Option<String> {
+        self.snapshots.off()
+    }
+
+    pub fn context(&self) -> (u64, u64) {
+        (self.last_input, COMPACT_AT_TOKENS)
+    }
+
+    pub fn limits(&self) -> Option<&Limits> {
+        self.limits.as_ref()
     }
 
     pub fn title(&self) -> Result<Option<String>, Error> {
@@ -558,7 +572,13 @@ impl Session {
                     });
                     tokio::time::sleep(wait).await;
                 }
-                result => return Ok(result?),
+                result => {
+                    let mut reply = result?;
+                    if let Some(limits) = reply.limits.take() {
+                        self.limits = Some(limits);
+                    }
+                    return Ok(reply);
+                }
             }
         }
     }

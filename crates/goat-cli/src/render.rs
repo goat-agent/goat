@@ -210,6 +210,14 @@ impl<W: Write> Terminal<W> {
         self.flush();
     }
 
+    pub(crate) fn lines(&mut self, lines: &[String]) {
+        self.enter(Section::Reply);
+        for line in lines {
+            self.put(&format!("{INDENT}{line}\n"));
+        }
+        self.flush();
+    }
+
     pub(crate) fn outcome(&mut self, outcome: Result<&str, &str>) {
         self.enter(Section::Reply);
         let text = match outcome {

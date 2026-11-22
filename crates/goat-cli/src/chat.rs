@@ -4,6 +4,7 @@ use std::pin::{Pin, pin};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use crossterm::style::Stylize;
 use goat_core::account::{self, Account};
 use goat_core::catalog::{self, Model};
 use goat_core::provider::{Endpoints, Provider};
@@ -11,11 +12,12 @@ use goat_core::session::{self, Environment, Event, Prompt, Session, Sink};
 use goat_core::store::{Recent, Sent, Store};
 
 use crate::command::{self, Name};
-use crate::input::{Editor, Entry, Input, Keys, Mode, RawMode, TurnKeys};
+use crate::input::{self, Editor, Entry, Input, Keys, Mode, RawMode, TurnKeys};
 use crate::kitty;
 use crate::paths::Paths;
 use crate::render::{Banner, Ending, Terminal, Work};
 use crate::target::{self, Choices, Current, DEFAULT_EFFORT, Effort, Files, Offer, plural};
+use crate::usage::{self, Row};
 
 const USER_AGENT: &str = concat!("goat/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -50,6 +52,7 @@ struct Chat {
     environment: Environment,
     database: PathBuf,
     naming: Option<Naming>,
+    warned: Vec<String>,
 }
 
 struct Naming {
@@ -267,6 +270,11 @@ impl Chat {
                 .reply("Type /resume and pick a session from the list"),
             (Name::Resume, id) => self.resume(id)?,
             (Name::Rewind, picked) => self.rewind(picked).await?,
+            (Name::Status, _) => self.show_status()?,
+            (Name::Usage, _) => {
+                let lines: Vec<String> = self.usage().iter().map(Row::line).collect();
+                self.terminal.lines(&lines);
+            }
         }
         Ok(Flow::Continue)
     }
@@ -438,6 +446,64 @@ impl Chat {
             sent: &self.sent,
             files: &self.files,
             current: current(&self.session),
+        }
+    }
+
+    fn show_status(&mut self) -> anyhow::Result<()> {
+        let id = self.session.id();
+        let session = match self.session.title()? {
+            Some(title) => format!("{title} ({id})"),
+            None => id.to_string(),
+        };
+        let files = self.session.instruction_files();
+        let instructions = if files.is_empty() {
+            "none".to_owned()
+        } else {
+            files.join(", ")
+        };
+        let snapshots = self
+            .session
+            .snapshots_off()
+            .map_or_else(|| "on".to_owned(), |reason| format!("off, {reason}"));
+        let rows = [
+            ("Session", session),
+            ("Model", self.status()),
+            (
+                "Directory",
+                directory(self.session.workspace(), &self.environment.home),
+            ),
+            ("Instructions", instructions),
+            ("Snapshots", snapshots),
+        ];
+        let lines: Vec<String> = rows
+            .iter()
+            .map(|(label, value)| format!("{}  {value}", format!("{label:<12}").dim()))
+            .collect();
+        self.terminal.lines(&lines);
+        Ok(())
+    }
+
+    fn usage(&self) -> Vec<Row> {
+        usage::rows(self.session.context(), self.session.limits(), input::now())
+    }
+
+    fn warn(&mut self) {
+        let mut shown = Vec::new();
+        for row in self.usage() {
+            let seen = self.warned.iter().position(|label| *label == row.label);
+            match (row.is_high(), seen) {
+                (true, None) => {
+                    shown.push(row.line());
+                    self.warned.push(row.label);
+                }
+                (false, Some(at)) => {
+                    self.warned.swap_remove(at);
+                }
+                _ => {}
+            }
+        }
+        if !shown.is_empty() {
+            self.terminal.lines(&shown);
         }
     }
 
@@ -618,6 +684,7 @@ async fn run(
         environment: environment(paths),
         database: paths.database.clone(),
         naming: None,
+        warned: Vec::new(),
     };
     chat.greet();
     chat.session.replay(&mut chat.terminal)?;
@@ -641,6 +708,7 @@ async fn run(
             continue;
         }
         chat.input(&input).await?;
+        chat.warn();
         if input.mode == Mode::Agent {
             chat.name().await;
         }
