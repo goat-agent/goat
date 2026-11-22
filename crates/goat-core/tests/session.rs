@@ -58,6 +58,7 @@ fn environment(dir: &Path, url: &str) -> Environment {
         workspace: dir.to_owned(),
         home: dir.to_owned(),
         spill: dir.join(".spill"),
+        snapshots: dir.join(".snapshots"),
         endpoints: Endpoints {
             openai: url.into(),
             codex: url.into(),
@@ -323,42 +324,100 @@ fn writing(path: &str, content: &str) -> &'static str {
     ))
 }
 
+fn shelling(command: &str) -> &'static str {
+    leak(OPENAI_TOOL_CALL.replace("echo hi", command))
+}
+
 #[tokio::test]
-async fn restoring_code_brings_files_back_to_how_they_were_before_a_prompt() {
+async fn restoring_code_brings_the_workspace_back_to_how_it_was_before_a_prompt() {
     let server = server::replay(vec![
         writing("a.txt", "v1"),
         OPENAI_ANSWER,
         writing("a.txt", "v2"),
         OPENAI_ANSWER,
-        writing("b.txt", "b1"),
+        shelling("printf b1 > b.txt"),
         OPENAI_ANSWER,
     ])
     .await;
     let dir = tempfile::tempdir().unwrap();
-    let env = environment(dir.path(), &server.url);
+    let store = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("work");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let env = Environment {
+        workspace: workspace.clone(),
+        snapshots: store.path().join("snapshots"),
+        ..environment(dir.path(), &server.url)
+    };
     let mut session = openai_session(&env).unwrap();
-    std::fs::write(dir.path().join("a.txt"), "v0").unwrap();
+    std::fs::write(workspace.join("a.txt"), "v0").unwrap();
     for prompt in ["one", "two", "three"] {
         session
             .turn(prompt, &mut Recorder::default())
             .await
             .unwrap();
     }
-    let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).ok();
+    let read = |name: &str| std::fs::read_to_string(workspace.join(name)).ok();
+    assert_eq!(read("b.txt").as_deref(), Some("b1"));
     let sent = session.sent().unwrap();
-    let changed: Vec<u64> = sent.iter().map(|sent| sent.changed).collect();
-    assert_eq!(changed, [2, 2, 1]);
 
-    session.restore(sent[1].id).unwrap();
+    session.restore(sent[1].id).await.unwrap();
     assert_eq!(read("a.txt").as_deref(), Some("v1"));
     assert_eq!(read("b.txt"), None);
 
-    session.restore(sent[2].id).unwrap();
+    session.restore(sent[2].id).await.unwrap();
     assert_eq!(read("a.txt").as_deref(), Some("v2"));
     assert_eq!(read("b.txt"), None);
 
-    session.restore(sent[0].id).unwrap();
+    let restored = session.restore(sent[0].id).await.unwrap().unwrap();
     assert_eq!(read("a.txt").as_deref(), Some("v0"));
+    assert_eq!(restored, [std::path::PathBuf::from("a.txt")]);
+}
+
+#[tokio::test]
+async fn rewinding_the_conversation_drops_the_snapshots_after_it() {
+    let server = server::replay(vec![OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("work");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let env = Environment {
+        workspace,
+        snapshots: store.path().join("snapshots"),
+        ..environment(dir.path(), &server.url)
+    };
+    let mut session = openai_session(&env).unwrap();
+    session
+        .turn("first", &mut Recorder::default())
+        .await
+        .unwrap();
+    session
+        .turn("second", &mut Recorder::default())
+        .await
+        .unwrap();
+    let sent = session.sent().unwrap();
+
+    session.rewind(sent[1].id).unwrap();
+
+    assert!(session.restore(sent[1].id).await.unwrap().is_none());
+    assert!(session.restore(sent[0].id).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_workspace_that_holds_home_is_not_snapshotted_and_says_so() {
+    let server = server::replay(vec![OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+    let mut recorder = Recorder::default();
+
+    session.turn("hi", &mut recorder).await.unwrap();
+
+    assert_eq!(
+        recorder.order[0],
+        "untracked the working directory holds the home directory"
+    );
+    let sent = session.sent().unwrap();
+    assert!(session.restore(sent[0].id).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -943,6 +1002,7 @@ fn name(event: &Event<'_>) -> String {
         Event::CallFailed { problem } => format!("failed {problem}"),
         Event::Changed(diff) => format!("changed +{} -{}", diff.added, diff.removed),
         Event::Retrying { attempt, restarts } => format!("retrying {attempt} {restarts}"),
+        Event::Untracked { reason } => format!("untracked {reason}"),
         Event::RunFinished { outcome } => format!("finished {}", outcome.is_error),
         Event::ShellOutput(output) => format!("output {}", output.trim_end()),
         Event::ShellFinished { code, .. } => format!("exit {code:?}"),
@@ -956,7 +1016,7 @@ fn name(event: &Event<'_>) -> String {
 fn shown(order: &[String]) -> Vec<String> {
     let mut merged: Vec<String> = Vec::new();
     for event in order {
-        if event == "usage" || event.starts_with("reasoning") {
+        if event == "usage" || event.starts_with("reasoning") || event.starts_with("untracked") {
             continue;
         }
         match (merged.last_mut(), event.strip_prefix("text ")) {

@@ -266,7 +266,7 @@ impl Chat {
                 .terminal
                 .reply("Type /resume and pick a session from the list"),
             (Name::Resume, id) => self.resume(id)?,
-            (Name::Rewind, picked) => self.rewind(picked)?,
+            (Name::Rewind, picked) => self.rewind(picked).await?,
         }
         Ok(Flow::Continue)
     }
@@ -375,7 +375,7 @@ impl Chat {
         Ok(())
     }
 
-    fn rewind(&mut self, picked: &str) -> anyhow::Result<()> {
+    async fn rewind(&mut self, picked: &str) -> anyhow::Result<()> {
         let sent = self.session.sent()?;
         if picked.is_empty() {
             self.terminal.reply(if sent.is_empty() {
@@ -400,9 +400,9 @@ impl Chat {
             other => bail!("{other} is not both, conversation or code"),
         };
         let restored = if code {
-            self.session.restore(target.id)?
+            self.session.restore(target.id).await?
         } else {
-            Vec::new()
+            Some(Vec::new())
         };
         if conversation {
             self.session.rewind(target.id)?;
@@ -411,12 +411,20 @@ impl Chat {
             self.session.replay(&mut self.terminal)?;
             self.editor.prefill(&target.text, &target.images);
         }
-        let files = plural(u64::try_from(restored.len()).unwrap_or(0), "file");
-        let note = match (conversation, restored.is_empty()) {
-            (true, true) => "Went back to before this prompt".to_owned(),
-            (true, false) => format!("Went back to before this prompt and restored {files}"),
-            (false, true) => "There were no file changes to restore".to_owned(),
-            (false, false) => format!("Restored {files}"),
+        let files = match &restored {
+            None => {
+                "the files have no snapshot from then, so they were left as they are".to_owned()
+            }
+            Some(paths) if paths.is_empty() => "no files had changed".to_owned(),
+            Some(paths) => format!(
+                "restored {}",
+                plural(u64::try_from(paths.len()).unwrap_or(0), "file")
+            ),
+        };
+        let note = match (conversation, code) {
+            (true, true) => format!("Went back to before this prompt; {files}"),
+            (true, false) => "Went back to before this prompt".to_owned(),
+            (false, _) => format!("Kept the conversation; {files}"),
         };
         self.terminal.outcome(Ok(&note));
         Ok(())
@@ -692,6 +700,7 @@ fn environment(paths: &Paths) -> Environment {
         workspace: paths.workspace.clone(),
         home: paths.home.clone(),
         spill: paths.spill.clone(),
+        snapshots: paths.snapshots.clone(),
         endpoints: Endpoints::default(),
     }
 }

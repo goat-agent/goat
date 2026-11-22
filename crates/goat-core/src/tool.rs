@@ -22,7 +22,6 @@ use crate::message::Diff;
 
 pub(crate) use self::web::{Searcher, Web};
 
-pub(crate) use self::files::TRACKED_BYTES;
 use self::host::Host;
 pub use self::mention::workspace_files;
 pub(crate) use self::mention::{Attached, mentioned};
@@ -102,10 +101,6 @@ pub(crate) enum Step {
     Shown(Picture),
 }
 
-pub(crate) trait Journal: std::fmt::Debug {
-    fn record(&self, path: &Path, before: Option<&[u8]>) -> Result<(), String>;
-}
-
 #[derive(Debug, Deserialize)]
 pub(crate) struct Run {
     code: String,
@@ -169,11 +164,10 @@ impl Runner {
         home: &Path,
         spill: &Path,
         resumed: bool,
-        journal: Option<Rc<dyn Journal>>,
     ) -> Result<Self, Error> {
         let (tx, steps) = mpsc::channel(STEP_BACKLOG);
         Ok(Self {
-            host: Rc::new(Host::new(workspace, home, spill, tx, journal)?),
+            host: Rc::new(Host::new(workspace, home, spill, tx)?),
             steps,
             script: None,
             had_sandbox: resumed,
@@ -288,7 +282,7 @@ mod tests {
     }
 
     fn runner(dir: &Path) -> Runner {
-        Runner::new(dir, dir, &dir.join(".spill"), false, None).unwrap()
+        Runner::new(dir, dir, &dir.join(".spill"), false).unwrap()
     }
 
     fn run(code: &str) -> Run {
