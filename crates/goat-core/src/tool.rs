@@ -89,6 +89,7 @@ pub enum Kind {
     Fetch,
     Search,
     Skill,
+    Mcp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,6 +148,7 @@ impl Kind {
             Self::Fetch => "fetch",
             Self::Search => "search",
             Self::Skill => "skill",
+            Self::Mcp => "mcp",
         }
     }
 }
@@ -190,6 +192,10 @@ impl Runner {
 
     pub(crate) fn set_skills(&self, skills: Vec<Skill>) {
         self.host.set_skills(skills);
+    }
+
+    pub(crate) fn set_mcp(&self, clients: Rc<crate::mcp::Clients>) {
+        self.host.set_mcp(clients);
     }
 
     pub(crate) fn mark_skill(&self, name: &str) -> bool {

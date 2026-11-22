@@ -40,6 +40,20 @@ To attach an image, drop its file on the terminal, paste its path, or press Ctrl
 
 Skills follow the [Agent Skills](https://agentskills.io) format: a folder with a `SKILL.md` whose frontmatter has a `name` and a `description`. goat reads them from `~/.goat/skills`, `~/.agents/skills`, and the `.goat/skills` and `.agents/skills` folders from the project's root down to the working directory; a project skill wins over a personal one with the same name, and `.goat` over `.agents`. The model sees each skill's name and description and loads one with `skill(name, args)` when a task matches. Typing `/` lists them after the commands, and `/name text` sends the skill with the prompt. The text after the name fills `$ARGUMENTS` in the skill, or is added as `ARGUMENTS: text` when the skill has no such placeholder; `argument-hint` shows next to the name. `disable-model-invocation: true` keeps a skill from the model and `user-invocable: false` keeps it out of the list. Skills loaded in a session are kept when the conversation is compacted.
 
+MCP servers are set in `~/.goat/mcp.toml` and in `.goat/mcp.toml` from the project's root down to the working directory, one table per server, with either a `command` to start or a `url` to reach; `$NAME` and `${NAME}` take values from the environment, and a project server wins over a personal one with the same name:
+
+```toml
+[github]
+command = ["npx", "-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_PERSONAL_ACCESS_TOKEN = "$GITHUB_TOKEN" }
+
+[docs]
+url = "https://example.com/mcp"
+headers = { Authorization = "Bearer $DOCS_TOKEN" }
+```
+
+The model sees only the server names. In a run it lists their tools with `await mcp.tools()`, each with its arguments on one line, reads one tool's input as a TypeScript signature with `await mcp.describe("github.create_issue")`, and calls it with `await mcp.github.create_issue({...})`, which returns the tool's structured result or its text, throws when the tool reports an error, and shows images like `read` does. A server starts the first time a run uses it and stops with goat. `/status` shows each server and whether it is connected. OAuth sign-in is not supported yet.
+
 Typing `@` at the start of a word lists the files and directories of the working directory under the prompt, leaving out what `.gitignore` ignores; picking a directory lists what is inside it. When the message is sent, each `@path` that exists goes with it: a file as its lines with the same anchors `read` gives, so the model can edit it without reading it first, a directory as its listing, and an image as an image. The prompt itself keeps the text as typed.
 
 Every `edit` and `write` shows what it changed under its call: the number of added and removed lines, then the changed lines with their numbers, cut to 16 lines. A resumed session shows the same.

@@ -60,6 +60,7 @@ fn environment(dir: &Path, url: &str) -> Environment {
         spill: dir.join(".spill"),
         snapshots: dir.join(".snapshots"),
         personal: dir.join(".goat/AGENTS.md"),
+        variable: |_| None,
         endpoints: Endpoints {
             openai: url.into(),
             codex: url.into(),
@@ -620,6 +621,54 @@ async fn a_slash_command_sends_the_skill_with_the_prompt_and_compaction_keeps_it
     let mut replayed = Recorder::default();
     session.replay(&mut replayed).unwrap();
     assert_eq!(replayed.order[0], "prompt /demo tonight");
+}
+
+#[tokio::test]
+async fn mcp_tools_are_listed_described_and_called_from_a_run() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp/server.py");
+    let code = "const tools = await mcp.tools(); \
+        const shape = await mcp.describe('fixture.echo'); \
+        const echoed = await mcp.fixture.echo({ text: 'hi there' }); \
+        const added = await mcp.fixture.sum({ numbers: [1, 2] }); \
+        let failed = ''; try { await mcp.fixture.nope({}) } catch (e) { failed = e.message } \
+        return { tools: tools.map(t => t.name), shape, echoed, added, failed }";
+    let call = leak(OPENAI_TOOL_CALL.replace("(await bash('echo hi')).output", code));
+    let server = server::replay(vec![call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".goat")).unwrap();
+    std::fs::write(
+        dir.path().join(".goat/mcp.toml"),
+        format!(
+            "[fixture]\ncommand = [\"python3\", \"{}\"]\n",
+            fixture.display()
+        ),
+    )
+    .unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+    let mut recorder = Recorder::default();
+
+    session
+        .turn("use the fixture", &mut recorder)
+        .await
+        .unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].contains("MCP servers are connected to the sandbox: fixture."));
+    let result = &requests[1];
+    assert!(result.contains("fixture.echo"), "{result}");
+    assert!(result.contains("mcp.fixture.echo(args: {"));
+    assert!(result.contains("What to echo"));
+    assert!(result.contains("hi there"));
+    assert!(result.contains("\\\"total\\\": 3"));
+    assert!(result.contains("no tool nope"));
+    assert!(recorder.order.contains(&"call mcp fixture.echo".to_owned()));
+    let (states, problems) = session.servers();
+    assert_eq!(
+        states,
+        [("fixture".to_owned(), goat_core::mcp::State::Connected)]
+    );
+    assert_eq!(problems, [] as [String; 0]);
 }
 
 #[tokio::test]

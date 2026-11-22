@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::instructions;
+use crate::mcp;
 use crate::skill::{self, Skill};
 
 const BASE: &str = "\
@@ -44,6 +45,7 @@ pub(super) fn instructions(
     personal: &Path,
     home: &Path,
     skills: &[Skill],
+    servers: &[mcp::Server],
 ) -> String {
     let mut text = BASE
         .replace("{workspace}", &workspace.display().to_string())
@@ -62,6 +64,10 @@ pub(super) fn instructions(
         }
     }
     if let Some(catalog) = skill::catalog(skills) {
+        text.push_str("\n\n");
+        text.push_str(&catalog);
+    }
+    if let Some(catalog) = mcp::catalog(servers) {
         text.push_str("\n\n");
         text.push_str(&catalog);
     }

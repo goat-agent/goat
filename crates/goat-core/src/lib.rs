@@ -4,6 +4,7 @@ pub mod account;
 pub mod catalog;
 pub mod image;
 mod instructions;
+pub mod mcp;
 pub mod message;
 pub mod provider;
 pub mod session;

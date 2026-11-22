@@ -1,13 +1,15 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
+use std::rc::Rc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::web::{self, Web};
-use super::{Call, Kind, Step, bash, danger, files, hashline};
+use super::{Call, Kind, Step, bash, danger, files, hashline, spill};
+use crate::mcp::Clients;
 use crate::skill::{self, Skill};
 use crate::{image, instructions};
 
@@ -24,6 +26,7 @@ pub(crate) struct Host {
     web: RefCell<Option<Web>>,
     nested: RefCell<Nested>,
     skills: RefCell<Skills>,
+    mcp: RefCell<Option<Rc<Clients>>>,
 }
 
 #[derive(Debug, Default)]
@@ -69,6 +72,17 @@ enum Op {
         name: String,
         args: Option<String>,
     },
+    McpTools {
+        server: Option<String>,
+    },
+    McpDescribe {
+        name: String,
+    },
+    McpCall {
+        server: String,
+        tool: String,
+        args: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -101,6 +115,7 @@ impl Host {
             web: RefCell::new(None),
             nested: RefCell::new(Nested::default()),
             skills: RefCell::new(Skills::default()),
+            mcp: RefCell::new(None),
         })
     }
 
@@ -182,6 +197,18 @@ impl Host {
                     .ok_or("web search needs a signed-in account")?;
                 to_value(web::search(&searcher, &query).await?)
             }
+            Op::McpTools { server } => to_value(self.mcp()?.tools(server.as_deref()).await?),
+            Op::McpDescribe { name } => to_value(self.mcp()?.describe(&name).await?),
+            Op::McpCall { server, tool, args } => {
+                let called = self.mcp()?.call(&server, &tool, args).await?;
+                for bytes in called.images {
+                    self.show(bytes, &format!("{server}.{tool}")).await?;
+                }
+                match called.value {
+                    serde_json::Value::String(text) => to_value(spill::fit(text, &self.spill)),
+                    value => Ok(value),
+                }
+            }
             Op::Skill { name, args } => {
                 to_value(self.load_skill(&name, args.as_deref().unwrap_or_default())?)
             }
@@ -230,6 +257,17 @@ impl Host {
             .borrow()
             .clone()
             .ok_or_else(|| "the web is not available here".to_owned())
+    }
+
+    pub(crate) fn set_mcp(&self, clients: Rc<Clients>) {
+        self.mcp.replace(Some(clients));
+    }
+
+    fn mcp(&self) -> Result<Rc<Clients>, String> {
+        self.mcp
+            .borrow()
+            .clone()
+            .ok_or_else(|| "no MCP servers are configured".to_owned())
     }
 
     pub(crate) fn set_skills(&self, known: Vec<Skill>) {
@@ -338,6 +376,21 @@ impl Op {
             Self::Fetch { url } => (Kind::Fetch, url),
             Self::Search { query } => (Kind::Search, query),
             Self::Skill { name, .. } => (Kind::Skill, name),
+            Self::McpTools { server } => {
+                return Call {
+                    kind: Kind::Mcp,
+                    target: server
+                        .as_deref()
+                        .map_or("tools".into(), |server| format!("{server} tools").into()),
+                };
+            }
+            Self::McpDescribe { name } => (Kind::Mcp, name),
+            Self::McpCall { server, tool, .. } => {
+                return Call {
+                    kind: Kind::Mcp,
+                    target: format!("{server}.{tool}").into(),
+                };
+            }
         };
         Call {
             kind,

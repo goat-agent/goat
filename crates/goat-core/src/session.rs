@@ -3,6 +3,7 @@ mod replay;
 mod snapshot;
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -10,6 +11,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use crate::account::Account;
 use crate::image::{Image, Picture};
 use crate::instructions;
+use crate::mcp;
 use crate::message::{self, Diff, Message, Origin, Part, Role, Trace};
 use crate::provider::{self, Chunk, Endpoints, Images, Limits, Provider, Request, Stop, Usage};
 use crate::skill;
@@ -107,6 +109,7 @@ pub struct Environment {
     pub spill: std::path::PathBuf,
     pub snapshots: std::path::PathBuf,
     pub personal: std::path::PathBuf,
+    pub variable: fn(&str) -> Option<String>,
     pub endpoints: Endpoints,
 }
 
@@ -130,6 +133,8 @@ pub struct Session {
     last_input: u64,
     limits: Option<Limits>,
     skills: skill::Found,
+    servers: mcp::Config,
+    clients: Rc<mcp::Clients>,
     personal: PathBuf,
     home: PathBuf,
 }
@@ -143,8 +148,14 @@ impl Session {
         model: &str,
     ) -> Result<Self, Error> {
         let found = skill::discover(&env.workspace, &env.home);
-        let instructions =
-            prompt::instructions(&env.workspace, &env.personal, &env.home, &found.skills);
+        let servers = mcp::config(&env.workspace, &env.home, env.variable).servers;
+        let instructions = prompt::instructions(
+            &env.workspace,
+            &env.personal,
+            &env.home,
+            &found.skills,
+            &servers,
+        );
         let id = store.create_session(&env.workspace, &instructions)?;
         Self::assemble(
             id,
@@ -214,6 +225,9 @@ impl Session {
         let found = skill::discover(&env.workspace, &env.home);
         let runner = Runner::new(&env.workspace, &env.home, &env.spill, !messages.is_empty())?;
         runner.set_skills(found.skills.clone());
+        let servers = mcp::config(&env.workspace, &env.home, env.variable);
+        let clients = Rc::new(mcp::Clients::new(servers.servers.clone(), http.clone()));
+        runner.set_mcp(Rc::clone(&clients));
         for name in loaded_skills(&messages) {
             runner.mark_skill(&name);
         }
@@ -230,6 +244,8 @@ impl Session {
             instructions,
             runner,
             skills: found,
+            servers,
+            clients,
             tool: tool::spec(),
             messages,
             finished: Vec::new(),
@@ -405,6 +421,10 @@ impl Session {
 
     pub fn skills(&self) -> &skill::Found {
         &self.skills
+    }
+
+    pub fn servers(&self) -> (Vec<(String, mcp::State)>, &[String]) {
+        (self.clients.states(), &self.servers.problems)
     }
 
     pub fn snapshots_off(&self) -> Option<String> {

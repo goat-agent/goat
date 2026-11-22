@@ -7,6 +7,7 @@ use anyhow::{Context, bail};
 use crossterm::style::Stylize;
 use goat_core::account::{self, Account};
 use goat_core::catalog::{self, Model};
+use goat_core::mcp::State;
 use goat_core::provider::{Endpoints, Provider};
 use goat_core::session::{self, Environment, Event, Prompt, Session, Sink};
 use goat_core::store::{Recent, Sent, Store};
@@ -465,6 +466,21 @@ impl Chat {
         } else {
             files.join(", ")
         };
+        let (states, problems) = self.session.servers();
+        let mut shown: Vec<String> = states
+            .iter()
+            .map(|(name, state)| match state {
+                State::Idle => name.clone(),
+                State::Connected => format!("{name} (connected)"),
+                State::Failed(problem) => format!("{name} (failed: {problem})"),
+            })
+            .collect();
+        shown.extend(problems.iter().cloned());
+        let servers = if shown.is_empty() {
+            "none".to_owned()
+        } else {
+            shown.join(", ")
+        };
         let found = self.session.skills();
         let mut skills = match found.skills.len() {
             0 => "none".to_owned(),
@@ -492,6 +508,7 @@ impl Chat {
             ),
             ("Instructions", instructions),
             ("Skills", skills),
+            ("MCP", servers),
             ("Snapshots", snapshots),
         ];
         let lines: Vec<String> = rows
@@ -790,6 +807,7 @@ fn environment(paths: &Paths) -> Environment {
         spill: paths.spill.clone(),
         snapshots: paths.snapshots.clone(),
         personal: paths.personal.clone(),
+        variable: |name| std::env::var(name).ok(),
         endpoints: Endpoints::default(),
     }
 }
