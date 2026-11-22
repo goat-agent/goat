@@ -9,7 +9,7 @@ use goat_core::session::{Environment, Event, Prompt, Session, Sink};
 use goat_core::store::Store;
 
 const TURNS: usize = 50;
-const BUDGET_KIB: u64 = 50 * 1024;
+const BUDGET_KIB: u64 = 40 * 1024;
 const IMAGE_EDGE: u32 = 260;
 
 struct Discard;
@@ -68,11 +68,11 @@ async fn fifty_turns_stay_within_the_memory_budget() {
     assert_eq!(session.messages().len(), TURNS * 4);
     assert_eq!(requests, TURNS * 2);
 
-    if let Some(peak) = peak_rss_kib() {
-        eprintln!("peak rss after {TURNS} turns: {peak} KiB");
+    if let Some(peak) = peak_data_kib() {
+        eprintln!("peak memory outside code after {TURNS} turns: {peak} KiB");
         assert!(
             peak <= BUDGET_KIB,
-            "peak rss {peak} KiB is over {BUDGET_KIB} KiB"
+            "peak memory outside code {peak} KiB is over {BUDGET_KIB} KiB"
         );
     }
 }
@@ -91,10 +91,13 @@ fn noise(seed: u32) -> Result<Vec<u8>, ::image::ImageError> {
     Ok(bytes.into_inner())
 }
 
-fn peak_rss_kib() -> Option<u64> {
+fn peak_data_kib() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("VmHWM:"))
-        .and_then(|value| value.trim().trim_end_matches("kB").trim().parse().ok())
+    let field = |name: &str| -> Option<u64> {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .and_then(|value| value.trim().trim_end_matches("kB").trim().parse().ok())
+    };
+    Some(field("VmHWM:")?.saturating_sub(field("RssFile:")?))
 }
