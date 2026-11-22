@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use crate::instructions;
+
 const BASE: &str = "\
 You are goat, a coding agent working in the user's terminal.
 
@@ -36,15 +38,22 @@ pub(super) const TITLE_LINE: &str = "Title:";
 
 pub(super) const SUMMARY_PREFIX: &str = "Summary of the earlier conversation, written by you:\n\n";
 
-const PROJECT_FILE: &str = "AGENTS.md";
-
-pub(super) fn instructions(workspace: &Path) -> String {
+pub(super) fn instructions(workspace: &Path, personal: &Path, home: &Path) -> String {
     let mut text = BASE
         .replace("{workspace}", &workspace.display().to_string())
         .replace("{os}", std::env::consts::OS);
-    if let Ok(project) = std::fs::read_to_string(workspace.join(PROJECT_FILE)) {
-        text.push_str("\n\nProject instructions from AGENTS.md:\n\n");
-        text.push_str(project.trim());
+    let mut room = instructions::BYTES;
+    for path in instructions::sources(workspace, personal) {
+        let Some(found) = instructions::read(&path, room) else {
+            continue;
+        };
+        room = room.saturating_sub(found.len());
+        let shown = instructions::shown(&path, workspace, home);
+        text.push_str("\n\n");
+        text.push_str(&instructions::block(&shown, &found));
+        if room == 0 {
+            break;
+        }
     }
     text
 }

@@ -56,7 +56,7 @@ The model's summary of its reasoning is shown dimmed while it thinks, and replie
 - When the connection drops or the server is busy, goat tries again until it works, waiting 1, 2, 4, 8 and 16 seconds and then 30 seconds between tries, with the attempt shown on the spinner line; Esc stops it. A reply that was cut off partway starts over below what was already shown. Errors that waiting cannot fix, such as a bad request, a usage limit or a failed sign-in, stop the turn at once.
 - The conversation is summarized once a request passes 200k input tokens.
 - Sessions, messages and accounts are stored in `~/.goat/goat.db` (SQLite, mode 0600). Long command output is kept in `~/.goat/outputs` for 7 days.
-- An `AGENTS.md` file in the working directory is added to the instructions.
+- Instructions come from `AGENTS.md` files: `~/.goat/AGENTS.md` for every project, then each one from the project's root, the nearest folder with `.git`, down to the working directory, more specific last. They are read when a session starts, up to 32 KiB. An `AGENTS.md` in a folder below the working directory is added to a run's result the first time the run reads, edits or writes a file in that folder, and shows as `Loaded <path>`.
 - The models goat knows, with their names and effort levels, are listed in a catalog built into goat. A model the catalog does not have is an error until goat is updated.
 
 ## Development

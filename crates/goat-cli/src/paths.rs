@@ -12,6 +12,7 @@ pub(crate) struct Paths {
     pub(crate) database: PathBuf,
     pub(crate) spill: PathBuf,
     pub(crate) snapshots: PathBuf,
+    pub(crate) personal: PathBuf,
     pub(crate) workspace: PathBuf,
 }
 
@@ -33,6 +34,7 @@ impl Paths {
             database: data.join("goat.db"),
             spill,
             snapshots,
+            personal: data.join("AGENTS.md"),
             home,
             workspace,
         })

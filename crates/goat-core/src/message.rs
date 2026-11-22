@@ -131,6 +131,7 @@ pub enum Trace {
     Call { kind: Kind, target: Box<str> },
     Failed { problem: Box<str> },
     Changed { diff: Diff },
+    Loaded { path: Box<str> },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

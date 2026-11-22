@@ -701,6 +701,7 @@ fn environment(paths: &Paths) -> Environment {
         home: paths.home.clone(),
         spill: paths.spill.clone(),
         snapshots: paths.snapshots.clone(),
+        personal: paths.personal.clone(),
         endpoints: Endpoints::default(),
     }
 }

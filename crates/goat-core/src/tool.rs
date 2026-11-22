@@ -10,7 +10,7 @@ mod spill;
 mod web;
 
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use serde::Deserialize;
@@ -18,6 +18,7 @@ use serde_json::value::RawValue;
 use tokio::sync::mpsc;
 
 use crate::image::Picture;
+use crate::instructions;
 use crate::message::Diff;
 
 pub(crate) use self::web::{Searcher, Web};
@@ -98,6 +99,7 @@ pub(crate) enum Step {
     Started(Call),
     Failed(Box<str>),
     Changed(Diff),
+    Loaded(Box<str>),
     Shown(Picture),
 }
 
@@ -178,6 +180,14 @@ impl Runner {
         self.host.workspace()
     }
 
+    pub(crate) fn mark_loaded(&self, path: PathBuf) {
+        self.host.mark_loaded(path);
+    }
+
+    pub(crate) fn loaded(&self) -> Vec<PathBuf> {
+        self.host.loaded()
+    }
+
     pub(crate) fn attach(&self, raw: &str) -> Option<Attached> {
         mention::attach(|raw| self.host.resolve(raw), self.host.spill(), raw)
     }
@@ -228,6 +238,10 @@ impl Runner {
         while let Ok(step) = self.steps.try_recv() {
             take(step);
         }
+        let loaded = self.host.take_instructions();
+        for (shown, _) in &loaded {
+            on_step(Step::Loaded(shown.as_str().into()));
+        }
         self.script = Some(script);
         let dropped = images.len().saturating_sub(IMAGES_PER_RUN);
         images.truncate(IMAGES_PER_RUN);
@@ -242,8 +256,13 @@ impl Runner {
             )
             .ok();
         }
+        let mut output = spill::fit(text, self.host.spill());
+        for (shown, found) in &loaded {
+            output.push_str("\n\n");
+            output.push_str(&instructions::block(shown, found));
+        }
         Outcome {
-            output: spill::fit(text, self.host.spill()).into(),
+            output: output.into(),
             is_error: outcome.is_error,
             images,
         }

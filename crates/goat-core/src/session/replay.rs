@@ -69,6 +69,7 @@ impl Replay {
                     })),
                     Trace::Failed { problem } => sink.emit(Event::CallFailed { problem }),
                     Trace::Changed { diff } => sink.emit(Event::Changed(diff)),
+                    Trace::Loaded { path } => sink.emit(Event::Loaded { path }),
                 }
             }
             let outcome = Outcome {
