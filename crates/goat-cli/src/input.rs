@@ -29,6 +29,7 @@ const SHELL_PROMPT: &str = "! ";
 const INDENT: &str = "  ";
 const TAB: &str = "    ";
 const PALETTE_ROWS: usize = 12;
+const LABEL_COLUMN: usize = 30;
 const REWIND_HINT: &str = "Esc again to go back to an earlier prompt";
 const KEY_POLL: Duration = Duration::from_millis(100);
 const KEY_BACKLOG: usize = 64;
@@ -113,6 +114,7 @@ struct Attachment {
 
 struct Item {
     label: String,
+    about: String,
     is_current: bool,
     text: String,
     cursor: Option<usize>,
@@ -730,11 +732,21 @@ impl Line {
             })
             .collect();
         let width = shown.iter().map(|row| row.width()).max().unwrap_or(0);
+        let column = shown
+            .iter()
+            .map(|row| row.width())
+            .filter(|width| *width <= LABEL_COLUMN)
+            .max()
+            .unwrap_or(0);
         shown
             .into_iter()
             .zip(items)
             .enumerate()
             .map(|(index, (row, item))| {
+                if !item.about.is_empty() {
+                    let pad = " ".repeat(column.saturating_sub(row.width()));
+                    return format!("{INDENT}{row}{pad}  {}", item.about);
+                }
                 let level = self
                     .selected
                     .filter(|selected| *selected == index)
@@ -803,10 +815,10 @@ impl Line {
         for (index, row_text) in palette.iter().enumerate() {
             if selected == Some(index) {
                 let text = row_text.strip_prefix(INDENT).unwrap_or(row_text);
-                let shown = fit(text, width - 1 - PROMPT.width());
+                let shown = cut(text, width - 1 - PROMPT.width());
                 rows.push(format!("{}{shown}", PROMPT.dim()));
             } else {
-                rows.push(format!("{}", fit(row_text, width - 1).dim()));
+                rows.push(format!("{}", cut(row_text, width - 1).dim()));
             }
         }
         Frame {
@@ -828,6 +840,7 @@ fn palette(text: &str, cursor: usize, choices: &Choices<'_>) -> Vec<Item> {
             .into_iter()
             .take(PALETTE_ROWS)
             .map(|candidate| Item {
+                about: String::new(),
                 text: format!("{before}{}{after}", candidate.value),
                 cursor: Some(before.len() + candidate.value.len()),
                 is_final: false,
@@ -850,7 +863,8 @@ fn palette(text: &str, cursor: usize, choices: &Choices<'_>) -> Vec<Item> {
                         Name::Model | Name::Effort | Name::Resume | Name::Rewind
                     );
                     Item {
-                        label: format!("/{:<10}{}", spec.word, spec.about),
+                        label: format!("/{}", spec.word),
+                        about: spec.about.to_owned(),
                         is_current: false,
                         text: if takes_value {
                             format!("{head}{} ", spec.word)
@@ -863,6 +877,30 @@ fn palette(text: &str, cursor: usize, choices: &Choices<'_>) -> Vec<Item> {
                         effort: 0,
                     }
                 })
+                .chain(
+                    choices
+                        .skills
+                        .iter()
+                        .filter(|skill| skill.for_user && skill.name.starts_with(typed))
+                        .map(|skill| Item {
+                            label: match &skill.hint {
+                                Some(hint) => format!("/{} {hint}", skill.name),
+                                None => format!("/{}", skill.name),
+                            },
+                            about: skill
+                                .description
+                                .split_whitespace()
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                            is_current: false,
+                            text: format!("{head}{} ", skill.name),
+                            cursor: None,
+                            is_final: false,
+                            efforts: Vec::new(),
+                            effort: 0,
+                        }),
+                )
+                .take(PALETTE_ROWS)
                 .collect();
         }
         Typing::Argument(name, typed) => (name, typed),
@@ -882,6 +920,7 @@ fn palette(text: &str, cursor: usize, choices: &Choices<'_>) -> Vec<Item> {
         .into_iter()
         .take(PALETTE_ROWS)
         .map(|candidate| Item {
+            about: String::new(),
             is_final: !candidate.value.ends_with(['/', ' ']),
             text: format!("{head}{}", candidate.value),
             cursor: None,
@@ -1025,6 +1064,14 @@ fn is_interrupt(key: KeyEvent) -> bool {
     matches!(key.code, KeyCode::Esc) || ctrl && matches!(key.code, KeyCode::Char('c'))
 }
 
+fn cut(text: &str, width: usize) -> String {
+    let shown = fit(text, width);
+    if shown.len() == text.len() {
+        return shown.to_owned();
+    }
+    format!("{}…", fit(text, width.saturating_sub(1)))
+}
+
 pub(crate) fn fit(text: &str, width: usize) -> &str {
     let mut used = 0;
     for (at, grapheme) in text.grapheme_indices(true) {
@@ -1118,6 +1165,14 @@ mod tests {
             kind: Kind::OpenAi,
             label: account.label(),
         }];
+        let skills = [goat_core::skill::Skill {
+            name: "commit".to_owned(),
+            description: "Commit the work\nmore".to_owned(),
+            hint: Some("[push|pr|merge]".to_owned()),
+            location: std::path::PathBuf::new(),
+            for_model: true,
+            for_user: true,
+        }];
         let files = Files::listed(
             ["README.md", "src/", "src/input.rs", "src/main.rs"]
                 .map(str::to_owned)
@@ -1129,6 +1184,7 @@ mod tests {
             sessions: &[],
             sent: &[],
             files: &files,
+            skills: &skills,
             current: Current {
                 account: account.id,
                 model: "gpt-6.2-sol",
@@ -1174,6 +1230,47 @@ mod tests {
 
     fn rows(text: &str) -> Vec<String> {
         with_choices(|choices| Line::default().rows(&palette(text, text.len(), choices)))
+    }
+
+    #[test]
+    fn a_label_too_long_for_the_column_does_not_widen_it() {
+        let item = |label: &str| Item {
+            label: label.to_owned(),
+            about: "about".to_owned(),
+            is_current: false,
+            text: String::new(),
+            cursor: None,
+            is_final: true,
+            efforts: Vec::new(),
+            effort: 0,
+        };
+        let long = format!("/blog {}", "x".repeat(40));
+
+        let rows = Line::default().rows(&[item("/model"), item(&long), item("/exit")]);
+
+        assert_eq!(rows[0], "  /model  about");
+        assert_eq!(rows[1], format!("  {long}  about"));
+        assert_eq!(rows[2], "  /exit   about");
+    }
+
+    #[test]
+    fn a_long_row_is_cut_with_an_ellipsis() {
+        assert_eq!(
+            cut("/skill-author  Writes, revises and tests skills", 24),
+            "/skill-author  Writes, …"
+        );
+        assert_eq!(cut("/exit  Quit", 24), "/exit  Quit");
+    }
+
+    #[test]
+    fn skills_follow_the_commands_with_their_hint() {
+        assert_eq!(
+            rows("/co"),
+            [
+                "  /compact                 Summarize the conversation to free up context",
+                "  /commit [push|pr|merge]  Commit the work more",
+            ]
+        );
     }
 
     fn press(line: &mut Line, codes: &[KeyCode]) -> Action {
@@ -1674,7 +1771,7 @@ mod tests {
     fn slash_lists_matching_commands_under_the_prompt() {
         assert_eq!(
             rows("/e"),
-            ["  /effort    Set the reasoning effort", "  /exit      Quit"]
+            ["  /effort  Set the reasoning effort", "  /exit    Quit"]
         );
     }
 

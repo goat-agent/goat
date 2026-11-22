@@ -12,6 +12,7 @@ use crate::image::{Image, Picture};
 use crate::instructions;
 use crate::message::{self, Diff, Message, Origin, Part, Role, Trace};
 use crate::provider::{self, Chunk, Endpoints, Images, Limits, Provider, Request, Stop, Usage};
+use crate::skill;
 use crate::store::{self, Sent, Store};
 use crate::tool::{self, Outcome, Runner, Searcher, Step, Web};
 
@@ -128,6 +129,7 @@ pub struct Session {
     trace: Vec<Trace>,
     last_input: u64,
     limits: Option<Limits>,
+    skills: skill::Found,
     personal: PathBuf,
     home: PathBuf,
 }
@@ -140,7 +142,9 @@ impl Session {
         account: Account,
         model: &str,
     ) -> Result<Self, Error> {
-        let instructions = prompt::instructions(&env.workspace, &env.personal, &env.home);
+        let found = skill::discover(&env.workspace, &env.home);
+        let instructions =
+            prompt::instructions(&env.workspace, &env.personal, &env.home, &found.skills);
         let id = store.create_session(&env.workspace, &instructions)?;
         Self::assemble(
             id,
@@ -207,6 +211,12 @@ impl Session {
         instructions: Box<str>,
         messages: Vec<Message>,
     ) -> Result<Self, Error> {
+        let found = skill::discover(&env.workspace, &env.home);
+        let runner = Runner::new(&env.workspace, &env.home, &env.spill, !messages.is_empty())?;
+        runner.set_skills(found.skills.clone());
+        for name in loaded_skills(&messages) {
+            runner.mark_skill(&name);
+        }
         Ok(Self {
             id,
             provider: Provider::new(&account, http.clone(), &env.endpoints),
@@ -218,7 +228,8 @@ impl Session {
             model: model.into(),
             effort: None,
             instructions,
-            runner: Runner::new(&env.workspace, &env.home, &env.spill, !messages.is_empty())?,
+            runner,
+            skills: found,
             tool: tool::spec(),
             messages,
             finished: Vec::new(),
@@ -285,6 +296,16 @@ impl Session {
         }
         let mut parts = vec![Part::text(prompt.text)];
         parts.extend(self.keep(prompt.images)?.into_iter().map(Part::Image));
+        if let Some((invoked, args)) = skill::invoked(&self.skills.skills, prompt.text) {
+            let text = skill::activate(invoked, args).unwrap_or_else(|problem| {
+                format!("The {} skill could not be loaded: {problem}", invoked.name)
+            });
+            self.runner.mark_skill(&invoked.name);
+            parts.push(Part::Skill {
+                name: invoked.name.as_str().into(),
+                text: text.into(),
+            });
+        }
         parts.extend(self.mentions(prompt.text)?);
         let message = Message::new(Role::User, None, parts);
         let tree = self.snapshots.take().await;
@@ -380,6 +401,10 @@ impl Session {
             .chain(self.runner.loaded())
             .map(|path| instructions::shown(&path, workspace, &self.home))
             .collect()
+    }
+
+    pub fn skills(&self) -> &skill::Found {
+        &self.skills
     }
 
     pub fn snapshots_off(&self) -> Option<String> {
@@ -606,6 +631,14 @@ impl Session {
         if text.trim().is_empty() {
             return Ok(false);
         }
+        let mut text = text;
+        for name in self.runner.active_skills() {
+            let found = self.skills.skills.iter().find(|known| known.name == name);
+            if let Some(Ok(loaded)) = found.map(|known| skill::activate(known, "")) {
+                text.push_str("\n\n");
+                text.push_str(&loaded);
+            }
+        }
         let summary = Message::new(
             Role::Summary,
             None,
@@ -818,6 +851,27 @@ fn sent(shown: usize) -> usize {
         return shown;
     }
     IMAGE_BATCH + shown % IMAGE_BATCH
+}
+
+fn loaded_skills(messages: &[Message]) -> Vec<String> {
+    let mut names = Vec::new();
+    for part in messages.iter().flat_map(|message| &message.parts) {
+        match part {
+            Part::Skill { name, .. } => names.push(name.to_string()),
+            Part::Summary { text, .. } => names.extend(skill::activated(text).map(str::to_owned)),
+            Part::ToolResult { trace, .. } => {
+                names.extend(trace.iter().filter_map(|step| match step {
+                    Trace::Call {
+                        kind: tool::Kind::Skill,
+                        target,
+                    } => Some(target.to_string()),
+                    _ => None,
+                }));
+            }
+            _ => {}
+        }
+    }
+    names
 }
 
 fn interrupted(trace: &[Trace]) -> String {

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use goat_core::account;
 use goat_core::catalog::Model;
+use goat_core::skill::Skill;
 use goat_core::store::{Recent, Sent};
 
 pub(crate) const DEFAULT_EFFORT: &str = "default";
@@ -31,6 +32,7 @@ pub(crate) struct Choices<'a> {
     pub(crate) sessions: &'a [Recent],
     pub(crate) sent: &'a [Sent],
     pub(crate) files: &'a Files,
+    pub(crate) skills: &'a [Skill],
     pub(crate) current: Current<'a>,
 }
 
@@ -484,6 +486,7 @@ mod tests {
             sessions: &[],
             sent,
             files: &files,
+            skills: &[],
             current: Current {
                 account: goat_core::account::Id::generate(),
                 model: "gpt-6.2-sol",
@@ -553,6 +556,7 @@ mod tests {
             sessions: &recent,
             sent: &[],
             files: Box::leak(Box::new(Files::listed(Vec::new()))),
+            skills: &[],
             current: Current {
                 account: goat_core::account::Id::generate(),
                 model: "gpt-6.2-sol",
@@ -623,6 +627,7 @@ mod tests {
             sessions: &[],
             sent: &[],
             files: Box::leak(Box::new(Files::listed(Vec::new()))),
+            skills: &[],
             current: Current {
                 account: offers[0].account,
                 model: "gpt-6.2-sol",
@@ -763,6 +768,7 @@ mod tests {
             sessions: &[],
             sent: &[],
             files: Box::leak(Box::new(Files::listed(Vec::new()))),
+            skills: &[],
             current: Current {
                 account: offers[0].account,
                 model: "claude-opus-5-5",

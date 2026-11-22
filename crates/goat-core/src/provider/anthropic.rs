@@ -320,6 +320,10 @@ fn turn<'a>(message: &'a Message, native: bool, images: &'a Images) -> Option<Tu
                 r#type: "text",
                 text: Cow::Owned(message::shell(command, output, *code)),
             })),
+            Part::Skill { text, .. } => Some(Block::Text(TextBlock {
+                r#type: "text",
+                text: Cow::Borrowed(text),
+            })),
             Part::File { path, text } => Some(Block::Text(TextBlock {
                 r#type: "text",
                 text: Cow::Owned(message::file(path, text)),

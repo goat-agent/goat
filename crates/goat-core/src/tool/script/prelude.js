@@ -28,6 +28,8 @@
     };
   };
   const webSearch = (query) => call({ op: "search", query: String(query) });
+  const skill = (name, args) =>
+    call({ op: "skill", name: String(name), args: args == null ? null : String(args) });
 
   const show = (value) => {
     if (typeof value === "string") return value;
@@ -39,7 +41,7 @@
     logged.push(values.map(show).join(" "));
   };
   globalThis.console = { log, info: log, warn: log, error: log, debug: log };
-  Object.assign(globalThis, { bash, read, edit, write, webFetch, webSearch });
+  Object.assign(globalThis, { bash, read, edit, write, webFetch, webSearch, skill });
 
   return (value) => {
     const parts = logged.splice(0);

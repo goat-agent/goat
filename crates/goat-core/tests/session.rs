@@ -566,6 +566,62 @@ async fn personal_and_project_instructions_open_the_session() {
     );
 }
 
+fn with_skill(dir: &Path) -> std::io::Result<()> {
+    let skill = dir.join(".agents/skills/demo");
+    std::fs::create_dir_all(&skill)?;
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: demo\ndescription: Shows how demos run.\n---\nDo the demo for $ARGUMENTS.\n",
+    )
+}
+
+#[tokio::test]
+async fn the_model_loads_a_listed_skill_and_its_instructions_follow_the_run() {
+    let call = leak(OPENAI_TOOL_CALL.replace(
+        "(await bash('echo hi')).output",
+        "await skill('demo', 'fast')",
+    ));
+    let server = server::replay(vec![call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    with_skill(dir.path()).unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+    let mut recorder = Recorder::default();
+
+    session.turn("demo please", &mut recorder).await.unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].contains("<name>demo</name>"));
+    assert!(requests[1].contains("Do the demo for fast."));
+    assert!(recorder.order.contains(&"call skill demo".to_owned()));
+}
+
+#[tokio::test]
+async fn a_slash_command_sends_the_skill_with_the_prompt_and_compaction_keeps_it() {
+    let summary = leak(OPENAI_ANSWER.replace("Done.", "Summary text."));
+    let server = server::replay(vec![OPENAI_ANSWER, summary]).await;
+    let dir = tempfile::tempdir().unwrap();
+    with_skill(dir.path()).unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    session
+        .turn("/demo tonight", &mut Recorder::default())
+        .await
+        .unwrap();
+    session.compact("", &mut Recorder::default()).await.unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].contains("Do the demo for tonight."));
+    let Part::Summary { text, .. } = &session.messages()[0].parts[0] else {
+        panic!("expected a summary");
+    };
+    assert!(text.contains("<skill_content name=\"demo\">\nDo the demo for ."));
+    let mut replayed = Recorder::default();
+    session.replay(&mut replayed).unwrap();
+    assert_eq!(replayed.order[0], "prompt /demo tonight");
+}
+
 #[tokio::test]
 async fn cancelled_tool_call_is_closed_before_the_next_turn() {
     let slow_tool_call = leak(OPENAI_TOOL_CALL.replace("echo hi", "sleep 5"));

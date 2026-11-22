@@ -361,6 +361,7 @@ impl<W: Write> Terminal<W> {
             Kind::Write => "Write",
             Kind::Fetch => "WebFetch",
             Kind::Search => "WebSearch",
+            Kind::Skill => "Skill",
         };
         self.call_line(verb, &call.target);
     }

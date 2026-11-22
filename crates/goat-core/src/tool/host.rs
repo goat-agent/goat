@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 
 use super::web::{self, Web};
 use super::{Call, Kind, Step, bash, danger, files, hashline};
+use crate::skill::{self, Skill};
 use crate::{image, instructions};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -22,6 +23,14 @@ pub(crate) struct Host {
     steps: mpsc::Sender<Step>,
     web: RefCell<Option<Web>>,
     nested: RefCell<Nested>,
+    skills: RefCell<Skills>,
+}
+
+#[derive(Debug, Default)]
+struct Skills {
+    known: Vec<Skill>,
+    active: HashSet<String>,
+    pending: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -56,6 +65,10 @@ enum Op {
     Search {
         query: String,
     },
+    Skill {
+        name: String,
+        args: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -87,6 +100,7 @@ impl Host {
             steps,
             web: RefCell::new(None),
             nested: RefCell::new(Nested::default()),
+            skills: RefCell::new(Skills::default()),
         })
     }
 
@@ -168,6 +182,9 @@ impl Host {
                     .ok_or("web search needs a signed-in account")?;
                 to_value(web::search(&searcher, &query).await?)
             }
+            Op::Skill { name, args } => {
+                to_value(self.load_skill(&name, args.as_deref().unwrap_or_default())?)
+            }
         }
     }
 
@@ -213,6 +230,48 @@ impl Host {
             .borrow()
             .clone()
             .ok_or_else(|| "the web is not available here".to_owned())
+    }
+
+    pub(crate) fn set_skills(&self, known: Vec<Skill>) {
+        self.skills.borrow_mut().known = known;
+    }
+
+    pub(crate) fn mark_skill(&self, name: &str) -> bool {
+        self.skills.borrow_mut().active.insert(name.to_owned())
+    }
+
+    pub(crate) fn active_skills(&self) -> Vec<String> {
+        let mut active: Vec<String> = self.skills.borrow().active.iter().cloned().collect();
+        active.sort();
+        active
+    }
+
+    pub(crate) fn take_skills(&self) -> Vec<String> {
+        std::mem::take(&mut self.skills.borrow_mut().pending)
+    }
+
+    fn load_skill(&self, name: &str, args: &str) -> Result<String, String> {
+        let mut skills = self.skills.borrow_mut();
+        let skill = skills
+            .known
+            .iter()
+            .find(|skill| skill.name == name && skill.for_model)
+            .ok_or_else(|| format!("there is no skill named {name}"))?;
+        let text = if skills.active.contains(name) {
+            let mut text = format!("The {name} skill is already loaded above; follow it.");
+            if !args.is_empty() {
+                text.push_str("\n\nARGUMENTS: ");
+                text.push_str(args);
+            }
+            text
+        } else {
+            skill::activate(skill, args)?
+        };
+        skills.active.insert(name.to_owned());
+        skills.pending.push(text);
+        Ok(format!(
+            "The {name} skill's instructions come after this run's result."
+        ))
     }
 
     pub(crate) fn mark_loaded(&self, path: PathBuf) {
@@ -278,6 +337,7 @@ impl Op {
             Self::Write { path, .. } => (Kind::Write, path),
             Self::Fetch { url } => (Kind::Fetch, url),
             Self::Search { query } => (Kind::Search, query),
+            Self::Skill { name, .. } => (Kind::Skill, name),
         };
         Call {
             kind,
