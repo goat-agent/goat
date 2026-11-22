@@ -54,6 +54,7 @@ struct Activity {
     work: Work,
     started: Instant,
     frame: usize,
+    retrying: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -245,6 +246,7 @@ impl<W: Write> Terminal<W> {
             work,
             started: Instant::now(),
             frame: 0,
+            retrying: None,
         });
         self.flush();
     }
@@ -458,10 +460,11 @@ impl<W: Write> Terminal<W> {
         let wrapped = wrap(&self.pending, (self.columns)());
         let spinner = self.activity.as_ref().map(|activity| {
             let took = format!("({})", elapsed(activity.started.elapsed()));
-            let doing = match activity.work {
-                Work::Turn => "Working",
-                Work::Shell => "Running",
-                Work::Compact => "Compacting",
+            let doing = match (activity.retrying, activity.work) {
+                (Some(attempt), _) => format!("Retrying (attempt {attempt}), Esc to stop"),
+                (None, Work::Turn) => "Working".to_owned(),
+                (None, Work::Shell) => "Running".to_owned(),
+                (None, Work::Compact) => "Compacting".to_owned(),
             };
             format!("{} {doing} {}", SPINNER[activity.frame], took.dim())
         });
@@ -517,6 +520,13 @@ impl<W: Write> Terminal<W> {
 
 impl<W: Write> Sink for Terminal<W> {
     fn emit(&mut self, event: Event<'_>) {
+        if let Some(activity) = &mut self.activity {
+            activity.retrying = match event {
+                Event::Retrying { attempt, .. } => Some(attempt),
+                Event::Usage(_) => activity.retrying,
+                _ => None,
+            };
+        }
         match event {
             Event::Prompt(text) => self.prompt(Mode::Agent, text),
             Event::ShellCommand(command) => self.prompt(Mode::Shell, command),
@@ -552,7 +562,11 @@ impl<W: Write> Sink for Terminal<W> {
             }
             Event::ShellOutput(chunk) => self.shell_output(chunk),
             Event::ShellFinished { code, problem } => self.shell_finished(code, problem),
-            Event::RunFinished { .. } | Event::Usage(_) => {}
+            Event::Retrying { restarts: true, .. } => {
+                self.close_section();
+                self.note("The reply was cut off, so it starts over");
+            }
+            Event::RunFinished { .. } | Event::Usage(_) | Event::Retrying { .. } => {}
             Event::Compacting => {
                 self.open(Section::Note);
                 self.put(&format!(
@@ -767,6 +781,25 @@ mod tests {
             format!("    {}", "… 3 more lines".dim()),
         ];
         assert!(screen.contains(&expected.join("\n")), "{screen:?}");
+    }
+
+    #[test]
+    fn a_retry_shows_on_the_spinner_and_a_cut_reply_says_it_starts_over() {
+        let mut terminal = Terminal::with_writer(Vec::new(), || 60);
+        terminal.begin_turn(Work::Turn);
+        terminal.emit(Event::Text("Partial"));
+
+        terminal.emit(Event::Retrying {
+            attempt: 2,
+            restarts: true,
+        });
+        let during = visible(&terminal.out);
+        terminal.emit(Event::Text("Done."));
+        let after = visible(&terminal.out);
+
+        assert!(during.contains("Retrying (attempt 2), Esc to stop"));
+        assert!(during.contains("The reply was cut off, so it starts over"));
+        assert!(!after.contains("Retrying"));
     }
 
     #[test]

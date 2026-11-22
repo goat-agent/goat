@@ -150,7 +150,7 @@ async fn evaluate<'js>(
     calls: &Cell<usize>,
 ) -> Result<Value<'js>, String> {
     let promise = ctx
-        .eval_promise(code)
+        .eval_promise(format!("{{{code}\n}}"))
         .catch(ctx)
         .map_err(|e| e.to_string())?;
     let completion: Object = settle(ctx, promise.into_future(), calls)
@@ -255,10 +255,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn variables_persist_between_runs() {
+    async fn names_declared_in_a_run_can_be_declared_again() {
         let dir = tempfile::tempdir().unwrap();
         let script = script(dir.path()).await;
-        script.eval("let seen = ['a']").await;
+        assert_eq!(script.eval("const r = 1; r").await, Outcome::ok("1"));
+        assert_eq!(script.eval("const r = 2; r").await, Outcome::ok("2"));
+        assert_eq!(script.eval("typeof r").await, Outcome::ok("undefined"));
+    }
+
+    #[tokio::test]
+    async fn values_on_global_this_carry_over_to_later_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = script(dir.path()).await;
+        script.eval("globalThis.seen = ['a']").await;
         assert_eq!(
             script.eval("seen.concat('b')").await.output.as_ref(),
             "[\n  \"a\",\n  \"b\"\n]"
@@ -345,7 +354,7 @@ mod tests {
     async fn busy_loop_is_stopped_and_the_sandbox_survives() {
         let dir = tempfile::tempdir().unwrap();
         let script = script(dir.path()).await;
-        script.eval("let kept = 7").await;
+        script.eval("globalThis.kept = 7").await;
         let outcome = script.eval("while (true) {}").await;
         assert!(outcome.is_error);
         assert!(outcome.output.contains("without awaiting a call"));

@@ -31,12 +31,14 @@ use self::script::Script;
 const NAME: &str = "run";
 const IMAGES_PER_RUN: usize = 4;
 const STEP_BACKLOG: usize = 64;
-const NEW_SANDBOX: &str = "[this run started a new sandbox; variables from earlier runs are gone]";
+const NEW_SANDBOX: &str =
+    "[this run started a new sandbox; values earlier runs kept on globalThis are gone]";
 
 const SCHEMA: &str = r#"{"type":"object","properties":{"code":{"type":"string","description":"JavaScript to run; top-level await works and the last expression is the result"},"description":{"type":"string","description":"What this run does in 3 to 8 words, shown to the user"}},"required":["code","description"],"additionalProperties":false}"#;
 const DESCRIPTION: &str = "\
-Run JavaScript in a sandbox to work in the workspace. Top-level await works, the value of the last expression comes back to you, and variables persist between runs. \
-Do steps that belong together in one run, such as search, read, edit and test, and return only what you need to see; everything else stays in the sandbox.
+Run JavaScript in a sandbox to work in the workspace. Top-level await works, and the value of the last expression comes back to you. \
+let, const and class declarations belong to their run, so a later run can declare the same names. To keep a value for later runs, put it on globalThis, as in globalThis.files = await bash`ls`. \
+Do steps that belong together in one run, such as search, read, edit and test, and return only what you need to see; nothing else enters the conversation.
 
 The sandbox reaches the system only through these async functions:
 - bash`cmd ${value}` or bash(command, {timeout}) runs bash -c in the working directory. Template values are shell-quoted. Returns {code, output, file}: code is null when the command was killed or timed out (default 120 seconds), output holds stdout and stderr cut to their first and last 20 KB, and file names the full output when it was cut. A non-zero exit is returned, not thrown.
@@ -396,7 +398,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut runner = runner(dir.path());
         runner
-            .run(&run("let kept = 1"), offline(), &mut |_| {})
+            .run(&run("globalThis.kept = 1"), offline(), &mut |_| {})
             .await;
         let cancelled = tokio::time::timeout(
             Duration::from_millis(300),
