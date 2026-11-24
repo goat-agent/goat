@@ -8,6 +8,7 @@ pub mod google;
 mod mime;
 mod sheets;
 mod slides;
+mod worker;
 
 use std::sync::Arc;
 

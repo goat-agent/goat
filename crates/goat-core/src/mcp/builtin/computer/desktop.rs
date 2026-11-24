@@ -1,5 +1,6 @@
 use serde::Serialize;
-use tokio::sync::oneshot;
+
+use super::super::worker::{self, Worker};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub(crate) struct Rect {
@@ -184,62 +185,7 @@ pub(crate) trait Platform {
     fn host_app(&mut self) -> Option<App>;
 }
 
-type Job = Box<dyn FnOnce(&mut dyn Platform) + Send>;
-
-#[derive(Debug, Clone)]
-pub(crate) struct Desktop {
-    jobs: std::sync::mpsc::Sender<Job>,
-}
-
-impl Desktop {
-    #[cfg_attr(
-        all(not(target_os = "macos"), not(test)),
-        expect(dead_code, reason = "only the macOS adapter starts a desktop so far")
-    )]
-    pub(crate) fn start<P: Platform + 'static>(
-        make: impl FnOnce() -> Result<P, Fault> + Send + 'static,
-    ) -> Result<Self, Fault> {
-        let (jobs, inbox) = std::sync::mpsc::channel::<Job>();
-        let (ready, started) = std::sync::mpsc::channel();
-        std::thread::Builder::new()
-            .name("goat-desktop".to_owned())
-            .spawn(move || {
-                let mut platform = match make() {
-                    Ok(platform) => {
-                        ready.send(Ok(())).ok();
-                        platform
-                    }
-                    Err(fault) => {
-                        ready.send(Err(fault)).ok();
-                        return;
-                    }
-                };
-                for job in inbox {
-                    job(&mut platform);
-                }
-            })
-            .map_err(|err| Fault::Failed(format!("the desktop thread did not start: {err}")))?;
-        started
-            .recv()
-            .map_err(|_| Fault::Failed("the desktop thread stopped".to_owned()))??;
-        Ok(Self { jobs })
-    }
-
-    pub(crate) async fn run<T: Send + 'static>(
-        &self,
-        work: impl FnOnce(&mut dyn Platform) -> T + Send + 'static,
-    ) -> Result<T, Fault> {
-        let (reply, answer) = oneshot::channel();
-        self.jobs
-            .send(Box::new(move |platform| {
-                reply.send(work(platform)).ok();
-            }))
-            .map_err(|_| Fault::Failed("the desktop thread stopped".to_owned()))?;
-        answer
-            .await
-            .map_err(|_| Fault::Failed("the desktop thread stopped".to_owned()))
-    }
-}
+pub(crate) type Desktop = Worker<dyn Platform>;
 
 impl Fault {
     pub(crate) fn code(&self) -> &'static str {
@@ -260,5 +206,11 @@ impl Fault {
             | Self::Denied(text)
             | Self::Failed(text) => text,
         }
+    }
+}
+
+impl From<worker::Error> for Fault {
+    fn from(err: worker::Error) -> Self {
+        Self::Failed(err.to_string())
     }
 }
