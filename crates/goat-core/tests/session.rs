@@ -9,7 +9,9 @@ use tokio::io::AsyncBufReadExt;
 
 use goat_core::account::{Account, Credential, Kind, codex};
 use goat_core::image;
+use goat_core::mcp;
 use goat_core::message::{Part, Role};
+use goat_core::plugin::Plugin;
 use goat_core::provider::Endpoints;
 use goat_core::session::{self, Environment, Event, Prompt, Session, Sink};
 use goat_core::store::Store;
@@ -33,12 +35,18 @@ struct Recorder {
     shell_ends: Vec<(Option<i32>, Option<String>)>,
     stops: Vec<&'static str>,
     order: Vec<String>,
+    allows: bool,
 }
 
 impl Sink for Recorder {
     fn emit(&mut self, event: Event<'_>) {
         self.order.push(name(&event));
         match event {
+            Event::Confirm(question) if self.allows => {
+                if let Some(answer) = question.take_answer() {
+                    answer.give(true);
+                }
+            }
             Event::Text(text) => self.text.push_str(text),
             Event::Reasoning(text) => self.reasoning.push_str(text),
             Event::RunStarted { description } => self.tools.push(description.to_owned()),
@@ -68,7 +76,9 @@ fn environment(dir: &Path, url: &str) -> Environment {
             openai: url.into(),
             codex: url.into(),
             anthropic: url.into(),
+            ..Endpoints::default()
         },
+        plugins: Vec::new(),
     }
 }
 
@@ -667,10 +677,7 @@ async fn mcp_tools_are_listed_described_and_called_from_a_run() {
     assert!(result.contains("no tool nope"));
     assert!(recorder.order.contains(&"call mcp fixture.echo".to_owned()));
     let (states, problems) = session.servers();
-    assert_eq!(
-        states,
-        [("fixture".to_owned(), goat_core::mcp::State::Connected)]
-    );
+    assert_eq!(states, [status("fixture", mcp::State::Connected)]);
     assert_eq!(problems, [] as [String; 0]);
 }
 
@@ -707,7 +714,10 @@ fn with_config(dir: &Path, text: &str) -> std::io::Result<()> {
 }
 
 async fn sign_in(session: &Session, name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let sign_in = session.sign_in(name).await?;
+    approve(session.sign_in(name).await?).await
+}
+
+async fn approve(sign_in: mcp::SignIn) -> Result<(), Box<dyn std::error::Error>> {
     let browser = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
@@ -758,7 +768,7 @@ async fn a_server_that_needs_sign_in_tells_the_model_to_ask_for_it() {
     assert!(result.contains("notes unavailable: notes needs sign-in"));
     assert_eq!(
         session.servers().0,
-        [("notes".to_owned(), goat_core::mcp::State::NeedsSignIn)]
+        [status("notes", mcp::State::NeedsSignIn)]
     );
 }
 
@@ -785,11 +795,12 @@ async fn a_sign_in_lets_later_sessions_call_the_server_with_its_token() {
         .unwrap();
 
     let requests = server.requests.lock().unwrap();
-    assert!(requests[1].contains("token access1"), "{}", requests[1]);
-    assert_eq!(
-        later.servers().0,
-        [("notes".to_owned(), goat_core::mcp::State::Connected)]
+    assert!(
+        requests[1].contains("token access1 over 2026-07-28"),
+        "{}",
+        requests[1]
     );
+    assert_eq!(later.servers().0, [status("notes", mcp::State::Connected)]);
 }
 
 #[tokio::test]
@@ -833,12 +844,13 @@ async fn checking_a_server_behind_sign_in_reports_that_it_needs_sign_in() {
     let store = Store::open_in_memory().unwrap();
     let config = goat_core::mcp::config(dir.path(), dir.path(), |_| None, &[]);
 
-    let state = goat_core::mcp::check(
-        &config.servers[0],
-        &reqwest::Client::new(),
-        std::sync::Arc::new(store.logins().unwrap()),
-    )
-    .await;
+    let context = mcp::Context {
+        http: reqwest::Client::new(),
+        logins: std::sync::Arc::new(store.logins().unwrap()),
+        endpoints: Endpoints::default(),
+    };
+
+    let state = mcp::check(&config.servers[0], &context).await;
 
     assert_eq!(state, goat_core::mcp::State::NeedsSignIn);
 }
@@ -1347,6 +1359,7 @@ fn name(event: &Event<'_>) -> String {
         Event::Refused => "refused".to_owned(),
         Event::Compacting => "compacting".to_owned(),
         Event::Usage(_) => "usage".to_owned(),
+        Event::Confirm(question) => format!("confirm {}", question.text()),
     }
 }
 
@@ -1467,4 +1480,296 @@ async fn compaction_renames_the_session() {
         panic!("expected a summary");
     };
     assert!(text.ends_with("Goal: ship it"));
+}
+
+fn status(name: &str, state: mcp::State) -> mcp::Status {
+    mcp::Status {
+        name: name.to_owned(),
+        state,
+        plugin: None,
+    }
+}
+
+fn notes_plugin(url: &str) -> Result<Plugin, goat_core::plugin::Error> {
+    Plugin::load(&[
+        (
+            "plugin.toml",
+            "name = \"notes\"\ndescription = \"Read and write notes\"\n",
+        ),
+        ("mcp.toml", &format!("[notes]\nurl = \"{url}\"\n")),
+        (
+            "skills/guide/SKILL.md",
+            "---\ndescription: How to use notes\n---\nAsk whoami first.",
+        ),
+    ])
+}
+
+#[tokio::test]
+async fn a_plugin_waiting_for_sign_in_is_offered_but_not_connected() {
+    let (_oauth, url) = oauth_server().await.unwrap();
+    let server = server::replay(vec![OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut env = environment(dir.path(), &server.url);
+    env.plugins = vec![notes_plugin(&url).unwrap()];
+    let mut session = openai_session(&env).unwrap();
+
+    session
+        .turn("hello", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(
+        requests[0]
+            .contains("Plugins the user has not signed in to: notes (Read and write notes).")
+    );
+    assert!(!requests[0].contains("MCP servers are connected"));
+    assert!(!requests[0].contains("notes:guide"));
+    assert_eq!(session.servers().0, []);
+}
+
+#[tokio::test]
+async fn a_signed_in_plugin_brings_its_server_and_its_skills() {
+    let (_oauth, url) = oauth_server().await.unwrap();
+    let call = leak(OPENAI_TOOL_CALL.replace(
+        "(await bash('echo hi')).output",
+        "await mcp.notes.whoami({})",
+    ));
+    let server = server::replay(vec![call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut env = environment(dir.path(), &server.url);
+    let plugin = notes_plugin(&url).unwrap();
+    env.plugins = vec![plugin.clone()];
+    let database = dir.path().join("goat.db");
+    let store = Store::open(&database).unwrap();
+    let context = mcp::Context {
+        http: reqwest::Client::new(),
+        logins: std::sync::Arc::new(store.logins().unwrap()),
+        endpoints: Endpoints::default(),
+    };
+    approve(
+        mcp::SignIn::start(&plugin.servers[0], None, &context)
+            .await
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut session = file_session(&env, &database).unwrap();
+
+    session
+        .turn("ask notes", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].contains("MCP servers are connected to the sandbox: notes."));
+    assert!(requests[0].contains("<name>notes:guide</name>"));
+    assert!(!requests[0].contains("Plugins the user has not signed in to"));
+    assert!(requests[1].contains("token access1"), "{}", requests[1]);
+}
+
+#[tokio::test]
+async fn a_second_account_is_signed_in_and_called_by_its_name() {
+    let (_oauth, url) = oauth_server().await.unwrap();
+    let call = leak(OPENAI_TOOL_CALL.replace(
+        "(await bash('echo hi')).output",
+        "[await mcp.notes.whoami({}), await mcp['notes#work'].whoami({}), await mcp.describe('notes#work.whoami')].join(' | ')",
+    ));
+    let server = server::replay(vec![call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    with_notes(dir.path(), &url).unwrap();
+    let env = environment(dir.path(), &server.url);
+    let database = dir.path().join("goat.db");
+    let first = file_session(&env, &database).unwrap();
+    sign_in(&first, "notes").await.unwrap();
+    sign_in(&first, "notes#work").await.unwrap();
+    let mut later = file_session(&env, &database).unwrap();
+
+    later
+        .turn("ask both", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].contains("MCP servers are connected to the sandbox: notes, notes#work."));
+    assert!(
+        requests[0].contains("mcp[\\\"server#account\\\"]"),
+        "{}",
+        requests[0]
+    );
+    assert!(
+        requests[1].contains("token access1 over 2026-07-28 | token access2 over 2026-07-28"),
+        "{}",
+        requests[1]
+    );
+    assert!(
+        requests[1].contains("mcp[\\\"notes#work\\\"].whoami(args"),
+        "{}",
+        requests[1]
+    );
+    assert_eq!(
+        later.servers().0,
+        [
+            status("notes", mcp::State::Connected),
+            status("notes#work", mcp::State::Connected),
+        ]
+    );
+}
+
+async fn gmail_server() -> std::io::Result<(tokio::process::Child, String)> {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp/gmail.py");
+    let mut child = tokio::process::Command::new("python3")
+        .arg("-I")
+        .arg(script)
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("the fixture has no stdout"))?;
+    let mut port = String::new();
+    tokio::io::BufReader::new(stdout)
+        .read_line(&mut port)
+        .await?;
+    Ok((child, format!("http://127.0.0.1:{}", port.trim())))
+}
+
+async fn gmail_session(
+    dir: &Path,
+    model: &str,
+    google: &str,
+) -> Result<(Session, Environment), Box<dyn std::error::Error>> {
+    let mut env = environment(dir, model);
+    env.endpoints.google_sign_in = format!("{google}/authorize").into();
+    env.endpoints.google_token = format!("{google}/token").into();
+    env.endpoints.gmail = google.into();
+    env.plugins = goat_core::plugin::builtin()?;
+    let database = dir.join("goat.db");
+    let store = Store::open(&database)?;
+    let context = mcp::Context {
+        http: reqwest::Client::new(),
+        logins: std::sync::Arc::new(store.logins()?),
+        endpoints: env.endpoints.clone(),
+    };
+    approve(mcp::SignIn::start(&env.plugins[0].servers[0], None, &context).await?).await?;
+    Ok((file_session(&env, &database)?, env))
+}
+
+async fn gmail_log(google: &str) -> Result<String, reqwest::Error> {
+    reqwest::get(format!("{google}/_log")).await?.text().await
+}
+
+#[tokio::test]
+async fn the_gmail_plugin_signs_in_with_google_and_reads_threads() {
+    let (_google, google) = gmail_server().await.unwrap();
+    let call = leak(OPENAI_TOOL_CALL.replace(
+        "(await bash('echo hi')).output",
+        "const found = await mcp.gmail.search_threads({ query: 'is:unread' }); \
+         const thread = await mcp.gmail.get_thread({ threadId: found.threads[0].id }); \
+         const message = await mcp.gmail.get_message({ messageId: 'm1' }); \
+         return { found, thread, message }",
+    ));
+    let server = server::replay(vec![call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = gmail_session(dir.path(), &server.url, &google)
+        .await
+        .unwrap();
+
+    session
+        .turn("read my mail", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let log = gmail_log(&google).await.unwrap();
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].contains("MCP servers are connected to the sandbox: gmail."));
+    let result = &requests[1];
+    assert!(result.contains("안녕하세요, 회의는 3시입니다."), "{result}");
+    assert!(result.contains("\\\"subject\\\": \\\"회의\\\""), "{result}");
+    assert!(
+        result.contains("\\\"displayName\\\": \\\"김철수\\\""),
+        "{result}"
+    );
+    assert!(result.contains("\\\"messageCount\\\": 2"), "{result}");
+    assert!(result.contains("Thanks **all**"), "{result}");
+    assert!(result.contains("안건.pdf"), "{result}");
+    assert!(result.contains("2026-11-28T12:00:00Z"), "{result}");
+    assert!(log.contains("gmail.modify"), "{log}");
+    assert!(log.contains("refresh"), "{log}");
+}
+
+#[tokio::test]
+async fn a_destructive_gmail_tool_runs_only_when_the_user_allows_it() {
+    let (_google, google) = gmail_server().await.unwrap();
+    let code = "let refused = ''; try { await mcp.gmail.trash_thread({ threadId: 't1' }) } \
+                catch (e) { refused = e.message } return refused";
+    let call = leak(OPENAI_TOOL_CALL.replace("(await bash('echo hi')).output", code));
+    let server = server::replay(vec![call, OPENAI_ANSWER, call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = gmail_session(dir.path(), &server.url, &google)
+        .await
+        .unwrap();
+    let mut refusing = Recorder::default();
+
+    session.turn("trash it", &mut refusing).await.unwrap();
+    let refused_log = gmail_log(&google).await.unwrap();
+    session
+        .turn(
+            "trash it",
+            &mut Recorder {
+                allows: true,
+                ..Recorder::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let allowed_log = gmail_log(&google).await.unwrap();
+    assert!(
+        refusing
+            .order
+            .iter()
+            .any(|event| event.starts_with("confirm gmail.trash_thread"))
+    );
+    let requests = server.requests.lock().unwrap();
+    assert!(
+        requests[1].contains("the user did not allow gmail.trash_thread"),
+        "{}",
+        requests[1]
+    );
+    assert!(!refused_log.contains("threads/t1/trash"), "{refused_log}");
+    assert!(allowed_log.contains("threads/t1/trash"), "{allowed_log}");
+}
+
+#[tokio::test]
+async fn a_draft_reply_stays_in_the_thread_with_its_headers() {
+    let (_google, google) = gmail_server().await.unwrap();
+    let code = "return await mcp.gmail.create_draft({ to: ['김철수 <kim@example.com>'], \
+                body: '고마워요', replyToMessageId: 'm1', includeSignature: true })";
+    let call = leak(OPENAI_TOOL_CALL.replace("(await bash('echo hi')).output", code));
+    let server = server::replay(vec![call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = gmail_session(dir.path(), &server.url, &google)
+        .await
+        .unwrap();
+
+    session
+        .turn("reply", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let log = gmail_log(&google).await.unwrap();
+    assert!(log.contains("In-Reply-To: <m1@example.com>"), "{log}");
+    assert!(
+        log.contains("Subject: =?UTF-8?B?UmU6IO2ajOydmA==?="),
+        "{log}"
+    );
+    assert!(log.contains("\"threadId\": \"t1\""), "{log}");
+    let requests = server.requests.lock().unwrap();
+    assert!(
+        requests[1].contains("#drafts?compose=d1"),
+        "{}",
+        requests[1]
+    );
 }

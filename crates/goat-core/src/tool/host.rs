@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::web::{self, Web};
-use super::{Call, Kind, Step, bash, danger, files, hashline, spill};
+use super::{Call, Kind, Question, Step, bash, danger, files, hashline, spill};
 use crate::mcp::Clients;
 use crate::skill::{self, Skill};
 use crate::{image, instructions};
@@ -163,6 +163,7 @@ impl Host {
                 limit,
             } => {
                 let resolved = self.resolve(&path);
+                self.guard(&resolved)?;
                 let value = match files::image(&resolved, &path)? {
                     Some(bytes) => to_value(self.show(bytes, &path).await?),
                     None => to_value(files::read(&resolved, &path, offset, limit)?),
@@ -172,6 +173,7 @@ impl Host {
             }
             Op::Edit { path, edits } => {
                 let resolved = self.resolve(&path);
+                self.guard(&resolved)?;
                 let (edited, diff) = files::edit(&resolved, &path, edits)?;
                 self.notice(&resolved);
                 self.steps.send(Step::Changed(diff)).await.ok();
@@ -179,6 +181,7 @@ impl Host {
             }
             Op::Write { path, content } => {
                 let resolved = self.resolve(&path);
+                self.guard(&resolved)?;
                 let (written, diff) = files::write(&resolved, &path, &content)?;
                 self.notice(&resolved);
                 if let Some(diff) = diff {
@@ -200,7 +203,11 @@ impl Host {
             Op::McpTools { server } => to_value(self.mcp()?.tools(server.as_deref()).await?),
             Op::McpDescribe { name } => to_value(self.mcp()?.describe(&name).await?),
             Op::McpCall { server, tool, args } => {
-                let called = self.mcp()?.call(&server, &tool, args).await?;
+                let clients = self.mcp()?;
+                if clients.is_destructive(&server, &tool).await {
+                    self.confirm(&format!("{server}.{tool}({args})")).await?;
+                }
+                let called = clients.call(&server, &tool, args).await?;
                 for bytes in called.images {
                     self.show(bytes, &format!("{server}.{tool}")).await?;
                 }
@@ -212,6 +219,15 @@ impl Host {
             Op::Skill { name, args } => {
                 to_value(self.load_skill(&name, args.as_deref().unwrap_or_default())?)
             }
+        }
+    }
+
+    async fn confirm(&self, call: &str) -> Result<(), String> {
+        let (question, answer) = Question::new(call.to_owned());
+        self.steps.send(Step::Confirm(question)).await.ok();
+        match answer.await {
+            Ok(true) => Ok(()),
+            _ => Err(format!("the user did not allow {call}")),
         }
     }
 
@@ -357,12 +373,46 @@ impl Host {
         }
     }
 
+    fn guard(&self, resolved: &Path) -> Result<(), String> {
+        if real(resolved).starts_with(real(&self.home.join(".goat"))) {
+            return Err(
+                "goat keeps its sign-ins in ~/.goat, so runs may not read or change it".to_owned(),
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) fn resolve(&self, raw: &str) -> PathBuf {
         match raw.strip_prefix('~') {
             Some("") => self.home.clone(),
             Some(rest) if rest.starts_with('/') => self.home.join(rest.trim_start_matches('/')),
             _ => self.workspace.join(raw),
         }
+    }
+}
+
+fn real(path: &Path) -> PathBuf {
+    let mut plain = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                plain.pop();
+            }
+            Component::CurDir => {}
+            other => plain.push(other),
+        }
+    }
+    let mut rest = Vec::new();
+    let mut base = plain.as_path();
+    loop {
+        if let Ok(found) = base.canonicalize() {
+            return rest.iter().rev().fold(found, |path, part| path.join(part));
+        }
+        let (Some(parent), Some(name)) = (base.parent(), base.file_name()) else {
+            return plain;
+        };
+        rest.push(name.to_owned());
+        base = parent;
     }
 }
 
@@ -428,6 +478,33 @@ mod tests {
         assert_eq!(reply, r#"{"ok":{"height":4,"image":"shot.png","width":6}}"#);
         assert!(matches!(rx.recv().await, Some(Step::Started(_))));
         assert!(matches!(rx.recv().await, Some(Step::Shown(picture)) if picture.width == 6));
+    }
+
+    #[tokio::test]
+    async fn goats_own_files_cannot_be_read_or_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join(".goat")).unwrap();
+        std::fs::write(home.join(".goat/mcp.toml"), "[notes]\n").unwrap();
+        let (tx, _rx) = mpsc::channel(16);
+        let host = Host::new(dir.path(), &home, &dir.path().join(".spill"), tx).unwrap();
+
+        let read = host
+            .call(r#"{"op":"read","path":"~/.goat/mcp.toml","offset":null,"limit":null}"#)
+            .await;
+        let written = host
+            .call(r#"{"op":"write","path":"home/.goat/x","content":"y"}"#)
+            .await;
+
+        assert!(
+            read.contains("goat keeps its sign-ins in ~/.goat"),
+            "{read}"
+        );
+        assert!(
+            written.contains("goat keeps its sign-ins in ~/.goat"),
+            "{written}"
+        );
+        assert!(!home.join(".goat/x").exists());
     }
 
     #[tokio::test]

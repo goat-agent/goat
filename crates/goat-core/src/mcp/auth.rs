@@ -7,7 +7,8 @@ use rmcp::transport::auth::{
 };
 use rmcp::transport::streamable_http_client::{AuthRequiredError, InsufficientScopeError};
 
-use super::{Error, Server, Transport, login_key};
+use super::builtin::google::Pending;
+use super::{Address, Context, Error, Server, Transport, login_key};
 use crate::oauth::{self, Listener};
 use crate::store::Logins;
 
@@ -15,9 +16,20 @@ const CLIENT_NAME: &str = "goat";
 
 pub struct SignIn {
     server: String,
-    state: OAuthState,
-    listener: Listener,
-    url: String,
+    flow: Flow,
+}
+
+enum Flow {
+    Mcp {
+        state: Box<OAuthState>,
+        listener: Listener,
+        url: String,
+    },
+    Google {
+        pending: Box<Pending>,
+        key: String,
+        context: Box<Context>,
+    },
 }
 
 pub(crate) struct Saved {
@@ -26,12 +38,34 @@ pub(crate) struct Saved {
 }
 
 impl SignIn {
-    pub async fn start(server: &Server, logins: Arc<Logins>) -> Result<Self, Error> {
-        let Transport::Url { url, client, .. } = &server.transport else {
-            return Err(Error::NotRemote(server.name.clone()));
+    pub async fn start(
+        server: &Server,
+        account: Option<&str>,
+        context: &Context,
+    ) -> Result<Self, Error> {
+        let shown = Address {
+            name: server.name.clone(),
+            account: account.map(str::to_owned),
+        }
+        .to_string();
+        let (url, client) = match &server.transport {
+            Transport::Url { url, client, .. } => (url, client),
+            Transport::Builtin(builtin) => {
+                let pending = Pending::start(builtin.scopes(), &context.endpoints).await?;
+                return Ok(Self {
+                    server: shown,
+                    flow: Flow::Google {
+                        pending: Box::new(pending),
+                        key: login_key(&format!("builtin:{}", builtin.as_str()), account),
+                        context: Box::new(context.clone()),
+                    },
+                });
+            }
+            Transport::Command { .. } => return Err(Error::NotRemote(server.name.clone())),
         };
+        let logins = Arc::clone(&context.logins);
         let authorize = |source| Error::Authorize {
-            server: server.name.clone(),
+            server: shown.clone(),
             source: Box::new(source),
         };
         let port = client.as_ref().and_then(|client| client.port).unwrap_or(0);
@@ -47,7 +81,7 @@ impl SignIn {
         let mut manager = AuthorizationManager::new(url.as_str())
             .await
             .map_err(authorize)?;
-        manager.set_credential_store(Saved::new(logins, url));
+        manager.set_credential_store(Saved::new(logins, url, account));
         let mut state = OAuthState::Unauthorized(manager);
         state
             .start_authorization(request)
@@ -55,25 +89,40 @@ impl SignIn {
             .map_err(authorize)?;
         let url = state.get_authorization_url().await.map_err(authorize)?;
         Ok(Self {
-            server: server.name.clone(),
-            state,
-            listener,
-            url,
+            server: shown,
+            flow: Flow::Mcp {
+                state: Box::new(state),
+                listener,
+                url,
+            },
         })
     }
 
     pub fn url(&self) -> &str {
-        &self.url
+        match &self.flow {
+            Flow::Mcp { url, .. } => url,
+            Flow::Google { pending, .. } => pending.url(),
+        }
     }
 
-    pub async fn finish(mut self) -> Result<(), Error> {
-        let callback = self.listener.callback().await?;
+    pub async fn finish(self) -> Result<(), Error> {
+        let (mut state, listener) = match self.flow {
+            Flow::Mcp {
+                state, listener, ..
+            } => (state, listener),
+            Flow::Google {
+                pending,
+                key,
+                context,
+            } => return pending.finish(&context, &key).await,
+        };
+        let callback = listener.callback().await?;
         if let Some(error) = callback.error {
             return Err(oauth::Error::Denied(error).into());
         }
         let code = callback.code.ok_or(oauth::Error::MissingCode)?;
         let csrf = callback.state.unwrap_or_default();
-        self.state
+        state
             .handle_callback_with_issuer(&code, &csrf, callback.issuer.as_deref())
             .await
             .map_err(|source| Error::Authorize {
@@ -87,16 +136,16 @@ impl std::fmt::Debug for SignIn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SignIn")
             .field("server", &self.server)
-            .field("url", &self.url)
+            .field("url", &self.url())
             .finish_non_exhaustive()
     }
 }
 
 impl Saved {
-    pub(crate) fn new(logins: Arc<Logins>, url: &str) -> Self {
+    pub(crate) fn new(logins: Arc<Logins>, url: &str, account: Option<&str>) -> Self {
         Self {
             logins,
-            key: login_key(url),
+            key: login_key(url, account),
         }
     }
 }

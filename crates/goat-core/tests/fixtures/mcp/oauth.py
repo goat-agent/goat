@@ -9,6 +9,8 @@ CODES = {}
 TOKENS = set()
 REFRESHES = set()
 PREREGISTERED = ("preregistered", "s3cret")
+MODERN = "2026-07-28"
+VERSION_KEY = "io.modelcontextprotocol/protocolVersion"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -104,7 +106,18 @@ class Handler(BaseHTTPRequestHandler):
             if "id" not in message:
                 return self.send(202)
             method = message["method"]
-            if method == "initialize":
+            version = message.get("params", {}).get("_meta", {}).get(VERSION_KEY)
+            if method == "server/discover":
+                result = {
+                    "supportedVersions": ["2025-11-25", MODERN],
+                    "capabilities": {"tools": {}},
+                    "ttlMs": 0,
+                    "cacheScope": "private",
+                    "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "notes", "version": "0"}},
+                }
+            elif method == "initialize" and message["params"]["protocolVersion"] >= MODERN:
+                return self.send(200, {"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32601, "message": "Method not supported"}})
+            elif method == "initialize":
                 result = {
                     "protocolVersion": message["params"]["protocolVersion"],
                     "capabilities": {"tools": {}},
@@ -113,9 +126,11 @@ class Handler(BaseHTTPRequestHandler):
             elif method == "tools/list":
                 result = {"tools": [{"name": "whoami", "description": "Name the token", "inputSchema": {"type": "object"}}]}
             elif method == "tools/call":
-                result = {"content": [{"type": "text", "text": f"token {token}"}]}
+                result = {"content": [{"type": "text", "text": f"token {token} over {version}"}]}
             else:
                 result = {}
+            if version:
+                result["resultType"] = "complete"
             return self.send(200, {"jsonrpc": "2.0", "id": message["id"], "result": result})
         self.send(404, {})
 

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use ignore::WalkBuilder;
 
@@ -21,9 +22,15 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub hint: Option<String>,
-    pub location: PathBuf,
+    pub source: Source,
     pub for_model: bool,
     pub for_user: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    File(PathBuf),
+    Plugin(Arc<str>),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -101,27 +108,32 @@ pub(crate) fn catalog(skills: &[Skill]) -> Option<String> {
 }
 
 pub(crate) fn activate(skill: &Skill, args: &str) -> Result<String, String> {
-    let text = read(&skill.location)?;
+    let text = match &skill.source {
+        Source::File(location) => read(location)?,
+        Source::Plugin(text) => text.to_string(),
+    };
     let body = split(&text).map_or(text.as_str(), |(_, body)| body).trim();
     let (body, is_used) = substitute(body, args);
-    let dir = skill.location.parent().unwrap_or(&skill.location);
     let mut out = format!("<skill_content name=\"{}\">\n{body}", escape(&skill.name));
     if !is_used && !args.is_empty() {
         write!(out, "\n\nARGUMENTS: {args}").ok();
     }
-    write!(
-        out,
-        "\n\nSkill directory: {}\nRelative paths in this skill are relative to the skill directory.",
-        dir.display()
-    )
-    .ok();
-    let files = resources(dir);
-    if !files.is_empty() {
-        out.push_str("\n\n<skill_resources>\n");
-        for file in files {
-            writeln!(out, "<file>{}</file>", escape(&file)).ok();
+    if let Source::File(location) = &skill.source {
+        let dir = location.parent().unwrap_or(location);
+        write!(
+            out,
+            "\n\nSkill directory: {}\nRelative paths in this skill are relative to the skill directory.",
+            dir.display()
+        )
+        .ok();
+        let files = resources(dir);
+        if !files.is_empty() {
+            out.push_str("\n\n<skill_resources>\n");
+            for file in files {
+                writeln!(out, "<file>{}</file>", escape(&file)).ok();
+            }
+            out.push_str("</skill_resources>");
         }
-        out.push_str("</skill_resources>");
     }
     out.push_str("\n</skill_content>");
     Ok(out)
@@ -137,7 +149,25 @@ pub(crate) fn activated(text: &str) -> impl Iterator<Item = &str> {
 
 fn parse(location: &Path) -> Result<Skill, String> {
     let text = read(location)?;
-    let (front, _) = split(&text).ok_or("it has no frontmatter between --- lines")?;
+    let folder = location
+        .parent()
+        .and_then(Path::file_name)
+        .map_or_default(|name| name.to_string_lossy().into_owned());
+    let skill = from_text(&text, folder, Source::File(location.to_owned()))?;
+    if skill.name.contains(':') {
+        return Err("its name has a colon, which only plugin skills use".to_owned());
+    }
+    Ok(skill)
+}
+
+pub(crate) fn from_plugin(plugin: &str, folder: &str, text: &str) -> Result<Skill, String> {
+    let mut skill = from_text(text, folder.to_owned(), Source::Plugin(text.into()))?;
+    skill.name = format!("{plugin}:{}", skill.name);
+    Ok(skill)
+}
+
+fn from_text(text: &str, folder: String, source: Source) -> Result<Skill, String> {
+    let (front, _) = split(text).ok_or("it has no frontmatter between --- lines")?;
     let fields = fields(front);
     let field = |key: &str| {
         fields
@@ -147,10 +177,6 @@ fn parse(location: &Path) -> Result<Skill, String> {
             .filter(|value| !value.is_empty())
     };
     let description = field("description").ok_or("it has no description")?;
-    let folder = location
-        .parent()
-        .and_then(Path::file_name)
-        .map_or_default(|name| name.to_string_lossy().into_owned());
     let flag = |key: &str, default: bool| {
         field(key).map_or(default, |value| {
             matches!(
@@ -163,7 +189,7 @@ fn parse(location: &Path) -> Result<Skill, String> {
         name: field("name").map_or(folder, str::to_owned),
         description: description.to_owned(),
         hint: field("argument-hint").map(str::to_owned),
-        location: location.to_owned(),
+        source,
         for_model: !flag("disable-model-invocation", false),
         for_user: flag("user-invocable", true),
     })
@@ -336,6 +362,34 @@ mod tests {
     }
 
     #[test]
+    fn a_disk_skill_with_a_colon_in_its_name_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = skill_at(dir.path(), "mail", "name: gmail:api\ndescription: x", "");
+
+        let err = parse(&path).unwrap_err();
+
+        assert_eq!(err, "its name has a colon, which only plugin skills use");
+    }
+
+    #[test]
+    fn a_plugin_skill_is_prefixed_and_activates_without_a_directory() {
+        let skill = from_plugin(
+            "gmail",
+            "api",
+            "---\ndescription: Use Gmail\n---\nSearch first.",
+        )
+        .unwrap();
+
+        let text = activate(&skill, "").unwrap();
+
+        assert_eq!(skill.name, "gmail:api");
+        assert_eq!(
+            text,
+            "<skill_content name=\"gmail:api\">\nSearch first.\n</skill_content>"
+        );
+    }
+
+    #[test]
     fn a_skill_without_a_description_is_skipped() {
         let dir = tempfile::tempdir().unwrap();
         let path = skill_at(dir.path(), "empty", "name: empty", "");
@@ -418,7 +472,7 @@ mod tests {
             name: name.to_owned(),
             description: "a <b> & c".to_owned(),
             hint: None,
-            location: PathBuf::new(),
+            source: Source::File(PathBuf::new()),
             for_model,
             for_user: true,
         };
@@ -436,7 +490,7 @@ mod tests {
             name: "commit".to_owned(),
             description: String::new(),
             hint: None,
-            location: PathBuf::new(),
+            source: Source::File(PathBuf::new()),
             for_model: true,
             for_user: true,
         };

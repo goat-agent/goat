@@ -1,13 +1,15 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::pin::{Pin, pin};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
 use crossterm::style::Stylize;
 use goat_core::account::{self, Account};
 use goat_core::catalog::{self, Model};
-use goat_core::mcp::{self, Decision, State};
+use goat_core::mcp::{self, Address, Decision, Server, Status};
+use goat_core::plugin;
 use goat_core::provider::{Endpoints, Provider};
 use goat_core::session::{self, Environment, Event, Prompt, Session, Sink};
 use goat_core::store::{Recent, Sent, Store};
@@ -17,6 +19,7 @@ use crate::command::{self, Name};
 use crate::input::{self, Editor, Entry, Input, Keys, Mode, RawMode, TurnKeys};
 use crate::kitty;
 use crate::paths::Paths;
+use crate::plugins;
 use crate::render::{Banner, Ending, Terminal, Work};
 use crate::target::{
     self, Choices, Current, DEFAULT_EFFORT, Effort, Files, Offer, plural, server_line,
@@ -53,7 +56,7 @@ struct Chat {
     recent: Vec<Recent>,
     sent: Vec<Sent>,
     files: Files,
-    servers: Vec<(String, State)>,
+    servers: Vec<Status>,
     environment: Environment,
     database: PathBuf,
     naming: Option<Naming>,
@@ -93,6 +96,7 @@ impl Chat {
                 files,
                 servers,
                 naming,
+                environment,
                 ..
             } = self;
             *recent = session
@@ -112,6 +116,7 @@ impl Chat {
                 files,
                 skills: &session.skills().skills,
                 servers,
+                plugins: &environment.plugins,
                 current: current(session),
             };
             let Some(pending) = naming else {
@@ -153,6 +158,7 @@ impl Chat {
             sent,
             files,
             servers,
+            environment,
             ..
         } = self;
         let model = session.model().to_owned();
@@ -166,6 +172,7 @@ impl Chat {
             files,
             skills: &skills,
             servers,
+            plugins: &environment.plugins,
             current: Current {
                 account: session.account().id,
                 model: &model,
@@ -199,8 +206,15 @@ impl Chat {
                         Err(err) => Ending::Failed(format!("{:#}", anyhow::Error::new(err))),
                     },
                     event = keys.next() => {
+                        let event = event?;
                         let mut terminal = shared.borrow_mut();
-                        if let TurnKeys::Interrupt = editor.during_turn(event?, &choices, &mut terminal) {
+                        if terminal.is_asking() {
+                            if let Some(is_allowed) = input::decision(&event) {
+                                terminal.decide(is_allowed);
+                            }
+                            continue;
+                        }
+                        if let TurnKeys::Interrupt = editor.during_turn(event, &choices, &mut terminal) {
                             break Ending::Interrupted;
                         }
                     }
@@ -286,6 +300,8 @@ impl Chat {
             (Name::Status, _) => self.show_status()?,
             (Name::Mcp, "") => self.show_servers(),
             (Name::Mcp, name) => self.sign_in(name).await?,
+            (Name::Plugin, "") => self.show_plugins()?,
+            (Name::Plugin, name) => self.sign_in_plugin(name).await?,
             (Name::Usage, _) => {
                 let lines: Vec<String> = self.usage().iter().map(Row::line).collect();
                 self.terminal.lines(&lines);
@@ -462,6 +478,7 @@ impl Chat {
             files: &self.files,
             skills: &self.session.skills().skills,
             servers: &self.servers,
+            plugins: &self.environment.plugins,
             current: current(&self.session),
         }
     }
@@ -473,16 +490,54 @@ impl Chat {
                 .reply("No MCP servers. Add one with `goat mcp add <name> <url>`");
             return;
         }
-        let mut lines: Vec<String> = states
-            .iter()
-            .map(|(name, state)| server_line(name, state))
-            .collect();
+        let mut lines: Vec<String> = states.iter().map(server_line).collect();
         lines.extend(problems.iter().cloned());
         self.terminal.lines(&lines);
     }
 
     async fn sign_in(&mut self, name: &str) -> anyhow::Result<()> {
         let sign_in = Box::pin(self.session.sign_in(name)).await?;
+        if self.wait_for(name, sign_in).await? {
+            self.session.reconnect(name);
+            self.terminal.outcome(Ok(&format!("Signed in to {name}")));
+        }
+        Ok(())
+    }
+
+    fn show_plugins(&mut self) -> anyhow::Result<()> {
+        let logins = self.session.store().logins()?;
+        let lines = plugins::lines(&self.environment.plugins, &logins)?;
+        self.terminal.lines(&lines);
+        Ok(())
+    }
+
+    async fn sign_in_plugin(&mut self, name: &str) -> anyhow::Result<()> {
+        let address = Address::parse(name)?;
+        let plugin = plugins::find(&self.environment.plugins, &address.name)?;
+        let servers: Vec<Server> = plugin.remotes().cloned().collect();
+        let context = reach(self.session.store())?;
+        for server in &servers {
+            let target = Address {
+                name: server.name.clone(),
+                account: address.account.clone(),
+            };
+            let sign_in = Box::pin(mcp::SignIn::start(
+                server,
+                target.account.as_deref(),
+                &context,
+            ))
+            .await?;
+            if !self.wait_for(&target.to_string(), sign_in).await? {
+                return Ok(());
+            }
+        }
+        self.terminal.outcome(Ok(&format!(
+            "Signed in to {address}; start a new session with /clear to use it"
+        )));
+        Ok(())
+    }
+
+    async fn wait_for(&mut self, name: &str, sign_in: mcp::SignIn) -> anyhow::Result<bool> {
         self.terminal.reply(&format!(
             "Opening your browser to sign in to {name}. If it does not open, visit:\n{}\nEsc cancels.",
             sign_in.url()
@@ -499,15 +554,12 @@ impl Chat {
                 }
             }
         };
-        match finished {
-            Some(result) => {
-                result.with_context(|| format!("sign in to {name}"))?;
-                self.session.reconnect(name);
-                self.terminal.outcome(Ok(&format!("Signed in to {name}")));
-            }
-            None => self.terminal.outcome(Ok("Sign-in cancelled")),
-        }
-        Ok(())
+        let Some(result) = finished else {
+            self.terminal.outcome(Ok("Sign-in cancelled"));
+            return Ok(false);
+        };
+        result.with_context(|| format!("sign in to {name}"))?;
+        Ok(true)
     }
 
     fn show_status(&mut self) -> anyhow::Result<()> {
@@ -523,10 +575,7 @@ impl Chat {
             files.join(", ")
         };
         let (states, problems) = self.session.servers();
-        let mut shown: Vec<String> = states
-            .iter()
-            .map(|(name, state)| server_line(name, state))
-            .collect();
+        let mut shown: Vec<String> = states.iter().map(server_line).collect();
         shown.extend(problems.iter().cloned());
         let servers = if shown.is_empty() {
             "none".to_owned()
@@ -645,7 +694,7 @@ pub(crate) async fn start(paths: &Paths, choice: Choice) -> anyhow::Result<()> {
     let mut session = Session::create(
         store,
         http()?,
-        &environment(paths),
+        &environment(paths)?,
         opening.account,
         &opening.model,
     )?;
@@ -673,7 +722,7 @@ pub(crate) async fn resume(paths: &Paths, choice: Choice, id: Option<&str>) -> a
     let mut session = Session::resume(
         store,
         http()?,
-        &environment(paths),
+        &environment(paths)?,
         id,
         opening.account,
         &opening.model,
@@ -756,6 +805,7 @@ fn open(
         files: &Files::listed(Vec::new()),
         skills: &[],
         servers: &[],
+        plugins: &[],
         current: Current {
             account: account.id,
             model: &model,
@@ -797,7 +847,7 @@ async fn run(
         sent: Vec::new(),
         files: Files::listed(Vec::new()),
         servers: Vec::new(),
-        environment: environment(paths),
+        environment: environment(paths)?,
         database: paths.database.clone(),
         naming: None,
         warned: Vec::new(),
@@ -879,8 +929,8 @@ fn pick_model(store: &Store, account: &Account) -> anyhow::Result<String> {
     ))
 }
 
-fn environment(paths: &Paths) -> Environment {
-    Environment {
+fn environment(paths: &Paths) -> anyhow::Result<Environment> {
+    Ok(Environment {
         workspace: paths.workspace.clone(),
         home: paths.home.clone(),
         spill: paths.spill.clone(),
@@ -888,7 +938,16 @@ fn environment(paths: &Paths) -> Environment {
         personal: paths.personal.clone(),
         variable: |name| std::env::var(name).ok(),
         endpoints: Endpoints::default(),
-    }
+        plugins: plugin::builtin()?,
+    })
+}
+
+pub(crate) fn reach(store: &Store) -> anyhow::Result<mcp::Context> {
+    Ok(mcp::Context {
+        http: http()?,
+        logins: Arc::new(store.logins()?),
+        endpoints: Endpoints::default(),
+    })
 }
 
 pub(crate) fn http() -> anyhow::Result<reqwest::Client> {

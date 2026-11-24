@@ -3,6 +3,8 @@ use std::path::{Component, Path, PathBuf};
 use tree_sitter::{Language, Node, Parser};
 
 const SHELLS: &[&str] = &["bash", "sh", "zsh", "dash", "ksh", "fish"];
+const PRIVATE: &str = ".goat";
+const PRIVATE_REASON: &str = "goat keeps its sign-ins in ~/.goat, so commands may not touch it";
 const SAFE_DEVICES: &[&str] = &[
     "/dev/null",
     "/dev/zero",
@@ -107,7 +109,7 @@ fn visit(
 ) -> Option<String> {
     let found = match node.kind() {
         "command" => check_command(node, source, scope, nested),
-        "file_redirect" => check_redirect(node, source),
+        "file_redirect" => check_redirect(node, source, scope),
         "function_definition" => check_fork_bomb(node, source),
         _ => None,
     };
@@ -132,6 +134,9 @@ fn check_command(
 fn check_words(words: &[String], scope: &Scope<'_>, nested: &mut Vec<String>) -> Option<String> {
     let (name, args) = words.split_first()?;
     let name = name.rsplit('/').next().unwrap_or(name);
+    if name != "goat" && args.iter().any(|arg| is_private(arg, scope)) {
+        return Some(PRIVATE_REASON.to_owned());
+    }
     let recursive = || args.iter().any(|arg| is_recursive_flag(arg));
 
     if SHELLS.contains(&name) {
@@ -171,10 +176,22 @@ fn is_command_flag(arg: &str) -> bool {
     })
 }
 
-fn check_redirect(node: Node<'_>, source: &str) -> Option<String> {
+fn check_redirect(node: Node<'_>, source: &str, scope: &Scope<'_>) -> Option<String> {
     let destination = node.child_by_field_name("destination")?;
     let target = unquote(text(destination, source));
+    if is_private(&target, scope) {
+        return Some(PRIVATE_REASON.to_owned());
+    }
     is_disk(&target).then(|| format!("redirecting output to {target} would overwrite a disk"))
+}
+
+fn is_private(raw: &str, scope: &Scope<'_>) -> bool {
+    let raw = raw.split_once('=').map_or(raw, |(_, value)| value);
+    if raw.is_empty() || raw.starts_with('-') {
+        return false;
+    }
+    let private = normalize(&scope.home.join(PRIVATE));
+    normalize(&expand(raw, scope)).starts_with(&private)
 }
 
 fn check_fork_bomb(node: Node<'_>, source: &str) -> Option<String> {
@@ -344,6 +361,24 @@ mod tests {
         ] {
             assert!(blocked(command), "{command} should be blocked");
         }
+    }
+
+    #[test]
+    fn commands_that_touch_goats_own_files_are_blocked() {
+        for command in [
+            "sqlite3 ~/.goat/goat.db 'select * from logins'",
+            "cat $HOME/.goat/mcp.toml",
+            "cp /home/me/.goat/goat.db /tmp/x",
+            "cd ~/.goat",
+            "tar -czf out.tgz --directory=/home/me/.goat .",
+            "echo x > ~/.goat/mcp.toml",
+            "cat ../../.goat/goat.db",
+            "bash -c 'cat ~/.goat/goat.db'",
+        ] {
+            assert!(blocked(command), "{command} should be blocked");
+        }
+        assert!(!blocked("goat mcp list"));
+        assert!(!blocked("cat .goat/mcp.toml"));
     }
 
     #[test]

@@ -40,6 +40,7 @@ pub(crate) struct Terminal<W: Write = BufWriter<Stdout>> {
     code: Option<highlight::Block>,
     calls: usize,
     activity: Option<Activity>,
+    asking: Option<tool::Answer>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -120,7 +121,27 @@ impl<W: Write> Terminal<W> {
             code: None,
             calls: 0,
             activity: None,
+            asking: None,
         }
+    }
+
+    pub(crate) fn is_asking(&self) -> bool {
+        self.asking.is_some()
+    }
+
+    pub(crate) fn decide(&mut self, is_allowed: bool) {
+        let Some(answer) = self.asking.take() else {
+            return;
+        };
+        answer.give(is_allowed);
+        let shown = if is_allowed {
+            "Allowed".green()
+        } else {
+            "Refused".red()
+        };
+        self.enter(Section::Run);
+        self.put(&format!("{INDENT}{INDENT}{shown}\n"));
+        self.flush();
     }
 
     pub(crate) fn columns(&self) -> usize {
@@ -604,6 +625,17 @@ impl<W: Write> Sink for Terminal<W> {
                 self.note("The reply was cut off, so it starts over");
             }
             Event::RunFinished { .. } | Event::Usage(_) | Event::Retrying { .. } => {}
+            Event::Confirm(question) => {
+                self.enter(Section::Run);
+                let width = self.columns().saturating_sub(40).max(20);
+                self.put(&format!(
+                    "{INDENT}{} Allow {}? {}\n",
+                    "?".yellow(),
+                    fit(first_line(question.text()), width),
+                    "y allows, any other key refuses".dim()
+                ));
+                self.asking = question.take_answer();
+            }
             Event::Compacting => {
                 self.open(Section::Note);
                 self.put(&format!(

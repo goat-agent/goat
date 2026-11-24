@@ -14,6 +14,7 @@ use crate::image::{Image, Picture};
 use crate::instructions;
 use crate::mcp;
 use crate::message::{self, Diff, Message, Origin, Part, Role, Trace};
+use crate::plugin::Plugin;
 use crate::provider::{self, Chunk, Endpoints, Images, Limits, Provider, Request, Stop, Usage};
 use crate::skill;
 use crate::store::{self, Logins, Sent, Store};
@@ -83,6 +84,7 @@ pub enum Event<'a> {
         restarts: bool,
     },
     Compacting,
+    Confirm(&'a tool::Question),
 }
 
 #[derive(Debug)]
@@ -112,6 +114,13 @@ pub struct Environment {
     pub personal: std::path::PathBuf,
     pub variable: fn(&str) -> Option<String>,
     pub endpoints: Endpoints,
+    pub plugins: Vec<Plugin>,
+}
+
+struct Discovered<'a> {
+    skills: skill::Found,
+    servers: mcp::Config,
+    waiting: Vec<&'a Plugin>,
 }
 
 #[derive(Debug)]
@@ -136,7 +145,7 @@ pub struct Session {
     skills: skill::Found,
     servers: mcp::Config,
     clients: Rc<mcp::Clients>,
-    logins: Arc<Logins>,
+    reach: mcp::Context,
     personal: PathBuf,
     home: PathBuf,
 }
@@ -149,15 +158,15 @@ impl Session {
         account: Account,
         model: &str,
     ) -> Result<Self, Error> {
-        let found = skill::discover(&env.workspace, &env.home);
-        let reviews = store.mcp_reviews()?;
-        let servers = mcp::config(&env.workspace, &env.home, env.variable, &reviews).servers;
+        let logins = store.logins()?;
+        let found = discover(env, &store, &logins)?;
         let instructions = prompt::instructions(
             &env.workspace,
             &env.personal,
             &env.home,
-            &found.skills,
-            &servers,
+            &found.skills.skills,
+            &mcp::addresses(&found.servers.servers, &logins),
+            &found.waiting,
         );
         let id = store.create_session(&env.workspace, &instructions)?;
         Self::assemble(
@@ -225,21 +234,20 @@ impl Session {
         instructions: Box<str>,
         messages: Vec<Message>,
     ) -> Result<Self, Error> {
-        let found = skill::discover(&env.workspace, &env.home);
+        let logins = Arc::new(store.logins()?);
+        let Discovered {
+            skills: found,
+            servers,
+            ..
+        } = discover(env, &store, &logins)?;
         let runner = Runner::new(&env.workspace, &env.home, &env.spill, !messages.is_empty())?;
         runner.set_skills(found.skills.clone());
-        let servers = mcp::config(
-            &env.workspace,
-            &env.home,
-            env.variable,
-            &store.mcp_reviews()?,
-        );
-        let logins = Arc::new(store.logins()?);
-        let clients = Rc::new(mcp::Clients::new(
-            servers.servers.clone(),
-            http.clone(),
-            Arc::clone(&logins),
-        ));
+        let reach = mcp::Context {
+            http: http.clone(),
+            logins: Arc::clone(&logins),
+            endpoints: env.endpoints.clone(),
+        };
+        let clients = Rc::new(mcp::Clients::new(servers.servers.clone(), reach.clone()));
         runner.set_mcp(Rc::clone(&clients));
         for name in loaded_skills(&messages) {
             runner.mark_skill(&name);
@@ -259,7 +267,7 @@ impl Session {
             skills: found,
             servers,
             clients,
-            logins,
+            reach,
             tool: tool::spec(),
             messages,
             finished: Vec::new(),
@@ -437,18 +445,19 @@ impl Session {
         &self.skills
     }
 
-    pub fn servers(&self) -> (Vec<(String, mcp::State)>, &[String]) {
+    pub fn servers(&self) -> (Vec<mcp::Status>, &[String]) {
         (self.clients.states(), &self.servers.problems)
     }
 
     pub async fn sign_in(&self, name: &str) -> Result<mcp::SignIn, mcp::Error> {
+        let address = mcp::Address::parse(name)?;
         let server = self
             .servers
             .servers
             .iter()
-            .find(|server| server.name == name)
-            .ok_or_else(|| mcp::Error::Unknown(name.to_owned()))?;
-        mcp::SignIn::start(server, Arc::clone(&self.logins)).await
+            .find(|server| server.name == address.name)
+            .ok_or_else(|| mcp::Error::Unknown(address.name.clone()))?;
+        mcp::SignIn::start(server, address.account.as_deref(), &self.reach).await
     }
 
     pub fn reconnect(&self, name: &str) {
@@ -591,6 +600,7 @@ impl Session {
                     trace.push(Trace::Loaded { path });
                 }
                 Step::Shown(_) => {}
+                Step::Confirm(question) => sink.emit(Event::Confirm(&question)),
             })
             .await;
         sink.emit(Event::RunFinished { outcome: &outcome });
@@ -899,6 +909,33 @@ fn sent(shown: usize) -> usize {
         return shown;
     }
     IMAGE_BATCH + shown % IMAGE_BATCH
+}
+
+fn discover<'a>(
+    env: &'a Environment,
+    store: &Store,
+    logins: &Logins,
+) -> Result<Discovered<'a>, Error> {
+    let mut skills = skill::discover(&env.workspace, &env.home);
+    let mut servers = mcp::config(
+        &env.workspace,
+        &env.home,
+        env.variable,
+        &store.mcp_reviews()?,
+    );
+    let mut waiting = Vec::new();
+    for plugin in &env.plugins {
+        if plugin.is_signed_in(logins)? {
+            plugin.join(&mut skills.skills, &mut servers.servers);
+        } else {
+            waiting.push(plugin);
+        }
+    }
+    Ok(Discovered {
+        skills,
+        servers,
+        waiting,
+    })
 }
 
 fn loaded_skills(messages: &[Message]) -> Vec<String> {

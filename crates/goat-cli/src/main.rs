@@ -8,6 +8,7 @@ mod kitty;
 mod login;
 mod markdown;
 mod paths;
+mod plugins;
 mod render;
 mod servers;
 mod target;
@@ -50,10 +51,21 @@ enum Command {
     Logout { account: String },
     #[command(about = "List accounts")]
     Accounts,
-    #[command(about = "List MCP servers, or add, remove and sign in to one")]
+    #[command(
+        about = "List MCP servers, or add, remove and sign in to one",
+        arg_required_else_help = true
+    )]
     Mcp {
         #[command(subcommand)]
-        action: Option<servers::Action>,
+        action: servers::Action,
+    },
+    #[command(
+        about = "List plugins, or sign in to one",
+        arg_required_else_help = true
+    )]
+    Plugin {
+        #[command(subcommand)]
+        action: plugins::Action,
     },
 }
 
@@ -74,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Logout { account } => login::logout(&paths, &account),
         Command::Accounts => login::list(&paths),
         Command::Mcp { action } => servers::run(&paths, action).await,
+        Command::Plugin { action } => plugins::run(&paths, action).await,
     }
 }
 
@@ -121,5 +134,34 @@ mod tests {
     #[test]
     fn resume_is_no_longer_a_command() {
         assert!(parse(&["resume"]).is_err());
+    }
+
+    #[test]
+    fn servers_and_plugins_are_listed_with_list() {
+        let servers = parse(&["mcp", "list"]).unwrap();
+        let plugins = parse(&["plugin", "list"]).unwrap();
+
+        assert!(matches!(
+            servers.command,
+            Some(Command::Mcp {
+                action: servers::Action::List
+            })
+        ));
+        assert!(matches!(
+            plugins.command,
+            Some(Command::Plugin {
+                action: plugins::Action::List
+            })
+        ));
+    }
+
+    #[test]
+    fn mcp_without_a_subcommand_shows_help() {
+        let err = parse(&["mcp"]).err().unwrap();
+
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
     }
 }
