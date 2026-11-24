@@ -71,6 +71,12 @@ pub struct Endpoints {
     pub google_sign_in: Box<str>,
     pub google_token: Box<str>,
     pub gmail: Box<str>,
+    pub calendar: Box<str>,
+    pub drive: Box<str>,
+    pub docs: Box<str>,
+    pub sheets: Box<str>,
+    pub slides: Box<str>,
+    pub people: Box<str>,
 }
 
 impl Default for Endpoints {
@@ -82,6 +88,12 @@ impl Default for Endpoints {
             google_sign_in: "https://accounts.google.com/o/oauth2/v2/auth".into(),
             google_token: "https://oauth2.googleapis.com/token".into(),
             gmail: "https://gmail.googleapis.com".into(),
+            calendar: "https://www.googleapis.com".into(),
+            drive: "https://www.googleapis.com".into(),
+            docs: "https://docs.googleapis.com".into(),
+            sheets: "https://sheets.googleapis.com".into(),
+            slides: "https://slides.googleapis.com".into(),
+            people: "https://people.googleapis.com".into(),
         }
     }
 }

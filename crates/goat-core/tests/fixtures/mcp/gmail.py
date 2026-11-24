@@ -116,6 +116,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(302, None, [("location", location)])
         if url.path == "/_log":
             return self.send(200, LOG)
+        if url.path == "/calendar/v3/users/me/calendarList":
+            if not self.authorized():
+                return None
+            return self.send(200, {"items": [{"id": "family@group.calendar.google.com", "summary": "가족", "timeZone": "Asia/Seoul"}]})
         if not url.path.startswith("/gmail/v1/users/me/"):
             return self.send(404, {})
         if not self.authorized():

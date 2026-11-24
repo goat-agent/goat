@@ -1,22 +1,14 @@
-use std::sync::Arc;
-
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use futures::future::join_all;
-use rmcp::ErrorData;
-use rmcp::handler::server::ServerHandler;
-use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    InitializeResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities, Tool,
-};
-use rmcp::service::{RequestContext, RoleServer};
-use serde_json::{Map, Value, json};
+use reqwest::{Method, Url};
+use serde_json::{Value, json};
 
-use super::google::Access;
+use super::google::{self, Args, Rest, copy, items};
 use super::mime::{self, Attachment, Draft};
 
-pub(crate) const SCOPES: &[&str] = &["https://www.googleapis.com/auth/gmail.modify"];
-const TOOLS: &str = include_str!("gmail.json");
+pub(super) const SCOPES: &[&str] = &["https://www.googleapis.com/auth/gmail.modify"];
+pub(super) const TOOLS: &str = include_str!("gmail.json");
 const PAGE: u64 = 20;
 const MOST_PAGE: u64 = 50;
 const SEARCH_MESSAGES: usize = 5;
@@ -49,11 +41,9 @@ const PRESETS: &[(&str, &str, &str)] = &[
 ];
 
 #[derive(Debug)]
-pub(crate) struct Gmail {
-    api: Box<str>,
-    http: reqwest::Client,
-    access: Access,
-    tools: Arc<[Tool]>,
+pub(super) struct Gmail {
+    rest: Rest,
+    base: Box<str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,19 +55,15 @@ enum Format {
     Raw,
 }
 
-struct Args(Map<String, Value>);
-
 impl Gmail {
-    pub(crate) fn new(api: &str, http: reqwest::Client, access: Access) -> Self {
+    pub(super) fn new(rest: Rest, base: &str) -> Self {
         Self {
-            api: api.trim_end_matches('/').into(),
-            http,
-            access,
-            tools: tools().into(),
+            rest,
+            base: base.into(),
         }
     }
 
-    async fn run(&self, name: &str, args: &Args) -> Result<Value, String> {
+    pub(super) async fn run(&self, name: &str, args: &Args) -> Result<Value, String> {
         match name {
             "search_threads" => self.search_threads(args).await,
             "get_thread" => self.get_thread(args).await,
@@ -170,13 +156,16 @@ impl Gmail {
                 self.relabel("messages", &args.text("messageId")?, &inbox(), &spam())
                     .await
             }
-            _ => Err(format!("gmail has no tool named {name}")),
+            _ => Err(google::no_tool(name)),
         }
     }
 
     async fn search_threads(&self, args: &Args) -> Result<Value, String> {
         let view = args.word("view").unwrap_or("THREAD_VIEW_MINIMAL");
-        let mut query = vec![("maxResults", page(args).to_string())];
+        let mut query = vec![(
+            "maxResults",
+            args.page("pageSize", PAGE, MOST_PAGE).to_string(),
+        )];
         if let Some(text) = args.word("query") {
             query.push(("q", text.to_owned()));
         }
@@ -255,7 +244,10 @@ impl Gmail {
         } else {
             Format::Metadata
         };
-        let mut query = vec![("maxResults", page(args).to_string())];
+        let mut query = vec![(
+            "maxResults",
+            args.page("pageSize", PAGE, MOST_PAGE).to_string(),
+        )];
         if let Some(text) = args.word("query") {
             query.push(("q", text.to_owned()));
         }
@@ -401,7 +393,7 @@ impl Gmail {
             .and_then(|wanted| PRESETS.iter().find(|(preset, _, _)| *preset == wanted))
         {
             body["color"] = json!({ "backgroundColor": background, "textColor": text });
-        } else if let Some(color) = args.0.get("color").filter(|color| color.is_object()) {
+        } else if let Some(color) = args.value("color").filter(|color| color.is_object()) {
             body["color"] = color.clone();
         }
         let created = self.post("labels", &body).await?;
@@ -560,72 +552,21 @@ impl Gmail {
     }
 
     async fn get(&self, path: &str, query: &[(&str, String)]) -> Result<Value, String> {
-        let url = reqwest::Url::parse_with_params(&self.url(path), query)
-            .map_err(|err| format!("Gmail address for {path}: {err}"))?;
-        self.send(self.http.get(url)).await
+        self.rest.get(self.url(path, query)?).await
     }
 
     async fn post(&self, path: &str, body: &Value) -> Result<Value, String> {
-        let request = self.http.post(self.url(path)).json(body);
-        self.send(request).await
-    }
-
-    fn url(&self, path: &str) -> String {
-        format!("{}/gmail/v1/users/me/{path}", self.api)
-    }
-
-    async fn send(&self, request: reqwest::RequestBuilder) -> Result<Value, String> {
-        let bearer = self.access.bearer().await?;
-        let response = request
-            .bearer_auth(bearer)
-            .send()
+        self.rest
+            .send(Method::POST, self.url(path, &[])?, body)
             .await
-            .map_err(|err| format!("Gmail could not be reached: {err}"))?;
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|err| format!("Gmail's answer could not be read: {err}"))?;
-        let value: Value = if text.trim().is_empty() {
-            json!({})
-        } else {
-            serde_json::from_str(&text).unwrap_or(Value::String(text))
-        };
-        if status.is_success() {
-            return Ok(value);
-        }
-        let message = value["error"]["message"]
-            .as_str()
-            .map_or_else(|| value.to_string(), str::to_owned);
-        Err(format!("Gmail returned {}: {message}", status.as_u16()))
-    }
-}
-
-impl ServerHandler for Gmail {
-    fn get_info(&self) -> InitializeResult {
-        InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("gmail", env!("CARGO_PKG_VERSION")))
     }
 
-    fn list_tools(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
-        std::future::ready(Ok(ListToolsResult::with_all_items(self.tools.to_vec())))
-    }
-
-    async fn call_tool(
-        &self,
-        request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResponse, ErrorData> {
-        let args = Args(request.arguments.unwrap_or_default());
-        let result = match self.run(&request.name, &args).await {
-            Ok(value) => CallToolResult::structured(value),
-            Err(problem) => CallToolResult::error(vec![ContentBlock::text(problem)]),
-        };
-        Ok(result.into())
+    fn url(&self, path: &str, query: &[(&str, String)]) -> Result<Url, String> {
+        let segments: Vec<&str> = ["gmail", "v1", "users", "me"]
+            .into_iter()
+            .chain(path.split('/'))
+            .collect();
+        google::at(&self.base, &segments, query)
     }
 }
 
@@ -656,45 +597,11 @@ impl Format {
     }
 }
 
-impl Args {
-    fn word(&self, key: &str) -> Option<&str> {
-        self.0
-            .get(key)
-            .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
-    }
-
-    fn text(&self, key: &str) -> Result<String, String> {
-        self.word(key)
-            .map(str::to_owned)
-            .ok_or_else(|| format!("{key} is required"))
-    }
-
-    fn list(&self, key: &str) -> Vec<String> {
-        self.0
-            .get(key)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect()
-    }
-
-    fn flag(&self, key: &str) -> bool {
-        self.0.get(key).and_then(Value::as_bool) == Some(true)
-    }
-}
-
 #[derive(Default)]
 struct Body {
     text: Option<String>,
     html: Option<String>,
     files: Vec<Value>,
-}
-
-pub(crate) fn tools() -> Vec<Tool> {
-    serde_json::from_str(TOOLS).unwrap_or_else(|err| unreachable!("gmail.json is valid: {err}"))
 }
 
 fn attachments(args: &Args) -> Result<Vec<Attachment>, String> {
@@ -789,19 +696,6 @@ fn message_list(raw: &str) -> Option<&'static str> {
     }
 }
 
-fn page(args: &Args) -> u64 {
-    args.0
-        .get("pageSize")
-        .and_then(Value::as_u64)
-        .filter(|size| *size > 0)
-        .unwrap_or(PAGE)
-        .min(MOST_PAGE)
-}
-
-fn items<'a>(value: &'a Value, key: &str) -> impl Iterator<Item = &'a Value> {
-    value[key].as_array().into_iter().flatten()
-}
-
 fn labels(message: &Value) -> impl Iterator<Item = &str> {
     items(message, "labelIds").filter_map(Value::as_str)
 }
@@ -815,12 +709,6 @@ fn header(message: &Value, name: &str) -> Option<String> {
         })
         .and_then(|header| header["value"].as_str())
         .map(str::to_owned)
-}
-
-fn copy(from: &Value, to: &mut Value, field: &str) {
-    if let Some(value) = from.get(field).filter(|value| !value.is_null()) {
-        to[field] = value.clone();
-    }
 }
 
 fn spam() -> Vec<String> {
@@ -870,42 +758,12 @@ fn plain(html: &str) -> String {
 }
 
 fn rfc3339(seconds: i64) -> String {
-    let days = seconds.div_euclid(86_400);
-    let rest = seconds.rem_euclid(86_400);
-    let (year, month, day) = civil(days);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        rest / 3600,
-        rest % 3600 / 60,
-        rest % 60
-    )
-}
-
-fn civil(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    (year, month, day)
+    jiff::Timestamp::from_second(seconds).map_or_else(|_| seconds.to_string(), |at| at.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_tool_contract_matches_the_official_gmail_server() {
-        let names: Vec<String> = tools().iter().map(|tool| tool.name.to_string()).collect();
-
-        assert_eq!(names.len(), 23);
-        assert!(names.contains(&"search_threads".to_owned()));
-        assert!(names.contains(&"create_draft".to_owned()));
-    }
 
     #[test]
     fn dates_are_rfc3339_in_utc() {

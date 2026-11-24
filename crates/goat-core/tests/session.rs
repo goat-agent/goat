@@ -1639,10 +1639,20 @@ async fn gmail_session(
     model: &str,
     google: &str,
 ) -> Result<(Session, Environment), Box<dyn std::error::Error>> {
+    google_session(dir, model, google, "gmail").await
+}
+
+async fn google_session(
+    dir: &Path,
+    model: &str,
+    google: &str,
+    plugin: &str,
+) -> Result<(Session, Environment), Box<dyn std::error::Error>> {
     let mut env = environment(dir, model);
     env.endpoints.google_sign_in = format!("{google}/authorize").into();
     env.endpoints.google_token = format!("{google}/token").into();
     env.endpoints.gmail = google.into();
+    env.endpoints.calendar = google.into();
     env.plugins = goat_core::plugin::builtin()?;
     let database = dir.join("goat.db");
     let store = Store::open(&database)?;
@@ -1652,12 +1662,12 @@ async fn gmail_session(
         endpoints: env.endpoints.clone(),
         home: dir.to_owned(),
     };
-    let gmail = env
+    let found = env
         .plugins
         .iter()
-        .find(|plugin| plugin.name == "gmail")
-        .ok_or("the gmail plugin is built in")?;
-    approve(mcp::SignIn::start(&gmail.servers[0], None, &context).await?).await?;
+        .find(|found| found.name == plugin)
+        .ok_or("the plugin is built in")?;
+    approve(mcp::SignIn::start(&found.servers[0], None, &context).await?).await?;
     Ok((file_session(&env, &database)?, env))
 }
 
@@ -1702,6 +1712,32 @@ async fn the_gmail_plugin_signs_in_with_google_and_reads_threads() {
     assert!(result.contains("2026-11-28T12:00:00Z"), "{result}");
     assert!(log.contains("gmail.modify"), "{log}");
     assert!(log.contains("refresh"), "{log}");
+}
+
+#[tokio::test]
+async fn the_calendar_plugin_signs_in_with_its_own_scopes_and_reads_calendars() {
+    let (_google, google) = gmail_server().await.unwrap();
+    let call = leak(OPENAI_TOOL_CALL.replace(
+        "(await bash('echo hi')).output",
+        "return await mcp.google_calendar.list_calendars({})",
+    ));
+    let server = server::replay(vec![call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = google_session(dir.path(), &server.url, &google, "google_calendar")
+        .await
+        .unwrap();
+
+    session
+        .turn("which calendars do I have", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let log = gmail_log(&google).await.unwrap();
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].contains("MCP servers are connected to the sandbox: google_calendar."));
+    assert!(requests[1].contains("가족"), "{}", requests[1]);
+    assert!(log.contains("calendar.events.freebusy"), "{log}");
+    assert!(!log.contains("gmail.modify"), "{log}");
 }
 
 #[tokio::test]

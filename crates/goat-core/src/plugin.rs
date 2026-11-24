@@ -16,6 +16,45 @@ const BUILTIN: &[&[(&str, &str)]] = &[
         (SERVERS, include_str!("../plugins/gmail/mcp.toml")),
     ],
     &[
+        (
+            MANIFEST,
+            include_str!("../plugins/google_calendar/plugin.toml"),
+        ),
+        (SERVERS, include_str!("../plugins/google_calendar/mcp.toml")),
+    ],
+    &[
+        (
+            MANIFEST,
+            include_str!("../plugins/google_drive/plugin.toml"),
+        ),
+        (SERVERS, include_str!("../plugins/google_drive/mcp.toml")),
+    ],
+    &[
+        (MANIFEST, include_str!("../plugins/google_docs/plugin.toml")),
+        (SERVERS, include_str!("../plugins/google_docs/mcp.toml")),
+    ],
+    &[
+        (
+            MANIFEST,
+            include_str!("../plugins/google_sheets/plugin.toml"),
+        ),
+        (SERVERS, include_str!("../plugins/google_sheets/mcp.toml")),
+    ],
+    &[
+        (
+            MANIFEST,
+            include_str!("../plugins/google_slides/plugin.toml"),
+        ),
+        (SERVERS, include_str!("../plugins/google_slides/mcp.toml")),
+    ],
+    &[
+        (
+            MANIFEST,
+            include_str!("../plugins/google_contacts/plugin.toml"),
+        ),
+        (SERVERS, include_str!("../plugins/google_contacts/mcp.toml")),
+    ],
+    &[
         (MANIFEST, include_str!("../plugins/computer/plugin.toml")),
         (SERVERS, include_str!("../plugins/computer/mcp.toml")),
         (

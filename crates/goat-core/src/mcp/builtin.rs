@@ -1,7 +1,13 @@
+mod calendar;
 pub mod computer;
+mod contacts;
+mod docs;
+mod drive;
 mod gmail;
-pub(crate) mod google;
+pub mod google;
 mod mime;
+mod sheets;
+mod slides;
 
 use std::sync::Arc;
 
@@ -13,56 +19,55 @@ const PIPE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
-    Gmail,
+    Google(google::Product),
     Computer,
 }
 
 #[derive(Debug)]
 pub(crate) enum Running {
-    Gmail(RunningService<RoleServer, gmail::Gmail>),
+    Google(RunningService<RoleServer, google::Server>),
     Computer(RunningService<RoleServer, computer::Computer>),
 }
 
 impl Builtin {
     pub fn parse(name: &str) -> Option<Self> {
         match name {
-            "gmail" => Some(Self::Gmail),
             "computer" => Some(Self::Computer),
-            _ => None,
+            _ => google::Product::parse(name).map(Self::Google),
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Gmail => "gmail",
+            Self::Google(product) => product.as_str(),
             Self::Computer => "computer",
         }
     }
 
     pub fn needs_sign_in(self) -> bool {
         match self {
-            Self::Gmail => true,
+            Self::Google(_) => true,
             Self::Computer => false,
         }
     }
 
     pub fn forget_grants(self, logins: &crate::store::Logins) -> Result<(), crate::store::Error> {
         match self {
-            Self::Gmail => Ok(()),
+            Self::Google(_) => Ok(()),
             Self::Computer => computer::forget_grants(logins),
         }
     }
 
     pub fn missing_permissions(self, ask: bool) -> Result<Vec<&'static str>, String> {
         match self {
-            Self::Gmail => Ok(Vec::new()),
+            Self::Google(_) => Ok(Vec::new()),
             Self::Computer => computer::missing_permissions(ask),
         }
     }
 
     pub(crate) fn scopes(self) -> &'static [&'static str] {
         match self {
-            Self::Gmail => gmail::SCOPES,
+            Self::Google(product) => product.scopes(),
             Self::Computer => &[],
         }
     }
@@ -75,12 +80,11 @@ impl Builtin {
     ) -> Result<Running, String> {
         let failed = |err| format!("{} did not start: {err}", self.as_str());
         match self {
-            Self::Gmail => {
-                let access = google::Access::new(context, key);
-                let server =
-                    gmail::Gmail::new(&context.endpoints.gmail, context.http.clone(), access);
-                server.serve(pipe).await.map(Running::Gmail).map_err(failed)
-            }
+            Self::Google(product) => google::Server::new(product, context, key)
+                .serve(pipe)
+                .await
+                .map(Running::Google)
+                .map_err(failed),
             Self::Computer => {
                 let desktop = computer::start(&context.home.join(".goat")).map_err(|fault| {
                     format!("{} did not start: {}", self.as_str(), fault.message())
@@ -103,7 +107,7 @@ impl Builtin {
 impl Running {
     pub(crate) async fn cancel(self) {
         match self {
-            Self::Gmail(service) => drop(service.cancel().await),
+            Self::Google(service) => drop(service.cancel().await),
             Self::Computer(service) => drop(service.cancel().await),
         }
     }
