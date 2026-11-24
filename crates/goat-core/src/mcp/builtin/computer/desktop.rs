@@ -143,6 +143,10 @@ pub(crate) enum WindowState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Fault {
+    #[cfg_attr(
+        all(not(target_os = "macos"), not(test)),
+        expect(dead_code, reason = "only the macOS adapter finds stale refs so far")
+    )]
     Stale(String),
     Missing(String),
     Unsupported(String),
@@ -188,6 +192,10 @@ pub(crate) struct Desktop {
 }
 
 impl Desktop {
+    #[cfg_attr(
+        all(not(target_os = "macos"), not(test)),
+        expect(dead_code, reason = "only the macOS adapter starts a desktop so far")
+    )]
     pub(crate) fn start<P: Platform + 'static>(
         make: impl FnOnce() -> Result<P, Fault> + Send + 'static,
     ) -> Result<Self, Fault> {
