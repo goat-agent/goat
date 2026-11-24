@@ -860,7 +860,7 @@ fn palette(text: &str, cursor: usize, choices: &Choices<'_>) -> Vec<Item> {
                 .map(|spec| {
                     let takes_value = matches!(
                         spec.name,
-                        Name::Model | Name::Effort | Name::Resume | Name::Rewind
+                        Name::Model | Name::Effort | Name::Resume | Name::Rewind | Name::Mcp
                     );
                     Item {
                         label: format!("/{}", spec.word),
@@ -912,6 +912,7 @@ fn palette(text: &str, cursor: usize, choices: &Choices<'_>) -> Vec<Item> {
         Name::Effort => choices.efforts(typed),
         Name::Resume => choices.sessions(typed, now()),
         Name::Rewind => choices.rewinds(typed, now()),
+        Name::Mcp => choices.servers(typed),
         Name::Compact | Name::Clear | Name::Status | Name::Usage | Name::Help | Name::Exit => {
             Vec::new()
         }
@@ -1059,6 +1060,10 @@ fn width(columns: usize) -> usize {
     columns.max(PROMPT.width() + 2)
 }
 
+pub(crate) fn interrupts(event: &Event) -> bool {
+    matches!(event, Event::Key(key) if key.kind != KeyEventKind::Release && is_interrupt(*key))
+}
+
 fn is_interrupt(key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     matches!(key.code, KeyCode::Esc) || ctrl && matches!(key.code, KeyCode::Char('c'))
@@ -1185,6 +1190,7 @@ mod tests {
             sent: &[],
             files: &files,
             skills: &skills,
+            servers: &[],
             current: Current {
                 account: account.id,
                 model: "gpt-6.2-sol",
@@ -1301,6 +1307,15 @@ mod tests {
         let mut terminal = Terminal::with_writer(Vec::new(), || 40);
         let event = Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
         with_choices(|choices| editor.during_turn(event, choices, &mut terminal))
+    }
+
+    #[test]
+    fn escape_and_ctrl_c_interrupt_but_other_keys_do_not() {
+        let key = |code, modifiers| Event::Key(KeyEvent::new(code, modifiers));
+
+        assert!(interrupts(&key(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(interrupts(&key(KeyCode::Char('c'), KeyModifiers::CONTROL)));
+        assert!(!interrupts(&key(KeyCode::Char('c'), KeyModifiers::NONE)));
     }
 
     #[test]
@@ -1802,7 +1817,7 @@ mod tests {
     #[test]
     fn arrows_pick_a_command_and_enter_runs_it() {
         let mut line = line("/", 1);
-        let mut keys = vec![KeyCode::Down; 8];
+        let mut keys = vec![KeyCode::Down; 9];
         keys.push(KeyCode::Enter);
         let action = press(&mut line, &keys);
         assert!(matches!(action, Action::Submit));

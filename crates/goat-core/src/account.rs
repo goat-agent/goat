@@ -1,10 +1,11 @@
 pub mod chatgpt;
 pub mod codex;
-mod oauth;
 
 use serde::{Deserialize, Serialize};
 
-pub use oauth::Error;
+use crate::oauth;
+
+pub use crate::oauth::Error;
 
 crate::id::define!(Id);
 

@@ -6,6 +6,7 @@ pub mod image;
 mod instructions;
 pub mod mcp;
 pub mod message;
+mod oauth;
 pub mod provider;
 pub mod session;
 pub mod skill;

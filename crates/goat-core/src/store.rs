@@ -1,10 +1,13 @@
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::account::{self, Account, Credential};
 use crate::image::{self, Image, Picture};
+use crate::mcp;
 use crate::message::{self, Message, Origin, Part, Role};
 use crate::session;
 
@@ -63,7 +66,22 @@ const MIGRATIONS: &[&str] = &[
         tree text not null
     ) strict;
 ",
+    "
+    create table mcp_reviews (
+        path text primary key,
+        digest blob not null,
+        decision text not null
+    ) strict;
+
+    create table logins (
+        key text primary key,
+        credentials text not null
+    ) strict;
+",
 ];
+
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+static MEMORY: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -80,6 +98,12 @@ pub enum Error {
 #[derive(Debug)]
 pub struct Store {
     conn: Connection,
+    location: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct Logins {
+    conn: Mutex<Connection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,18 +135,34 @@ impl Store {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "wal")?;
         conn.pragma_update(None, "foreign_keys", true)?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        let store = Self { conn };
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        let store = Self {
+            conn,
+            location: path.to_owned(),
+        };
         store.migrate()?;
         Ok(store)
     }
 
     pub fn open_in_memory() -> Result<Self, Error> {
-        let conn = Connection::open_in_memory()?;
+        let number = MEMORY.fetch_add(1, Ordering::Relaxed);
+        let location = PathBuf::from(format!(
+            "file:goat-{}-{number}?mode=memory&cache=shared",
+            std::process::id()
+        ));
+        let conn = Connection::open(&location)?;
         conn.pragma_update(None, "foreign_keys", true)?;
-        let store = Self { conn };
+        let store = Self { conn, location };
         store.migrate()?;
         Ok(store)
+    }
+
+    pub fn logins(&self) -> Result<Logins, Error> {
+        let conn = Connection::open(&self.location)?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        Ok(Logins {
+            conn: Mutex::new(conn),
+        })
     }
 
     fn migrate(&self) -> Result<(), Error> {
@@ -504,6 +544,76 @@ impl Store {
             .execute("delete from accounts where id = ?1", [id])?
             > 0)
     }
+
+    pub fn mcp_reviews(&self) -> Result<Vec<mcp::Review>, Error> {
+        let mut statement = self
+            .conn
+            .prepare("select path, digest, decision from mcp_reviews")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, [u8; 32]>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (path, digest, decision) = row?;
+            Ok(mcp::Review {
+                path: PathBuf::from(path),
+                digest: mcp::Digest::from_bytes(digest),
+                decision: mcp::Decision::parse(&decision).ok_or(Error::Unknown("mcp decision"))?,
+            })
+        })
+        .collect()
+    }
+
+    pub fn save_mcp_review(&self, review: &mcp::Review) -> Result<(), Error> {
+        self.conn.execute(
+            "insert into mcp_reviews (path, digest, decision) values (?1, ?2, ?3)
+             on conflict (path) do update set digest = excluded.digest, decision = excluded.decision",
+            params![
+                review.path.to_string_lossy(),
+                review.digest.as_bytes(),
+                review.decision.as_str(),
+            ],
+        )?;
+        Ok(())
+    }
+}
+
+impl Logins {
+    pub fn get(&self, key: &str) -> Result<Option<String>, Error> {
+        Ok(self
+            .lock()
+            .query_row(
+                "select credentials from logins where key = ?1",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn save(&self, key: &str, credentials: &str) -> Result<(), Error> {
+        self.lock().execute(
+            "insert into logins (key, credentials) values (?1, ?2)
+             on conflict (key) do update set credentials = excluded.credentials",
+            [key, credentials],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove(&self, key: &str) -> Result<bool, Error> {
+        Ok(self
+            .lock()
+            .execute("delete from logins where key = ?1", [key])?
+            > 0)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 fn title(parts: &str) -> String {
@@ -557,6 +667,46 @@ fn now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_mcp_review_replaces_the_old_one_for_the_same_file() {
+        let store = Store::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".goat")).unwrap();
+        let path = dir.path().join(".goat/mcp.toml");
+        std::fs::write(&path, "[a]\nurl = \"https://a\"\n").unwrap();
+        let first = mcp::config(dir.path(), &dir.path().join("home"), |_| None, &[]).unreviewed;
+        std::fs::write(&path, "[b]\nurl = \"https://b\"\n").unwrap();
+        let second = mcp::config(dir.path(), &dir.path().join("home"), |_| None, &[]).unreviewed;
+
+        store
+            .save_mcp_review(&first[0].clone().decide(mcp::Decision::Allowed))
+            .unwrap();
+        store
+            .save_mcp_review(&second[0].clone().decide(mcp::Decision::Denied))
+            .unwrap();
+
+        assert_eq!(
+            store.mcp_reviews().unwrap(),
+            [second[0].clone().decide(mcp::Decision::Denied)]
+        );
+    }
+
+    #[test]
+    fn logins_are_shared_with_the_store_they_come_from() {
+        let store = Store::open_in_memory().unwrap();
+        let logins = store.logins().unwrap();
+
+        logins.save("mcp:https://a", "{\"v\":1}").unwrap();
+        logins.save("mcp:https://a", "{\"v\":2}").unwrap();
+
+        assert_eq!(
+            store.logins().unwrap().get("mcp:https://a").unwrap(),
+            Some("{\"v\":2}".to_owned())
+        );
+        assert!(logins.remove("mcp:https://a").unwrap());
+        assert_eq!(logins.get("mcp:https://a").unwrap(), None);
+    }
 
     #[test]
     fn an_image_is_stored_once_and_read_back() {

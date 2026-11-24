@@ -7,17 +7,20 @@ use anyhow::{Context, bail};
 use crossterm::style::Stylize;
 use goat_core::account::{self, Account};
 use goat_core::catalog::{self, Model};
-use goat_core::mcp::State;
+use goat_core::mcp::{self, Decision, State};
 use goat_core::provider::{Endpoints, Provider};
 use goat_core::session::{self, Environment, Event, Prompt, Session, Sink};
 use goat_core::store::{Recent, Sent, Store};
 
+use crate::ask;
 use crate::command::{self, Name};
 use crate::input::{self, Editor, Entry, Input, Keys, Mode, RawMode, TurnKeys};
 use crate::kitty;
 use crate::paths::Paths;
 use crate::render::{Banner, Ending, Terminal, Work};
-use crate::target::{self, Choices, Current, DEFAULT_EFFORT, Effort, Files, Offer, plural};
+use crate::target::{
+    self, Choices, Current, DEFAULT_EFFORT, Effort, Files, Offer, plural, server_line,
+};
 use crate::usage::{self, Row};
 
 const USER_AGENT: &str = concat!("goat/", env!("CARGO_PKG_VERSION"));
@@ -50,6 +53,7 @@ struct Chat {
     recent: Vec<Recent>,
     sent: Vec<Sent>,
     files: Files,
+    servers: Vec<(String, State)>,
     environment: Environment,
     database: PathBuf,
     naming: Option<Naming>,
@@ -87,6 +91,7 @@ impl Chat {
                 recent,
                 sent,
                 files,
+                servers,
                 naming,
                 ..
             } = self;
@@ -98,6 +103,7 @@ impl Chat {
                 .collect();
             *sent = session.sent()?;
             *files = Files::new(session.workspace().to_owned());
+            *servers = session.servers().0;
             let choices = Choices {
                 offers,
                 catalog,
@@ -105,6 +111,7 @@ impl Chat {
                 sent,
                 files,
                 skills: &session.skills().skills,
+                servers,
                 current: current(session),
             };
             let Some(pending) = naming else {
@@ -145,6 +152,7 @@ impl Chat {
             recent,
             sent,
             files,
+            servers,
             ..
         } = self;
         let model = session.model().to_owned();
@@ -157,6 +165,7 @@ impl Chat {
             sent,
             files,
             skills: &skills,
+            servers,
             current: Current {
                 account: session.account().id,
                 model: &model,
@@ -275,6 +284,8 @@ impl Chat {
             (Name::Resume, id) => self.resume(id)?,
             (Name::Rewind, picked) => self.rewind(picked).await?,
             (Name::Status, _) => self.show_status()?,
+            (Name::Mcp, "") => self.show_servers(),
+            (Name::Mcp, name) => self.sign_in(name).await?,
             (Name::Usage, _) => {
                 let lines: Vec<String> = self.usage().iter().map(Row::line).collect();
                 self.terminal.lines(&lines);
@@ -450,8 +461,53 @@ impl Chat {
             sent: &self.sent,
             files: &self.files,
             skills: &self.session.skills().skills,
+            servers: &self.servers,
             current: current(&self.session),
         }
+    }
+
+    fn show_servers(&mut self) {
+        let (states, problems) = self.session.servers();
+        if states.is_empty() && problems.is_empty() {
+            self.terminal
+                .reply("No MCP servers. Add one with `goat mcp add <name> <url>`");
+            return;
+        }
+        let mut lines: Vec<String> = states
+            .iter()
+            .map(|(name, state)| server_line(name, state))
+            .collect();
+        lines.extend(problems.iter().cloned());
+        self.terminal.lines(&lines);
+    }
+
+    async fn sign_in(&mut self, name: &str) -> anyhow::Result<()> {
+        let sign_in = Box::pin(self.session.sign_in(name)).await?;
+        self.terminal.reply(&format!(
+            "Opening your browser to sign in to {name}. If it does not open, visit:\n{}\nEsc cancels.",
+            sign_in.url()
+        ));
+        webbrowser::open(sign_in.url()).ok();
+        let mut finish = Box::pin(sign_in.finish());
+        let finished = loop {
+            tokio::select! {
+                result = &mut finish => break Some(result),
+                event = self.keys.next() => {
+                    if input::interrupts(&event?) {
+                        break None;
+                    }
+                }
+            }
+        };
+        match finished {
+            Some(result) => {
+                result.with_context(|| format!("sign in to {name}"))?;
+                self.session.reconnect(name);
+                self.terminal.outcome(Ok(&format!("Signed in to {name}")));
+            }
+            None => self.terminal.outcome(Ok("Sign-in cancelled")),
+        }
+        Ok(())
     }
 
     fn show_status(&mut self) -> anyhow::Result<()> {
@@ -469,11 +525,7 @@ impl Chat {
         let (states, problems) = self.session.servers();
         let mut shown: Vec<String> = states
             .iter()
-            .map(|(name, state)| match state {
-                State::Idle => name.clone(),
-                State::Connected => format!("{name} (connected)"),
-                State::Failed(problem) => format!("{name} (failed: {problem})"),
-            })
+            .map(|(name, state)| server_line(name, state))
             .collect();
         shown.extend(problems.iter().cloned());
         let servers = if shown.is_empty() {
@@ -589,6 +641,7 @@ pub(crate) async fn start(paths: &Paths, choice: Choice) -> anyhow::Result<()> {
         model,
         choice.model.as_deref(),
     )?;
+    review_servers(&store, paths)?;
     let mut session = Session::create(
         store,
         http()?,
@@ -616,6 +669,7 @@ pub(crate) async fn resume(paths: &Paths, choice: Choice, id: Option<&str>) -> a
     let catalog = catalog::models()?;
     let offers = offers(&store)?;
     let opening = reopen(&store, &offers, &catalog, id, choice.model.as_deref())?;
+    review_servers(&store, paths)?;
     let mut session = Session::resume(
         store,
         http()?,
@@ -626,6 +680,29 @@ pub(crate) async fn resume(paths: &Paths, choice: Choice, id: Option<&str>) -> a
     )?;
     session.set_effort(opening.effort.as_deref());
     run(session, offers, catalog, paths).await
+}
+
+fn review_servers(store: &Store, paths: &Paths) -> anyhow::Result<()> {
+    let reviews = store.mcp_reviews()?;
+    let config = mcp::config(&paths.workspace, &paths.home, |_| None, &reviews);
+    for file in config.unreviewed {
+        ask::say(&format!(
+            "This project defines MCP servers in {}. goat runs them only if you allow it:",
+            directory(&file.path, &paths.home)
+        ))?;
+        for line in file.text.lines() {
+            ask::say(&format!("  {line}"))?;
+        }
+        let decision = match ask::choose(
+            "Allow these servers? goat asks again when the file changes.",
+            &["Allow", "Deny"],
+        )? {
+            0 => Decision::Allowed,
+            _ => Decision::Denied,
+        };
+        store.save_mcp_review(&file.decide(decision))?;
+    }
+    Ok(())
 }
 
 fn reopen(
@@ -678,6 +755,7 @@ fn open(
         sent: &[],
         files: &Files::listed(Vec::new()),
         skills: &[],
+        servers: &[],
         current: Current {
             account: account.id,
             model: &model,
@@ -718,6 +796,7 @@ async fn run(
         recent: Vec::new(),
         sent: Vec::new(),
         files: Files::listed(Vec::new()),
+        servers: Vec::new(),
         environment: environment(paths),
         database: paths.database.clone(),
         naming: None,
@@ -752,7 +831,7 @@ async fn run(
     }
 }
 
-fn directory(workspace: &Path, home: &Path) -> String {
+pub(crate) fn directory(workspace: &Path, home: &Path) -> String {
     match workspace.strip_prefix(home) {
         Ok(inside) if inside.as_os_str().is_empty() => "~".to_owned(),
         Ok(inside) => format!("~/{}", inside.display()),
