@@ -74,7 +74,7 @@ impl SignIn {
         let code = callback.code.ok_or(oauth::Error::MissingCode)?;
         let csrf = callback.state.unwrap_or_default();
         self.state
-            .handle_callback(&code, &csrf)
+            .handle_callback_with_issuer(&code, &csrf, callback.issuer.as_deref())
             .await
             .map_err(|source| Error::Authorize {
                 server: self.server,

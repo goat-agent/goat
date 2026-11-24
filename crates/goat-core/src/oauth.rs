@@ -120,6 +120,7 @@ impl Listener {
 pub(crate) struct Callback {
     pub(crate) code: Option<String>,
     pub(crate) state: Option<String>,
+    pub(crate) issuer: Option<String>,
     pub(crate) client_id: Option<String>,
     pub(crate) error: Option<String>,
 }
@@ -136,6 +137,7 @@ impl Callback {
             match &*key {
                 "code" => callback.code = value,
                 "state" => callback.state = value,
+                "iss" => callback.issuer = value,
                 "client_id" => callback.client_id = value,
                 "error" => callback.error = value,
                 _ => {}
@@ -278,6 +280,14 @@ mod tests {
             callback.into_code("xyz"),
             Err(Error::StateMismatch)
         ));
+    }
+
+    #[test]
+    fn callback_keeps_the_issuer_of_the_authorization_response() {
+        let callback =
+            Callback::parse("/auth/callback?code=abc&state=xyz&iss=https%3A%2F%2Fas.example")
+                .unwrap();
+        assert_eq!(callback.issuer.as_deref(), Some("https://as.example"));
     }
 
     #[test]
