@@ -14,6 +14,7 @@ futures.workspace = true
 getrandom.workspace = true
 htmd.workspace = true
 ignore.workspace = true
+jiff.workspace = true
 image.workspace = true
 reqwest.workspace = true
 rmcp.workspace = true

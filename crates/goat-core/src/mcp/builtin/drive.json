@@ -1,0 +1,398 @@
+[
+  {
+    "name": "copy_file",
+    "description": "Call this tool to copy an existing File in Google Drive.\nThe tool allows specifying a new title and a parent folder for the copy.\nIf the title is not specified, the copy title will be 'Copy of {original title}'.\nIf the parent folder is not specified, the copy will be created in the same folder as the original file, unless the requesting user does not have write access to that folder, in which case the copy will be created in the user's root folder.\nPregenerated file IDs (`pregeneratedId`, obtained from `generate_ids`) are supported when copying non-Google Workspace files.\nReturns the newly created File object upon successful copying.\n",
+    "inputSchema": {
+      "description": "Request to copy a file.",
+      "properties": {
+        "fileId": {
+          "description": "Required. The ID of the file to copy.",
+          "type": "string"
+        },
+        "parentId": {
+          "description": "The parent id of the newly created file. If empty, the file will be created with the same parent as the original file.",
+          "type": "string"
+        },
+        "pregeneratedId": {
+          "description": "Optional. The pregenerated id of the newly created file, obtained from the `generate_ids` tool. Supported for binary/blob files; not supported for native Google Workspace document types.",
+          "type": "string"
+        },
+        "title": {
+          "description": "The title of the newly created file. If empty, the title will be 'Copy of {original file title}'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fileId"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false,
+      "title": "Copy file"
+    }
+  },
+  {
+    "name": "create_file",
+    "description": "Call this tool to create or upload a File to Google Drive.\n\nIf uploading content, prefer `textContent` for text content. For non-UTF8 contents, use the `base64Content` field and base64 encode the data to set on that field.\n\nReturns a single File object upon successful creation.\n\nThe following Google first-party mime types can be created without providing content:\n\n - `application/vnd.google-apps.document` \n - `application/vnd.google-apps.spreadsheet` \n - `application/vnd.google-apps.presentation` \n\nFolders can be created by setting the mime type to `application/vnd.google-apps.folder`.\n\nWhen uploading content, the `contentMimeType` field is required and should match the type of the content being uploaded.\n\nBy default, supported content will be converted to Google first-party mime types.\n\nTo disable conversions for first-party mime types, set `disableConversionToGoogleType` to true.\n\nPregenerated file IDs (`pregeneratedId`, obtained from `generate_ids`) are supported for non-Google Workspace files and folders (`application/vnd.google-apps.folder`). When uploading content with `pregeneratedId`, `disableConversionToGoogleType` must be set to true.\n",
+    "inputSchema": {
+      "description": "Request to upload a file.",
+      "properties": {
+        "base64Content": {
+          "description": "Optional. The base64 encoded content to upload. It's an error to set this and `textContent`.",
+          "type": "string"
+        },
+        "content": {
+          "deprecated": true,
+          "description": "Deprecated: Use `base64Content` or `textContent` instead. The content of the file encoded as base64. The content field should always be base64 encoded regardless of the mime type of the file.",
+          "type": "string"
+        },
+        "contentMimeType": {
+          "description": "The mime type of the content being uploaded. Required when any type of content is provided.",
+          "type": "string"
+        },
+        "disableConversionToGoogleType": {
+          "description": "Set to true to retain the passed in content mime type and not convert to a Google type. For example, without this a `text/plain` content mime type will be converted to to `application/vnd.google-apps.document`. Has no effect for types that do not have a Google equivalent.",
+          "type": "boolean"
+        },
+        "inheritedPermissionsDisabled": {
+          "description": "Set to true to disable inherited permissions on the created folder, restricting access to only users with direct permissions on the folder.",
+          "type": "boolean"
+        },
+        "mimeType": {
+          "deprecated": true,
+          "description": "Deprecated: DO NOT USE!! Set `contentMimeType` instead.",
+          "type": "string"
+        },
+        "parentId": {
+          "description": "The parent id of the file.",
+          "type": "string"
+        },
+        "pregeneratedId": {
+          "description": "Optional. The pregenerated id of the file to create, obtained from the `generate_ids` tool. Supported for binary/blob files and folders (`application/vnd.google-apps.folder`); not supported for native Google Workspace document types. When uploading content with a pregenerated id, `disableConversionToGoogleType` must be set to true.",
+          "type": "string"
+        },
+        "textContent": {
+          "description": "Optional. The (UTF-8) text content to upload. It's an error to set this and `base64Content`.",
+          "type": "string"
+        },
+        "title": {
+          "description": "Required. The title of the file.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false,
+      "title": "Create file"
+    }
+  },
+  {
+    "name": "download_file_content",
+    "description": "Call this tool to download the content of a Drive file as a base64 encoded string.\n\nIf the file is a Google Drive first-party mime type, the `exportMimeType` field specifies the desired export mime type. When the field is unset, defaults to plain text types (e.g. `text/plain`, `text/csv`).\n\nIf the file is not found, try using other tools like `search_files` to find the file the user is requesting.\n\nIf the user wants a natural language representation of their Drive content, use the `read_file_content` tool (`read_file_content` should be smaller and easier to parse).\n",
+    "inputSchema": {
+      "description": "Defines a request to download a file's content.",
+      "properties": {
+        "exportMimeType": {
+          "description": "Optional. For Google native files, the MIME type to export the file to, ignored otherwise. Defaults to text if not specified.",
+          "type": "string"
+        },
+        "fileId": {
+          "description": "Required. The ID of the file to retrieve.",
+          "type": "string"
+        },
+        "revisionId": {
+          "description": "Optional. The revision id for the version of the file to download. If not specified, the latest revision will be downloaded.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fileId"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Download file content"
+    }
+  },
+  {
+    "name": "get_file_metadata",
+    "description": "Call this tool to find general metadata about a user's Drive file.\n\nContext window token management can be tuned via `snippetVerbosity` (default is `SnippetVerbosity.DETAILED`) or if only metadata is needed, use `excludeContentSnippets`.\n\nIf the file is not found, try using other tools like `search_files` to find the file the user is requesting.\n",
+    "inputSchema": {
+      "description": "Request to get the file.",
+      "properties": {
+        "excludeContentSnippets": {
+          "description": "If `true`, the content snippet will be excluded from the response. Must not be set to `true` if `snippetVerbosity` is specified.",
+          "type": "boolean"
+        },
+        "fileId": {
+          "description": "Required. The ID of the file to retrieve.",
+          "type": "string"
+        },
+        "includeExternalityState": {
+          "description": "Optional. When true, also returns `externality_state`. Defaults to `false`.",
+          "type": "boolean"
+        },
+        "includeRichMetadata": {
+          "description": "Optional. When true, also returns `owner_name`, `last_modifying_user_name`, `last_modifying_user_email`, `visibility`, and `last_commented_time`. Defaults to `false`.",
+          "type": "boolean"
+        },
+        "snippetVerbosity": {
+          "description": "Optional. Set to specify how verbose the snippets should be. Defaults to `DETAILED` if not set. Must not be set if `excludeContentSnippets` is `true`.",
+          "enum": [
+            "UNSPECIFIED",
+            "BRIEF",
+            "MEDIUM",
+            "DETAILED",
+            "MAX_ALLOWED"
+          ],
+          "type": "string",
+          "x-google-enum-descriptions": [
+            "",
+            "Limits the returned snippet to about 1000 characters.",
+            "Limits the returned snippet to about 2500 characters.",
+            "Limits the returned snippet to about 5000 characters.",
+            "The verbosity is greatly increased, limited by the overall response size."
+          ]
+        }
+      },
+      "required": [
+        "fileId"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get file metadata"
+    }
+  },
+  {
+    "name": "get_file_permissions",
+    "description": "Call this tool to list the permissions of a Drive File.\n",
+    "inputSchema": {
+      "description": "Request to get file permissions.",
+      "properties": {
+        "fileId": {
+          "description": "Required. The ID of the file to get permissions for.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fileId"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get file permissions"
+    }
+  },
+  {
+    "name": "list_recent_files",
+    "description": "Call this tool to find recent files for a user specified a sort order. Default sort order is `recency` if orderBy is not set or set to an unsupported value.\n\nContext window token management can be tuned via `snippetVerbosity` (default is `SnippetVerbosity.DETAILED`) or if only metadata is needed, use `excludeContentSnippets`.\n\nSupported sort orders are:\n\n - `recency`: The most recent timestamp from the file's date-time fields.\n - `lastModified`: The last time the file was modified by anyone.\n - `lastModifiedByMe`: The last time the file was modified by the user.\n\nThe default page size is 10. Utilize `nextPageToken` to paginate through the results.\n",
+    "inputSchema": {
+      "description": "Request to list files.",
+      "properties": {
+        "excludeContentSnippets": {
+          "description": "If `true`, the content snippet will be excluded from the response. Must not be set to `true` if `snippetVerbosity` is specified.",
+          "type": "boolean"
+        },
+        "includeExternalityState": {
+          "description": "Optional. When true, also returns `externality_state` for each file. Defaults to `false`.",
+          "type": "boolean"
+        },
+        "orderBy": {
+          "description": "The sort order for the files.",
+          "type": "string"
+        },
+        "pageSize": {
+          "description": "The maximum number of files to return.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "pageToken": {
+          "description": "The page token to use for pagination.",
+          "type": "string"
+        },
+        "snippetVerbosity": {
+          "description": "Optional. Set to specify how verbose the snippets should be. Defaults to `DETAILED` if not set. Must not be set if `excludeContentSnippets` is `true`.",
+          "enum": [
+            "UNSPECIFIED",
+            "BRIEF",
+            "MEDIUM",
+            "DETAILED",
+            "MAX_ALLOWED"
+          ],
+          "type": "string",
+          "x-google-enum-descriptions": [
+            "",
+            "Limits the returned snippet to about 1000 characters.",
+            "Limits the returned snippet to about 2500 characters.",
+            "Limits the returned snippet to about 5000 characters.",
+            "The verbosity is greatly increased, limited by the overall response size."
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List recent files"
+    }
+  },
+  {
+    "name": "read_file_content",
+    "description": "Call this tool to fetch a natural language representation of a known Drive file, and if specified, its comments.\n\nREQUIREMENTS & WORKFLOW:\n - `fileId` is required. You MUST pass an exact Drive file ID returned by a previous discovery tool (`search_files` or `list_recent_files`) or provided explicitly in the user prompt.\n - If given a file title, name, or topic without an explicit `fileId`, you MUST FIRST call `search_files` to find the file and retrieve its `fileId` before invoking this tool.\n - Set `includeComments` to `true` when the user asks about comments, feedback, action items, open questions, or discussion threads on the file, or before replying to or resolving a comment.\n\nThe file content may be incomplete for very large files. The text representation will change over time, so don't make assumptions about the particular format of the text returned by this tool. If supported and specified, comment tags will be included in the content.\n\nSupported Mime Types:\n\n - `application/vnd.google-apps.document` (supports comments)\n - `application/vnd.google-apps.presentation` (supports comments)\n - `application/vnd.google-apps.spreadsheet` (supports comments)\n - `application/pdf` \n - `application/msword` \n - `application/vnd.openxmlformats-officedocument.wordprocessingml.document` \n - `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` \n - `application/vnd.openxmlformats-officedocument.presentationml.presentation` \n - `application/vnd.oasis.opendocument.spreadsheet` \n - `application/vnd.oasis.opendocument.presentation` \n - `application/x-vnd.oasis.opendocument.text` \n - `image/png` \n - `image/jpeg` \n - `image/jpg` \n - `text/*` \n - `video/*` (when a transcript is available)\n\nIf the file is not found, try using other tools like `search_files` to find the file the user is requesting using keywords.\n",
+    "inputSchema": {
+      "description": "Request to read file content with support for fetching comments.",
+      "properties": {
+        "fileId": {
+          "description": "Required. The ID of the file to retrieve.",
+          "type": "string"
+        },
+        "includeComments": {
+          "description": "Whether to include comments in the response. Set to true when the user asks about comments, feedback, action items, open questions, or discussion threads on the file, or before replying to or resolving a comment. Comments will be inlined in the text content of the file with a mapping to the comment threads. Note: Comments are only supported for Google Docs, Slides, and Sheets.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "fileId"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Read file content"
+    }
+  },
+  {
+    "name": "search_files",
+    "description": "Search for Drive files using a structured query (syntax: `query_term operator values`). Only terms in this list are supported.\nCombine clauses with `and`, `or`, `not`, and parentheses. String values must be single-quoted; escape embedded quotes as `\\'`.\nContext window token management can be tuned via `snippetVerbosity` (default is `SnippetVerbosity.DETAILED`) or if only metadata is needed, use `excludeContentSnippets`.\nTo display a folder hierarchy, directory tree structure, or recursive directory and file counts, prefer `get_folder_tree` (when available) over emulating tree traversal with `search_files`; use `search_files` first only if you need to look up a named folder's ID.\n\nUse `title contains` instead of `title =` when searching by file or folder name, unless the user explicitly asks for an exact full-title match. Do NOT include document type terms (e.g., 'presentation', 'slides', 'deck', 'document', 'doc', 'spreadsheet', 'sheet', 'pdf', 'folder', 'project') inside `title` or `fullText` clauses. Separate title keywords from file type terms and map them to `mimeType` clauses in the query.\n\nWhere a folder ID is expected (`parentId`, `ancestors`), `'root'` means the user's \"My Drive\".\n\nQuery terms & operators:\n\n - `title` (ops: contains, =, !=) — file title\n - `fullText` (ops: contains) — title or body text\n - `mimeType` (ops: contains, =, !=) — MIME type\n - `modifiedTime`, `viewedByMeTime`, `createdTime` (ops: `<=`, `<`, `=`, `!=`, `>`, `>=`). Use RFC 3339 UTC, e.g., `2012-06-04T12:00:00-08:00`. Date types not comparable.\n - `parentId` (ops: `=`, `!=`). Direct children only.\n - `ancestors` (use `'<folderId>' in ancestors`). Files anywhere under the folder, including nested subfolders. Recently moved files may take a short time to appear.\n - `owner` (ops: `=`, `!=`). Use `'me'` for the requesting user.\n - `readers`, `writers` (use `'me' in readers` or `'user@example.com' in writers`). \n - `creator` (ops: `=`, `!=`). `'me'` or an email — who created the file.\n - `sharedFrom` (ops: `=`, `!=`). An email — who shared the file with the user.\n - `sharedTo` (ops: `=`, `!=`). An email — who the user shared the file with.\n - `visibility` (ops: `=`, `!=`): `'anyoneWithLink'`, `'anyoneCanFind'`, `'anyone'`, `'domainWithLink'`, `'domainCanFind'`, `'domain'`, `'limited'` (not shared via link, domain or publicly), `'external'` (shared with people outside the user's organization).\n - `sharedWithMe`, `starred` (ops: `=`, `!=`). `true` or `false`.\n - `folderProperties` (use `'value' in folderProperties`): `'syncedComputer'` (synced computer), `'syncFolder'` (synced folder).\n - `followUp` (ops: `=`, `!=`): `'assignedcomments'` (aliases `'todos'`, `'actionitems'`), `'suggestions'`, `'any'` — files with open follow-ups for the user.\n - `trashed` (ops: `=`, `!=`). `true` or `false` (default `false`).\n\nOther operators: `and`, `or`, `not`, `in`.\n\nExamples:\n\n - `title contains 'hello' and title contains 'goodbye'`\n - `modifiedTime > '2024-01-01T00:00:00Z' and (mimeType contains 'image/' or mimeType contains 'video/')`\n - `mimeType = 'application/vnd.google-apps.project'` (for Drive projects)\n - `parentId = '1234567'` (direct children of a folder)\n - `'1234567' in ancestors and mimeType = 'application/pdf'` (PDFs anywhere under a folder)\n - `fullText contains 'hello'`\n - `owner = 'test@example.org'`\n - `sharedWithMe = true`\n - `starred = true`\n - `owner = 'me'` (for files owned by the user)\n - `'colleague@example.org' in writers and sharedFrom = 'colleague@example.org'`\n - `owner = 'me' and visibility = 'anyone'` (user's files shared publicly or by link)\n - `'syncedComputer' in folderProperties`\n\nUse `nextPageToken` to paginate. Duplicate results can occur across page boundaries. An empty response means no more results.\n",
+    "inputSchema": {
+      "description": "Request to search files.",
+      "properties": {
+        "excludeContentSnippets": {
+          "description": "If `true`, the content snippet will be excluded from the response. Must not be set to `true` if `snippetVerbosity` is specified.",
+          "type": "boolean"
+        },
+        "includeExternalityState": {
+          "description": "Optional. When true, also returns `externality_state` for each file. Defaults to `false`.",
+          "type": "boolean"
+        },
+        "includeRichMetadata": {
+          "description": "Optional. When true, also returns `owner_name`, `last_modifying_user_name`, `last_modifying_user_email`, `visibility`, and `last_commented_time`. Defaults to `false`.",
+          "type": "boolean"
+        },
+        "orderBy": {
+          "description": "Optional. The sort order for the search results. Specifies a single sort clause with syntax `<field> [asc|desc]`. Supported fields: - `modifiedTime` (defaults to `desc`) - `viewedByMeTime` (defaults to `desc`) Examples: `modifiedTime desc`, `viewedByMeTime`. If omitted or empty, results are ordered by relevance descending. Unsupported fields or invalid directions return an error.",
+          "type": "string"
+        },
+        "pageSize": {
+          "description": "The maximum number of files to return in each page.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "pageToken": {
+          "description": "The page token to use for pagination.",
+          "type": "string"
+        },
+        "query": {
+          "description": "The search query.",
+          "type": "string"
+        },
+        "snippetVerbosity": {
+          "description": "Optional. Set to specify how verbose the snippets should be. Defaults to `DETAILED` if not set. Must not be set if `excludeContentSnippets` is `true`.",
+          "enum": [
+            "UNSPECIFIED",
+            "BRIEF",
+            "MEDIUM",
+            "DETAILED",
+            "MAX_ALLOWED"
+          ],
+          "type": "string",
+          "x-google-enum-descriptions": [
+            "",
+            "Limits the returned snippet to about 1000 characters.",
+            "Limits the returned snippet to about 2500 characters.",
+            "Limits the returned snippet to about 5000 characters.",
+            "The verbosity is greatly increased, limited by the overall response size."
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Search files"
+    }
+  },
+  {
+    "name": "upload_file_revision",
+    "description": "Call this tool to upload a new content revision for an existing blob file in Google Drive.\n\nPrefer `textContent` for UTF-8 text content. For binary or non-UTF8 contents, use the `base64Content` field and base64 encode the data.\n\nThe `contentMimeType` field is required and should match the type of the content being uploaded.\n\nIf the file is not found, try using other tools like `search_files` to find the file the user is attempting to update.\n",
+    "inputSchema": {
+      "description": "Request to upload a new revision for a blob file.",
+      "properties": {
+        "base64Content": {
+          "description": "Optional base64-encoded binary content to upload. Either base64Content or textContent must be set, but not both.",
+          "type": "string"
+        },
+        "contentMimeType": {
+          "description": "Required. The MIME type of the content to upload.",
+          "type": "string"
+        },
+        "etag": {
+          "description": "Optional. Opaque version token used for optimistic concurrency control (preventing concurrent edit conflicts). If set, the upload fails with FAILED_PRECONDITION if the file has been modified since the etag was returned. OMIT this field if you have not previously retrieved the file. Never fabricate or manually format an etag value. ONLY pass the exact, unaltered string previously received in `File.etag` or `Revision.file_etag` from a prior read or write operation.",
+          "type": "string"
+        },
+        "fileId": {
+          "description": "Required. The ID of the file to update with a new revision.",
+          "type": "string"
+        },
+        "textContent": {
+          "description": "Optional UTF-8 text content to upload. Either base64Content or textContent must be set, but not both.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fileId"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false,
+      "title": "Upload file revision"
+    }
+  }
+]
