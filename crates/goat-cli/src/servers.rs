@@ -12,6 +12,8 @@ use crate::paths::Paths;
 
 #[derive(Subcommand)]
 pub(crate) enum Action {
+    #[command(about = "List servers and their sign-ins")]
+    List,
     #[command(about = "Add a server reached at a URL, or started by the command after --")]
     Add(Addition),
     #[command(about = "Remove a server and its sign-in")]
@@ -68,14 +70,14 @@ pub(crate) struct Addition {
     command: Vec<String>,
 }
 
-pub(crate) async fn run(paths: &Paths, action: Option<Action>) -> anyhow::Result<()> {
+pub(crate) async fn run(paths: &Paths, action: Action) -> anyhow::Result<()> {
     let store = Store::open(&paths.database)?;
     match action {
-        None => list(&store, paths),
-        Some(Action::Add(addition)) => add(&store, paths, addition).await,
-        Some(Action::Remove { name }) => remove(&store, paths, &name),
-        Some(Action::Login { name }) => login(&store, paths, &name).await,
-        Some(Action::Logout { name }) => logout(&store, paths, &name),
+        Action::List => list(&store, paths),
+        Action::Add(addition) => add(&store, paths, addition).await,
+        Action::Remove { name } => remove(&store, paths, &name),
+        Action::Login { name } => login(&store, paths, &name).await,
+        Action::Logout { name } => logout(&store, paths, &name),
     }
 }
 
@@ -267,7 +269,7 @@ fn find<'a>(config: &'a Config, name: &str) -> anyhow::Result<&'a Server> {
         .servers
         .iter()
         .find(|server| server.name == name)
-        .with_context(|| format!("no MCP server named {name}; see `goat mcp`"))
+        .with_context(|| format!("no MCP server named {name}; see `goat mcp list`"))
 }
 
 fn target(server: &Server) -> &str {

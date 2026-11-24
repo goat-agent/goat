@@ -10,24 +10,26 @@ use crate::servers;
 
 #[derive(Subcommand)]
 pub(crate) enum Action {
+    #[command(about = "List plugins and their sign-ins")]
+    List,
     #[command(about = "Sign in to a plugin in the browser; name#account adds another account")]
     Login { name: String },
     #[command(about = "Forget the sign-in to a plugin")]
     Logout { name: String },
 }
 
-pub(crate) async fn run(paths: &Paths, action: Option<Action>) -> anyhow::Result<()> {
+pub(crate) async fn run(paths: &Paths, action: Action) -> anyhow::Result<()> {
     let store = Store::open(&paths.database)?;
     let plugins = plugin::builtin()?;
     match action {
-        None => {
+        Action::List => {
             for line in lines(&plugins, &store.logins()?)? {
                 ask::say(&line)?;
             }
             Ok(())
         }
-        Some(Action::Login { name }) => login(&store, &plugins, &name).await,
-        Some(Action::Logout { name }) => logout(&store, &plugins, &name),
+        Action::Login { name } => login(&store, &plugins, &name).await,
+        Action::Logout { name } => logout(&store, &plugins, &name),
     }
 }
 
@@ -64,7 +66,7 @@ pub(crate) fn find<'a>(plugins: &'a [Plugin], name: &str) -> anyhow::Result<&'a 
     plugins
         .iter()
         .find(|plugin| plugin.name == name)
-        .with_context(|| format!("no plugin named {name}; see `goat plugin`"))
+        .with_context(|| format!("no plugin named {name}; see `goat plugin list`"))
 }
 
 async fn login(store: &Store, plugins: &[Plugin], name: &str) -> anyhow::Result<()> {
