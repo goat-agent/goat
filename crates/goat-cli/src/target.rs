@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use goat_core::account;
 use goat_core::catalog::Model;
-use goat_core::mcp::State;
+use goat_core::mcp::{State, Status};
 use goat_core::plugin::Plugin;
 use goat_core::skill::Skill;
 use goat_core::store::{Recent, Sent};
@@ -35,7 +35,7 @@ pub(crate) struct Choices<'a> {
     pub(crate) sent: &'a [Sent],
     pub(crate) files: &'a Files,
     pub(crate) skills: &'a [Skill],
-    pub(crate) servers: &'a [(String, State)],
+    pub(crate) servers: &'a [Status],
     pub(crate) plugins: &'a [Plugin],
     pub(crate) current: Current<'a>,
 }
@@ -192,10 +192,10 @@ impl Choices<'_> {
     pub(crate) fn servers(&self, typed: &str) -> Vec<Candidate> {
         self.servers
             .iter()
-            .filter(|(name, _)| name.starts_with(typed))
-            .map(|(name, state)| Candidate {
-                value: name.clone(),
-                label: server_line(name, state),
+            .filter(|status| status.name.starts_with(typed))
+            .map(|status| Candidate {
+                value: status.name.clone(),
+                label: server_line(status),
                 is_current: false,
                 efforts: Vec::new(),
                 effort: 0,
@@ -499,13 +499,20 @@ pub(crate) fn plural(count: u64, word: &str) -> String {
     }
 }
 
-pub(crate) fn server_line(name: &str, state: &State) -> String {
-    match state {
-        State::Idle => name.to_owned(),
-        State::Connected => format!("{name} (connected)"),
-        State::NeedsSignIn => format!("{name} (needs sign-in)"),
-        State::Failed(problem) => format!("{name} (failed: {problem})"),
+pub(crate) fn server_line(status: &Status) -> String {
+    let mut notes = match &status.state {
+        State::Idle => Vec::new(),
+        State::Connected => vec!["connected".to_owned()],
+        State::NeedsSignIn => vec!["needs sign-in".to_owned()],
+        State::Failed(problem) => vec![format!("failed: {problem}")],
+    };
+    if let Some(plugin) = &status.plugin {
+        notes.push(format!("{plugin} plugin"));
     }
+    if notes.is_empty() {
+        return status.name.clone();
+    }
+    format!("{} ({})", status.name, notes.join(", "))
 }
 
 #[cfg(test)]

@@ -10,7 +10,10 @@ const SKILL: &str = "SKILL.md";
 const CATALOG: &str = "\
 Plugins the user has not signed in to: {plugins}. \
 When one would help, ask the user to run `goat plugin login <name>` and start a new session.";
-const BUILTIN: &[&[(&str, &str)]] = &[];
+const BUILTIN: &[&[(&str, &str)]] = &[&[
+    (MANIFEST, include_str!("../plugins/gmail/plugin.toml")),
+    (SERVERS, include_str!("../plugins/gmail/mcp.toml")),
+]];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plugin {
@@ -95,13 +98,17 @@ impl Plugin {
             .filter(|server| matches!(server.transport, mcp::Transport::Url { .. }))
     }
 
-    pub(crate) fn join(&self, skills: &mut Vec<Skill>, servers: &mut Vec<Server>) {
-        skills.extend(self.skills.iter().cloned());
+    pub fn add_servers(&self, servers: &mut Vec<Server>) {
         for server in &self.servers {
             if !servers.iter().any(|known| known.name == server.name) {
                 servers.push(server.clone());
             }
         }
+    }
+
+    pub(crate) fn join(&self, skills: &mut Vec<Skill>, servers: &mut Vec<Server>) {
+        skills.extend(self.skills.iter().cloned());
+        self.add_servers(servers);
     }
 }
 

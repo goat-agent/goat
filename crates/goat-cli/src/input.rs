@@ -1058,6 +1058,16 @@ fn width(columns: usize) -> usize {
     columns.max(PROMPT.width() + 2)
 }
 
+pub(crate) fn decision(event: &Event) -> Option<bool> {
+    match event {
+        Event::Key(key) if key.kind != KeyEventKind::Release => Some(
+            matches!(key.code, KeyCode::Char('y' | 'Y'))
+                && !key.modifiers.contains(KeyModifiers::CONTROL),
+        ),
+        _ => None,
+    }
+}
+
 pub(crate) fn interrupts(event: &Event) -> bool {
     matches!(event, Event::Key(key) if key.kind != KeyEventKind::Release && is_interrupt(*key))
 }
@@ -1138,6 +1148,17 @@ mod tests {
 
     use super::*;
     use crate::target::{Current, Files, Offer};
+
+    #[test]
+    fn only_y_allows_a_question() {
+        let press = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+
+        assert_eq!(decision(&press(KeyCode::Char('y'))), Some(true));
+        assert_eq!(decision(&press(KeyCode::Char('Y'))), Some(true));
+        assert_eq!(decision(&press(KeyCode::Char('n'))), Some(false));
+        assert_eq!(decision(&press(KeyCode::Enter)), Some(false));
+        assert_eq!(decision(&Event::Resize(80, 24)), None);
+    }
 
     fn line(text: &str, cursor: usize) -> Line {
         Line {

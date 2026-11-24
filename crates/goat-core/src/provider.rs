@@ -68,6 +68,9 @@ pub struct Endpoints {
     pub openai: Box<str>,
     pub codex: Box<str>,
     pub anthropic: Box<str>,
+    pub google_sign_in: Box<str>,
+    pub google_token: Box<str>,
+    pub gmail: Box<str>,
 }
 
 impl Default for Endpoints {
@@ -76,6 +79,9 @@ impl Default for Endpoints {
             openai: openai::BASE_URL.into(),
             codex: openai::CODEX_BASE_URL.into(),
             anthropic: anthropic::BASE_URL.into(),
+            google_sign_in: "https://accounts.google.com/o/oauth2/v2/auth".into(),
+            google_token: "https://oauth2.googleapis.com/token".into(),
+            gmail: "https://gmail.googleapis.com".into(),
         }
     }
 }

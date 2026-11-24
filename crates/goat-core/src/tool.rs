@@ -98,13 +98,56 @@ pub struct Call {
     pub target: Box<str>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Step {
     Started(Call),
     Failed(Box<str>),
     Changed(Diff),
     Loaded(Box<str>),
     Shown(Picture),
+    Confirm(Question),
+}
+
+#[derive(Debug)]
+pub struct Question {
+    text: Box<str>,
+    answer: std::cell::RefCell<Option<Answer>>,
+}
+
+#[derive(Debug)]
+pub struct Answer(tokio::sync::oneshot::Sender<bool>);
+
+impl Question {
+    pub(crate) fn new(text: String) -> (Self, tokio::sync::oneshot::Receiver<bool>) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let question = Self {
+            text: text.into(),
+            answer: std::cell::RefCell::new(Some(Answer(tx))),
+        };
+        (question, rx)
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn take_answer(&self) -> Option<Answer> {
+        self.answer.borrow_mut().take()
+    }
+}
+
+impl PartialEq for Question {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+    }
+}
+
+impl Eq for Question {}
+
+impl Answer {
+    pub fn give(self, is_allowed: bool) {
+        self.0.send(is_allowed).ok();
+    }
 }
 
 #[derive(Debug, Deserialize)]

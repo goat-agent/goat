@@ -37,6 +37,7 @@ async fn fifty_turns_stay_within_the_memory_budget() {
             openai: server.url.as_str().into(),
             codex: server.url.as_str().into(),
             anthropic: server.url.as_str().into(),
+            ..Endpoints::default()
         },
         plugins: Vec::new(),
     };

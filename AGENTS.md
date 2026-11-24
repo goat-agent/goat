@@ -41,10 +41,12 @@ Run the first three and `cargo deny check` before you finish. The toolchain is p
 - MCP is configured only by the user: `mcp.toml` files plus `goat mcp`. A project's `.goat/mcp.toml` loads only after the user allows its exact content (`mcp_reviews`, path and sha256); `goat mcp add`/`remove` keep a file allowed only if it was allowed before the edit. Vendor-specific integrations belong in plugins, not in `mcp`.
 - MCP OAuth is rmcp's `auth` feature. Sign-ins live in `logins` under `mcp:<url>`, as rmcp's `StoredCredentials` JSON, read on every request. rmcp needs a `Send + Sync` store, so it goes through `Store::logins`, a second connection to the same database; plugins share the table under `plugin:<name>`.
 - Plugins are built in: each folder in `crates/goat-core/plugins/` is added to `BUILTIN` in `plugin.rs` with `include_str!`, and a test loads every one. A plugin's servers sign in under the same `mcp:<url>` keys as the user's own, so a plugin needs no storage of its own. Names of servers, plugins and accounts use letters, digits, `-` and `_`; `.` separates a server from its tool and `#` a server from its account.
+- Tools come only from MCP servers. When a service has no usable MCP server, goat ships one: `mcp/builtin/` runs it in the same process over an in-memory pipe, and an `mcp.toml` entry names it with `builtin = "gmail"`. The pipe uses the `initialize` handshake, because rmcp's in-process server waits for it. `mcp/builtin/gmail.json` is the tool contract of Google's own Gmail MCP server (names, input schemas, annotations), so a plugin can switch to `url = "https://gmailmcp.googleapis.com/mcp/v1"` once that server is generally available without the model noticing.
+- A tool annotated `destructiveHint: true` runs only after the user allows it: the host sends `Step::Confirm` and waits for the answer, and a sink that does not answer refuses. Commands and file operations may not touch `~/.goat`.
 - `~/.goat/goat.db` stores credentials with mode 0600. Tests use `Store::open_in_memory` or a temporary directory, never the real home.
 
 ## Boundaries
 
 - Always: add or update a test with every behavior change.
 - Ask first: new dependencies, schema migrations, and changes to the blocked commands in `tool/danger.rs`.
-- Never: put real keys or tokens in code, tests or fixtures, or call real model APIs from tests.
+- Never: put real keys or tokens in code, tests or fixtures, or call real model APIs from tests. The one exception is goat's desktop OAuth client in `mcp/builtin/google.rs`: Google treats an installed app's client secret as public, as gcloud does.

@@ -1,8 +1,9 @@
 mod auth;
+pub mod builtin;
 mod edit;
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -23,9 +24,11 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use crate::oauth;
+use crate::provider::Endpoints;
 use crate::store::{self, Logins};
 
 pub use auth::SignIn;
+pub use builtin::Builtin;
 pub use edit::{add, remove};
 
 const FILE: &str = "mcp.toml";
@@ -70,6 +73,21 @@ pub enum Transport {
         headers: Vec<(String, String)>,
         client: Option<OauthClient>,
     },
+    Builtin(Builtin),
+}
+
+#[derive(Debug, Clone)]
+pub struct Context {
+    pub http: reqwest::Client,
+    pub logins: Arc<Logins>,
+    pub endpoints: Endpoints,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    pub name: String,
+    pub state: State,
+    pub plugin: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,11 +198,18 @@ pub(crate) struct Called {
     pub(crate) images: Vec<Vec<u8>>,
 }
 
+#[derive(Debug)]
+struct Live {
+    client: RunningService<RoleClient, ()>,
+    server: Option<builtin::Running>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Entry {
     command: Option<Vec<String>>,
     url: Option<String>,
+    builtin: Option<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
     #[serde(default)]
@@ -211,6 +236,29 @@ impl Digest {
 
     pub(crate) fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+}
+
+impl Transport {
+    fn identity(&self) -> Option<String> {
+        match self {
+            Self::Url { url, .. } => Some(url.clone()),
+            Self::Builtin(builtin) => Some(format!("builtin:{}", builtin.as_str())),
+            Self::Command { .. } => None,
+        }
+    }
+}
+
+impl Live {
+    fn is_open(&self) -> bool {
+        !self.client.is_closed()
+    }
+
+    async fn close(self) {
+        self.client.cancel().await.ok();
+        if let Some(server) = self.server {
+            server.cancel().await.ok();
+        }
     }
 }
 
@@ -370,12 +418,25 @@ pub(crate) fn parse(
             continue;
         }
         let mut expand = |value: &str| expand(value, variable, &name, problems);
-        let transport = match (entry.command, entry.url) {
-            (Some(_), None) if entry.oauth.is_some() => {
+        let transport = match (entry.command, entry.url, entry.builtin) {
+            (Some(_), None, None) if entry.oauth.is_some() => {
                 problems.push(format!("{name}: oauth needs a url"));
                 continue;
             }
-            (Some(command), None) if !command.is_empty() => Transport::Command {
+            (None, None, Some(builtin)) => match Builtin::parse(&builtin) {
+                Some(builtin) if entry.oauth.is_none() => Transport::Builtin(builtin),
+                Some(_) => {
+                    problems.push(format!("{name}: a builtin server signs in by itself"));
+                    continue;
+                }
+                None => {
+                    problems.push(format!(
+                        "{name}: goat has no builtin server named {builtin}"
+                    ));
+                    continue;
+                }
+            },
+            (Some(command), None, None) if !command.is_empty() => Transport::Command {
                 program: expand(&command[0]),
                 args: command[1..].iter().map(|arg| expand(arg)).collect(),
                 env: entry
@@ -384,7 +445,7 @@ pub(crate) fn parse(
                     .map(|(key, value)| (key.clone(), expand(value)))
                     .collect(),
             },
-            (None, Some(url)) => Transport::Url {
+            (None, Some(url), None) => Transport::Url {
                 url: expand(&url),
                 headers: entry
                     .headers
@@ -398,7 +459,7 @@ pub(crate) fn parse(
                 }),
             },
             _ => {
-                problems.push(format!("{name} needs either command or url"));
+                problems.push(format!("{name} needs one of command, url or builtin"));
                 continue;
             }
         };
@@ -412,10 +473,10 @@ pub(crate) fn parse(
 }
 
 pub fn sign_ins(logins: &Logins, server: &Server) -> Result<Vec<Option<String>>, store::Error> {
-    let Transport::Url { url, .. } = &server.transport else {
+    let Some(identity) = server.transport.identity() else {
         return Ok(Vec::new());
     };
-    let key = login_key(url, None);
+    let key = login_key(&identity, None);
     let prefix = format!("{key}#");
     let default = logins.get(&key)?.map(|_| None);
     let accounts = logins
@@ -426,16 +487,16 @@ pub fn sign_ins(logins: &Logins, server: &Server) -> Result<Vec<Option<String>>,
 }
 
 pub fn sign_out(logins: &Logins, server: &Server, account: Option<&str>) -> Result<bool, Error> {
-    let Transport::Url { url, .. } = &server.transport else {
+    let Some(identity) = server.transport.identity() else {
         return Err(Error::NotRemote(server.name.clone()));
     };
-    Ok(logins.remove(&login_key(url, account))?)
+    Ok(logins.remove(&login_key(&identity, account))?)
 }
 
-pub async fn check(server: &Server, http: &reqwest::Client, logins: Arc<Logins>) -> State {
-    match connect(server, None, http, &logins).await {
-        Ok(service) => {
-            service.cancel().await.ok();
+pub async fn check(server: &Server, context: &Context) -> State {
+    match connect(server, None, context).await {
+        Ok(live) => {
+            live.close().await;
             State::Connected
         }
         Err(Trouble::NeedsSignIn) => State::NeedsSignIn,
@@ -450,10 +511,10 @@ fn root(workspace: &Path) -> &Path {
         .unwrap_or(workspace)
 }
 
-fn login_key(url: &str, account: Option<&str>) -> String {
+fn login_key(identity: &str, account: Option<&str>) -> String {
     match account {
-        Some(account) => format!("mcp:{url}#{account}"),
-        None => format!("mcp:{url}"),
+        Some(account) => format!("mcp:{identity}#{account}"),
+        None => format!("mcp:{identity}"),
     }
 }
 
@@ -529,42 +590,74 @@ fn expand(
 #[derive(Debug)]
 pub(crate) struct Clients {
     servers: Vec<Server>,
-    http: reqwest::Client,
-    logins: Arc<Logins>,
-    live: RefCell<HashMap<String, RunningService<RoleClient, ()>>>,
+    context: Context,
+    live: RefCell<HashMap<String, Live>>,
     troubled: RefCell<HashMap<String, Trouble>>,
+    destructive: RefCell<HashMap<String, HashSet<String>>>,
 }
 
 impl Clients {
-    pub(crate) fn new(servers: Vec<Server>, http: reqwest::Client, logins: Arc<Logins>) -> Self {
+    pub(crate) fn new(servers: Vec<Server>, context: Context) -> Self {
         Self {
             servers,
-            http,
-            logins,
+            context,
             live: RefCell::new(HashMap::new()),
             troubled: RefCell::new(HashMap::new()),
+            destructive: RefCell::new(HashMap::new()),
         }
     }
 
-    pub(crate) fn states(&self) -> Vec<(String, State)> {
-        addresses(&self.servers, &self.logins)
+    pub(crate) async fn is_destructive(&self, name: &str, tool: &str) -> bool {
+        if let Some(found) = self.destructive.borrow().get(name) {
+            return found.contains(tool);
+        }
+        let Ok(peer) = self.peer(name).await else {
+            return false;
+        };
+        let Ok(tools) = peer.list_all_tools().await else {
+            return false;
+        };
+        let found: HashSet<String> = tools
+            .iter()
+            .filter(|tool| {
+                tool.annotations
+                    .as_ref()
+                    .and_then(|annotations| annotations.destructive_hint)
+                    == Some(true)
+            })
+            .map(|tool| tool.name.to_string())
+            .collect();
+        let is_destructive = found.contains(tool);
+        self.destructive.borrow_mut().insert(name.to_owned(), found);
+        is_destructive
+    }
+
+    pub(crate) fn states(&self) -> Vec<Status> {
+        addresses(&self.servers, &self.context.logins)
             .iter()
             .map(|address| {
                 let shown = address.to_string();
                 let state = match self.troubled.borrow().get(&shown) {
                     Some(Trouble::NeedsSignIn) => State::NeedsSignIn,
                     Some(Trouble::Failed(problem)) => State::Failed(problem.clone()),
-                    None if self
-                        .live
-                        .borrow()
-                        .get(&shown)
-                        .is_some_and(|service| !service.is_closed()) =>
-                    {
+                    None if self.live.borrow().get(&shown).is_some_and(Live::is_open) => {
                         State::Connected
                     }
                     None => State::Idle,
                 };
-                (shown, state)
+                let plugin = self
+                    .servers
+                    .iter()
+                    .find(|server| server.name == address.name)
+                    .and_then(|server| match &server.source {
+                        Source::Plugin(plugin) => Some(plugin.clone()),
+                        Source::File(_) => None,
+                    });
+                Status {
+                    name: shown,
+                    state,
+                    plugin,
+                }
             })
             .collect()
     }
@@ -664,13 +757,8 @@ impl Clients {
     }
 
     async fn peer(&self, name: &str) -> Result<Peer<RoleClient>, String> {
-        if let Some(service) = self
-            .live
-            .borrow()
-            .get(name)
-            .filter(|service| !service.is_closed())
-        {
-            return Ok(service.peer().clone());
+        if let Some(live) = self.live.borrow().get(name).filter(|live| live.is_open()) {
+            return Ok(live.client.peer().clone());
         }
         let address = Address::parse(name).map_err(|err| err.to_string())?;
         let server = self
@@ -678,11 +766,11 @@ impl Clients {
             .iter()
             .find(|server| server.name == address.name)
             .ok_or_else(|| format!("there is no MCP server named {}", address.name))?;
-        match connect(server, address.account.as_deref(), &self.http, &self.logins).await {
-            Ok(service) => {
-                let peer = service.peer().clone();
+        match connect(server, address.account.as_deref(), &self.context).await {
+            Ok(live) => {
+                let peer = live.client.peer().clone();
                 self.troubled.borrow_mut().remove(name);
-                self.live.borrow_mut().insert(name.to_owned(), service);
+                self.live.borrow_mut().insert(name.to_owned(), live);
                 Ok(peer)
             }
             Err(trouble) => {
@@ -714,11 +802,34 @@ impl Clients {
 async fn connect(
     server: &Server,
     account: Option<&str>,
-    http: &reqwest::Client,
-    logins: &Arc<Logins>,
-) -> Result<RunningService<RoleClient, ()>, Trouble> {
+    context: &Context,
+) -> Result<Live, Trouble> {
     let name = &server.name;
-    match &server.transport {
+    let (http, logins) = (&context.http, &context.logins);
+    let client = match &server.transport {
+        Transport::Builtin(builtin) => {
+            let key = login_key(&format!("builtin:{}", builtin.as_str()), account);
+            let is_signed_in = logins
+                .get(&key)
+                .map_err(|err| Trouble::Failed(format!("{name}: {err}")))?
+                .is_some();
+            if !is_signed_in {
+                return Err(Trouble::NeedsSignIn);
+            }
+            let (near, far) = builtin::pipe();
+            let (server, client) = tokio::join!(
+                builtin.serve(far, context, key),
+                ().serve_with_lifecycle(near, ClientLifecycleMode::Initialize)
+            );
+            let server = server.map_err(Trouble::Failed)?;
+            let client = client.map_err(|err| {
+                Trouble::Failed(format!("{name} did not start: {}", start_cause(&err)))
+            })?;
+            return Ok(Live {
+                client,
+                server: Some(server),
+            });
+        }
         Transport::Command { program, args, env } => {
             let mut command = tokio::process::Command::new(program);
             command
@@ -785,7 +896,11 @@ async fn connect(
                 _ => Trouble::Failed(format!("{name} did not connect: {}", start_cause(&err))),
             })
         }
-    }
+    }?;
+    Ok(Live {
+        client,
+        server: None,
+    })
 }
 
 fn lifecycle() -> ClientLifecycleMode {

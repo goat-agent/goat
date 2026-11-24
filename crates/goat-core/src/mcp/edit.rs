@@ -122,6 +122,9 @@ fn table(transport: &Transport) -> Table {
                 table.insert("oauth", toml_edit::value(oauth));
             }
         }
+        Transport::Builtin(builtin) => {
+            table.insert("builtin", toml_edit::value(builtin.as_str()));
+        }
     }
     table
 }

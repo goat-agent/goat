@@ -1,9 +1,9 @@
 use std::fmt::Write as _;
-use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use goat_core::mcp::{self, Address, Config, OauthClient, Server, Source, State, Transport};
+use goat_core::plugin;
 use goat_core::store::Store;
 
 use crate::ask;
@@ -101,10 +101,14 @@ fn list(store: &Store, paths: &Paths) -> anyhow::Result<()> {
         if let Some(accounts) = signed_in(&mcp::sign_ins(&logins, server)?) {
             write!(line, "  {accounts}").ok();
         }
-        if let Source::File(file) = &server.source
-            && *file != personal
-        {
-            write!(line, "  {}", directory(file, &paths.home)).ok();
+        match &server.source {
+            Source::File(file) if *file != personal => {
+                write!(line, "  {}", directory(file, &paths.home)).ok();
+            }
+            Source::Plugin(plugin) => {
+                write!(line, "  {plugin} plugin").ok();
+            }
+            Source::File(_) => {}
         }
         ask::say(&line)?;
     }
@@ -178,7 +182,7 @@ async fn add(store: &Store, paths: &Paths, addition: Addition) -> anyhow::Result
     else {
         return Ok(());
     };
-    let state = mcp::check(server, &crate::chat::http()?, Arc::new(store.logins()?)).await;
+    let state = mcp::check(server, &crate::chat::reach(store)?).await;
     match state {
         State::NeedsSignIn => ask::say(&format!(
             "{name} needs sign-in; run `goat mcp login {name}`."
@@ -226,10 +230,11 @@ pub(crate) async fn sign_in(
     server: &Server,
     address: &Address,
 ) -> anyhow::Result<()> {
+    let context = crate::chat::reach(store)?;
     let sign_in = Box::pin(mcp::SignIn::start(
         server,
         address.account.as_deref(),
-        Arc::new(store.logins()?),
+        &context,
     ))
     .await?;
     ask::say(&format!(
@@ -256,26 +261,43 @@ pub(crate) fn signed_in(accounts: &[Option<String>]) -> Option<String> {
 }
 
 fn load(store: &Store, paths: &Paths) -> anyhow::Result<Config> {
-    Ok(mcp::config(
+    let mut config = mcp::config(
         &paths.workspace,
         &paths.home,
         |name| std::env::var(name).ok(),
         &store.mcp_reviews()?,
-    ))
+    );
+    let logins = store.logins()?;
+    for plugin in plugin::builtin()? {
+        if plugin.is_signed_in(&logins)? {
+            plugin.add_servers(&mut config.servers);
+        }
+    }
+    Ok(config)
 }
 
 fn find<'a>(config: &'a Config, name: &str) -> anyhow::Result<&'a Server> {
-    config
-        .servers
-        .iter()
-        .find(|server| server.name == name)
-        .with_context(|| format!("no MCP server named {name}; see `goat mcp list`"))
+    if let Some(server) = config.servers.iter().find(|server| server.name == name) {
+        return Ok(server);
+    }
+    let owner = plugin::builtin()?
+        .into_iter()
+        .find(|plugin| plugin.servers.iter().any(|server| server.name == name));
+    match owner {
+        Some(plugin) => bail!(
+            "{name} comes from the {} plugin; sign in with `goat plugin login {}`",
+            plugin.name,
+            plugin.name
+        ),
+        None => bail!("no MCP server named {name}; see `goat mcp list`"),
+    }
 }
 
 fn target(server: &Server) -> &str {
     match &server.transport {
         Transport::Url { url, .. } => url,
         Transport::Command { program, .. } => program,
+        Transport::Builtin(builtin) => builtin.as_str(),
     }
 }
 

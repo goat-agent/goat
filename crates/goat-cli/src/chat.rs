@@ -8,7 +8,7 @@ use anyhow::{Context, bail};
 use crossterm::style::Stylize;
 use goat_core::account::{self, Account};
 use goat_core::catalog::{self, Model};
-use goat_core::mcp::{self, Address, Decision, Server, State};
+use goat_core::mcp::{self, Address, Decision, Server, Status};
 use goat_core::plugin;
 use goat_core::provider::{Endpoints, Provider};
 use goat_core::session::{self, Environment, Event, Prompt, Session, Sink};
@@ -56,7 +56,7 @@ struct Chat {
     recent: Vec<Recent>,
     sent: Vec<Sent>,
     files: Files,
-    servers: Vec<(String, State)>,
+    servers: Vec<Status>,
     environment: Environment,
     database: PathBuf,
     naming: Option<Naming>,
@@ -206,8 +206,15 @@ impl Chat {
                         Err(err) => Ending::Failed(format!("{:#}", anyhow::Error::new(err))),
                     },
                     event = keys.next() => {
+                        let event = event?;
                         let mut terminal = shared.borrow_mut();
-                        if let TurnKeys::Interrupt = editor.during_turn(event?, &choices, &mut terminal) {
+                        if terminal.is_asking() {
+                            if let Some(is_allowed) = input::decision(&event) {
+                                terminal.decide(is_allowed);
+                            }
+                            continue;
+                        }
+                        if let TurnKeys::Interrupt = editor.during_turn(event, &choices, &mut terminal) {
                             break Ending::Interrupted;
                         }
                     }
@@ -483,10 +490,7 @@ impl Chat {
                 .reply("No MCP servers. Add one with `goat mcp add <name> <url>`");
             return;
         }
-        let mut lines: Vec<String> = states
-            .iter()
-            .map(|(name, state)| server_line(name, state))
-            .collect();
+        let mut lines: Vec<String> = states.iter().map(server_line).collect();
         lines.extend(problems.iter().cloned());
         self.terminal.lines(&lines);
     }
@@ -511,7 +515,7 @@ impl Chat {
         let address = Address::parse(name)?;
         let plugin = plugins::find(&self.environment.plugins, &address.name)?;
         let servers: Vec<Server> = plugin.remotes().cloned().collect();
-        let logins = Arc::new(self.session.store().logins()?);
+        let context = reach(self.session.store())?;
         for server in &servers {
             let target = Address {
                 name: server.name.clone(),
@@ -520,7 +524,7 @@ impl Chat {
             let sign_in = Box::pin(mcp::SignIn::start(
                 server,
                 target.account.as_deref(),
-                Arc::clone(&logins),
+                &context,
             ))
             .await?;
             if !self.wait_for(&target.to_string(), sign_in).await? {
@@ -571,10 +575,7 @@ impl Chat {
             files.join(", ")
         };
         let (states, problems) = self.session.servers();
-        let mut shown: Vec<String> = states
-            .iter()
-            .map(|(name, state)| server_line(name, state))
-            .collect();
+        let mut shown: Vec<String> = states.iter().map(server_line).collect();
         shown.extend(problems.iter().cloned());
         let servers = if shown.is_empty() {
             "none".to_owned()
@@ -938,6 +939,14 @@ fn environment(paths: &Paths) -> anyhow::Result<Environment> {
         variable: |name| std::env::var(name).ok(),
         endpoints: Endpoints::default(),
         plugins: plugin::builtin()?,
+    })
+}
+
+pub(crate) fn reach(store: &Store) -> anyhow::Result<mcp::Context> {
+    Ok(mcp::Context {
+        http: http()?,
+        logins: Arc::new(store.logins()?),
+        endpoints: Endpoints::default(),
     })
 }
 

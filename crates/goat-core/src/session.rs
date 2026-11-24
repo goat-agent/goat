@@ -84,6 +84,7 @@ pub enum Event<'a> {
         restarts: bool,
     },
     Compacting,
+    Confirm(&'a tool::Question),
 }
 
 #[derive(Debug)]
@@ -144,7 +145,7 @@ pub struct Session {
     skills: skill::Found,
     servers: mcp::Config,
     clients: Rc<mcp::Clients>,
-    logins: Arc<Logins>,
+    reach: mcp::Context,
     personal: PathBuf,
     home: PathBuf,
 }
@@ -241,11 +242,12 @@ impl Session {
         } = discover(env, &store, &logins)?;
         let runner = Runner::new(&env.workspace, &env.home, &env.spill, !messages.is_empty())?;
         runner.set_skills(found.skills.clone());
-        let clients = Rc::new(mcp::Clients::new(
-            servers.servers.clone(),
-            http.clone(),
-            Arc::clone(&logins),
-        ));
+        let reach = mcp::Context {
+            http: http.clone(),
+            logins: Arc::clone(&logins),
+            endpoints: env.endpoints.clone(),
+        };
+        let clients = Rc::new(mcp::Clients::new(servers.servers.clone(), reach.clone()));
         runner.set_mcp(Rc::clone(&clients));
         for name in loaded_skills(&messages) {
             runner.mark_skill(&name);
@@ -265,7 +267,7 @@ impl Session {
             skills: found,
             servers,
             clients,
-            logins,
+            reach,
             tool: tool::spec(),
             messages,
             finished: Vec::new(),
@@ -443,7 +445,7 @@ impl Session {
         &self.skills
     }
 
-    pub fn servers(&self) -> (Vec<(String, mcp::State)>, &[String]) {
+    pub fn servers(&self) -> (Vec<mcp::Status>, &[String]) {
         (self.clients.states(), &self.servers.problems)
     }
 
@@ -455,7 +457,7 @@ impl Session {
             .iter()
             .find(|server| server.name == address.name)
             .ok_or_else(|| mcp::Error::Unknown(address.name.clone()))?;
-        mcp::SignIn::start(server, address.account.as_deref(), Arc::clone(&self.logins)).await
+        mcp::SignIn::start(server, address.account.as_deref(), &self.reach).await
     }
 
     pub fn reconnect(&self, name: &str) {
@@ -598,6 +600,7 @@ impl Session {
                     trace.push(Trace::Loaded { path });
                 }
                 Step::Shown(_) => {}
+                Step::Confirm(question) => sink.emit(Event::Confirm(&question)),
             })
             .await;
         sink.emit(Event::RunFinished { outcome: &outcome });
