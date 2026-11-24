@@ -199,7 +199,10 @@ pub enum Error {
 - **No lock guard is held across `.await`.** Clippy denies `await_holding_lock` and `await_holding_invalid_type`.
 - **Child processes run in their own process group.**
   - On timeout or cancel, kill the whole group, not only the leader.
-  - Use safe wrappers, because `unsafe_code` is forbidden.
+  - Use safe wrappers for them.
+- **`unsafe_code` is denied, not forbidden.** Only an adapter to an OS API that has no safe binding may use it, such as `mcp/builtin/computer/macos.rs`.
+  - Allow it on that module alone, with `#[expect(unsafe_code, reason = "...")]`.
+  - Keep each `unsafe` block to the one call that needs it.
 
 ## Memory
 
@@ -306,7 +309,7 @@ license = "MIT"
 publish = false
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 unreachable_pub = "warn"
 
 [workspace.lints.clippy]

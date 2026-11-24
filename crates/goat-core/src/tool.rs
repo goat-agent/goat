@@ -111,17 +111,29 @@ pub(crate) enum Step {
 #[derive(Debug)]
 pub struct Question {
     text: Box<str>,
+    can_always: bool,
     answer: std::cell::RefCell<Option<Answer>>,
 }
 
 #[derive(Debug)]
-pub struct Answer(tokio::sync::oneshot::Sender<bool>);
+pub struct Answer(tokio::sync::oneshot::Sender<Decision>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Once,
+    Always,
+    Refuse,
+}
 
 impl Question {
-    pub(crate) fn new(text: String) -> (Self, tokio::sync::oneshot::Receiver<bool>) {
+    pub(crate) fn new(
+        text: String,
+        can_always: bool,
+    ) -> (Self, tokio::sync::oneshot::Receiver<Decision>) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let question = Self {
             text: text.into(),
+            can_always,
             answer: std::cell::RefCell::new(Some(Answer(tx))),
         };
         (question, rx)
@@ -129,6 +141,10 @@ impl Question {
 
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    pub fn can_always(&self) -> bool {
+        self.can_always
     }
 
     pub fn take_answer(&self) -> Option<Answer> {
@@ -145,8 +161,8 @@ impl PartialEq for Question {
 impl Eq for Question {}
 
 impl Answer {
-    pub fn give(self, is_allowed: bool) {
-        self.0.send(is_allowed).ok();
+    pub fn give(self, decision: Decision) {
+        self.0.send(decision).ok();
     }
 }
 
@@ -227,6 +243,10 @@ impl Runner {
 
     pub(crate) fn workspace(&self) -> &Path {
         self.host.workspace()
+    }
+
+    pub(crate) fn asker(&self) -> mpsc::Sender<Step> {
+        self.host.steps()
     }
 
     pub(crate) fn mark_loaded(&self, path: PathBuf) {

@@ -23,8 +23,13 @@ getrandom = "0.4"
 htmd = "0.6"
 ignore = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSRunningApplication", "NSWorkspace"] }
+objc2-application-services = { version = "0.3", default-features = false, features = ["std", "libc", "HIServices", "AXUIElement", "AXError", "AXValue"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFBase", "CFCGTypes", "CFDictionary", "CFMachPort", "CFNumber", "CFRunLoop", "CFString"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGDirectDisplay", "CGError", "CGEvent", "CGEventTypes", "CGGeometry", "CGRemoteOperation", "CGWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSString"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "form"] }
-rmcp = { version = "3.11", default-features = false, features = ["client", "server", "transport-child-process", "transport-streamable-http-client-reqwest", "auth"] }
+rmcp = { version = "3.11", default-features = false, features = ["client", "server", "elicitation", "transport-child-process", "transport-streamable-http-client-reqwest", "auth"] }
 rquickjs = { version = "0.14", default-features = false, features = ["std", "futures"] }
 rusqlite = { version = "0.43", features = ["bundled", "uuid"] }
 rustix = { version = "1", features = ["process", "event", "stdio"] }
@@ -46,7 +51,7 @@ uuid = { version = "1", features = ["v7", "serde"] }
 webbrowser = "1"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 unreachable_pub = "warn"
 
 [workspace.lints.clippy]

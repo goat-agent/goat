@@ -1,0 +1,725 @@
+[
+  {
+    "name": "list_windows",
+    "title": "List windows",
+    "description": "Lists the displays, the focused app and window, and every running app with its windows. Window ids go to list_elements, screenshot and set_window.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "List windows",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "list_elements",
+    "title": "List elements",
+    "description": "Lists the accessible elements of a window: each has a `ref`, role, name, value, frame in screen points, and whether it is enabled or focused. Pass `find` to keep only elements whose name, value or role contains it, or `x` and `y` to get the element at that point. A ref lasts until list_elements is called again for the same window; a stale ref is refused, never guessed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A window id from list_windows. Null means the focused window."
+        },
+        "find": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Text the element's name, value or role must contain, ignoring case."
+        },
+        "x": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Horizontal position: screen points, or pixels of `shot` when it is given."
+        },
+        "y": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Vertical position: screen points, or pixels of `shot` when it is given."
+        },
+        "shot": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The screenshot `x` and `y` are measured in, from screenshot. Null means screen points."
+        }
+      },
+      "required": [
+        "window",
+        "find",
+        "x",
+        "y",
+        "shot"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "List elements",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "screenshot",
+    "title": "Take a screenshot",
+    "description": "Captures the main display, a window, or a region of either, and returns the image with its `shot` id, width and height. The terminal goat runs in is left out. Use the shot id with click, hover, drag, scroll and list_elements to give positions in the image's pixels.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A window id from list_windows. Null means the focused window."
+        },
+        "region": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Part to capture, in screen points; it is enlarged to show detail.",
+          "properties": {
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            },
+            "width": {
+              "type": "number"
+            },
+            "height": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "window",
+        "region"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Take a screenshot",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "wait",
+    "title": "Wait",
+    "description": "Waits until an element whose name or value contains `text` appears in the window, or disappears when `gone` is true, or until `ref` is gone. Returns `found` false after `timeout_ms` (default 10000, at most 60000).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A window id from list_windows. Null means the focused window."
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Text to wait for."
+        },
+        "ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An element ref to wait on; with gone true, waits until it disappears."
+        },
+        "gone": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Wait for the text or ref to disappear instead."
+        },
+        "timeout_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "How long to wait, in milliseconds."
+        }
+      },
+      "required": [
+        "window",
+        "text",
+        "ref",
+        "gone",
+        "timeout_ms"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Wait",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "click",
+    "title": "Click",
+    "description": "Clicks an element by `ref`, or a point by `x` and `y`. A plain left or right click on a ref uses the element's own action and does not move the pointer; other clicks move the real pointer. Returns whether the window changed and which app received it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An element ref from list_elements."
+        },
+        "x": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Horizontal position: screen points, or pixels of `shot` when it is given."
+        },
+        "y": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Vertical position: screen points, or pixels of `shot` when it is given."
+        },
+        "shot": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The screenshot `x` and `y` are measured in, from screenshot. Null means screen points."
+        },
+        "button": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Mouse button, default left.",
+          "enum": [
+            "left",
+            "right",
+            "middle",
+            null
+          ]
+        },
+        "count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "1, 2 or 3 clicks, default 1.",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "keys": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Modifiers held during the click, such as \"cmd\" or \"cmd+shift\"."
+        }
+      },
+      "required": [
+        "ref",
+        "x",
+        "y",
+        "shot",
+        "button",
+        "count",
+        "keys"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Click",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "hover",
+    "title": "Hover",
+    "description": "Moves the pointer over an element by `ref`, or to a point by `x` and `y`.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An element ref from list_elements."
+        },
+        "x": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Horizontal position: screen points, or pixels of `shot` when it is given."
+        },
+        "y": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Vertical position: screen points, or pixels of `shot` when it is given."
+        },
+        "shot": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The screenshot `x` and `y` are measured in, from screenshot. Null means screen points."
+        }
+      },
+      "required": [
+        "ref",
+        "x",
+        "y",
+        "shot"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Hover",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "drag",
+    "title": "Drag",
+    "description": "Presses at an element or point and releases at another: start from `ref` or `x`,`y`, end at `to_ref` or `to_x`,`to_y` (both in the same space as `shot`).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An element ref from list_elements."
+        },
+        "x": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Horizontal position: screen points, or pixels of `shot` when it is given."
+        },
+        "y": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Vertical position: screen points, or pixels of `shot` when it is given."
+        },
+        "shot": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The screenshot `x` and `y` are measured in, from screenshot. Null means screen points."
+        },
+        "to_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The element to drop on."
+        },
+        "to_x": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Where to release, horizontally."
+        },
+        "to_y": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Where to release, vertically."
+        }
+      },
+      "required": [
+        "ref",
+        "x",
+        "y",
+        "shot",
+        "to_ref",
+        "to_x",
+        "to_y"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Drag",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "scroll",
+    "title": "Scroll",
+    "description": "Scrolls at an element by `ref` or at a point by `x` and `y`, by `amount` wheel steps (default 3).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An element ref from list_elements."
+        },
+        "x": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Horizontal position: screen points, or pixels of `shot` when it is given."
+        },
+        "y": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Vertical position: screen points, or pixels of `shot` when it is given."
+        },
+        "shot": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The screenshot `x` and `y` are measured in, from screenshot. Null means screen points."
+        },
+        "direction": {
+          "type": "string",
+          "description": "Which way to scroll.",
+          "enum": [
+            "up",
+            "down",
+            "left",
+            "right"
+          ]
+        },
+        "amount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Wheel steps, default 3.",
+          "minimum": 1,
+          "maximum": 50
+        }
+      },
+      "required": [
+        "ref",
+        "x",
+        "y",
+        "shot",
+        "direction",
+        "amount"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Scroll",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "type",
+    "title": "Type",
+    "description": "Types text. With `ref`, sets the field's value directly and checks it; without, types into whatever has focus.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "The text to type."
+        },
+        "ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A text field to fill instead of typing into the focus."
+        }
+      },
+      "required": [
+        "text",
+        "ref"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Type",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "press",
+    "title": "Press keys",
+    "description": "Presses a key or a shortcut in the focused app, such as \"enter\", \"tab\", \"cmd+s\" or \"cmd+shift+left\". Modifiers are cmd, ctrl, alt and shift.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "string",
+          "description": "The key or shortcut."
+        }
+      },
+      "required": [
+        "keys"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Press keys",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "open",
+    "title": "Open",
+    "description": "Opens an app by name, a file or folder by absolute path, or a URL. Give exactly one.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "App name, such as \"Safari\"."
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Absolute path of a file or folder."
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A URL with its scheme."
+        }
+      },
+      "required": [
+        "app",
+        "path",
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Open",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "quit",
+    "title": "Quit app",
+    "description": "Quits a running app by name. The app may ask to save first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "description": "The app's name as list_windows shows it."
+        }
+      },
+      "required": [
+        "app"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Quit app",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "set_window",
+    "title": "Set window",
+    "description": "Focuses, minimizes, maximizes, restores or closes a window, and moves or resizes it with `x`, `y`, `width` and `height` in screen points. Closing asks the user first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "window": {
+          "type": "string",
+          "description": "A window id from list_windows."
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The state to put the window in.",
+          "enum": [
+            "focused",
+            "minimized",
+            "maximized",
+            "normal",
+            "closed",
+            null
+          ]
+        },
+        "x": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "New left edge."
+        },
+        "y": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "New top edge."
+        },
+        "width": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "New width."
+        },
+        "height": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "New height."
+        }
+      },
+      "required": [
+        "window",
+        "state",
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Set window",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "read_clipboard",
+    "title": "Read clipboard",
+    "description": "Returns the text on the clipboard.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Read clipboard",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "write_clipboard",
+    "title": "Write clipboard",
+    "description": "Puts text on the clipboard.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "The text."
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Write clipboard",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  }
+]

@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::path::{Path, PathBuf};
 use std::pin::{Pin, pin};
 use std::sync::Arc;
@@ -8,6 +8,7 @@ use anyhow::{Context, bail};
 use crossterm::style::Stylize;
 use goat_core::account::{self, Account};
 use goat_core::catalog::{self, Model};
+use goat_core::mcp::builtin::computer::Escape;
 use goat_core::mcp::{self, Address, Decision, Server, Status};
 use goat_core::plugin;
 use goat_core::provider::{Endpoints, Provider};
@@ -61,6 +62,7 @@ struct Chat {
     database: PathBuf,
     naming: Option<Naming>,
     warned: Vec<String>,
+    escape: OnceCell<Option<Escape>>,
 }
 
 struct Naming {
@@ -159,6 +161,7 @@ impl Chat {
             files,
             servers,
             environment,
+            escape,
             ..
         } = self;
         let model = session.model().to_owned();
@@ -208,9 +211,9 @@ impl Chat {
                     event = keys.next() => {
                         let event = event?;
                         let mut terminal = shared.borrow_mut();
-                        if terminal.is_asking() {
-                            if let Some(is_allowed) = input::decision(&event) {
-                                terminal.decide(is_allowed);
+                        if let Some(can_always) = terminal.asking() {
+                            if let Some(decision) = input::decision(&event, can_always) {
+                                terminal.decide(decision);
                             }
                             continue;
                         }
@@ -218,6 +221,7 @@ impl Chat {
                             break Ending::Interrupted;
                         }
                     }
+                    () = escaped(escape, &shared) => break Ending::Interrupted,
                     _ = ticks.tick() => shared.borrow_mut().tick(),
                 }
             }
@@ -505,8 +509,7 @@ impl Chat {
     }
 
     fn show_plugins(&mut self) -> anyhow::Result<()> {
-        let logins = self.session.store().logins()?;
-        let lines = plugins::lines(&self.environment.plugins, &logins)?;
+        let lines = plugins::lines(&self.environment.plugins, self.session.store())?;
         self.terminal.lines(&lines);
         Ok(())
     }
@@ -515,7 +518,7 @@ impl Chat {
         let address = Address::parse(name)?;
         let plugin = plugins::find(&self.environment.plugins, &address.name)?;
         let servers: Vec<Server> = plugin.remotes().cloned().collect();
-        let context = reach(self.session.store())?;
+        let context = reach(self.session.store(), &self.environment.home)?;
         for server in &servers {
             let target = Address {
                 name: server.name.clone(),
@@ -667,6 +670,16 @@ impl Chat {
             ),
             None => format!("Effort is {effort}"),
         }
+    }
+}
+
+async fn escaped(escape: &OnceCell<Option<Escape>>, terminal: &RefCell<&mut Terminal>) {
+    if terminal.borrow().drives_computer()
+        && let Some(escape) = escape.get_or_init(Escape::watch)
+    {
+        escape.pressed().await;
+    } else {
+        std::future::pending::<()>().await;
     }
 }
 
@@ -851,6 +864,7 @@ async fn run(
         database: paths.database.clone(),
         naming: None,
         warned: Vec::new(),
+        escape: OnceCell::new(),
     };
     chat.greet();
     chat.session.replay(&mut chat.terminal)?;
@@ -942,11 +956,12 @@ fn environment(paths: &Paths) -> anyhow::Result<Environment> {
     })
 }
 
-pub(crate) fn reach(store: &Store) -> anyhow::Result<mcp::Context> {
+pub(crate) fn reach(store: &Store, home: &Path) -> anyhow::Result<mcp::Context> {
     Ok(mcp::Context {
         http: http()?,
         logins: Arc::new(store.logins()?),
         endpoints: Endpoints::default(),
+        home: home.to_owned(),
     })
 }
 

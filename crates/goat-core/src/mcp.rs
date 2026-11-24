@@ -11,7 +11,14 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use rmcp::model::{CallToolRequestParams, ProtocolVersion};
+use rmcp::ErrorData;
+use rmcp::handler::client::ClientHandler;
+use rmcp::model::{
+    CallToolRequestParams, ClientCapabilities, ClientConfig, ElicitRequestParams, ElicitResult,
+    ElicitationAction, ElicitationCapability, FormElicitationCapability, Implementation,
+    ProtocolVersion,
+};
+use rmcp::service::RequestContext;
 use rmcp::service::{
     ClientInitializeError, ClientLifecycleMode, ClientServiceExt, Peer, RoleClient, RunningService,
     ServiceError,
@@ -26,6 +33,7 @@ use sha2::{Digest as _, Sha256};
 use crate::oauth;
 use crate::provider::Endpoints;
 use crate::store::{self, Logins};
+use crate::tool::{self, Question, Step};
 
 pub use auth::SignIn;
 pub use builtin::Builtin;
@@ -81,6 +89,7 @@ pub struct Context {
     pub http: reqwest::Client,
     pub logins: Arc<Logins>,
     pub endpoints: Endpoints,
+    pub home: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,8 +209,13 @@ pub(crate) struct Called {
 
 #[derive(Debug)]
 struct Live {
-    client: RunningService<RoleClient, ()>,
+    client: RunningService<RoleClient, Asker>,
     server: Option<builtin::Running>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Asker {
+    steps: Option<tokio::sync::mpsc::Sender<Step>>,
 }
 
 #[derive(Deserialize)]
@@ -257,7 +271,7 @@ impl Live {
     async fn close(self) {
         self.client.cancel().await.ok();
         if let Some(server) = self.server {
-            server.cancel().await.ok();
+            server.cancel().await;
         }
     }
 }
@@ -494,7 +508,7 @@ pub fn sign_out(logins: &Logins, server: &Server, account: Option<&str>) -> Resu
 }
 
 pub async fn check(server: &Server, context: &Context) -> State {
-    match connect(server, None, context).await {
+    match connect(server, None, context, Asker::default()).await {
         Ok(live) => {
             live.close().await;
             State::Connected
@@ -591,16 +605,22 @@ fn expand(
 pub(crate) struct Clients {
     servers: Vec<Server>,
     context: Context,
+    asker: Asker,
     live: RefCell<HashMap<String, Live>>,
     troubled: RefCell<HashMap<String, Trouble>>,
     destructive: RefCell<HashMap<String, HashSet<String>>>,
 }
 
 impl Clients {
-    pub(crate) fn new(servers: Vec<Server>, context: Context) -> Self {
+    pub(crate) fn new(
+        servers: Vec<Server>,
+        context: Context,
+        steps: tokio::sync::mpsc::Sender<Step>,
+    ) -> Self {
         Self {
             servers,
             context,
+            asker: Asker { steps: Some(steps) },
             live: RefCell::new(HashMap::new()),
             troubled: RefCell::new(HashMap::new()),
             destructive: RefCell::new(HashMap::new()),
@@ -766,7 +786,14 @@ impl Clients {
             .iter()
             .find(|server| server.name == address.name)
             .ok_or_else(|| format!("there is no MCP server named {}", address.name))?;
-        match connect(server, address.account.as_deref(), &self.context).await {
+        match connect(
+            server,
+            address.account.as_deref(),
+            &self.context,
+            self.asker.clone(),
+        )
+        .await
+        {
             Ok(live) => {
                 let peer = live.client.peer().clone();
                 self.troubled.borrow_mut().remove(name);
@@ -803,32 +830,13 @@ async fn connect(
     server: &Server,
     account: Option<&str>,
     context: &Context,
+    asker: Asker,
 ) -> Result<Live, Trouble> {
     let name = &server.name;
     let (http, logins) = (&context.http, &context.logins);
     let client = match &server.transport {
         Transport::Builtin(builtin) => {
-            let key = login_key(&format!("builtin:{}", builtin.as_str()), account);
-            let is_signed_in = logins
-                .get(&key)
-                .map_err(|err| Trouble::Failed(format!("{name}: {err}")))?
-                .is_some();
-            if !is_signed_in {
-                return Err(Trouble::NeedsSignIn);
-            }
-            let (near, far) = builtin::pipe();
-            let (server, client) = tokio::join!(
-                builtin.serve(far, context, key),
-                ().serve_with_lifecycle(near, ClientLifecycleMode::Initialize)
-            );
-            let server = server.map_err(Trouble::Failed)?;
-            let client = client.map_err(|err| {
-                Trouble::Failed(format!("{name} did not start: {}", start_cause(&err)))
-            })?;
-            return Ok(Live {
-                client,
-                server: Some(server),
-            });
+            return start_builtin(*builtin, name, account, context, asker).await;
         }
         Transport::Command { program, args, env } => {
             let mut command = tokio::process::Command::new(program);
@@ -839,7 +847,9 @@ async fn connect(
                 .stderr(Stdio::null())
                 .spawn()
                 .map_err(|err| Trouble::Failed(format!("{name} could not start: {err}")))?;
-            ().serve_with_lifecycle(transport, lifecycle())
+            asker
+                .clone()
+                .serve_with_lifecycle(transport, lifecycle())
                 .await
                 .map_err(|err| {
                     Trouble::Failed(format!("{name} did not start: {}", start_cause(&err)))
@@ -875,17 +885,21 @@ async fn connect(
                         }
                     })?;
                 let client = AuthClient::new(http.clone(), manager);
-                ().serve_with_lifecycle(
-                    StreamableHttpClientTransport::with_client(client, config),
-                    lifecycle(),
-                )
-                .await
+                asker
+                    .clone()
+                    .serve_with_lifecycle(
+                        StreamableHttpClientTransport::with_client(client, config),
+                        lifecycle(),
+                    )
+                    .await
             } else {
-                ().serve_with_lifecycle(
-                    StreamableHttpClientTransport::with_client(http.clone(), config),
-                    lifecycle(),
-                )
-                .await
+                asker
+                    .clone()
+                    .serve_with_lifecycle(
+                        StreamableHttpClientTransport::with_client(http.clone(), config),
+                        lifecycle(),
+                    )
+                    .await
             };
             started.map_err(|err| match &err {
                 ClientInitializeError::TransportError { error, .. }
@@ -901,6 +915,81 @@ async fn connect(
         client,
         server: None,
     })
+}
+
+async fn start_builtin(
+    builtin: Builtin,
+    name: &str,
+    account: Option<&str>,
+    context: &Context,
+    asker: Asker,
+) -> Result<Live, Trouble> {
+    let key = login_key(&format!("builtin:{}", builtin.as_str()), account);
+    if builtin.needs_sign_in() {
+        let is_signed_in = context
+            .logins
+            .get(&key)
+            .map_err(|err| Trouble::Failed(format!("{name}: {err}")))?
+            .is_some();
+        if !is_signed_in {
+            return Err(Trouble::NeedsSignIn);
+        }
+    }
+    let (near, far) = builtin::pipe();
+    let (server, client) = tokio::join!(
+        builtin.serve(far, context, key),
+        asker.serve_with_lifecycle(near, ClientLifecycleMode::Initialize)
+    );
+    let server = server.map_err(Trouble::Failed)?;
+    let client = client
+        .map_err(|err| Trouble::Failed(format!("{name} did not start: {}", start_cause(&err))))?;
+    Ok(Live {
+        client,
+        server: Some(server),
+    })
+}
+
+impl ClientHandler for Asker {
+    fn get_info(&self) -> ClientConfig {
+        let mut capabilities = ClientCapabilities::default();
+        capabilities.elicitation =
+            Some(ElicitationCapability::new().with_form(FormElicitationCapability::new()));
+        ClientConfig::new(
+            capabilities,
+            Implementation::new("goat", env!("CARGO_PKG_VERSION")),
+        )
+    }
+
+    async fn create_elicitation(
+        &self,
+        request: ElicitRequestParams,
+        _context: RequestContext<RoleClient>,
+    ) -> Result<ElicitResult, ErrorData> {
+        let (
+            Some(steps),
+            ElicitRequestParams::FormElicitationParams {
+                message,
+                requested_schema,
+                ..
+            },
+        ) = (&self.steps, request)
+        else {
+            return Ok(ElicitResult::new(ElicitationAction::Decline));
+        };
+        let can_always = serde_json::to_value(&requested_schema)
+            .is_ok_and(|schema| schema["properties"]["always"]["type"] == "boolean");
+        let (question, answer) = Question::new(message, can_always);
+        if steps.send(Step::Confirm(question)).await.is_err() {
+            return Ok(ElicitResult::new(ElicitationAction::Decline));
+        }
+        Ok(match answer.await {
+            Ok(tool::Decision::Once) => ElicitResult::new(ElicitationAction::Accept)
+                .with_content(serde_json::json!({ "always": false })),
+            Ok(tool::Decision::Always) => ElicitResult::new(ElicitationAction::Accept)
+                .with_content(serde_json::json!({ "always": true })),
+            Ok(tool::Decision::Refuse) | Err(_) => ElicitResult::new(ElicitationAction::Decline),
+        })
+    }
 }
 
 fn lifecycle() -> ClientLifecycleMode {

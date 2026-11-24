@@ -44,7 +44,7 @@ impl Sink for Recorder {
         match event {
             Event::Confirm(question) if self.allows => {
                 if let Some(answer) = question.take_answer() {
-                    answer.give(true);
+                    answer.give(goat_core::tool::Decision::Once);
                 }
             }
             Event::Text(text) => self.text.push_str(text),
@@ -848,6 +848,7 @@ async fn checking_a_server_behind_sign_in_reports_that_it_needs_sign_in() {
         http: reqwest::Client::new(),
         logins: std::sync::Arc::new(store.logins().unwrap()),
         endpoints: Endpoints::default(),
+        home: dir.path().to_owned(),
     };
 
     let state = mcp::check(&config.servers[0], &context).await;
@@ -1519,10 +1520,7 @@ async fn a_plugin_waiting_for_sign_in_is_offered_but_not_connected() {
         .unwrap();
 
     let requests = server.requests.lock().unwrap();
-    assert!(
-        requests[0]
-            .contains("Plugins the user has not signed in to: notes (Read and write notes).")
-    );
+    assert!(requests[0].contains("Plugins that are off: notes (Read and write notes)."));
     assert!(!requests[0].contains("MCP servers are connected"));
     assert!(!requests[0].contains("notes:guide"));
     assert_eq!(session.servers().0, []);
@@ -1546,6 +1544,7 @@ async fn a_signed_in_plugin_brings_its_server_and_its_skills() {
         http: reqwest::Client::new(),
         logins: std::sync::Arc::new(store.logins().unwrap()),
         endpoints: Endpoints::default(),
+        home: dir.path().to_owned(),
     };
     approve(
         mcp::SignIn::start(&plugin.servers[0], None, &context)
@@ -1564,7 +1563,7 @@ async fn a_signed_in_plugin_brings_its_server_and_its_skills() {
     let requests = server.requests.lock().unwrap();
     assert!(requests[0].contains("MCP servers are connected to the sandbox: notes."));
     assert!(requests[0].contains("<name>notes:guide</name>"));
-    assert!(!requests[0].contains("Plugins the user has not signed in to"));
+    assert!(!requests[0].contains("Plugins that are off"));
     assert!(requests[1].contains("token access1"), "{}", requests[1]);
 }
 
@@ -1651,8 +1650,14 @@ async fn gmail_session(
         http: reqwest::Client::new(),
         logins: std::sync::Arc::new(store.logins()?),
         endpoints: env.endpoints.clone(),
+        home: dir.to_owned(),
     };
-    approve(mcp::SignIn::start(&env.plugins[0].servers[0], None, &context).await?).await?;
+    let gmail = env
+        .plugins
+        .iter()
+        .find(|plugin| plugin.name == "gmail")
+        .ok_or("the gmail plugin is built in")?;
+    approve(mcp::SignIn::start(&gmail.servers[0], None, &context).await?).await?;
     Ok((file_session(&env, &database)?, env))
 }
 

@@ -18,6 +18,7 @@ use crate::markdown::{Markdown, Style};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const INDENT: &str = "  ";
+const COMPUTER: &str = "computer.";
 const TAB: &str = "    ";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GOAT: [&str; 3] = ["▀▀▄▄      ▄▄▀▀", "  ▄▄▀████▀▄▄  ", "     ▀██▀     "];
@@ -40,7 +41,7 @@ pub(crate) struct Terminal<W: Write = BufWriter<Stdout>> {
     code: Option<highlight::Block>,
     calls: usize,
     activity: Option<Activity>,
-    asking: Option<tool::Answer>,
+    asking: Option<(tool::Answer, bool)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -58,6 +59,7 @@ struct Activity {
     started: Instant,
     frame: usize,
     retrying: Option<u32>,
+    drives_computer: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -125,19 +127,19 @@ impl<W: Write> Terminal<W> {
         }
     }
 
-    pub(crate) fn is_asking(&self) -> bool {
-        self.asking.is_some()
+    pub(crate) fn asking(&self) -> Option<bool> {
+        self.asking.as_ref().map(|(_, can_always)| *can_always)
     }
 
-    pub(crate) fn decide(&mut self, is_allowed: bool) {
-        let Some(answer) = self.asking.take() else {
+    pub(crate) fn decide(&mut self, decision: tool::Decision) {
+        let Some((answer, _)) = self.asking.take() else {
             return;
         };
-        answer.give(is_allowed);
-        let shown = if is_allowed {
-            "Allowed".green()
-        } else {
-            "Refused".red()
+        answer.give(decision);
+        let shown = match decision {
+            tool::Decision::Once => "Allowed".green(),
+            tool::Decision::Always => "Always allowed".green(),
+            tool::Decision::Refuse => "Refused".red(),
         };
         self.enter(Section::Run);
         self.put(&format!("{INDENT}{INDENT}{shown}\n"));
@@ -279,8 +281,15 @@ impl<W: Write> Terminal<W> {
             started: Instant::now(),
             frame: 0,
             retrying: None,
+            drives_computer: false,
         });
         self.flush();
+    }
+
+    pub(crate) fn drives_computer(&self) -> bool {
+        self.activity
+            .as_ref()
+            .is_some_and(|activity| activity.drives_computer)
     }
 
     pub(crate) fn tick(&mut self) {
@@ -385,6 +394,12 @@ impl<W: Write> Terminal<W> {
             Kind::Skill => "Skill",
             Kind::Mcp => "Mcp",
         };
+        if call.kind == Kind::Mcp
+            && call.target.starts_with(COMPUTER)
+            && let Some(activity) = &mut self.activity
+        {
+            activity.drives_computer = true;
+        }
         self.call_line(verb, &call.target);
     }
 
@@ -628,13 +643,20 @@ impl<W: Write> Sink for Terminal<W> {
             Event::Confirm(question) => {
                 self.enter(Section::Run);
                 let width = self.columns().saturating_sub(40).max(20);
+                let keys = if question.can_always() {
+                    "y allows once, a always allows, any other key refuses"
+                } else {
+                    "y allows, any other key refuses"
+                };
                 self.put(&format!(
-                    "{INDENT}{} Allow {}? {}\n",
+                    "{INDENT}{} {}? {}\n",
                     "?".yellow(),
                     fit(first_line(question.text()), width),
-                    "y allows, any other key refuses".dim()
+                    keys.dim()
                 ));
-                self.asking = question.take_answer();
+                self.asking = question
+                    .take_answer()
+                    .map(|answer| (answer, question.can_always()));
             }
             Event::Compacting => {
                 self.open(Section::Note);
@@ -811,6 +833,23 @@ mod tests {
             kind,
             target: target.into(),
         }
+    }
+
+    #[test]
+    fn a_turn_drives_the_computer_only_after_a_computer_call() {
+        let mut terminal = Terminal::with_writer(Vec::new(), || 40);
+        terminal.begin_turn(Work::Turn);
+        terminal.emit(Event::Call(&call(Kind::Mcp, "gmail.search_threads")));
+        let before = terminal.drives_computer();
+        terminal.emit(Event::Call(&call(Kind::Mcp, "computer.click")));
+        let during = terminal.drives_computer();
+        terminal.finish_turn(Ending::Complete);
+        terminal.begin_turn(Work::Turn);
+
+        assert_eq!(
+            (before, during, terminal.drives_computer()),
+            (false, true, false)
+        );
     }
 
     #[test]

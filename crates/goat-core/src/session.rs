@@ -246,8 +246,13 @@ impl Session {
             http: http.clone(),
             logins: Arc::clone(&logins),
             endpoints: env.endpoints.clone(),
+            home: env.home.clone(),
         };
-        let clients = Rc::new(mcp::Clients::new(servers.servers.clone(), reach.clone()));
+        let clients = Rc::new(mcp::Clients::new(
+            servers.servers.clone(),
+            reach.clone(),
+            runner.asker(),
+        ));
         runner.set_mcp(Rc::clone(&clients));
         for name in loaded_skills(&messages) {
             runner.mark_skill(&name);
@@ -925,7 +930,7 @@ fn discover<'a>(
     );
     let mut waiting = Vec::new();
     for plugin in &env.plugins {
-        if plugin.is_signed_in(logins)? {
+        if plugin.is_on(store.plugin_enabled(&plugin.name)?, logins)? {
             plugin.join(&mut skills.skills, &mut servers.servers);
         } else {
             waiting.push(plugin);
