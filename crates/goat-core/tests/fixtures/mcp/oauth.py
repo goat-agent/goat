@@ -45,6 +45,7 @@ class Handler(BaseHTTPRequestHandler):
                 "registration_endpoint": f"{self.base()}/register",
                 "response_types_supported": ["code"],
                 "code_challenge_methods_supported": ["S256"],
+                "authorization_response_iss_parameter_supported": True,
                 "grant_types_supported": ["authorization_code", "refresh_token"],
                 "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
             })
@@ -53,7 +54,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, {"error": "invalid_request"})
             code = f"code{len(CODES)}"
             CODES[code] = query["code_challenge"]
-            location = query["redirect_uri"] + "?" + urllib.parse.urlencode({"code": code, "state": query["state"]})
+            location = query["redirect_uri"] + "?" + urllib.parse.urlencode({"code": code, "state": query["state"], "iss": self.base()})
             return self.send(302, None, [("location", location)])
         self.send(404, {})
 
