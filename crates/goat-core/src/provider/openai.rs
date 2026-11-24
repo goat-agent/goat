@@ -108,10 +108,7 @@ impl Client {
                     };
                     return Ok(Flow::Done);
                 }
-                "error" => {
-                    let error: ErrorDetail = serde_json::from_str(&event.data)?;
-                    return Err(error.into_error());
-                }
+                "error" => return Err(stream_error(&event.data)),
                 _ => {}
             }
             Ok(Flow::Continue)
@@ -178,10 +175,7 @@ impl Client {
                     let failed: Failed = serde_json::from_str(&event.data)?;
                     return Err(failed.response.error.into_error());
                 }
-                "error" => {
-                    let error: ErrorDetail = serde_json::from_str(&event.data)?;
-                    return Err(error.into_error());
-                }
+                "error" => return Err(stream_error(&event.data)),
                 _ => {}
             }
             Ok(Flow::Continue)
@@ -723,6 +717,13 @@ struct IncompleteDetails {
 }
 
 #[derive(Deserialize)]
+#[serde(untagged)]
+enum ErrorEvent {
+    Nested { error: ErrorDetail },
+    Flat(ErrorDetail),
+}
+
+#[derive(Deserialize)]
 struct ErrorDetail {
     code: Option<String>,
     message: String,
@@ -742,6 +743,13 @@ impl ErrorDetail {
             Some("server_error" | "server_is_overloaded") => Error::Busy(text),
             _ => Error::Stream(text),
         }
+    }
+}
+
+fn stream_error(data: &str) -> Error {
+    match serde_json::from_str(data) {
+        Ok(ErrorEvent::Nested { error } | ErrorEvent::Flat(error)) => error.into_error(),
+        Err(_) => Error::Stream(data.to_owned()),
     }
 }
 
@@ -1008,5 +1016,23 @@ mod tests {
             reasoning(Some("high")),
             r#"{"summary":"auto","effort":"high"}"#
         );
+    }
+
+    #[test]
+    fn stream_errors_show_the_server_message_in_either_shape() {
+        let flat = r#"{"type":"error","code":"invalid_prompt","message":"bad input","param":null}"#;
+        let nested = r#"{"type":"error","error":{"type":"invalid_request_error","code":"invalid_prompt","message":"bad input"}}"#;
+        for data in [flat, nested] {
+            assert!(
+                matches!(stream_error(data), Error::Stream(text) if text == "invalid_prompt: bad input")
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_stream_error_shows_the_raw_event() {
+        let data = r#"{"type":"error","detail":"nope"}"#;
+
+        assert!(matches!(stream_error(data), Error::Stream(text) if text == data));
     }
 }
