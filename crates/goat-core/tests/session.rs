@@ -3,6 +3,9 @@
 mod server;
 
 use std::path::Path;
+use std::process::Stdio;
+
+use tokio::io::AsyncBufReadExt;
 
 use goat_core::account::{Account, Credential, Kind, codex};
 use goat_core::image;
@@ -669,6 +672,175 @@ async fn mcp_tools_are_listed_described_and_called_from_a_run() {
         [("fixture".to_owned(), goat_core::mcp::State::Connected)]
     );
     assert_eq!(problems, [] as [String; 0]);
+}
+
+const NOTES_RUN: &str = "const tools = (await mcp.tools()).map(t => t.name + ' ' + t.description); \
+    let answer = ''; try { answer = await mcp.notes.whoami({}) } catch (e) { answer = e.message } \
+    return { tools, answer }";
+
+async fn oauth_server() -> std::io::Result<(tokio::process::Child, String)> {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp/oauth.py");
+    let mut child = tokio::process::Command::new("python3")
+        .arg("-I")
+        .arg(script)
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("the fixture has no stdout"))?;
+    let mut port = String::new();
+    tokio::io::BufReader::new(stdout)
+        .read_line(&mut port)
+        .await?;
+    Ok((child, format!("http://127.0.0.1:{}/mcp", port.trim())))
+}
+
+fn with_notes(dir: &Path, url: &str) -> std::io::Result<()> {
+    with_config(dir, &format!("[notes]\nurl = \"{url}\"\n"))
+}
+
+fn with_config(dir: &Path, text: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir.join(".goat"))?;
+    std::fs::write(dir.join(".goat/mcp.toml"), text)
+}
+
+async fn sign_in(session: &Session, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let sign_in = session.sign_in(name).await?;
+    let browser = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let authorized = browser.get(sign_in.url()).send().await?;
+    let callback = authorized
+        .headers()
+        .get("location")
+        .ok_or("the authorization server did not redirect")?
+        .to_str()?
+        .to_owned();
+    let (finished, page) = tokio::join!(sign_in.finish(), browser.get(&callback).send());
+    finished?;
+    page?;
+    Ok(())
+}
+
+fn file_session(env: &Environment, database: &Path) -> Result<Session, session::Error> {
+    Session::create(
+        Store::open(database)?,
+        reqwest::Client::new(),
+        env,
+        account(Kind::OpenAi),
+        "gpt-6.2-astra",
+    )
+}
+
+#[tokio::test]
+async fn a_server_that_needs_sign_in_tells_the_model_to_ask_for_it() {
+    let (_oauth, url) = oauth_server().await.unwrap();
+    let call = leak(OPENAI_TOOL_CALL.replace("(await bash('echo hi')).output", NOTES_RUN));
+    let server = server::replay(vec![call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    with_notes(dir.path(), &url).unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    session
+        .turn("ask notes", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    let result = &requests[1];
+    assert!(
+        result.contains("notes needs sign-in; ask the user to run /mcp notes"),
+        "{result}"
+    );
+    assert!(result.contains("notes unavailable: notes needs sign-in"));
+    assert_eq!(
+        session.servers().0,
+        [("notes".to_owned(), goat_core::mcp::State::NeedsSignIn)]
+    );
+}
+
+#[tokio::test]
+async fn a_sign_in_lets_later_sessions_call_the_server_with_its_token() {
+    let (_oauth, url) = oauth_server().await.unwrap();
+    let call = leak(OPENAI_TOOL_CALL.replace(
+        "(await bash('echo hi')).output",
+        "await mcp.notes.whoami({})",
+    ));
+    let server = server::replay(vec![call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    with_notes(dir.path(), &url).unwrap();
+    let env = environment(dir.path(), &server.url);
+    let database = dir.path().join("goat.db");
+    sign_in(&file_session(&env, &database).unwrap(), "notes")
+        .await
+        .unwrap();
+    let mut later = file_session(&env, &database).unwrap();
+
+    later
+        .turn("ask notes", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[1].contains("token access1"), "{}", requests[1]);
+    assert_eq!(
+        later.servers().0,
+        [("notes".to_owned(), goat_core::mcp::State::Connected)]
+    );
+}
+
+#[tokio::test]
+async fn a_registered_client_refreshes_an_expired_token_with_its_secret() {
+    let (_oauth, url) = oauth_server().await.unwrap();
+    let call = leak(OPENAI_TOOL_CALL.replace(
+        "(await bash('echo hi')).output",
+        "await mcp.notes.whoami({})",
+    ));
+    let server = server::replay(vec![call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    with_config(
+        dir.path(),
+        &format!(
+            "[notes]\nurl = \"{url}\"\noauth = {{ client_id = \"preregistered\", client_secret = \"s3cret\" }}\n"
+        ),
+    )
+    .unwrap();
+    let env = environment(dir.path(), &server.url);
+    let database = dir.path().join("goat.db");
+    sign_in(&file_session(&env, &database).unwrap(), "notes")
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let mut later = file_session(&env, &database).unwrap();
+
+    later
+        .turn("ask notes", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[1].contains("token access2"), "{}", requests[1]);
+}
+
+#[tokio::test]
+async fn checking_a_server_behind_sign_in_reports_that_it_needs_sign_in() {
+    let (_oauth, url) = oauth_server().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    with_notes(dir.path(), &url).unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let config = goat_core::mcp::config(dir.path(), dir.path(), |_| None, &[]);
+
+    let state = goat_core::mcp::check(
+        &config.servers[0],
+        &reqwest::Client::new(),
+        std::sync::Arc::new(store.logins().unwrap()),
+    )
+    .await;
+
+    assert_eq!(state, goat_core::mcp::State::NeedsSignIn);
 }
 
 #[tokio::test]

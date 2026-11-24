@@ -9,6 +9,7 @@ pub(crate) enum Name {
     Rewind,
     Resume,
     Status,
+    Mcp,
     Usage,
     Help,
     Exit,
@@ -55,6 +56,11 @@ pub(crate) const SPECS: &[Spec] = &[
         name: Name::Status,
         word: "status",
         about: "Show the session, model and instructions",
+    },
+    Spec {
+        name: Name::Mcp,
+        word: "mcp",
+        about: "Show MCP servers, or sign in to one",
     },
     Spec {
         name: Name::Usage,

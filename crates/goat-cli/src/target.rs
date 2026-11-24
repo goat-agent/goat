@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use goat_core::account;
 use goat_core::catalog::Model;
+use goat_core::mcp::State;
 use goat_core::skill::Skill;
 use goat_core::store::{Recent, Sent};
 
@@ -33,6 +34,7 @@ pub(crate) struct Choices<'a> {
     pub(crate) sent: &'a [Sent],
     pub(crate) files: &'a Files,
     pub(crate) skills: &'a [Skill],
+    pub(crate) servers: &'a [(String, State)],
     pub(crate) current: Current<'a>,
 }
 
@@ -181,6 +183,20 @@ impl Choices<'_> {
                     efforts: Vec::new(),
                     effort: 0,
                 }
+            })
+            .collect()
+    }
+
+    pub(crate) fn servers(&self, typed: &str) -> Vec<Candidate> {
+        self.servers
+            .iter()
+            .filter(|(name, _)| name.starts_with(typed))
+            .map(|(name, state)| Candidate {
+                value: name.clone(),
+                label: server_line(name, state),
+                is_current: false,
+                efforts: Vec::new(),
+                effort: 0,
             })
             .collect()
     }
@@ -467,6 +483,15 @@ pub(crate) fn plural(count: u64, word: &str) -> String {
     }
 }
 
+pub(crate) fn server_line(name: &str, state: &State) -> String {
+    match state {
+        State::Idle => name.to_owned(),
+        State::Connected => format!("{name} (connected)"),
+        State::NeedsSignIn => format!("{name} (needs sign-in)"),
+        State::Failed(problem) => format!("{name} (failed: {problem})"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use goat_core::account::{Account, Credential, Kind};
@@ -487,6 +512,7 @@ mod tests {
             sent,
             files: &files,
             skills: &[],
+            servers: &[],
             current: Current {
                 account: goat_core::account::Id::generate(),
                 model: "gpt-6.2-sol",
@@ -557,6 +583,7 @@ mod tests {
             sent: &[],
             files: Box::leak(Box::new(Files::listed(Vec::new()))),
             skills: &[],
+            servers: &[],
             current: Current {
                 account: goat_core::account::Id::generate(),
                 model: "gpt-6.2-sol",
@@ -628,6 +655,7 @@ mod tests {
             sent: &[],
             files: Box::leak(Box::new(Files::listed(Vec::new()))),
             skills: &[],
+            servers: &[],
             current: Current {
                 account: offers[0].account,
                 model: "gpt-6.2-sol",
@@ -769,6 +797,7 @@ mod tests {
             sent: &[],
             files: Box::leak(Box::new(Files::listed(Vec::new()))),
             skills: &[],
+            servers: &[],
             current: Current {
                 account: offers[0].account,
                 model: "claude-opus-5-5",

@@ -9,6 +9,7 @@ mod login;
 mod markdown;
 mod paths;
 mod render;
+mod servers;
 mod target;
 mod usage;
 
@@ -49,6 +50,11 @@ enum Command {
     Logout { account: String },
     #[command(about = "List accounts")]
     Accounts,
+    #[command(about = "List MCP servers, or add, remove and sign in to one")]
+    Mcp {
+        #[command(subcommand)]
+        action: Option<servers::Action>,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -67,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Login => login::login(&paths).await,
         Command::Logout { account } => login::logout(&paths, &account),
         Command::Accounts => login::list(&paths),
+        Command::Mcp { action } => servers::run(&paths, action).await,
     }
 }
 
