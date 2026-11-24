@@ -14,6 +14,7 @@ goat-core = { path = "crates/goat-core" }
 anyhow = "1"
 arboard = { version = "3.7", features = ["wayland-data-control"] }
 async-trait = "0.1"
+block2 = { version = "0.6", default-features = false, features = ["std"] }
 base64 = "0.23"
 clap = { version = "4.6", features = ["derive"] }
 crossterm = "0.29"
@@ -24,11 +25,14 @@ htmd = "0.6"
 ignore = "0.4"
 jiff = { version = "1.0", default-features = false, features = ["std", "tzdb-zoneinfo", "tzdb-bundle-platform"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSRunningApplication", "NSWorkspace"] }
 objc2-application-services = { version = "0.3", default-features = false, features = ["std", "libc", "HIServices", "AXUIElement", "AXError", "AXValue"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFBase", "CFCGTypes", "CFDictionary", "CFMachPort", "CFNumber", "CFRunLoop", "CFString"] }
-objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGDirectDisplay", "CGError", "CGEvent", "CGEventTypes", "CGGeometry", "CGRemoteOperation", "CGWindow"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSString"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGColor", "CGDirectDisplay", "CGError", "CGEvent", "CGEventTypes", "CGGeometry", "CGRemoteOperation", "CGWindow"] }
+objc2-contacts = { version = "0.3", default-features = false, features = ["std", "block2", "CNContact", "CNContactFetchRequest", "CNContactStore", "CNContact_Predicates", "CNError", "CNFetchRequest", "CNLabeledValue", "CNMutableContact", "CNMutablePostalAddress", "CNPhoneNumber", "CNPostalAddress", "CNSaveRequest"] }
+objc2-event-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-graphics", "EKAlarm", "EKCalendar", "EKCalendarItem", "EKEvent", "EKEventStore", "EKObject", "EKParticipant", "EKRecurrenceDayOfWeek", "EKRecurrenceEnd", "EKRecurrenceRule", "EKReminder", "EKSource", "EKTypes"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSArray", "NSCalendar", "NSDate", "NSEnumerator", "NSError", "NSObject", "NSPredicate", "NSSet", "NSString", "NSTimeZone", "NSURL", "NSValue"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "form"] }
 rmcp = { version = "3.11", default-features = false, features = ["client", "server", "elicitation", "transport-child-process", "transport-streamable-http-client-reqwest", "auth"] }
 rquickjs = { version = "0.14", default-features = false, features = ["std", "futures"] }
