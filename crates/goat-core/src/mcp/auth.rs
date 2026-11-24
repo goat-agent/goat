@@ -7,7 +7,7 @@ use rmcp::transport::auth::{
 };
 use rmcp::transport::streamable_http_client::{AuthRequiredError, InsufficientScopeError};
 
-use super::{Error, Server, Transport, login_key};
+use super::{Address, Error, Server, Transport, login_key};
 use crate::oauth::{self, Listener};
 use crate::store::Logins;
 
@@ -26,12 +26,21 @@ pub(crate) struct Saved {
 }
 
 impl SignIn {
-    pub async fn start(server: &Server, logins: Arc<Logins>) -> Result<Self, Error> {
+    pub async fn start(
+        server: &Server,
+        account: Option<&str>,
+        logins: Arc<Logins>,
+    ) -> Result<Self, Error> {
         let Transport::Url { url, client, .. } = &server.transport else {
             return Err(Error::NotRemote(server.name.clone()));
         };
+        let shown = Address {
+            name: server.name.clone(),
+            account: account.map(str::to_owned),
+        }
+        .to_string();
         let authorize = |source| Error::Authorize {
-            server: server.name.clone(),
+            server: shown.clone(),
             source: Box::new(source),
         };
         let port = client.as_ref().and_then(|client| client.port).unwrap_or(0);
@@ -47,7 +56,7 @@ impl SignIn {
         let mut manager = AuthorizationManager::new(url.as_str())
             .await
             .map_err(authorize)?;
-        manager.set_credential_store(Saved::new(logins, url));
+        manager.set_credential_store(Saved::new(logins, url, account));
         let mut state = OAuthState::Unauthorized(manager);
         state
             .start_authorization(request)
@@ -55,7 +64,7 @@ impl SignIn {
             .map_err(authorize)?;
         let url = state.get_authorization_url().await.map_err(authorize)?;
         Ok(Self {
-            server: server.name.clone(),
+            server: shown,
             state,
             listener,
             url,
@@ -93,10 +102,10 @@ impl std::fmt::Debug for SignIn {
 }
 
 impl Saved {
-    pub(crate) fn new(logins: Arc<Logins>, url: &str) -> Self {
+    pub(crate) fn new(logins: Arc<Logins>, url: &str, account: Option<&str>) -> Self {
         Self {
             logins,
-            key: login_key(url),
+            key: login_key(url, account),
         }
     }
 }

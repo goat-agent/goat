@@ -10,6 +10,7 @@ pub(crate) enum Name {
     Resume,
     Status,
     Mcp,
+    Plugin,
     Usage,
     Help,
     Exit,
@@ -63,6 +64,11 @@ pub(crate) const SPECS: &[Spec] = &[
         about: "Show MCP servers, or sign in to one",
     },
     Spec {
+        name: Name::Plugin,
+        word: "plugin",
+        about: "Show plugins, or sign in to one",
+    },
+    Spec {
         name: Name::Usage,
         word: "usage",
         about: "Show how full the context and the plan are",
@@ -80,6 +86,15 @@ pub(crate) const SPECS: &[Spec] = &[
 ];
 
 const ALIASES: &[(&str, Name)] = &[("quit", Name::Exit)];
+
+impl Name {
+    pub(crate) fn takes_value(self) -> bool {
+        matches!(
+            self,
+            Self::Model | Self::Effort | Self::Resume | Self::Rewind | Self::Mcp | Self::Plugin
+        )
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Invocation<'a> {

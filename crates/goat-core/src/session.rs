@@ -14,6 +14,7 @@ use crate::image::{Image, Picture};
 use crate::instructions;
 use crate::mcp;
 use crate::message::{self, Diff, Message, Origin, Part, Role, Trace};
+use crate::plugin::Plugin;
 use crate::provider::{self, Chunk, Endpoints, Images, Limits, Provider, Request, Stop, Usage};
 use crate::skill;
 use crate::store::{self, Logins, Sent, Store};
@@ -112,6 +113,13 @@ pub struct Environment {
     pub personal: std::path::PathBuf,
     pub variable: fn(&str) -> Option<String>,
     pub endpoints: Endpoints,
+    pub plugins: Vec<Plugin>,
+}
+
+struct Discovered<'a> {
+    skills: skill::Found,
+    servers: mcp::Config,
+    waiting: Vec<&'a Plugin>,
 }
 
 #[derive(Debug)]
@@ -149,15 +157,15 @@ impl Session {
         account: Account,
         model: &str,
     ) -> Result<Self, Error> {
-        let found = skill::discover(&env.workspace, &env.home);
-        let reviews = store.mcp_reviews()?;
-        let servers = mcp::config(&env.workspace, &env.home, env.variable, &reviews).servers;
+        let logins = store.logins()?;
+        let found = discover(env, &store, &logins)?;
         let instructions = prompt::instructions(
             &env.workspace,
             &env.personal,
             &env.home,
-            &found.skills,
-            &servers,
+            &found.skills.skills,
+            &mcp::addresses(&found.servers.servers, &logins),
+            &found.waiting,
         );
         let id = store.create_session(&env.workspace, &instructions)?;
         Self::assemble(
@@ -225,16 +233,14 @@ impl Session {
         instructions: Box<str>,
         messages: Vec<Message>,
     ) -> Result<Self, Error> {
-        let found = skill::discover(&env.workspace, &env.home);
+        let logins = Arc::new(store.logins()?);
+        let Discovered {
+            skills: found,
+            servers,
+            ..
+        } = discover(env, &store, &logins)?;
         let runner = Runner::new(&env.workspace, &env.home, &env.spill, !messages.is_empty())?;
         runner.set_skills(found.skills.clone());
-        let servers = mcp::config(
-            &env.workspace,
-            &env.home,
-            env.variable,
-            &store.mcp_reviews()?,
-        );
-        let logins = Arc::new(store.logins()?);
         let clients = Rc::new(mcp::Clients::new(
             servers.servers.clone(),
             http.clone(),
@@ -442,13 +448,14 @@ impl Session {
     }
 
     pub async fn sign_in(&self, name: &str) -> Result<mcp::SignIn, mcp::Error> {
+        let address = mcp::Address::parse(name)?;
         let server = self
             .servers
             .servers
             .iter()
-            .find(|server| server.name == name)
-            .ok_or_else(|| mcp::Error::Unknown(name.to_owned()))?;
-        mcp::SignIn::start(server, Arc::clone(&self.logins)).await
+            .find(|server| server.name == address.name)
+            .ok_or_else(|| mcp::Error::Unknown(address.name.clone()))?;
+        mcp::SignIn::start(server, address.account.as_deref(), Arc::clone(&self.logins)).await
     }
 
     pub fn reconnect(&self, name: &str) {
@@ -899,6 +906,33 @@ fn sent(shown: usize) -> usize {
         return shown;
     }
     IMAGE_BATCH + shown % IMAGE_BATCH
+}
+
+fn discover<'a>(
+    env: &'a Environment,
+    store: &Store,
+    logins: &Logins,
+) -> Result<Discovered<'a>, Error> {
+    let mut skills = skill::discover(&env.workspace, &env.home);
+    let mut servers = mcp::config(
+        &env.workspace,
+        &env.home,
+        env.variable,
+        &store.mcp_reviews()?,
+    );
+    let mut waiting = Vec::new();
+    for plugin in &env.plugins {
+        if plugin.is_signed_in(logins)? {
+            plugin.join(&mut skills.skills, &mut servers.servers);
+        } else {
+            waiting.push(plugin);
+        }
+    }
+    Ok(Discovered {
+        skills,
+        servers,
+        waiting,
+    })
 }
 
 fn loaded_skills(messages: &[Message]) -> Vec<String> {

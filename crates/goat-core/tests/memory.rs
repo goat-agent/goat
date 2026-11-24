@@ -38,6 +38,7 @@ async fn fifty_turns_stay_within_the_memory_budget() {
             codex: server.url.as_str().into(),
             anthropic: server.url.as_str().into(),
         },
+        plugins: Vec::new(),
     };
     let store = Store::open(&dir.path().join("goat.db")).unwrap();
     let account = Account::new(

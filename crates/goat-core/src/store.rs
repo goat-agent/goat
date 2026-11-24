@@ -609,6 +609,16 @@ impl Logins {
             > 0)
     }
 
+    pub fn keys(&self, prefix: &str) -> Result<Vec<String>, Error> {
+        let conn = self.lock();
+        let mut statement = conn
+            .prepare("select key from logins where substr(key, 1, length(?1)) = ?1 order by key")?;
+        let keys = statement
+            .query_map([prefix], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(keys)
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn
             .lock()
@@ -706,6 +716,24 @@ mod tests {
         );
         assert!(logins.remove("mcp:https://a").unwrap());
         assert_eq!(logins.get("mcp:https://a").unwrap(), None);
+    }
+
+    #[test]
+    fn login_keys_are_listed_by_exact_prefix() {
+        let store = Store::open_in_memory().unwrap();
+        let logins = store.logins().unwrap();
+        for key in [
+            "mcp:https://a/mcp",
+            "mcp:https://a/mcp#work",
+            "mcp:https://a/mcp2",
+            "mcp:https://a_mcp#x",
+        ] {
+            logins.save(key, "{}").unwrap();
+        }
+
+        let keys = logins.keys("mcp:https://a/mcp#").unwrap();
+
+        assert_eq!(keys, ["mcp:https://a/mcp#work"]);
     }
 
     #[test]

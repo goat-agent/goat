@@ -8,6 +8,7 @@ mod kitty;
 mod login;
 mod markdown;
 mod paths;
+mod plugins;
 mod render;
 mod servers;
 mod target;
@@ -55,6 +56,11 @@ enum Command {
         #[command(subcommand)]
         action: Option<servers::Action>,
     },
+    #[command(about = "List plugins, or sign in to one")]
+    Plugin {
+        #[command(subcommand)]
+        action: Option<plugins::Action>,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -74,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Logout { account } => login::logout(&paths, &account),
         Command::Accounts => login::list(&paths),
         Command::Mcp { action } => servers::run(&paths, action).await,
+        Command::Plugin { action } => plugins::run(&paths, action).await,
     }
 }
 

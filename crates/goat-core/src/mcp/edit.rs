@@ -2,10 +2,13 @@ use std::path::Path;
 
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table};
 
-use super::{Decision, Digest, Error, Review, Server, Transport, login_key};
+use super::{Decision, Digest, Error, Review, Server, Source, Transport, is_name, sign_ins};
 use crate::store::Store;
 
 pub fn add(store: &Store, file: &Path, name: &str, transport: &Transport) -> Result<(), Error> {
+    if !is_name(name) {
+        return Err(Error::BadName(name.to_owned()));
+    }
     rewrite(store, file, |document| {
         if document.contains_key(name) {
             return Err(Error::Exists {
@@ -19,14 +22,24 @@ pub fn add(store: &Store, file: &Path, name: &str, transport: &Transport) -> Res
 }
 
 pub fn remove(store: &Store, server: &Server) -> Result<(), Error> {
-    rewrite(store, &server.source, |document| {
+    let file = match &server.source {
+        Source::File(file) => file,
+        Source::Plugin(plugin) => {
+            return Err(Error::FromPlugin {
+                server: server.name.clone(),
+                plugin: plugin.clone(),
+            });
+        }
+    };
+    rewrite(store, file, |document| {
         document
             .remove(&server.name)
             .map(drop)
             .ok_or_else(|| Error::Unknown(server.name.clone()))
     })?;
-    if let Transport::Url { url, .. } = &server.transport {
-        store.logins()?.remove(&login_key(url))?;
+    let logins = store.logins()?;
+    for account in sign_ins(&logins, server)? {
+        super::sign_out(&logins, server, account.as_deref())?;
     }
     Ok(())
 }
@@ -226,7 +239,31 @@ mod tests {
     }
 
     #[test]
-    fn a_removed_server_loses_its_entry_and_its_sign_in() {
+    fn adding_a_name_outside_the_name_rule_is_rejected() {
+        let store = Store::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = add(&store, &dir.path().join("mcp.toml"), "a#b", &command("x")).unwrap_err();
+
+        assert_matches!(err, Error::BadName(_));
+    }
+
+    #[test]
+    fn removing_a_plugin_server_is_refused() {
+        let store = Store::open_in_memory().unwrap();
+        let server = Server {
+            name: "gmail".to_owned(),
+            source: Source::Plugin("gmail".to_owned()),
+            transport: command("x"),
+        };
+
+        let err = remove(&store, &server).unwrap_err();
+
+        assert_matches!(err, Error::FromPlugin { .. });
+    }
+
+    #[test]
+    fn a_removed_server_loses_its_entry_and_every_sign_in() {
         let store = Store::open_in_memory().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let (workspace, home) = project(dir.path());
@@ -237,10 +274,12 @@ mod tests {
             client: None,
         };
         add(&store, &file, "notes", &transport).unwrap();
-        store
-            .logins()
-            .unwrap()
-            .save(&login_key("https://notes"), "{}")
+        let logins = store.logins().unwrap();
+        logins
+            .save(&crate::mcp::login_key("https://notes", None), "{}")
+            .unwrap();
+        logins
+            .save(&crate::mcp::login_key("https://notes", Some("work")), "{}")
             .unwrap();
         let server = config(&workspace, &home, |_| None, &[]).servers.remove(0);
 
@@ -248,12 +287,8 @@ mod tests {
 
         assert_eq!(config(&workspace, &home, |_| None, &[]).servers, Vec::new());
         assert_eq!(
-            store
-                .logins()
-                .unwrap()
-                .get(&login_key("https://notes"))
-                .unwrap(),
-            None
+            logins.keys("mcp:https://notes").unwrap(),
+            Vec::<String>::new()
         );
     }
 }

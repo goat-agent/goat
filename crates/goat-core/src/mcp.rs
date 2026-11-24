@@ -10,9 +10,10 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use rmcp::model::CallToolRequestParams;
+use rmcp::model::{CallToolRequestParams, ProtocolVersion};
 use rmcp::service::{
-    ClientInitializeError, Peer, RoleClient, RunningService, ServiceError, ServiceExt,
+    ClientInitializeError, ClientLifecycleMode, ClientServiceExt, Peer, RoleClient, RunningService,
+    ServiceError,
 };
 use rmcp::transport::auth::{AuthClient, AuthorizationManager, OAuthClientConfig};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -34,12 +35,27 @@ MCP servers are connected to the sandbox: {servers}. \
 In a run, `await mcp.tools()` lists their tools as [{name, description, input}], \
 `await mcp.describe(name)` shows one tool's input, and `await mcp.<server>.<tool>(args)` calls it \
 with one object argument.";
+const ACCOUNTS: &str = "\
+A server signed in with another account is named server#account and reached as \
+`mcp[\"server#account\"].<tool>(args)`.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Server {
     pub name: String,
-    pub source: PathBuf,
+    pub source: Source,
     pub transport: Transport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    File(PathBuf),
+    Plugin(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub name: String,
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +121,12 @@ pub enum State {
 pub enum Error {
     #[error("there is no MCP server named {0}")]
     Unknown(String),
+    #[error(
+        "{0} is not a name; names use letters, digits, - and _, and name#account picks an account"
+    )]
+    BadName(String),
+    #[error("{server} comes from the {plugin} plugin; use `goat plugin logout {plugin}`")]
+    FromPlugin { server: String, plugin: String },
     #[error("{0} is started by a command and has no sign-in")]
     NotRemote(String),
     #[error("{name} is already in {}", path.display())]
@@ -192,6 +214,15 @@ impl Digest {
     }
 }
 
+impl std::fmt::Display for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(path) => write!(f, "{}", path.display()),
+            Self::Plugin(name) => write!(f, "the {name} plugin"),
+        }
+    }
+}
+
 impl Decision {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
@@ -205,6 +236,31 @@ impl Decision {
             "allowed" => Some(Self::Allowed),
             "denied" => Some(Self::Denied),
             _ => None,
+        }
+    }
+}
+
+impl Address {
+    pub fn parse(raw: &str) -> Result<Self, Error> {
+        let (name, account) = match raw.split_once('#') {
+            Some((name, account)) => (name, Some(account)),
+            None => (raw, None),
+        };
+        if !is_name(name) || account.is_some_and(|account| !is_name(account)) {
+            return Err(Error::BadName(raw.to_owned()));
+        }
+        Ok(Self {
+            name: name.to_owned(),
+            account: account.map(str::to_owned),
+        })
+    }
+}
+
+impl std::fmt::Display for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.account {
+            Some(account) => write!(f, "{}#{account}", self.name),
+            None => f.write_str(&self.name),
         }
     }
 }
@@ -276,78 +332,108 @@ pub fn config(
                 }
             }
         }
-        let entries: BTreeMap<String, Entry> = match toml::from_str(&text) {
-            Ok(entries) => entries,
-            Err(err) => {
-                config
-                    .problems
-                    .push(format!("{}: {}", file.display(), err.message()));
-                continue;
-            }
-        };
-        for (name, entry) in entries {
-            let mut expand = |value: &str| expand(value, variable, &name, &mut config.problems);
-            let transport = match (entry.command, entry.url) {
-                (Some(_), None) if entry.oauth.is_some() => {
-                    config.problems.push(format!("{name}: oauth needs a url"));
-                    continue;
-                }
-                (Some(command), None) if !command.is_empty() => Transport::Command {
-                    program: expand(&command[0]),
-                    args: command[1..].iter().map(|arg| expand(arg)).collect(),
-                    env: entry
-                        .env
-                        .iter()
-                        .map(|(key, value)| (key.clone(), expand(value)))
-                        .collect(),
-                },
-                (None, Some(url)) => Transport::Url {
-                    url: expand(&url),
-                    headers: entry
-                        .headers
-                        .iter()
-                        .map(|(key, value)| (key.clone(), expand(value)))
-                        .collect(),
-                    client: entry.oauth.map(|oauth| OauthClient {
-                        id: expand(&oauth.client_id),
-                        secret: oauth.client_secret.as_deref().map(&mut expand),
-                        port: oauth.callback_port,
-                    }),
-                },
-                _ => {
-                    config
-                        .problems
-                        .push(format!("{name} needs either command or url"));
-                    continue;
-                }
-            };
-            config.servers.retain(|server| server.name != name);
-            config.servers.push(Server {
-                name,
-                source: file.clone(),
-                transport,
-            });
+        let source = Source::File(file);
+        for server in parse(&text, &source, variable, &mut config.problems) {
+            config.servers.retain(|known| known.name != server.name);
+            config.servers.push(server);
         }
     }
     config
 }
 
-pub fn signed_in(logins: &Logins, server: &Server) -> Result<bool, Error> {
-    let Transport::Url { url, .. } = &server.transport else {
-        return Ok(false);
-    };
-    Ok(logins.get(&login_key(url))?.is_some())
+pub fn is_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-pub fn sign_out(logins: &Logins, server: &Server) -> Result<bool, Error> {
+pub(crate) fn parse(
+    text: &str,
+    source: &Source,
+    variable: fn(&str) -> Option<String>,
+    problems: &mut Vec<String>,
+) -> Vec<Server> {
+    let entries: BTreeMap<String, Entry> = match toml::from_str(text) {
+        Ok(entries) => entries,
+        Err(err) => {
+            problems.push(format!("{source}: {}", err.message()));
+            return Vec::new();
+        }
+    };
+    let mut servers = Vec::new();
+    for (name, entry) in entries {
+        if !is_name(&name) {
+            problems.push(format!(
+                "{name}: a server name uses letters, digits, - and _"
+            ));
+            continue;
+        }
+        let mut expand = |value: &str| expand(value, variable, &name, problems);
+        let transport = match (entry.command, entry.url) {
+            (Some(_), None) if entry.oauth.is_some() => {
+                problems.push(format!("{name}: oauth needs a url"));
+                continue;
+            }
+            (Some(command), None) if !command.is_empty() => Transport::Command {
+                program: expand(&command[0]),
+                args: command[1..].iter().map(|arg| expand(arg)).collect(),
+                env: entry
+                    .env
+                    .iter()
+                    .map(|(key, value)| (key.clone(), expand(value)))
+                    .collect(),
+            },
+            (None, Some(url)) => Transport::Url {
+                url: expand(&url),
+                headers: entry
+                    .headers
+                    .iter()
+                    .map(|(key, value)| (key.clone(), expand(value)))
+                    .collect(),
+                client: entry.oauth.map(|oauth| OauthClient {
+                    id: expand(&oauth.client_id),
+                    secret: oauth.client_secret.as_deref().map(&mut expand),
+                    port: oauth.callback_port,
+                }),
+            },
+            _ => {
+                problems.push(format!("{name} needs either command or url"));
+                continue;
+            }
+        };
+        servers.push(Server {
+            name,
+            source: source.clone(),
+            transport,
+        });
+    }
+    servers
+}
+
+pub fn sign_ins(logins: &Logins, server: &Server) -> Result<Vec<Option<String>>, store::Error> {
+    let Transport::Url { url, .. } = &server.transport else {
+        return Ok(Vec::new());
+    };
+    let key = login_key(url, None);
+    let prefix = format!("{key}#");
+    let default = logins.get(&key)?.map(|_| None);
+    let accounts = logins
+        .keys(&prefix)?
+        .into_iter()
+        .map(|key| Some(key[prefix.len()..].to_owned()));
+    Ok(default.into_iter().chain(accounts).collect())
+}
+
+pub fn sign_out(logins: &Logins, server: &Server, account: Option<&str>) -> Result<bool, Error> {
     let Transport::Url { url, .. } = &server.transport else {
         return Err(Error::NotRemote(server.name.clone()));
     };
-    Ok(logins.remove(&login_key(url))?)
+    Ok(logins.remove(&login_key(url, account))?)
 }
 
 pub async fn check(server: &Server, http: &reqwest::Client, logins: Arc<Logins>) -> State {
-    match connect(server, http, &logins).await {
+    match connect(server, None, http, &logins).await {
         Ok(service) => {
             service.cancel().await.ok();
             State::Connected
@@ -364,16 +450,39 @@ fn root(workspace: &Path) -> &Path {
         .unwrap_or(workspace)
 }
 
-fn login_key(url: &str) -> String {
-    format!("mcp:{url}")
+fn login_key(url: &str, account: Option<&str>) -> String {
+    match account {
+        Some(account) => format!("mcp:{url}#{account}"),
+        None => format!("mcp:{url}"),
+    }
 }
 
-pub(crate) fn catalog(servers: &[Server]) -> Option<String> {
-    if servers.is_empty() {
+pub(crate) fn addresses(servers: &[Server], logins: &Logins) -> Vec<Address> {
+    servers
+        .iter()
+        .flat_map(|server| {
+            let accounts = sign_ins(logins, server).unwrap_or_default();
+            std::iter::once(None)
+                .chain(accounts.into_iter().flatten().map(Some))
+                .map(|account| Address {
+                    name: server.name.clone(),
+                    account,
+                })
+        })
+        .collect()
+}
+
+pub(crate) fn catalog(addresses: &[Address]) -> Option<String> {
+    if addresses.is_empty() {
         return None;
     }
-    let names: Vec<&str> = servers.iter().map(|server| server.name.as_str()).collect();
-    Some(CATALOG.replace("{servers}", &names.join(", ")))
+    let names: Vec<String> = addresses.iter().map(Address::to_string).collect();
+    let mut text = CATALOG.replace("{servers}", &names.join(", "));
+    if addresses.iter().any(|address| address.account.is_some()) {
+        text.push(' ');
+        text.push_str(ACCOUNTS);
+    }
+    Some(text)
 }
 
 fn expand(
@@ -438,23 +547,24 @@ impl Clients {
     }
 
     pub(crate) fn states(&self) -> Vec<(String, State)> {
-        self.servers
+        addresses(&self.servers, &self.logins)
             .iter()
-            .map(|server| {
-                let state = match self.troubled.borrow().get(&server.name) {
+            .map(|address| {
+                let shown = address.to_string();
+                let state = match self.troubled.borrow().get(&shown) {
                     Some(Trouble::NeedsSignIn) => State::NeedsSignIn,
                     Some(Trouble::Failed(problem)) => State::Failed(problem.clone()),
                     None if self
                         .live
                         .borrow()
-                        .get(&server.name)
+                        .get(&shown)
                         .is_some_and(|service| !service.is_closed()) =>
                     {
                         State::Connected
                     }
                     None => State::Idle,
                 };
-                (server.name.clone(), state)
+                (shown, state)
             })
             .collect()
     }
@@ -466,9 +576,6 @@ impl Clients {
 
     pub(crate) async fn tools(&self, only: Option<&str>) -> Result<Vec<Listed>, String> {
         if let Some(only) = only {
-            if !self.servers.iter().any(|server| server.name == only) {
-                return Err(format!("there is no MCP server named {only}"));
-            }
             return self.server_tools(only).await;
         }
         let mut listed = Vec::new();
@@ -504,9 +611,14 @@ impl Clients {
         if let Some(description) = tool.description.as_deref().filter(|text| !text.is_empty()) {
             writeln!(text, "/** {} */", description.trim()).ok();
         }
+        let reached = if server.contains('#') {
+            format!("mcp[\"{server}\"]")
+        } else {
+            format!("mcp.{server}")
+        };
         write!(
             text,
-            "mcp.{server}.{name}(args: {}): Promise<unknown>",
+            "{reached}.{name}(args: {}): Promise<unknown>",
             typed(&schema, 0)
         )
         .ok();
@@ -560,12 +672,13 @@ impl Clients {
         {
             return Ok(service.peer().clone());
         }
+        let address = Address::parse(name).map_err(|err| err.to_string())?;
         let server = self
             .servers
             .iter()
-            .find(|server| server.name == name)
-            .ok_or_else(|| format!("there is no MCP server named {name}"))?;
-        match connect(server, &self.http, &self.logins).await {
+            .find(|server| server.name == address.name)
+            .ok_or_else(|| format!("there is no MCP server named {}", address.name))?;
+        match connect(server, address.account.as_deref(), &self.http, &self.logins).await {
             Ok(service) => {
                 let peer = service.peer().clone();
                 self.troubled.borrow_mut().remove(name);
@@ -600,6 +713,7 @@ impl Clients {
 
 async fn connect(
     server: &Server,
+    account: Option<&str>,
     http: &reqwest::Client,
     logins: &Arc<Logins>,
 ) -> Result<RunningService<RoleClient, ()>, Trouble> {
@@ -614,9 +728,11 @@ async fn connect(
                 .stderr(Stdio::null())
                 .spawn()
                 .map_err(|err| Trouble::Failed(format!("{name} could not start: {err}")))?;
-            ().serve(transport).await.map_err(|err| {
-                Trouble::Failed(format!("{name} did not start: {}", start_cause(&err)))
-            })
+            ().serve_with_lifecycle(transport, lifecycle())
+                .await
+                .map_err(|err| {
+                    Trouble::Failed(format!("{name} did not start: {}", start_cause(&err)))
+                })
         }
         Transport::Url {
             url,
@@ -634,11 +750,11 @@ async fn connect(
             let config =
                 StreamableHttpClientTransportConfig::with_uri(url.as_str()).custom_headers(map);
             let is_signed_in = logins
-                .get(&login_key(url))
+                .get(&login_key(url, account))
                 .map_err(|err| Trouble::Failed(format!("{name}: {err}")))?
                 .is_some();
             let started = if is_signed_in {
-                let manager = authorized(url, client.as_ref(), logins)
+                let manager = authorized(url, account, client.as_ref(), logins)
                     .await
                     .map_err(|err| {
                         if auth::is_sign_in_error(&err) {
@@ -648,13 +764,16 @@ async fn connect(
                         }
                     })?;
                 let client = AuthClient::new(http.clone(), manager);
-                ().serve(StreamableHttpClientTransport::with_client(client, config))
-                    .await
+                ().serve_with_lifecycle(
+                    StreamableHttpClientTransport::with_client(client, config),
+                    lifecycle(),
+                )
+                .await
             } else {
-                ().serve(StreamableHttpClientTransport::with_client(
-                    http.clone(),
-                    config,
-                ))
+                ().serve_with_lifecycle(
+                    StreamableHttpClientTransport::with_client(http.clone(), config),
+                    lifecycle(),
+                )
                 .await
             };
             started.map_err(|err| match &err {
@@ -669,13 +788,21 @@ async fn connect(
     }
 }
 
+fn lifecycle() -> ClientLifecycleMode {
+    ClientLifecycleMode::Auto {
+        preferred_versions: vec![ProtocolVersion::LATEST],
+        legacy_version: Some(ProtocolVersion::LATEST_WITH_INITIALIZE),
+    }
+}
+
 async fn authorized(
     url: &str,
+    account: Option<&str>,
     client: Option<&OauthClient>,
     logins: &Arc<Logins>,
 ) -> Result<AuthorizationManager, rmcp::transport::auth::AuthError> {
     let mut manager = AuthorizationManager::new(url).await?;
-    manager.set_credential_store(auth::Saved::new(Arc::clone(logins), url));
+    manager.set_credential_store(auth::Saved::new(Arc::clone(logins), url, account));
     manager.initialize_from_store().await?;
     if let Some(OauthClient {
         id,
@@ -977,7 +1104,10 @@ mod tests {
                 env: Vec::new(),
             }
         );
-        assert_eq!(config.servers[1].source, workspace.join(".goat/mcp.toml"));
+        assert_eq!(
+            config.servers[1].source,
+            Source::File(workspace.join(".goat/mcp.toml"))
+        );
         assert_eq!(config.problems, ["notes: $MISSING is not set"]);
     }
 
@@ -1070,6 +1200,81 @@ mod tests {
         });
 
         assert_eq!(brief(&schema), "message: string, options?: object");
+    }
+
+    #[test]
+    fn an_address_names_a_server_and_maybe_an_account() {
+        let plain = Address::parse("linear").unwrap();
+        let work = Address::parse("linear#work").unwrap();
+
+        assert_eq!(plain.account, None);
+        assert_eq!(work.name, "linear");
+        assert_eq!(work.account.as_deref(), Some("work"));
+        assert_eq!(work.to_string(), "linear#work");
+    }
+
+    #[test]
+    fn an_address_with_a_dot_or_an_empty_account_is_rejected() {
+        assert!(Address::parse("linear.issues").is_err());
+        assert!(Address::parse("linear#").is_err());
+        assert!(Address::parse("a#b#c").is_err());
+    }
+
+    #[test]
+    fn a_server_name_outside_the_name_rule_is_a_problem() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".goat")).unwrap();
+        std::fs::write(
+            dir.path().join(".goat/mcp.toml"),
+            "[\"my.notes\"]\nurl = \"https://x\"\n",
+        )
+        .unwrap();
+
+        let config = config(dir.path(), dir.path(), variable, &[]);
+
+        assert_eq!(config.servers, Vec::new());
+        assert_eq!(
+            config.problems,
+            ["my.notes: a server name uses letters, digits, - and _"]
+        );
+    }
+
+    #[test]
+    fn sign_ins_list_the_default_and_each_account() {
+        let store = store::Store::open_in_memory().unwrap();
+        let logins = store.logins().unwrap();
+        let server = Server {
+            name: "notes".to_owned(),
+            source: Source::File(PathBuf::new()),
+            transport: Transport::Url {
+                url: "https://notes/mcp".to_owned(),
+                headers: Vec::new(),
+                client: None,
+            },
+        };
+        logins
+            .save(&login_key("https://notes/mcp", None), "{}")
+            .unwrap();
+        logins
+            .save(&login_key("https://notes/mcp", Some("work")), "{}")
+            .unwrap();
+
+        let found = sign_ins(&logins, &server).unwrap();
+
+        assert_eq!(found, [None, Some("work".to_owned())]);
+    }
+
+    #[test]
+    fn the_catalog_names_accounts_and_how_to_reach_them() {
+        let addresses = [
+            Address::parse("notes").unwrap(),
+            Address::parse("notes#work").unwrap(),
+        ];
+
+        let text = catalog(&addresses).unwrap();
+
+        assert!(text.starts_with("MCP servers are connected to the sandbox: notes, notes#work."));
+        assert!(text.contains("`mcp[\"server#account\"].<tool>(args)`"));
     }
 
     #[test]

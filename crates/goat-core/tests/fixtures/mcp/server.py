@@ -23,7 +23,15 @@ TOOLS = [
 
 
 def reply(id, result):
-    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": id, "result": result}) + "\n")
+    send({"jsonrpc": "2.0", "id": id, "result": result})
+
+
+def reject(id):
+    send({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "Method not found"}})
+
+
+def send(message):
+    sys.stdout.write(json.dumps(message) + "\n")
     sys.stdout.flush()
 
 
@@ -54,4 +62,4 @@ for line in sys.stdin:
         else:
             reply(message["id"], {"content": [{"type": "text", "text": "no tool " + name}], "isError": True})
     else:
-        reply(message["id"], {})
+        reject(message["id"])

@@ -858,10 +858,7 @@ fn palette(text: &str, cursor: usize, choices: &Choices<'_>) -> Vec<Item> {
                 .iter()
                 .filter(|spec| spec.word.starts_with(typed))
                 .map(|spec| {
-                    let takes_value = matches!(
-                        spec.name,
-                        Name::Model | Name::Effort | Name::Resume | Name::Rewind | Name::Mcp
-                    );
+                    let takes_value = spec.name.takes_value();
                     Item {
                         label: format!("/{}", spec.word),
                         about: spec.about.to_owned(),
@@ -913,6 +910,7 @@ fn palette(text: &str, cursor: usize, choices: &Choices<'_>) -> Vec<Item> {
         Name::Resume => choices.sessions(typed, now()),
         Name::Rewind => choices.rewinds(typed, now()),
         Name::Mcp => choices.servers(typed),
+        Name::Plugin => choices.plugins(typed),
         Name::Compact | Name::Clear | Name::Status | Name::Usage | Name::Help | Name::Exit => {
             Vec::new()
         }
@@ -1174,7 +1172,7 @@ mod tests {
             name: "commit".to_owned(),
             description: "Commit the work\nmore".to_owned(),
             hint: Some("[push|pr|merge]".to_owned()),
-            location: std::path::PathBuf::new(),
+            source: goat_core::skill::Source::File(std::path::PathBuf::new()),
             for_model: true,
             for_user: true,
         }];
@@ -1191,6 +1189,7 @@ mod tests {
             files: &files,
             skills: &skills,
             servers: &[],
+            plugins: &[],
             current: Current {
                 account: account.id,
                 model: "gpt-6.2-sol",
@@ -1817,7 +1816,7 @@ mod tests {
     #[test]
     fn arrows_pick_a_command_and_enter_runs_it() {
         let mut line = line("/", 1);
-        let mut keys = vec![KeyCode::Down; 9];
+        let mut keys = vec![KeyCode::Down; 10];
         keys.push(KeyCode::Enter);
         let action = press(&mut line, &keys);
         assert!(matches!(action, Action::Submit));

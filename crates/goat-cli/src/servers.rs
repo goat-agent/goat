@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
-use goat_core::mcp::{self, Config, OauthClient, Server, State, Transport};
+use goat_core::mcp::{self, Address, Config, OauthClient, Server, Source, State, Transport};
 use goat_core::store::Store;
 
 use crate::ask;
@@ -16,7 +16,7 @@ pub(crate) enum Action {
     Add(Addition),
     #[command(about = "Remove a server and its sign-in")]
     Remove { name: String },
-    #[command(about = "Sign in to a server in the browser")]
+    #[command(about = "Sign in to a server in the browser; name#account adds another account")]
     Login { name: String },
     #[command(about = "Forget the sign-in to a server")]
     Logout { name: String },
@@ -96,11 +96,13 @@ fn list(store: &Store, paths: &Paths) -> anyhow::Result<()> {
         .unwrap_or(0);
     for server in &config.servers {
         let mut line = format!("{:width$}  {}", server.name, target(server));
-        if mcp::signed_in(&logins, server)? {
-            line.push_str("  signed in");
+        if let Some(accounts) = signed_in(&mcp::sign_ins(&logins, server)?) {
+            write!(line, "  {accounts}").ok();
         }
-        if server.source != personal {
-            write!(line, "  {}", directory(&server.source, &paths.home)).ok();
+        if let Source::File(file) = &server.source
+            && *file != personal
+        {
+            write!(line, "  {}", directory(file, &paths.home)).ok();
         }
         ask::say(&line)?;
     }
@@ -189,39 +191,66 @@ fn remove(store: &Store, paths: &Paths, name: &str) -> anyhow::Result<()> {
     let config = load(store, paths)?;
     let server = find(&config, name)?;
     mcp::remove(store, server)?;
-    ask::say(&format!(
-        "Removed {name} from {}.",
-        directory(&server.source, &paths.home)
-    ))?;
+    let shown = match &server.source {
+        Source::File(file) => directory(file, &paths.home),
+        Source::Plugin(plugin) => format!("the {plugin} plugin"),
+    };
+    ask::say(&format!("Removed {name} from {shown}."))?;
     Ok(())
 }
 
 async fn login(store: &Store, paths: &Paths, name: &str) -> anyhow::Result<()> {
+    let address = Address::parse(name)?;
     let config = load(store, paths)?;
-    let server = find(&config, name)?;
-    let sign_in = Box::pin(mcp::SignIn::start(server, Arc::new(store.logins()?))).await?;
+    let server = find(&config, &address.name)?;
+    sign_in(store, server, &address).await
+}
+
+fn logout(store: &Store, paths: &Paths, name: &str) -> anyhow::Result<()> {
+    let address = Address::parse(name)?;
+    let config = load(store, paths)?;
+    let server = find(&config, &address.name)?;
+    let text = if mcp::sign_out(&store.logins()?, server, address.account.as_deref())? {
+        format!("Signed out of {address}.")
+    } else {
+        format!("{address} was not signed in.")
+    };
+    ask::say(&text)?;
+    Ok(())
+}
+
+pub(crate) async fn sign_in(
+    store: &Store,
+    server: &Server,
+    address: &Address,
+) -> anyhow::Result<()> {
+    let sign_in = Box::pin(mcp::SignIn::start(
+        server,
+        address.account.as_deref(),
+        Arc::new(store.logins()?),
+    ))
+    .await?;
     ask::say(&format!(
-        "Opening your browser to sign in to {name}. If it does not open, visit:"
+        "Opening your browser to sign in to {address}. If it does not open, visit:"
     ))?;
     ask::say(sign_in.url())?;
     webbrowser::open(sign_in.url()).ok();
     Box::pin(sign_in.finish())
         .await
-        .with_context(|| format!("sign in to {name}"))?;
-    ask::say(&format!("Signed in to {name}."))?;
+        .with_context(|| format!("sign in to {address}"))?;
+    ask::say(&format!("Signed in to {address}."))?;
     Ok(())
 }
 
-fn logout(store: &Store, paths: &Paths, name: &str) -> anyhow::Result<()> {
-    let config = load(store, paths)?;
-    let server = find(&config, name)?;
-    let text = if mcp::sign_out(&store.logins()?, server)? {
-        format!("Signed out of {name}.")
-    } else {
-        format!("{name} was not signed in.")
-    };
-    ask::say(&text)?;
-    Ok(())
+pub(crate) fn signed_in(accounts: &[Option<String>]) -> Option<String> {
+    if accounts.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = accounts
+        .iter()
+        .map(|account| account.as_deref().unwrap_or("default"))
+        .collect();
+    Some(format!("signed in ({})", names.join(", ")))
 }
 
 fn load(store: &Store, paths: &Paths) -> anyhow::Result<Config> {
@@ -272,6 +301,13 @@ fn pairs(raw: &[String]) -> anyhow::Result<Vec<(String, String)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accounts_read_as_default_and_their_names() {
+        let shown = signed_in(&[None, Some("work".to_owned())]);
+
+        assert_eq!(shown.as_deref(), Some("signed in (default, work)"));
+    }
 
     #[test]
     fn a_pair_without_an_equals_sign_is_rejected() {

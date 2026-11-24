@@ -15,7 +15,7 @@ Run the first three and `cargo deny check` before you finish. The toolchain is p
 
 ## Layout
 
-- `crates/goat-core` is the library: agent loop (`session`), providers (`provider/openai`, `provider/anthropic`), the `run` tool and its sandbox (`tool/`), SQLite store (`store`), and accounts with ChatGPT sign-in (`account`). It never prints, reads environment variables or touches the terminal.
+- `crates/goat-core` is the library: agent loop (`session`), providers (`provider/openai`, `provider/anthropic`), the `run` tool and its sandbox (`tool/`), SQLite store (`store`), accounts with ChatGPT sign-in (`account`), MCP servers (`mcp`), skills (`skill`) and built-in plugins (`plugin`, with their files in `crates/goat-core/plugins/`). It never prints, reads environment variables or touches the terminal.
 - `crates/goat-cli` builds the `goat` binary: the inline input box (`input`), output (`render`), and the commands (`chat`, `login`).
 - `docs/style/rust.md` is the binding code style. Read it before writing code.
 
@@ -40,6 +40,7 @@ Run the first three and `cargo deny check` before you finish. The toolchain is p
 - Before each prompt, `session/snapshot.rs` snapshots the working directory with git into `~/.goat/snapshots/<key>/repo`, with its own index per session, the user's and the system's git config shut out, and never the project's `.git`. The tree id is kept in the `snapshots` table under the prompt's message id, so rewinding the conversation, which deletes the messages from that prompt on, drops their snapshots too. Restoring the files makes the working directory match the prompt's tree; ignored files and files over 10 MB are never in a tree, so they are never touched. Keep the conversation cut at a user prompt so both providers accept what remains.
 - MCP is configured only by the user: `mcp.toml` files plus `goat mcp`. A project's `.goat/mcp.toml` loads only after the user allows its exact content (`mcp_reviews`, path and sha256); `goat mcp add`/`remove` keep a file allowed only if it was allowed before the edit. Vendor-specific integrations belong in plugins, not in `mcp`.
 - MCP OAuth is rmcp's `auth` feature. Sign-ins live in `logins` under `mcp:<url>`, as rmcp's `StoredCredentials` JSON, read on every request. rmcp needs a `Send + Sync` store, so it goes through `Store::logins`, a second connection to the same database; plugins share the table under `plugin:<name>`.
+- Plugins are built in: each folder in `crates/goat-core/plugins/` is added to `BUILTIN` in `plugin.rs` with `include_str!`, and a test loads every one. A plugin's servers sign in under the same `mcp:<url>` keys as the user's own, so a plugin needs no storage of its own. Names of servers, plugins and accounts use letters, digits, `-` and `_`; `.` separates a server from its tool and `#` a server from its account.
 - `~/.goat/goat.db` stores credentials with mode 0600. Tests use `Store::open_in_memory` or a temporary directory, never the real home.
 
 ## Boundaries

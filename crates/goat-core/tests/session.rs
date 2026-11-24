@@ -9,7 +9,9 @@ use tokio::io::AsyncBufReadExt;
 
 use goat_core::account::{Account, Credential, Kind, codex};
 use goat_core::image;
+use goat_core::mcp;
 use goat_core::message::{Part, Role};
+use goat_core::plugin::Plugin;
 use goat_core::provider::Endpoints;
 use goat_core::session::{self, Environment, Event, Prompt, Session, Sink};
 use goat_core::store::Store;
@@ -69,6 +71,7 @@ fn environment(dir: &Path, url: &str) -> Environment {
             codex: url.into(),
             anthropic: url.into(),
         },
+        plugins: Vec::new(),
     }
 }
 
@@ -707,7 +710,10 @@ fn with_config(dir: &Path, text: &str) -> std::io::Result<()> {
 }
 
 async fn sign_in(session: &Session, name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let sign_in = session.sign_in(name).await?;
+    approve(session.sign_in(name).await?).await
+}
+
+async fn approve(sign_in: mcp::SignIn) -> Result<(), Box<dyn std::error::Error>> {
     let browser = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
@@ -785,7 +791,11 @@ async fn a_sign_in_lets_later_sessions_call_the_server_with_its_token() {
         .unwrap();
 
     let requests = server.requests.lock().unwrap();
-    assert!(requests[1].contains("token access1"), "{}", requests[1]);
+    assert!(
+        requests[1].contains("token access1 over 2026-07-28"),
+        "{}",
+        requests[1]
+    );
     assert_eq!(
         later.servers().0,
         [("notes".to_owned(), goat_core::mcp::State::Connected)]
@@ -1467,4 +1477,126 @@ async fn compaction_renames_the_session() {
         panic!("expected a summary");
     };
     assert!(text.ends_with("Goal: ship it"));
+}
+
+fn notes_plugin(url: &str) -> Result<Plugin, goat_core::plugin::Error> {
+    Plugin::load(&[
+        (
+            "plugin.toml",
+            "name = \"notes\"\ndescription = \"Read and write notes\"\n",
+        ),
+        ("mcp.toml", &format!("[notes]\nurl = \"{url}\"\n")),
+        (
+            "skills/guide/SKILL.md",
+            "---\ndescription: How to use notes\n---\nAsk whoami first.",
+        ),
+    ])
+}
+
+#[tokio::test]
+async fn a_plugin_waiting_for_sign_in_is_offered_but_not_connected() {
+    let (_oauth, url) = oauth_server().await.unwrap();
+    let server = server::replay(vec![OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut env = environment(dir.path(), &server.url);
+    env.plugins = vec![notes_plugin(&url).unwrap()];
+    let mut session = openai_session(&env).unwrap();
+
+    session
+        .turn("hello", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(
+        requests[0]
+            .contains("Plugins the user has not signed in to: notes (Read and write notes).")
+    );
+    assert!(!requests[0].contains("MCP servers are connected"));
+    assert!(!requests[0].contains("notes:guide"));
+    assert_eq!(session.servers().0, []);
+}
+
+#[tokio::test]
+async fn a_signed_in_plugin_brings_its_server_and_its_skills() {
+    let (_oauth, url) = oauth_server().await.unwrap();
+    let call = leak(OPENAI_TOOL_CALL.replace(
+        "(await bash('echo hi')).output",
+        "await mcp.notes.whoami({})",
+    ));
+    let server = server::replay(vec![call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut env = environment(dir.path(), &server.url);
+    let plugin = notes_plugin(&url).unwrap();
+    env.plugins = vec![plugin.clone()];
+    let database = dir.path().join("goat.db");
+    let store = Store::open(&database).unwrap();
+    let logins = std::sync::Arc::new(store.logins().unwrap());
+    approve(
+        mcp::SignIn::start(&plugin.servers[0], None, logins)
+            .await
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut session = file_session(&env, &database).unwrap();
+
+    session
+        .turn("ask notes", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].contains("MCP servers are connected to the sandbox: notes."));
+    assert!(requests[0].contains("<name>notes:guide</name>"));
+    assert!(!requests[0].contains("Plugins the user has not signed in to"));
+    assert!(requests[1].contains("token access1"), "{}", requests[1]);
+}
+
+#[tokio::test]
+async fn a_second_account_is_signed_in_and_called_by_its_name() {
+    let (_oauth, url) = oauth_server().await.unwrap();
+    let call = leak(OPENAI_TOOL_CALL.replace(
+        "(await bash('echo hi')).output",
+        "[await mcp.notes.whoami({}), await mcp['notes#work'].whoami({}), await mcp.describe('notes#work.whoami')].join(' | ')",
+    ));
+    let server = server::replay(vec![call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    with_notes(dir.path(), &url).unwrap();
+    let env = environment(dir.path(), &server.url);
+    let database = dir.path().join("goat.db");
+    let first = file_session(&env, &database).unwrap();
+    sign_in(&first, "notes").await.unwrap();
+    sign_in(&first, "notes#work").await.unwrap();
+    let mut later = file_session(&env, &database).unwrap();
+
+    later
+        .turn("ask both", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].contains("MCP servers are connected to the sandbox: notes, notes#work."));
+    assert!(
+        requests[0].contains("mcp[\\\"server#account\\\"]"),
+        "{}",
+        requests[0]
+    );
+    assert!(
+        requests[1].contains("token access1 over 2026-07-28 | token access2 over 2026-07-28"),
+        "{}",
+        requests[1]
+    );
+    assert!(
+        requests[1].contains("mcp[\\\"notes#work\\\"].whoami(args"),
+        "{}",
+        requests[1]
+    );
+    assert_eq!(
+        later.servers().0,
+        [
+            ("notes".to_owned(), mcp::State::Connected),
+            ("notes#work".to_owned(), mcp::State::Connected),
+        ]
+    );
 }

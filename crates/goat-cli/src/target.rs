@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use goat_core::account;
 use goat_core::catalog::Model;
 use goat_core::mcp::State;
+use goat_core::plugin::Plugin;
 use goat_core::skill::Skill;
 use goat_core::store::{Recent, Sent};
 
@@ -35,6 +36,7 @@ pub(crate) struct Choices<'a> {
     pub(crate) files: &'a Files,
     pub(crate) skills: &'a [Skill],
     pub(crate) servers: &'a [(String, State)],
+    pub(crate) plugins: &'a [Plugin],
     pub(crate) current: Current<'a>,
 }
 
@@ -194,6 +196,20 @@ impl Choices<'_> {
             .map(|(name, state)| Candidate {
                 value: name.clone(),
                 label: server_line(name, state),
+                is_current: false,
+                efforts: Vec::new(),
+                effort: 0,
+            })
+            .collect()
+    }
+
+    pub(crate) fn plugins(&self, typed: &str) -> Vec<Candidate> {
+        self.plugins
+            .iter()
+            .filter(|plugin| plugin.name.starts_with(typed))
+            .map(|plugin| Candidate {
+                value: plugin.name.clone(),
+                label: format!("{}  {}", plugin.name, plugin.description),
                 is_current: false,
                 efforts: Vec::new(),
                 effort: 0,
@@ -513,6 +529,7 @@ mod tests {
             files: &files,
             skills: &[],
             servers: &[],
+            plugins: &[],
             current: Current {
                 account: goat_core::account::Id::generate(),
                 model: "gpt-6.2-sol",
@@ -584,6 +601,7 @@ mod tests {
             files: Box::leak(Box::new(Files::listed(Vec::new()))),
             skills: &[],
             servers: &[],
+            plugins: &[],
             current: Current {
                 account: goat_core::account::Id::generate(),
                 model: "gpt-6.2-sol",
@@ -656,6 +674,7 @@ mod tests {
             files: Box::leak(Box::new(Files::listed(Vec::new()))),
             skills: &[],
             servers: &[],
+            plugins: &[],
             current: Current {
                 account: offers[0].account,
                 model: "gpt-6.2-sol",
@@ -798,6 +817,7 @@ mod tests {
             files: Box::leak(Box::new(Files::listed(Vec::new()))),
             skills: &[],
             servers: &[],
+            plugins: &[],
             current: Current {
                 account: offers[0].account,
                 model: "claude-opus-5-5",
