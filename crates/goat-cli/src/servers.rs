@@ -182,7 +182,7 @@ async fn add(store: &Store, paths: &Paths, addition: Addition) -> anyhow::Result
     else {
         return Ok(());
     };
-    let state = mcp::check(server, &crate::chat::reach(store)?).await;
+    let state = mcp::check(server, &crate::chat::reach(store, &paths.home)?).await;
     match state {
         State::NeedsSignIn => ask::say(&format!(
             "{name} needs sign-in; run `goat mcp login {name}`."
@@ -209,7 +209,7 @@ async fn login(store: &Store, paths: &Paths, name: &str) -> anyhow::Result<()> {
     let address = Address::parse(name)?;
     let config = load(store, paths)?;
     let server = find(&config, &address.name)?;
-    sign_in(store, server, &address).await
+    sign_in(store, &paths.home, server, &address).await
 }
 
 fn logout(store: &Store, paths: &Paths, name: &str) -> anyhow::Result<()> {
@@ -227,10 +227,11 @@ fn logout(store: &Store, paths: &Paths, name: &str) -> anyhow::Result<()> {
 
 pub(crate) async fn sign_in(
     store: &Store,
+    home: &std::path::Path,
     server: &Server,
     address: &Address,
 ) -> anyhow::Result<()> {
-    let context = crate::chat::reach(store)?;
+    let context = crate::chat::reach(store, home)?;
     let sign_in = Box::pin(mcp::SignIn::start(
         server,
         address.account.as_deref(),
@@ -269,7 +270,7 @@ fn load(store: &Store, paths: &Paths) -> anyhow::Result<Config> {
     );
     let logins = store.logins()?;
     for plugin in plugin::builtin()? {
-        if plugin.is_signed_in(&logins)? {
+        if plugin.is_on(store.plugin_enabled(&plugin.name)?, &logins)? {
             plugin.add_servers(&mut config.servers);
         }
     }

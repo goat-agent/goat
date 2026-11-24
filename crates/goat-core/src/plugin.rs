@@ -8,12 +8,22 @@ const MANIFEST: &str = "plugin.toml";
 const SERVERS: &str = "mcp.toml";
 const SKILL: &str = "SKILL.md";
 const CATALOG: &str = "\
-Plugins the user has not signed in to: {plugins}. \
-When one would help, ask the user to run `goat plugin login <name>` and start a new session.";
-const BUILTIN: &[&[(&str, &str)]] = &[&[
-    (MANIFEST, include_str!("../plugins/gmail/plugin.toml")),
-    (SERVERS, include_str!("../plugins/gmail/mcp.toml")),
-]];
+Plugins that are off: {plugins}. \
+When one would help, ask the user to run `goat plugin enable <name>` and start a new session.";
+const BUILTIN: &[&[(&str, &str)]] = &[
+    &[
+        (MANIFEST, include_str!("../plugins/gmail/plugin.toml")),
+        (SERVERS, include_str!("../plugins/gmail/mcp.toml")),
+    ],
+    &[
+        (MANIFEST, include_str!("../plugins/computer/plugin.toml")),
+        (SERVERS, include_str!("../plugins/computer/mcp.toml")),
+        (
+            "skills/use/SKILL.md",
+            include_str!("../plugins/computer/skills/use/SKILL.md"),
+        ),
+    ],
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plugin {
@@ -83,6 +93,44 @@ impl Plugin {
         })
     }
 
+    pub fn needs_sign_in(&self) -> bool {
+        self.servers.iter().any(|server| match &server.transport {
+            mcp::Transport::Url { .. } => true,
+            mcp::Transport::Builtin(builtin) => builtin.needs_sign_in(),
+            mcp::Transport::Command { .. } => false,
+        })
+    }
+
+    pub fn is_on(&self, setting: Option<bool>, logins: &Logins) -> Result<bool, store::Error> {
+        if !setting.unwrap_or_else(|| self.needs_sign_in()) {
+            return Ok(false);
+        }
+        Ok(!self.needs_sign_in() || self.is_signed_in(logins)?)
+    }
+
+    pub fn forget_grants(&self, logins: &Logins) -> Result<(), store::Error> {
+        for server in &self.servers {
+            if let mcp::Transport::Builtin(builtin) = &server.transport {
+                builtin.forget_grants(logins)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn missing_permissions(&self, ask: bool) -> Result<Vec<&'static str>, String> {
+        let mut missing = Vec::new();
+        for server in &self.servers {
+            if let mcp::Transport::Builtin(builtin) = &server.transport {
+                for permission in builtin.missing_permissions(ask)? {
+                    if !missing.contains(&permission) {
+                        missing.push(permission);
+                    }
+                }
+            }
+        }
+        Ok(missing)
+    }
+
     pub fn is_signed_in(&self, logins: &Logins) -> Result<bool, store::Error> {
         for server in &self.servers {
             if !mcp::sign_ins(logins, server)?.is_empty() {
@@ -95,7 +143,11 @@ impl Plugin {
     pub fn remotes(&self) -> impl Iterator<Item = &Server> {
         self.servers
             .iter()
-            .filter(|server| matches!(server.transport, mcp::Transport::Url { .. }))
+            .filter(|server| match &server.transport {
+                mcp::Transport::Url { .. } => true,
+                mcp::Transport::Builtin(builtin) => builtin.needs_sign_in(),
+                mcp::Transport::Command { .. } => false,
+            })
     }
 
     pub fn add_servers(&self, servers: &mut Vec<Server>) {
@@ -176,6 +228,34 @@ mod tests {
     }
 
     #[test]
+    fn a_plugin_that_signs_in_is_on_once_signed_in_unless_disabled() {
+        let store = store::Store::open_in_memory().unwrap();
+        let logins = store.logins().unwrap();
+        let plugin = Plugin::load(NOTES).unwrap();
+        logins.save("mcp:https://notes.example/mcp", "{}").unwrap();
+
+        assert!(plugin.is_on(None, &logins).unwrap());
+        assert!(!plugin.is_on(Some(false), &logins).unwrap());
+    }
+
+    #[test]
+    fn a_plugin_without_sign_in_is_off_until_enabled() {
+        let store = store::Store::open_in_memory().unwrap();
+        let logins = store.logins().unwrap();
+        let plugin = Plugin::load(&[
+            (
+                MANIFEST,
+                "name = \"local\"\ndescription = \"Local tools\"\n",
+            ),
+            (SERVERS, "[local]\ncommand = [\"local-mcp\"]\n"),
+        ])
+        .unwrap();
+
+        assert!(!plugin.is_on(None, &logins).unwrap());
+        assert!(plugin.is_on(Some(true), &logins).unwrap());
+    }
+
+    #[test]
     fn a_user_server_with_the_same_name_wins_over_the_plugin() {
         let plugin = Plugin::load(NOTES).unwrap();
         let mine = Server {
@@ -209,11 +289,7 @@ mod tests {
 
         let text = catalog(&[&plugin]).unwrap();
 
-        assert!(
-            text.starts_with(
-                "Plugins the user has not signed in to: notes (Read and write notes)."
-            )
-        );
-        assert!(text.contains("goat plugin login <name>"));
+        assert!(text.starts_with("Plugins that are off: notes (Read and write notes)."));
+        assert!(text.contains("goat plugin enable <name>"));
     }
 }

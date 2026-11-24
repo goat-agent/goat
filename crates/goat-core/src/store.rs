@@ -78,6 +78,12 @@ const MIGRATIONS: &[&str] = &[
         credentials text not null
     ) strict;
 ",
+    "
+    create table plugins (
+        name text primary key,
+        enabled integer not null
+    ) strict;
+",
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -567,6 +573,26 @@ impl Store {
         .collect()
     }
 
+    pub fn plugin_enabled(&self, name: &str) -> Result<Option<bool>, Error> {
+        Ok(self
+            .conn
+            .query_row(
+                "select enabled from plugins where name = ?1",
+                [name],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()?)
+    }
+
+    pub fn set_plugin_enabled(&self, name: &str, is_enabled: bool) -> Result<(), Error> {
+        self.conn.execute(
+            "insert into plugins (name, enabled) values (?1, ?2)
+             on conflict (name) do update set enabled = excluded.enabled",
+            params![name, is_enabled],
+        )?;
+        Ok(())
+    }
+
     pub fn save_mcp_review(&self, review: &mcp::Review) -> Result<(), Error> {
         self.conn.execute(
             "insert into mcp_reviews (path, digest, decision) values (?1, ?2, ?3)
@@ -716,6 +742,18 @@ mod tests {
         );
         assert!(logins.remove("mcp:https://a").unwrap());
         assert_eq!(logins.get("mcp:https://a").unwrap(), None);
+    }
+
+    #[test]
+    fn a_plugin_remembers_whether_it_is_enabled() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.plugin_enabled("computer").unwrap(), None);
+
+        store.set_plugin_enabled("computer", true).unwrap();
+        store.set_plugin_enabled("gmail", false).unwrap();
+
+        assert_eq!(store.plugin_enabled("computer").unwrap(), Some(true));
+        assert_eq!(store.plugin_enabled("gmail").unwrap(), Some(false));
     }
 
     #[test]

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::web::{self, Web};
-use super::{Call, Kind, Question, Step, bash, danger, files, hashline, spill};
+use super::{Call, Decision, Kind, Question, Step, bash, danger, files, hashline, spill};
 use crate::mcp::Clients;
 use crate::skill::{self, Skill};
 use crate::{image, instructions};
@@ -222,11 +222,15 @@ impl Host {
         }
     }
 
+    pub(crate) fn steps(&self) -> mpsc::Sender<Step> {
+        self.steps.clone()
+    }
+
     async fn confirm(&self, call: &str) -> Result<(), String> {
-        let (question, answer) = Question::new(call.to_owned());
+        let (question, answer) = Question::new(call.to_owned(), false);
         self.steps.send(Step::Confirm(question)).await.ok();
         match answer.await {
-            Ok(true) => Ok(()),
+            Ok(Decision::Once | Decision::Always) => Ok(()),
             _ => Err(format!("the user did not allow {call}")),
         }
     }
