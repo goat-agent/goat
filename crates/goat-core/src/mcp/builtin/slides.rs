@@ -1,8 +1,9 @@
 use reqwest::{Method, Url};
 use serde_json::{Value, json};
 
+use super::args::Args;
 use super::drive;
-use super::google::{self, Args, Rest, rename};
+use super::google::{self, Rest, rename};
 
 pub(super) const SCOPES: &[&str] = &[
     "https://www.googleapis.com/auth/drive.readonly",

@@ -1,11 +1,12 @@
-use jiff::civil::{Date, DateTime, Time, Weekday};
-use jiff::tz::TimeZone;
-use jiff::{Timestamp, ToSpan, ZonedDateTime};
+use jiff::civil::{Time, Weekday};
+use jiff::{Timestamp, ToSpan};
 use reqwest::{Method, Url};
 use serde_json::{Value, json};
 use tokio::sync::OnceCell;
 
-use super::google::{self, Args, Rest, copy, items, rename};
+use super::args::Args;
+use super::google::{self, Rest, copy, items, rename};
+use super::zone::Zone;
 use crate::oauth;
 
 pub(super) const SCOPES: &[&str] = &[
@@ -57,11 +58,6 @@ pub(super) struct Calendar {
     rest: Rest,
     base: Box<str>,
     home: OnceCell<String>,
-}
-
-struct Zone {
-    name: String,
-    tz: TimeZone,
 }
 
 struct Search {
@@ -494,9 +490,7 @@ impl Calendar {
                 .await?
                 .clone(),
         };
-        let tz = TimeZone::get(&name)
-            .map_err(|err| format!("{name} is not a known time zone: {err}"))?;
-        Ok(Zone { name, tz })
+        Zone::named(name)
     }
 
     fn url(&self, segments: &[&str], query: &[(&str, String)]) -> Result<Url, String> {
@@ -505,68 +499,6 @@ impl Calendar {
             .chain(segments.iter().copied())
             .collect();
         google::at(&self.base, &path, query)
-    }
-}
-
-impl Zone {
-    fn at(&self, text: &str) -> Result<ZonedDateTime, String> {
-        if let Ok(instant) = text.parse::<Timestamp>() {
-            return Ok(instant.to_zoned_datetime(self.tz.clone()));
-        }
-        if let Ok(civil) = text.parse::<DateTime>() {
-            return self.civil(civil);
-        }
-        if let Ok(day) = text.parse::<Date>() {
-            return self.civil(day.to_datetime(Time::midnight()));
-        }
-        Err(format!("{text} is not an ISO 8601 time"))
-    }
-
-    fn civil(&self, civil: DateTime) -> Result<ZonedDateTime, String> {
-        self.tz
-            .to_zoned_datetime(civil)
-            .map_err(|err| format!("{civil} does not exist in {}: {err}", self.name))
-    }
-
-    fn moment(&self, at: &ZonedDateTime) -> Value {
-        json!({ "dateTime": at.datetime().to_string(), "timeZone": self.name })
-    }
-
-    fn span(&self, start: &str, end: &str, is_all_day: bool) -> Result<(Value, Value), String> {
-        let (start, end) = (self.at(start)?, self.at(end)?);
-        if !is_all_day {
-            return Ok((self.moment(&start), self.moment(&end)));
-        }
-        let first = start.date();
-        let mut last = end.date();
-        if last <= first {
-            last = first.tomorrow().map_err(|err| err.to_string())?;
-        }
-        Ok((
-            json!({ "date": first.to_string() }),
-            json!({ "date": last.to_string() }),
-        ))
-    }
-
-    fn length(&self, found: &Value) -> Result<i64, String> {
-        let instant = |moment: &Value| -> Option<Timestamp> {
-            moment["dateTime"]
-                .as_str()
-                .or_else(|| moment["date"].as_str())
-                .and_then(|text| self.at(text).ok())
-                .map(|at| at.timestamp())
-        };
-        let (Some(start), Some(end)) = (instant(&found["start"]), instant(&found["end"])) else {
-            return Err("the event has no start and end to keep its length from".to_owned());
-        };
-        Ok(end.as_second() - start.as_second())
-    }
-
-    fn slot(&self, start: Timestamp, end: Timestamp) -> Value {
-        json!({
-            "start": self.moment(&start.to_zoned_datetime(self.tz.clone())),
-            "end": self.moment(&end.to_zoned_datetime(self.tz.clone())),
-        })
     }
 }
 

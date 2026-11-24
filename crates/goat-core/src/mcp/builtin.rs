@@ -1,3 +1,5 @@
+pub mod apple;
+mod args;
 mod calendar;
 pub mod computer;
 mod contacts;
@@ -8,6 +10,8 @@ pub mod google;
 mod mime;
 mod sheets;
 mod slides;
+mod worker;
+mod zone;
 
 use std::sync::Arc;
 
@@ -21,18 +25,21 @@ const PIPE_BYTES: usize = 64 * 1024;
 pub enum Builtin {
     Google(google::Product),
     Computer,
+    Apple,
 }
 
 #[derive(Debug)]
 pub(crate) enum Running {
     Google(RunningService<RoleServer, google::Server>),
     Computer(RunningService<RoleServer, computer::Computer>),
+    Apple(RunningService<RoleServer, apple::Apple>),
 }
 
 impl Builtin {
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "computer" => Some(Self::Computer),
+            "apple" => Some(Self::Apple),
             _ => google::Product::parse(name).map(Self::Google),
         }
     }
@@ -41,19 +48,20 @@ impl Builtin {
         match self {
             Self::Google(product) => product.as_str(),
             Self::Computer => "computer",
+            Self::Apple => "apple",
         }
     }
 
     pub fn needs_sign_in(self) -> bool {
         match self {
             Self::Google(_) => true,
-            Self::Computer => false,
+            Self::Computer | Self::Apple => false,
         }
     }
 
     pub fn forget_grants(self, logins: &crate::store::Logins) -> Result<(), crate::store::Error> {
         match self {
-            Self::Google(_) => Ok(()),
+            Self::Google(_) | Self::Apple => Ok(()),
             Self::Computer => computer::forget_grants(logins),
         }
     }
@@ -62,13 +70,14 @@ impl Builtin {
         match self {
             Self::Google(_) => Ok(Vec::new()),
             Self::Computer => computer::missing_permissions(ask),
+            Self::Apple => apple::missing_permissions(ask),
         }
     }
 
     pub(crate) fn scopes(self) -> &'static [&'static str] {
         match self {
             Self::Google(product) => product.scopes(),
-            Self::Computer => &[],
+            Self::Computer | Self::Apple => &[],
         }
     }
 
@@ -100,6 +109,15 @@ impl Builtin {
                     .map(Running::Computer)
                     .map_err(failed)
             }
+            Self::Apple => {
+                let library = apple::start().map_err(|fault| {
+                    format!("{} did not start: {}", self.as_str(), fault.message())
+                })?;
+                let server = apple::Apple::new(library).await.map_err(|fault| {
+                    format!("{} did not start: {}", self.as_str(), fault.message())
+                })?;
+                server.serve(pipe).await.map(Running::Apple).map_err(failed)
+            }
         }
     }
 }
@@ -109,6 +127,7 @@ impl Running {
         match self {
             Self::Google(service) => drop(service.cancel().await),
             Self::Computer(service) => drop(service.cancel().await),
+            Self::Apple(service) => drop(service.cancel().await),
         }
     }
 }

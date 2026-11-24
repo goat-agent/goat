@@ -2,7 +2,8 @@ use reqwest::Url;
 use serde_json::{Value, json};
 use tokio::sync::OnceCell;
 
-use super::google::{self, Args, Rest, items};
+use super::args::Args;
+use super::google::{self, Rest, items};
 
 pub(super) const SCOPES: &[&str] = &[
     "https://www.googleapis.com/auth/contacts.readonly",

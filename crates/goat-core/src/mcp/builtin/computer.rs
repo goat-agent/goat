@@ -77,7 +77,7 @@ impl Computer {
 
     async fn run(&self, name: &str, args: &Args, peer: &Peer<RoleServer>) -> Result<Value, Fault> {
         match name {
-            "list_windows" => self.on(|p| p.screen()).await.and_then(to_value),
+            "list_windows" => self.on(Platform::screen).await.and_then(to_value),
             "list_elements" => self.list_elements(args).await,
             "wait" => self.wait(args).await,
             "click" => self.click(args, peer).await,
@@ -126,7 +126,7 @@ impl Computer {
             "open" => self.open(args).await,
             "quit" => {
                 let wanted = args.text("app")?.to_owned();
-                let screen = self.on(|p| p.screen()).await?;
+                let screen = self.on(Platform::screen).await?;
                 let app = screen
                     .apps
                     .into_iter()
@@ -139,7 +139,7 @@ impl Computer {
             }
             "set_window" => self.set_window(args, peer).await,
             "read_clipboard" => {
-                let text = self.on(|p| p.read_clipboard()).await?;
+                let text = self.on(Platform::read_clipboard).await?;
                 Ok(json!({ "text": text }))
             }
             "write_clipboard" => {
@@ -361,7 +361,7 @@ impl Computer {
         &self,
         peer: &Peer<RoleServer>,
         target: Target,
-        work: impl FnOnce(&mut dyn Platform) -> Result<(), Fault> + Send + 'static,
+        work: impl FnOnce(&mut (dyn Platform + 'static)) -> Result<(), Fault> + Send + 'static,
     ) -> Result<Value, Fault> {
         self.hold()?;
         let app = self
@@ -490,7 +490,7 @@ impl Computer {
 
     async fn on<T: Send + 'static>(
         &self,
-        work: impl FnOnce(&mut dyn Platform) -> Result<T, Fault> + Send + 'static,
+        work: impl FnOnce(&mut (dyn Platform + 'static)) -> Result<T, Fault> + Send + 'static,
     ) -> Result<T, Fault> {
         self.desktop.run(work).await?
     }
@@ -690,7 +690,9 @@ impl Escape {
 #[cfg(target_os = "macos")]
 pub(crate) fn start(goat_dir: &std::path::Path) -> Result<Desktop, Fault> {
     let scratch = goat_dir.join("computer");
-    Desktop::start(move || macos::Mac::new(scratch))
+    Desktop::start("goat-desktop", move || {
+        macos::Mac::new(scratch).map(|mac| Box::new(mac) as Box<dyn Platform>)
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -771,7 +773,8 @@ mod tests {
 
     async fn rig_with(fake: Fake, logins: Arc<Logins>, home: &std::path::Path) -> Rig {
         let log = Arc::clone(&fake.log);
-        let desktop = Desktop::start(move || Ok(fake)).unwrap();
+        let desktop =
+            Desktop::start("goat-desktop", move || Ok::<_, Fault>(Box::new(fake))).unwrap();
         let computer = Computer::new(desktop, Arc::clone(&logins), home);
         let answering = Answering::default();
         let (near, far) = tokio::io::duplex(64 * 1024);

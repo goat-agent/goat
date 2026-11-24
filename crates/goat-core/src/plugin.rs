@@ -62,6 +62,14 @@ const BUILTIN: &[&[(&str, &str)]] = &[
             include_str!("../plugins/computer/skills/use/SKILL.md"),
         ),
     ],
+    &[
+        (MANIFEST, include_str!("../plugins/apple/plugin.toml")),
+        (SERVERS, include_str!("../plugins/apple/mcp.toml")),
+        (
+            "skills/use/SKILL.md",
+            include_str!("../plugins/apple/skills/use/SKILL.md"),
+        ),
+    ],
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
