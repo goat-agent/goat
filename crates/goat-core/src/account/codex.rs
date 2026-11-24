@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::oauth::{self, Error, Listener, Pkce};
+use crate::oauth::{self, Error, Listener, Pkce};
 
 const AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
 const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
