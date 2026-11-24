@@ -1,3 +1,4 @@
+mod args;
 mod calendar;
 pub mod computer;
 mod contacts;
@@ -9,6 +10,7 @@ mod mime;
 mod sheets;
 mod slides;
 mod worker;
+mod zone;
 
 use std::sync::Arc;
 

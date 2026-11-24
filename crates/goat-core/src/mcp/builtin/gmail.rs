@@ -4,7 +4,8 @@ use futures::future::join_all;
 use reqwest::{Method, Url};
 use serde_json::{Value, json};
 
-use super::google::{self, Args, Rest, copy, items};
+use super::args::Args;
+use super::google::{self, Rest, copy, items};
 use super::mime::{self, Attachment, Draft};
 
 pub(super) const SCOPES: &[&str] = &["https://www.googleapis.com/auth/gmail.modify"];

@@ -3,7 +3,8 @@ use base64::engine::general_purpose::STANDARD;
 use reqwest::{Method, Url};
 use serde_json::{Value, json};
 
-use super::google::{self, Args, Rest, copy, items, rename};
+use super::args::Args;
+use super::google::{self, Rest, copy, items, rename};
 use crate::oauth;
 
 pub(super) const SCOPES: &[&str] = &[
