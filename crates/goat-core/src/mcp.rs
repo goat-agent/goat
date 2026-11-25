@@ -43,8 +43,9 @@ const FILE: &str = "mcp.toml";
 const DEPTH: usize = 3;
 const CATALOG: &str = "\
 MCP servers are connected to the sandbox: {servers}. \
-In a run, `await mcp.tools()` lists their tools as [{name, description, input}], \
-`await mcp.describe(name)` shows one tool's input, and `await mcp.<server>.<tool>(args)` calls it \
+In a run, `await mcp.tools()` lists their tools as [{name, description, input}]; \
+an entry named by a server alone gives that server's own instructions, which you follow when you use it, \
+or why it is unavailable. `await mcp.describe(name)` shows one tool's input, and `await mcp.<server>.<tool>(args)` calls it \
 with one object argument.";
 const ACCOUNTS: &str = "\
 A server signed in with another account is named server#account and reached as \
@@ -766,13 +767,27 @@ impl Clients {
             self.lost(name, &err)
                 .unwrap_or_else(|| format!("{name} could not list its tools: {}", call_cause(&err)))
         })?;
-        Ok(tools
+        let instructions = peer
+            .peer_info()
+            .and_then(|info| {
+                info.instructions
+                    .as_deref()
+                    .map(str::trim)
+                    .map(str::to_owned)
+            })
+            .filter(|text| !text.is_empty())
+            .map(|description| Listed {
+                name: name.to_owned(),
+                description,
+                input: String::new(),
+            });
+        Ok(instructions
             .into_iter()
-            .map(|tool| Listed {
+            .chain(tools.into_iter().map(|tool| Listed {
                 name: format!("{name}.{}", tool.name),
                 description: tool.description.as_deref().unwrap_or_default().to_owned(),
                 input: brief(&Value::Object((*tool.input_schema).clone())),
-            })
+            }))
             .collect())
     }
 
