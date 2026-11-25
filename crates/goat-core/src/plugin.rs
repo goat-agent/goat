@@ -70,6 +70,30 @@ const BUILTIN: &[&[(&str, &str)]] = &[
             include_str!("../plugins/apple/skills/use/SKILL.md"),
         ),
     ],
+    &[
+        (MANIFEST, include_str!("../plugins/linear/plugin.toml")),
+        (SERVERS, include_str!("../plugins/linear/mcp.toml")),
+    ],
+    &[
+        (MANIFEST, include_str!("../plugins/notion/plugin.toml")),
+        (SERVERS, include_str!("../plugins/notion/mcp.toml")),
+    ],
+    &[
+        (MANIFEST, include_str!("../plugins/sentry/plugin.toml")),
+        (SERVERS, include_str!("../plugins/sentry/mcp.toml")),
+    ],
+    &[
+        (MANIFEST, include_str!("../plugins/posthog/plugin.toml")),
+        (SERVERS, include_str!("../plugins/posthog/mcp.toml")),
+    ],
+    &[
+        (MANIFEST, include_str!("../plugins/granola/plugin.toml")),
+        (SERVERS, include_str!("../plugins/granola/mcp.toml")),
+    ],
+    &[
+        (MANIFEST, include_str!("../plugins/fireflies/plugin.toml")),
+        (SERVERS, include_str!("../plugins/fireflies/mcp.toml")),
+    ],
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
