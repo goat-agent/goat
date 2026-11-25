@@ -60,6 +60,7 @@ struct Activity {
     frame: usize,
     retrying: Option<u32>,
     drives_computer: bool,
+    agent_calls: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -282,6 +283,7 @@ impl<W: Write> Terminal<W> {
             frame: 0,
             retrying: None,
             drives_computer: false,
+            agent_calls: 0,
         });
         self.flush();
     }
@@ -393,6 +395,7 @@ impl<W: Write> Terminal<W> {
             Kind::Search => "WebSearch",
             Kind::Skill => "Skill",
             Kind::Mcp => "Mcp",
+            Kind::Agent => "Agent",
         };
         if call.kind == Kind::Mcp
             && call.target.starts_with(COMPUTER)
@@ -532,7 +535,12 @@ impl<W: Write> Terminal<W> {
                 (None, Work::Shell) => "Running".to_owned(),
                 (None, Work::Compact) => "Compacting".to_owned(),
             };
-            format!("{} {doing} {}", SPINNER[activity.frame], took.dim())
+            let line = format!("{} {doing} {}", SPINNER[activity.frame], took.dim());
+            match activity.agent_calls {
+                0 => line,
+                1 => format!("{line} {}", "· agents made 1 call".dim()),
+                calls => format!("{line} {}", format!("· agents made {calls} calls").dim()),
+            }
         });
         let above = wrapped.len() + usize::from(spinner.is_some());
         let composer = self.composer.iter().flat_map(|frame| &frame.rows);
@@ -607,6 +615,12 @@ impl<W: Write> Sink for Terminal<W> {
                 self.put(&format!("{} {description}\n", "•".dim()));
             }
             Event::Call(call) => self.call(call),
+            Event::AgentCall(_) => {
+                if let Some(activity) = &mut self.activity {
+                    activity.agent_calls += 1;
+                    self.erase();
+                }
+            }
             Event::Changed(diff) => self.changed(diff),
             Event::Loaded { path } => self.call_line("Loaded", path),
             Event::Untracked { reason } => {
@@ -1281,6 +1295,24 @@ mod tests {
         terminal.begin_turn(Work::Shell);
 
         let expected = format!("⠋ Running {}\n› ", "(0s)".dim());
+        assert_eq!(visible(&terminal.out), expected);
+    }
+
+    #[test]
+    fn calls_made_by_agents_are_counted_on_the_spinner() {
+        let mut terminal = Terminal::with_writer(Vec::new(), || 60);
+        terminal.show(composer(""));
+        terminal.begin_turn(Work::Turn);
+        let read = call(Kind::Read, "a.rs");
+
+        terminal.emit(Event::AgentCall(&read));
+        terminal.emit(Event::AgentCall(&read));
+
+        let expected = format!(
+            "⠋ Working {} {}\n› ",
+            "(0s)".dim(),
+            "· agents made 2 calls".dim()
+        );
         assert_eq!(visible(&terminal.out), expected);
     }
 

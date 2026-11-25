@@ -11,9 +11,10 @@ mod web;
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::rc::Rc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use tokio::sync::mpsc;
 
@@ -49,6 +50,7 @@ The sandbox reaches the system only through these async functions:
 - webFetch(url) gets a web page like the standard fetch and returns {ok, status, url, text(), json()}, where text() of an HTML page is markdown. The text is cut to its first and last 20 KB with the full text in a file. Only http and https URLs without credentials are fetched; use bash and curl for anything else.
 - webSearch(query) searches the web and returns up to 8 results as [{title, url, snippet}].
 - skill(name, args) loads a skill listed in your instructions; its instructions come after the run's result. args is the user's text for it, or omitted.
+- agent(task, {as, id}) starts an agent: a helper with its own context, the same functions and this working directory. It returns {id, text}, where text is its final answer. as names an agent from your instructions and defaults to general; id continues an agent that finished, with task as its next message. Agents cannot start agents.
 - console.log(...) adds lines to what you see, before the result.
 
 A failed read, edit or write, and a blocked command, throw an Error. A run returns only after all its calls finish, so await the calls whose results you use. Paths are relative to the working directory, and ~ is the home directory.";
@@ -90,6 +92,7 @@ pub enum Kind {
     Search,
     Skill,
     Mcp,
+    Agent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +109,28 @@ pub(crate) enum Step {
     Loaded(Box<str>),
     Shown(Picture),
     Confirm(Question),
+    AgentCall(Call),
+}
+
+pub(crate) trait Spawn: std::fmt::Debug {
+    fn spawn<'a>(
+        &'a self,
+        task: Task,
+        steps: &'a mpsc::Sender<Step>,
+    ) -> Pin<Box<dyn Future<Output = Result<Report, String>> + 'a>>;
+}
+
+#[derive(Debug)]
+pub(crate) struct Task {
+    pub(crate) text: String,
+    pub(crate) agent: Option<String>,
+    pub(crate) id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct Report {
+    pub(crate) id: String,
+    pub(crate) text: String,
 }
 
 #[derive(Debug)]
@@ -149,6 +174,14 @@ impl Question {
 
     pub fn take_answer(&self) -> Option<Answer> {
         self.answer.borrow_mut().take()
+    }
+
+    pub(crate) fn forward(&self) -> Option<Self> {
+        Some(Self {
+            text: self.text.clone(),
+            can_always: self.can_always,
+            answer: std::cell::RefCell::new(Some(self.take_answer()?)),
+        })
     }
 }
 
@@ -208,6 +241,7 @@ impl Kind {
             Self::Search => "search",
             Self::Skill => "skill",
             Self::Mcp => "mcp",
+            Self::Agent => "agent",
         }
     }
 }
@@ -259,6 +293,10 @@ impl Runner {
 
     pub(crate) fn set_mcp(&self, clients: Rc<crate::mcp::Clients>) {
         self.host.set_mcp(clients);
+    }
+
+    pub(crate) fn set_spawner(&self, spawner: Option<Rc<dyn Spawn>>) {
+        self.host.set_spawner(spawner);
     }
 
     pub(crate) fn mark_skill(&self, name: &str) -> bool {

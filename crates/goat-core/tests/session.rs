@@ -1365,6 +1365,7 @@ fn name(event: &Event<'_>) -> String {
         Event::Compacting => "compacting".to_owned(),
         Event::Usage(_) => "usage".to_owned(),
         Event::Confirm(question) => format!("confirm {}", question.text()),
+        Event::AgentCall(call) => format!("agent call {} {}", call.kind.as_str(), call.target),
     }
 }
 
@@ -1817,4 +1818,170 @@ async fn a_draft_reply_stays_in_the_thread_with_its_headers() {
         "{}",
         requests[1]
     );
+}
+
+fn run_call(code: &str) -> &'static str {
+    leak(OPENAI_TOOL_CALL.replace("(await bash('echo hi')).output", code))
+}
+
+fn answer(text: &str) -> &'static str {
+    leak(
+        OPENAI_ANSWER
+            .replace(r#""delta":"Done""#, &format!(r#""delta":"{text}""#))
+            .replace(r#""delta":".""#, r#""delta":"""#)
+            .replace("Done.", text),
+    )
+}
+
+#[tokio::test]
+async fn an_agent_does_its_task_in_its_own_session_and_returns_its_answer() {
+    let server = server::replay(vec![
+        run_call("(await agent('find the bug')).text"),
+        run_call("await write('found.txt', 'here')"),
+        answer("The bug is in found.txt."),
+        OPENAI_ANSWER,
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+    let mut recorder = Recorder::default();
+
+    session.turn("look for it", &mut recorder).await.unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[1].contains("find the bug"));
+    assert!(requests[1].contains("Another agent gave you the task"));
+    assert!(requests[1].contains("Do the whole task, check it"));
+    assert!(!requests[1].contains("look for it"));
+    assert_eq!(result_of(&session), "The bug is in found.txt.");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("found.txt")).unwrap(),
+        "here"
+    );
+    assert!(
+        recorder
+            .order
+            .contains(&"call agent find the bug".to_owned())
+    );
+    assert!(
+        recorder
+            .order
+            .contains(&"agent call write found.txt".to_owned())
+    );
+    assert!(recorder.order.contains(&"changed +1 -0".to_owned()));
+    assert_eq!(
+        session
+            .store()
+            .recent_sessions(dir.path(), 10)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn an_agent_continues_from_where_it_stopped_when_given_its_id() {
+    let server = server::replay(vec![
+        run_call(
+            "const a = await agent('look first'); (await agent('now go on', {id: a.id})).text",
+        ),
+        answer("First."),
+        answer("Second."),
+        OPENAI_ANSWER,
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    session.turn("go", &mut Recorder::default()).await.unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[2].contains("look first"));
+    assert!(requests[2].contains("First."));
+    assert!(requests[2].contains("now go on"));
+    assert_eq!(result_of(&session), "Second.");
+}
+
+#[tokio::test]
+async fn agents_cannot_start_agents() {
+    let server = server::replay(vec![
+        run_call("(await agent('outer')).text"),
+        run_call("await agent('inner')"),
+        answer("Could not."),
+        OPENAI_ANSWER,
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    session.turn("go", &mut Recorder::default()).await.unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[2].contains("agents cannot start agents"));
+    assert_eq!(result_of(&session), "Could not.");
+}
+
+#[tokio::test]
+async fn an_unknown_agent_is_an_error_the_run_can_catch() {
+    let server = server::replay(vec![
+        run_call(
+            "let m = ''; try { await agent('x', {as: 'nope'}) } catch (e) { m = e.message }; m",
+        ),
+        OPENAI_ANSWER,
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    session.turn("go", &mut Recorder::default()).await.unwrap();
+
+    assert_eq!(result_of(&session), "there is no agent named nope");
+}
+
+#[tokio::test]
+async fn an_agent_whose_model_no_account_offers_is_an_error() {
+    let server = server::replay(vec![
+        run_call(
+            "let m = ''; try { await agent('x', {as: 'scout'}) } catch (e) { m = e.message }; m",
+        ),
+        OPENAI_ANSWER,
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".goat/agents")).unwrap();
+    std::fs::write(
+        dir.path().join(".goat/agents/scout.md"),
+        "---\ndescription: Searches\nmodel: claude-haiku-5-5\n---\nSearch only.\n",
+    )
+    .unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    session.turn("go", &mut Recorder::default()).await.unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].contains("<name>scout</name>"));
+    assert_eq!(result_of(&session), "no account offers claude-haiku-5-5");
+}
+
+#[tokio::test]
+async fn agents_run_side_by_side_in_one_run() {
+    let server = server::replay(vec![
+        run_call("(await Promise.all([agent('one'), agent('two')])).map(r => r.text).join(',')"),
+        answer("Same."),
+        answer("Same."),
+        OPENAI_ANSWER,
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let env = environment(dir.path(), &server.url);
+    let mut session = openai_session(&env).unwrap();
+
+    session.turn("go", &mut Recorder::default()).await.unwrap();
+
+    assert_eq!(result_of(&session), "Same.,Same.");
 }

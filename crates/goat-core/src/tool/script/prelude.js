@@ -50,6 +50,13 @@
   );
   const skill = (name, args) =>
     call({ op: "skill", name: String(name), args: args == null ? null : String(args) });
+  const agent = (task, { as = null, id = null } = {}) =>
+    call({
+      op: "agent",
+      task: String(task),
+      as: as == null ? null : String(as),
+      id: id == null ? null : String(id),
+    });
 
   const show = (value) => {
     if (typeof value === "string") return value;
@@ -61,7 +68,7 @@
     logged.push(values.map(show).join(" "));
   };
   globalThis.console = { log, info: log, warn: log, error: log, debug: log };
-  Object.assign(globalThis, { bash, read, edit, write, webFetch, webSearch, skill, mcp });
+  Object.assign(globalThis, { bash, read, edit, write, webFetch, webSearch, skill, agent, mcp });
 
   return (value) => {
     const parts = logged.splice(0);

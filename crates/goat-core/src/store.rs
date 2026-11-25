@@ -84,6 +84,9 @@ const MIGRATIONS: &[&str] = &[
         enabled integer not null
     ) strict;
 ",
+    "
+    alter table sessions add column spawned_by blob references messages on delete cascade;
+",
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -163,6 +166,20 @@ impl Store {
         Ok(store)
     }
 
+    pub(crate) fn connect(location: &Path) -> Result<Self, Error> {
+        let conn = Connection::open(location)?;
+        conn.pragma_update(None, "foreign_keys", true)?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        Ok(Self {
+            conn,
+            location: location.to_owned(),
+        })
+    }
+
+    pub(crate) fn location(&self) -> &Path {
+        &self.location
+    }
+
     pub fn logins(&self) -> Result<Logins, Error> {
         let conn = Connection::open(&self.location)?;
         conn.busy_timeout(BUSY_TIMEOUT)?;
@@ -196,6 +213,37 @@ impl Store {
         Ok(id)
     }
 
+    pub(crate) fn create_agent_session(
+        &self,
+        cwd: &Path,
+        instructions: &str,
+        spawned_by: message::Id,
+    ) -> Result<session::Id, Error> {
+        let id = session::Id::generate();
+        self.conn.execute(
+            "insert into sessions (id, cwd, instructions, created_at, spawned_by) values (?1, ?2, ?3, ?4, ?5)",
+            params![id, cwd.to_string_lossy(), instructions, now(), spawned_by],
+        )?;
+        Ok(id)
+    }
+
+    pub(crate) fn is_agent_of(
+        &self,
+        agent: session::Id,
+        parent: session::Id,
+    ) -> Result<bool, Error> {
+        Ok(self
+            .conn
+            .query_row(
+                "select 1 from sessions s join messages m on m.id = s.spawned_by
+                 where s.id = ?1 and m.session_id = ?2",
+                params![agent, parent],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
     pub fn session(&self, id: session::Id) -> Result<Option<SessionInfo>, Error> {
         Ok(self
             .conn
@@ -211,7 +259,7 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "select id, cwd, instructions, created_at from sessions where cwd = ?1 order by id desc limit 1",
+                "select id, cwd, instructions, created_at from sessions where cwd = ?1 and spawned_by is null order by id desc limit 1",
                 [cwd.to_string_lossy()],
                 session_info,
             )
@@ -364,7 +412,8 @@ impl Store {
                 (select m.parts from messages m where m.session_id = s.id and m.role = 'user' order by m.id limit 1),
                 (select max(m.id) from messages m where m.session_id = s.id) as last
              from sessions s
-             where s.cwd = ?1 and exists (select 1 from messages m where m.session_id = s.id)
+             where s.cwd = ?1 and s.spawned_by is null
+               and exists (select 1 from messages m where m.session_id = s.id)
              order by last desc limit ?2",
         )?;
         let rows = statement.query_map(params![cwd.to_string_lossy(), limit], |row| {
@@ -901,6 +950,57 @@ mod tests {
         store.create_session(cwd, "be brief").unwrap();
 
         assert_eq!(store.recent_sessions(cwd, 10).unwrap(), Vec::new());
+    }
+
+    fn agent_of(store: &Store, cwd: &Path) -> (session::Id, Message, session::Id) {
+        let parent = store.create_session(cwd, "be brief").unwrap();
+        store.append(parent, &Message::user("look around")).unwrap();
+        let call = Message::new(Role::Assistant, Some(origin()), vec![Part::text("on it")]);
+        store.append(parent, &call).unwrap();
+        let agent = store
+            .create_agent_session(cwd, "be brief", call.id)
+            .unwrap();
+        store.append(agent, &Message::user("search")).unwrap();
+        (parent, call, agent)
+    }
+
+    #[test]
+    fn agent_sessions_are_not_listed_or_continued() {
+        let store = Store::open_in_memory().unwrap();
+        let cwd = Path::new("/work");
+        let (parent, _, _) = agent_of(&store, cwd);
+
+        let listed: Vec<session::Id> = store
+            .recent_sessions(cwd, 10)
+            .unwrap()
+            .iter()
+            .map(|recent| recent.id)
+            .collect();
+
+        assert_eq!(listed, [parent]);
+        assert_eq!(store.latest_session(cwd).unwrap().unwrap().id, parent);
+    }
+
+    #[test]
+    fn rewinding_past_the_call_deletes_the_agent_session() {
+        let store = Store::open_in_memory().unwrap();
+        let (parent, call, agent) = agent_of(&store, Path::new("/work"));
+
+        store.truncate(parent, call.id).unwrap();
+
+        assert!(store.session(agent).unwrap().is_none());
+        assert!(store.context(agent).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_agent_belongs_only_to_the_session_that_started_it() {
+        let store = Store::open_in_memory().unwrap();
+        let cwd = Path::new("/work");
+        let (parent, _, agent) = agent_of(&store, cwd);
+        let other = store.create_session(cwd, "be brief").unwrap();
+
+        assert!(store.is_agent_of(agent, parent).unwrap());
+        assert!(!store.is_agent_of(agent, other).unwrap());
     }
 
     #[test]

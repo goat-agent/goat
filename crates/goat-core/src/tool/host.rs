@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::web::{self, Web};
-use super::{Call, Decision, Kind, Question, Step, bash, danger, files, hashline, spill};
+use super::{
+    Call, Decision, Kind, Question, Spawn, Step, Task, bash, danger, files, hashline, spill,
+};
 use crate::mcp::Clients;
 use crate::skill::{self, Skill};
 use crate::{image, instructions};
@@ -27,6 +29,7 @@ pub(crate) struct Host {
     nested: RefCell<Nested>,
     skills: RefCell<Skills>,
     mcp: RefCell<Option<Rc<Clients>>>,
+    spawner: RefCell<Option<Rc<dyn Spawn>>>,
 }
 
 #[derive(Debug, Default)]
@@ -83,6 +86,12 @@ enum Op {
         tool: String,
         args: serde_json::Value,
     },
+    Agent {
+        task: String,
+        #[serde(rename = "as")]
+        agent: Option<String>,
+        id: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -116,6 +125,7 @@ impl Host {
             nested: RefCell::new(Nested::default()),
             skills: RefCell::new(Skills::default()),
             mcp: RefCell::new(None),
+            spawner: RefCell::new(None),
         })
     }
 
@@ -219,6 +229,19 @@ impl Host {
             Op::Skill { name, args } => {
                 to_value(self.load_skill(&name, args.as_deref().unwrap_or_default())?)
             }
+            Op::Agent { task, agent, id } => {
+                let spawner = self
+                    .spawner
+                    .borrow()
+                    .clone()
+                    .ok_or("agents cannot start agents")?;
+                let task = Task {
+                    text: task,
+                    agent,
+                    id,
+                };
+                to_value(spawner.spawn(task, &self.steps).await?)
+            }
         }
     }
 
@@ -277,6 +300,10 @@ impl Host {
             .borrow()
             .clone()
             .ok_or_else(|| "the web is not available here".to_owned())
+    }
+
+    pub(crate) fn set_spawner(&self, spawner: Option<Rc<dyn Spawn>>) {
+        self.spawner.replace(spawner);
     }
 
     pub(crate) fn set_mcp(&self, clients: Rc<Clients>) {
@@ -443,6 +470,15 @@ impl Op {
                 return Call {
                     kind: Kind::Mcp,
                     target: format!("{server}.{tool}").into(),
+                };
+            }
+            Self::Agent { task, agent, .. } => {
+                return Call {
+                    kind: Kind::Agent,
+                    target: match agent {
+                        Some(agent) => format!("{agent}: {task}").into(),
+                        None => task.as_str().into(),
+                    },
                 };
             }
         };
