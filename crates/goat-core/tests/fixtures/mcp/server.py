@@ -45,6 +45,7 @@ for line in sys.stdin:
             "protocolVersion": message["params"]["protocolVersion"],
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "fixture", "version": "1"},
+            "instructions": "Echo before you sum.",
         })
     elif method == "tools/list":
         reply(message["id"], {"tools": TOOLS})

@@ -644,7 +644,7 @@ async fn mcp_tools_are_listed_described_and_called_from_a_run() {
         const echoed = await mcp.fixture.echo({ text: 'hi there' }); \
         const added = await mcp.fixture.sum({ numbers: [1, 2] }); \
         let failed = ''; try { await mcp.fixture.nope({}) } catch (e) { failed = e.message } \
-        return { tools: tools.map(t => t.name), shape, echoed, added, failed }";
+        return { tools: tools.map(t => t.name).join(' '), notes: tools[0].description, shape, echoed, added, failed }";
     let call = leak(OPENAI_TOOL_CALL.replace("(await bash('echo hi')).output", code));
     let server = server::replay(vec![call, OPENAI_ANSWER]).await;
     let dir = tempfile::tempdir().unwrap();
@@ -669,7 +669,11 @@ async fn mcp_tools_are_listed_described_and_called_from_a_run() {
     let requests = server.requests.lock().unwrap();
     assert!(requests[0].contains("MCP servers are connected to the sandbox: fixture."));
     let result = &requests[1];
-    assert!(result.contains("fixture.echo"), "{result}");
+    assert!(
+        result.contains("fixture fixture.echo fixture.sum"),
+        "{result}"
+    );
+    assert!(result.contains("Echo before you sum."));
     assert!(result.contains("mcp.fixture.echo(args: {"));
     assert!(result.contains("What to echo"));
     assert!(result.contains("hi there"));
