@@ -24,6 +24,7 @@ Run the first three and `cargo deny check` before you finish. The toolchain is p
 - No comments in code. The only exceptions are listed in `docs/style/rust.md`.
 - Keep memory low. Stream instead of buffering, and keep large data on disk. `crates/goat-core/tests/memory.rs` fails on Linux when 50 turns peak above 40 MiB, not counting the pages of the program's own code.
 - A failed tool call is an `Outcome` with `is_error`, not an `Err`.
+- The README is a short overview for newcomers. Do not describe features, commands or behavior there; the code and its tests are the reference.
 - Persist a message only when it is complete. A cancelled turn must leave history that both providers accept.
 
 ## Gotchas
