@@ -614,6 +614,12 @@ impl Chat {
                 .iter()
                 .map(|(path, problem)| format!("skipped {} ({problem})", path.display())),
         );
+        let language_servers = self.session.language_servers();
+        let lsp = if language_servers.is_empty() {
+            "none yet".to_owned()
+        } else {
+            language_servers.join(", ")
+        };
         let snapshots = self
             .session
             .snapshots_off()
@@ -628,6 +634,7 @@ impl Chat {
             ("Instructions", instructions),
             ("Skills", skills),
             ("Agents", agents.join(", ")),
+            ("LSP", lsp),
             ("MCP", servers),
             ("Snapshots", snapshots),
         ];

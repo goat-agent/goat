@@ -396,6 +396,7 @@ impl<W: Write> Terminal<W> {
             Kind::Skill => "Skill",
             Kind::Mcp => "Mcp",
             Kind::Agent => "Agent",
+            Kind::Lsp => "Lsp",
         };
         if call.kind == Kind::Mcp
             && call.target.starts_with(COMPUTER)

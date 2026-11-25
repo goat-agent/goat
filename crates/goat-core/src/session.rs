@@ -189,6 +189,7 @@ struct Shared {
     catalog: Vec<Model>,
     slots: tokio::sync::Semaphore,
     running: RefCell<HashSet<Id>>,
+    lsp: Rc<tool::Servers>,
 }
 
 impl Session {
@@ -295,6 +296,7 @@ impl Session {
             catalog: catalog::models()?,
             slots: tokio::sync::Semaphore::new(AGENTS_AT_ONCE),
             running: RefCell::new(HashSet::new()),
+            lsp: Rc::new(tool::Servers::new(&env.workspace, &env.home)),
         });
         let parts = Parts {
             id,
@@ -322,6 +324,7 @@ impl Session {
         } = parts;
         runner.set_skills(shared.skills.skills.clone());
         runner.set_mcp(Rc::clone(&shared.clients));
+        runner.set_lsp(Rc::clone(&shared.lsp));
         for name in loaded_skills(&messages) {
             runner.mark_skill(&name);
         }
@@ -526,6 +529,10 @@ impl Session {
 
     pub fn agents(&self) -> &agents::Found {
         &self.shared.agents
+    }
+
+    pub fn language_servers(&self) -> Vec<String> {
+        self.shared.lsp.states()
     }
 
     pub fn servers(&self) -> (Vec<mcp::Status>, &[String]) {

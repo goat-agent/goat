@@ -1,0 +1,89 @@
+[[servers]]
+name = "rust-analyzer"
+command = ["rust-analyzer"]
+diagnostics = "push"
+languages = { rs = "rust" }
+
+[[servers]]
+name = "typescript-language-server"
+command = ["typescript-language-server", "--stdio"]
+diagnostics = "push"
+languages = { ts = "typescript", mts = "typescript", cts = "typescript", tsx = "typescriptreact", js = "javascript", mjs = "javascript", cjs = "javascript", jsx = "javascriptreact" }
+
+[[servers]]
+name = "tsc"
+command = ["tsc", "--lsp", "--stdio"]
+diagnostics = "pull"
+languages = { ts = "typescript", mts = "typescript", cts = "typescript", tsx = "typescriptreact", js = "javascript", mjs = "javascript", cjs = "javascript", jsx = "javascriptreact" }
+
+[[servers]]
+name = "basedpyright"
+command = ["basedpyright-langserver", "--stdio"]
+diagnostics = "pull"
+languages = { py = "python", pyi = "python" }
+
+[[servers]]
+name = "pyright"
+command = ["pyright-langserver", "--stdio"]
+diagnostics = "pull"
+languages = { py = "python", pyi = "python" }
+
+[[servers]]
+name = "gopls"
+command = ["gopls"]
+diagnostics = "push"
+languages = { go = "go" }
+
+[[servers]]
+name = "clangd"
+command = ["clangd", "--background-index"]
+diagnostics = "push"
+languages = { c = "c", h = "c", cc = "cpp", cpp = "cpp", cxx = "cpp", hh = "cpp", hpp = "cpp", hxx = "cpp", m = "objective-c", mm = "objective-cpp" }
+
+[[servers]]
+name = "sourcekit-lsp"
+command = ["sourcekit-lsp"]
+diagnostics = "pull"
+languages = { swift = "swift" }
+
+[[servers]]
+name = "jdtls"
+command = ["jdtls", "-data", "{data}"]
+diagnostics = "push"
+languages = { java = "java" }
+
+[[servers]]
+name = "roslyn-language-server"
+command = ["roslyn-language-server", "--stdio", "--autoLoadProjects"]
+diagnostics = "pull"
+languages = { cs = "csharp" }
+
+[[servers]]
+name = "csharp-ls"
+command = ["csharp-ls"]
+diagnostics = "push"
+languages = { cs = "csharp" }
+
+[[servers]]
+name = "kotlin-lsp"
+command = ["kotlin-lsp", "--stdio"]
+diagnostics = "push"
+languages = { kt = "kotlin", kts = "kotlin" }
+
+[[servers]]
+name = "intelephense"
+command = ["intelephense", "--stdio"]
+diagnostics = "push"
+languages = { php = "php" }
+
+[[servers]]
+name = "ruby-lsp"
+command = ["ruby-lsp"]
+diagnostics = "pull"
+languages = { rb = "ruby" }
+
+[[servers]]
+name = "lua-language-server"
+command = ["lua-language-server"]
+diagnostics = "pull"
+languages = { lua = "lua" }

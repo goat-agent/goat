@@ -4,6 +4,7 @@ mod diff;
 mod files;
 mod hashline;
 mod host;
+mod lsp;
 mod mention;
 mod script;
 mod spill;
@@ -23,6 +24,7 @@ use crate::instructions;
 use crate::message::Diff;
 use crate::skill::Skill;
 
+pub(crate) use self::lsp::Servers;
 pub(crate) use self::web::{Searcher, Web};
 
 use self::host::Host;
@@ -50,6 +52,7 @@ The sandbox reaches the system only through these async functions:
 - webFetch(url) gets a web page like the standard fetch and returns {ok, status, url, text(), json()}, where text() of an HTML page is markdown. The text is cut to its first and last 20 KB with the full text in a file. Only http and https URLs without credentials are fetched; use bash and curl for anything else.
 - webSearch(query) searches the web and returns up to 8 results as [{title, url, snippet}].
 - skill(name, args) loads a skill listed in your instructions; its instructions come after the run's result. args is the user's text for it, or omitted.
+- lsp.definition(path, line, name), lsp.references(path, line, name), lsp.implementations(path, line, name) and lsp.hover(path, line, name) ask the language server about the symbol name on line, a number or an anchor. The first three return [{path, line}] with anchored lines; hover returns its text. lsp.symbols(path) outlines a file and lsp.symbols(query) searches the project, as [{name, kind, path, line}]. lsp.rename(path, line, name, newName) renames the symbol everywhere and returns {files}. lsp.diagnostics(path) returns a file's [{path, line, severity, message}], or the known errors of all files without a path. They throw when no language server serves the file. After a run that changes files, the errors it caused come after its result.
 - agent(task, {as, id}) starts an agent: a helper with its own context, the same functions and this working directory. It returns {id, text}, where text is its final answer. as names an agent from your instructions and defaults to general; id continues an agent that finished, with task as its next message. Agents cannot start agents.
 - console.log(...) adds lines to what you see, before the result.
 
@@ -93,6 +96,7 @@ pub enum Kind {
     Skill,
     Mcp,
     Agent,
+    Lsp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,6 +246,7 @@ impl Kind {
             Self::Skill => "skill",
             Self::Mcp => "mcp",
             Self::Agent => "agent",
+            Self::Lsp => "lsp",
         }
     }
 }
@@ -297,6 +302,10 @@ impl Runner {
 
     pub(crate) fn set_spawner(&self, spawner: Option<Rc<dyn Spawn>>) {
         self.host.set_spawner(spawner);
+    }
+
+    pub(crate) fn set_lsp(&self, servers: Rc<Servers>) {
+        self.host.set_lsp(servers);
     }
 
     pub(crate) fn mark_skill(&self, name: &str) -> bool {
@@ -381,6 +390,10 @@ impl Runner {
             .ok();
         }
         let mut output = spill::fit(text, self.host.spill());
+        if let Some(checked) = self.host.check().await {
+            output.push_str("\n\n");
+            output.push_str(&checked);
+        }
         for (shown, found) in &loaded {
             output.push_str("\n\n");
             output.push_str(&instructions::block(shown, found));
@@ -531,6 +544,72 @@ mod tests {
                     hidden: 0,
                 }),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_that_breaks_a_file_ends_with_the_errors_it_caused() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lsp/server.py");
+        std::fs::create_dir_all(dir.path().join(".goat")).unwrap();
+        std::fs::write(
+            dir.path().join(".goat/lsp.toml"),
+            format!(
+                "[[servers]]\nname = \"fake\"\ncommand = [\"python3\", \"{}\"]\ndiagnostics = \"push\"\nlanguages = {{ fake = \"fake\" }}\n",
+                fixture.display()
+            ),
+        )
+        .unwrap();
+        let mut runner = runner(dir.path());
+        runner.set_lsp(Rc::new(Servers::new(dir.path(), dir.path())));
+
+        let outcome = runner
+            .run(
+                &run("await write('a.fake', 'ERROR here'); 'written'"),
+                offline(),
+                &mut |_| {},
+            )
+            .await;
+
+        assert_eq!(
+            &*outcome.output,
+            format!(
+                "written\n\nErrors after this run:\na.fake {}  bad line ERROR here",
+                hashline::tag_line(1, "ERROR here")
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_a_command_breaks_is_checked_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lsp/server.py");
+        std::fs::create_dir_all(dir.path().join(".goat")).unwrap();
+        std::fs::write(
+            dir.path().join(".goat/lsp.toml"),
+            format!(
+                "[[servers]]\nname = \"fake\"\ncommand = [\"python3\", \"{}\"]\ndiagnostics = \"push\"\nlanguages = {{ fake = \"fake\" }}\n",
+                fixture.display()
+            ),
+        )
+        .unwrap();
+        let mut runner = runner(dir.path());
+        runner.set_lsp(Rc::new(Servers::new(dir.path(), dir.path())));
+
+        let outcome = runner
+            .run(
+                &run("(await bash`printf 'ERROR here' > b.fake`).code"),
+                offline(),
+                &mut |_| {},
+            )
+            .await;
+
+        assert_eq!(
+            &*outcome.output,
+            format!(
+                "0\n\nErrors after this run:\nb.fake {}  bad line ERROR here",
+                hashline::tag_line(1, "ERROR here")
+            )
         );
     }
 
