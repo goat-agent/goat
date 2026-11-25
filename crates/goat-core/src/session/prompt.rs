@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::agent::{self, Agent};
 use crate::instructions;
 use crate::mcp;
 use crate::plugin::{self, Plugin};
@@ -39,6 +40,10 @@ Reply with the name only, without quotes or a final period.";
 
 pub(super) const TITLE_LINE: &str = "Title:";
 
+pub(super) const AGENT: &str = "\
+Another agent gave you the task in the first message. It sees only your last message, not your runs or the files you read, and you cannot start agents yourself. \
+The task text is all you know of its conversation: if something you need is missing, say what it is and stop instead of guessing.";
+
 pub(super) const SUMMARY_PREFIX: &str = "Summary of the earlier conversation, written by you:\n\n";
 
 pub(super) fn instructions(
@@ -46,6 +51,7 @@ pub(super) fn instructions(
     personal: &Path,
     home: &Path,
     skills: &[Skill],
+    agents: &[Agent],
     servers: &[mcp::Address],
     waiting: &[&Plugin],
 ) -> String {
@@ -69,6 +75,8 @@ pub(super) fn instructions(
         text.push_str("\n\n");
         text.push_str(&catalog);
     }
+    text.push_str("\n\n");
+    text.push_str(&agent::catalog(agents));
     if let Some(catalog) = mcp::catalog(servers) {
         text.push_str("\n\n");
         text.push_str(&catalog);

@@ -599,6 +599,27 @@ impl Chat {
             skills.push_str("; skipped ");
             skills.push_str(&skipped.join(", "));
         }
+        let found = self.session.agents();
+        let mut agents: Vec<String> = found
+            .agents
+            .iter()
+            .map(|agent| match &agent.model {
+                Some(model) => format!("{} ({model})", agent.name),
+                None => agent.name.clone(),
+            })
+            .collect();
+        agents.extend(
+            found
+                .skipped
+                .iter()
+                .map(|(path, problem)| format!("skipped {} ({problem})", path.display())),
+        );
+        let language_servers = self.session.language_servers();
+        let lsp = if language_servers.is_empty() {
+            "none yet".to_owned()
+        } else {
+            language_servers.join(", ")
+        };
         let snapshots = self
             .session
             .snapshots_off()
@@ -612,6 +633,8 @@ impl Chat {
             ),
             ("Instructions", instructions),
             ("Skills", skills),
+            ("Agents", agents.join(", ")),
+            ("LSP", lsp),
             ("MCP", servers),
             ("Snapshots", snapshots),
         ];

@@ -1,7 +1,10 @@
+mod agent;
 mod prompt;
 mod replay;
 mod snapshot;
 
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -10,6 +13,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 
 use crate::account::Account;
+use crate::agent as agents;
+use crate::catalog::{self, Model};
 use crate::image::{Image, Picture};
 use crate::instructions;
 use crate::mcp;
@@ -31,6 +36,7 @@ const IMAGES_PER_REQUEST: usize = 20;
 const IMAGE_BATCH: usize = 10;
 const TITLE_CHARS: usize = 80;
 const NAMING_CHARS: usize = 2000;
+const AGENTS_AT_ONCE: usize = 6;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -46,6 +52,8 @@ pub enum Error {
     NotFound(Id),
     #[error("could not restore the files: {0}")]
     Restore(String),
+    #[error("model catalog")]
+    Catalog(#[from] catalog::Error),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -85,6 +93,7 @@ pub enum Event<'a> {
     },
     Compacting,
     Confirm(&'a tool::Question),
+    AgentCall(&'a tool::Call),
 }
 
 #[derive(Debug)]
@@ -93,6 +102,17 @@ pub struct Naming {
     bearer: Box<str>,
     origin: Origin,
     conversation: String,
+}
+
+struct Parts<'a> {
+    id: Id,
+    depth: Depth,
+    store: Store,
+    account: Account,
+    model: &'a str,
+    effort: Option<Box<str>>,
+    instructions: Rc<str>,
+    messages: Vec<Message>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -120,21 +140,22 @@ pub struct Environment {
 struct Discovered<'a> {
     skills: skill::Found,
     servers: mcp::Config,
+    agents: agents::Found,
     waiting: Vec<&'a Plugin>,
 }
 
 #[derive(Debug)]
 pub struct Session {
     id: Id,
+    depth: Depth,
     store: Store,
     snapshots: Snapshots,
-    http: reqwest::Client,
-    endpoints: Endpoints,
+    shared: Rc<Shared>,
     provider: Provider,
     account: Account,
     model: Box<str>,
     effort: Option<Box<str>>,
-    instructions: Box<str>,
+    instructions: Rc<str>,
     runner: Runner,
     tool: tool::Spec,
     messages: Vec<Message>,
@@ -142,12 +163,33 @@ pub struct Session {
     trace: Vec<Trace>,
     last_input: u64,
     limits: Option<Limits>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Depth {
+    Main,
+    Agent,
+}
+
+#[derive(Debug)]
+struct Shared {
+    database: PathBuf,
+    http: reqwest::Client,
+    endpoints: Endpoints,
+    workspace: PathBuf,
+    home: PathBuf,
+    spill: PathBuf,
+    snapshots: PathBuf,
+    personal: PathBuf,
     skills: skill::Found,
     servers: mcp::Config,
     clients: Rc<mcp::Clients>,
     reach: mcp::Context,
-    personal: PathBuf,
-    home: PathBuf,
+    agents: agents::Found,
+    catalog: Vec<Model>,
+    slots: tokio::sync::Semaphore,
+    running: RefCell<HashSet<Id>>,
+    lsp: Rc<tool::Servers>,
 }
 
 impl Session {
@@ -165,6 +207,7 @@ impl Session {
             &env.personal,
             &env.home,
             &found.skills.skills,
+            &found.agents.agents,
             &mcp::addresses(&found.servers.servers, &logins),
             &found.waiting,
         );
@@ -191,7 +234,7 @@ impl Session {
     ) -> Result<Self, Error> {
         let info = store.session(id)?.ok_or(Error::NotFound(id))?;
         let messages = store.context(id)?;
-        let session = Self::assemble(
+        Self::assemble(
             id,
             store,
             http,
@@ -200,24 +243,7 @@ impl Session {
             model,
             info.instructions,
             messages,
-        )?;
-        let loaded = session
-            .messages
-            .iter()
-            .flat_map(|message| &message.parts)
-            .filter_map(|part| match part {
-                Part::ToolResult { trace, .. } => Some(trace),
-                _ => None,
-            })
-            .flatten()
-            .filter_map(|step| match step {
-                Trace::Loaded { path } => Some(env.workspace.join(&**path)),
-                _ => None,
-            });
-        for path in loaded {
-            session.runner.mark_loaded(path);
-        }
-        Ok(session)
+        )
     }
 
     #[expect(
@@ -236,52 +262,94 @@ impl Session {
     ) -> Result<Self, Error> {
         let logins = Arc::new(store.logins()?);
         let Discovered {
-            skills: found,
+            skills,
             servers,
+            agents,
             ..
         } = discover(env, &store, &logins)?;
-        let runner = Runner::new(&env.workspace, &env.home, &env.spill, !messages.is_empty())?;
-        runner.set_skills(found.skills.clone());
         let reach = mcp::Context {
             http: http.clone(),
             logins: Arc::clone(&logins),
             endpoints: env.endpoints.clone(),
             home: env.home.clone(),
         };
+        let runner = Runner::new(&env.workspace, &env.home, &env.spill, !messages.is_empty())?;
         let clients = Rc::new(mcp::Clients::new(
             servers.servers.clone(),
             reach.clone(),
             runner.asker(),
         ));
-        runner.set_mcp(Rc::clone(&clients));
-        for name in loaded_skills(&messages) {
-            runner.mark_skill(&name);
-        }
-        Ok(Self {
-            id,
-            provider: Provider::new(&account, http.clone(), &env.endpoints),
-            store,
-            snapshots: Snapshots::new(&env.snapshots, &env.workspace, &env.home, id),
+        let shared = Rc::new(Shared {
+            database: store.location().to_owned(),
             http,
             endpoints: env.endpoints.clone(),
-            account,
-            model: model.into(),
-            effort: None,
-            instructions,
-            runner,
-            skills: found,
+            workspace: env.workspace.clone(),
+            home: env.home.clone(),
+            spill: env.spill.clone(),
+            snapshots: env.snapshots.clone(),
+            personal: env.personal.clone(),
+            skills,
             servers,
             clients,
             reach,
+            agents,
+            catalog: catalog::models()?,
+            slots: tokio::sync::Semaphore::new(AGENTS_AT_ONCE),
+            running: RefCell::new(HashSet::new()),
+            lsp: Rc::new(tool::Servers::new(&env.workspace, &env.home)),
+        });
+        let parts = Parts {
+            id,
+            depth: Depth::Main,
+            store,
+            account,
+            model,
+            effort: None,
+            instructions: instructions.into(),
+            messages,
+        };
+        Ok(Self::build(shared, runner, parts))
+    }
+
+    fn build(shared: Rc<Shared>, runner: Runner, parts: Parts<'_>) -> Self {
+        let Parts {
+            id,
+            depth,
+            store,
+            account,
+            model,
+            effort,
+            instructions,
+            messages,
+        } = parts;
+        runner.set_skills(shared.skills.skills.clone());
+        runner.set_mcp(Rc::clone(&shared.clients));
+        runner.set_lsp(Rc::clone(&shared.lsp));
+        for name in loaded_skills(&messages) {
+            runner.mark_skill(&name);
+        }
+        for path in loaded_instructions(&messages) {
+            runner.mark_loaded(shared.workspace.join(path));
+        }
+        Self {
+            id,
+            depth,
+            provider: Provider::new(&account, shared.http.clone(), &shared.endpoints),
+            snapshots: Snapshots::new(&shared.snapshots, &shared.workspace, &shared.home, id),
+            store,
+            shared,
+            account,
+            model: model.into(),
+            effort,
+            instructions,
+            runner,
             tool: tool::spec(),
             messages,
             finished: Vec::new(),
             trace: Vec::new(),
             last_input: 0,
             limits: None,
-            personal: env.personal.clone(),
-            home: env.home.clone(),
-        })
+        }
     }
 
     pub fn id(&self) -> Id {
@@ -321,7 +389,7 @@ impl Session {
     }
 
     pub fn set_account(&mut self, account: Account, model: &str) {
-        self.provider = Provider::new(&account, self.http.clone(), &self.endpoints);
+        self.provider = Provider::new(&account, self.shared.http.clone(), &self.shared.endpoints);
         self.account = account;
         self.model = model.into();
     }
@@ -332,14 +400,10 @@ impl Session {
         sink: &mut impl Sink,
     ) -> Result<(), Error> {
         let prompt = prompt.into();
-        self.close_interrupted_calls()?;
-        if self.last_input > COMPACT_AT_TOKENS {
-            sink.emit(Event::Compacting);
-            self.summarize("").await?;
-        }
+        self.prepare(sink).await?;
         let mut parts = vec![Part::text(prompt.text)];
         parts.extend(self.keep(prompt.images)?.into_iter().map(Part::Image));
-        if let Some((invoked, args)) = skill::invoked(&self.skills.skills, prompt.text) {
+        if let Some((invoked, args)) = skill::invoked(&self.shared.skills.skills, prompt.text) {
             let text = skill::activate(invoked, args).unwrap_or_else(|problem| {
                 format!("The {} skill could not be loaded: {problem}", invoked.name)
             });
@@ -360,6 +424,19 @@ impl Session {
         if let Some(tree) = tree {
             self.store.put_snapshot(id, &tree)?;
         }
+        self.respond(sink).await
+    }
+
+    async fn prepare(&mut self, sink: &mut impl Sink) -> Result<(), Error> {
+        self.close_interrupted_calls()?;
+        if self.last_input > COMPACT_AT_TOKENS {
+            sink.emit(Event::Compacting);
+            self.summarize("").await?;
+        }
+        Ok(())
+    }
+
+    async fn respond(&mut self, sink: &mut impl Sink) -> Result<(), Error> {
         loop {
             let reply = self
                 .request(None, true, &mut |event| sink.emit(event))
@@ -439,34 +516,43 @@ impl Session {
 
     pub fn instruction_files(&self) -> Vec<String> {
         let workspace = self.workspace();
-        instructions::sources(workspace, &self.personal)
+        instructions::sources(workspace, &self.shared.personal)
             .into_iter()
             .chain(self.runner.loaded())
-            .map(|path| instructions::shown(&path, workspace, &self.home))
+            .map(|path| instructions::shown(&path, workspace, &self.shared.home))
             .collect()
     }
 
     pub fn skills(&self) -> &skill::Found {
-        &self.skills
+        &self.shared.skills
+    }
+
+    pub fn agents(&self) -> &agents::Found {
+        &self.shared.agents
+    }
+
+    pub fn language_servers(&self) -> Vec<String> {
+        self.shared.lsp.states()
     }
 
     pub fn servers(&self) -> (Vec<mcp::Status>, &[String]) {
-        (self.clients.states(), &self.servers.problems)
+        (self.shared.clients.states(), &self.shared.servers.problems)
     }
 
     pub async fn sign_in(&self, name: &str) -> Result<mcp::SignIn, mcp::Error> {
         let address = mcp::Address::parse(name)?;
         let server = self
+            .shared
             .servers
             .servers
             .iter()
             .find(|server| server.name == address.name)
             .ok_or_else(|| mcp::Error::Unknown(address.name.clone()))?;
-        mcp::SignIn::start(server, address.account.as_deref(), &self.reach).await
+        mcp::SignIn::start(server, address.account.as_deref(), &self.shared.reach).await
     }
 
     pub fn reconnect(&self, name: &str) {
-        self.clients.reset(name);
+        self.shared.clients.reset(name);
     }
 
     pub fn snapshots_off(&self) -> Option<String> {
@@ -573,13 +659,14 @@ impl Session {
             description: run.description(),
         });
         let web = Web {
-            http: self.http.clone(),
+            http: self.shared.http.clone(),
             search: self.bearer(false).await.ok().map(|bearer| Searcher {
                 provider: self.provider.clone(),
                 model: self.model.clone(),
                 bearer,
             }),
         };
+        self.runner.set_spawner(self.spawner());
         self.trace.clear();
         let trace = &mut self.trace;
         let outcome = self
@@ -606,6 +693,7 @@ impl Session {
                 }
                 Step::Shown(_) => {}
                 Step::Confirm(question) => sink.emit(Event::Confirm(&question)),
+                Step::AgentCall(call) => sink.emit(Event::AgentCall(&call)),
             })
             .await;
         sink.emit(Event::RunFinished { outcome: &outcome });
@@ -696,7 +784,12 @@ impl Session {
         }
         let mut text = text;
         for name in self.runner.active_skills() {
-            let found = self.skills.skills.iter().find(|known| known.name == name);
+            let found = self
+                .shared
+                .skills
+                .skills
+                .iter()
+                .find(|known| known.name == name);
             if let Some(Ok(loaded)) = found.map(|known| skill::activate(known, "")) {
                 text.push_str("\n\n");
                 text.push_str(&loaded);
@@ -810,7 +903,7 @@ impl Session {
     }
 
     async fn bearer(&mut self, force: bool) -> Result<Box<str>, Error> {
-        bearer(&self.store, &self.http, &mut self.account, force).await
+        bearer(&self.store, &self.shared.http, &mut self.account, force).await
     }
 }
 
@@ -928,6 +1021,7 @@ fn discover<'a>(
         env.variable,
         &store.mcp_reviews()?,
     );
+    let agents = agents::discover(&env.workspace, &env.home, &catalog::models()?);
     let mut waiting = Vec::new();
     for plugin in &env.plugins {
         if plugin.is_on(store.plugin_enabled(&plugin.name)?, logins)? {
@@ -939,6 +1033,7 @@ fn discover<'a>(
     Ok(Discovered {
         skills,
         servers,
+        agents,
         waiting,
     })
 }
@@ -962,6 +1057,21 @@ fn loaded_skills(messages: &[Message]) -> Vec<String> {
         }
     }
     names
+}
+
+fn loaded_instructions(messages: &[Message]) -> impl Iterator<Item = &str> {
+    messages
+        .iter()
+        .flat_map(|message| &message.parts)
+        .filter_map(|part| match part {
+            Part::ToolResult { trace, .. } => Some(trace),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|step| match step {
+            Trace::Loaded { path } => Some(&**path),
+            _ => None,
+        })
 }
 
 fn interrupted(trace: &[Trace]) -> String {

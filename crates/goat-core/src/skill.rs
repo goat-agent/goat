@@ -1,13 +1,13 @@
 use std::collections::HashSet;
 use std::fmt::Write as _;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ignore::WalkBuilder;
 
+use crate::frontmatter::{self, read, split};
+
 const FILE: &str = "SKILL.md";
-const FILE_BYTES: u64 = 1024 * 1024;
 const PER_ROOT: usize = 200;
 const RESOURCES: usize = 50;
 const RESOURCE_DEPTH: usize = 3;
@@ -168,7 +168,7 @@ pub(crate) fn from_plugin(plugin: &str, folder: &str, text: &str) -> Result<Skil
 
 fn from_text(text: &str, folder: String, source: Source) -> Result<Skill, String> {
     let (front, _) = split(text).ok_or("it has no frontmatter between --- lines")?;
-    let fields = fields(front);
+    let fields = frontmatter::fields(front);
     let field = |key: &str| {
         fields
             .iter()
@@ -193,83 +193,6 @@ fn from_text(text: &str, folder: String, source: Source) -> Result<Skill, String
         for_model: !flag("disable-model-invocation", false),
         for_user: flag("user-invocable", true),
     })
-}
-
-fn read(location: &Path) -> Result<String, String> {
-    let file = std::fs::File::open(location)
-        .map_err(|err| format!("could not read {}: {err}", location.display()))?;
-    let mut bytes = Vec::new();
-    file.take(FILE_BYTES)
-        .read_to_end(&mut bytes)
-        .map_err(|err| format!("could not read {}: {err}", location.display()))?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
-}
-
-fn split(text: &str) -> Option<(&str, &str)> {
-    let text = text.trim_start_matches('\u{feff}');
-    let rest = text.strip_prefix("---")?;
-    let rest = rest
-        .strip_prefix('\n')
-        .or_else(|| rest.strip_prefix("\r\n"))?;
-    let mut at = 0;
-    for line in rest.split_inclusive('\n') {
-        if line.trim_end() == "---" {
-            return Some((&rest[..at], &rest[at + line.len()..]));
-        }
-        at += line.len();
-    }
-    None
-}
-
-fn fields(front: &str) -> Vec<(String, String)> {
-    let mut fields = Vec::new();
-    let mut lines = front.lines().peekable();
-    while let Some(line) = lines.next() {
-        if line.starts_with([' ', '\t', '#', '-']) {
-            continue;
-        }
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value = value.trim();
-        let block: Option<&str> = match value {
-            ">" | ">-" | ">+" => Some(" "),
-            "|" | "|-" | "|+" => Some("\n"),
-            _ => None,
-        };
-        let value = if let Some(join) = block {
-            let mut parts = Vec::new();
-            while let Some(next) =
-                lines.next_if(|next| next.is_empty() || next.starts_with([' ', '\t']))
-            {
-                parts.push(next.trim());
-            }
-            parts.join(join).trim().to_owned()
-        } else {
-            scalar(value)
-        };
-        fields.push((key.trim().to_owned(), value));
-    }
-    fields
-}
-
-fn scalar(value: &str) -> String {
-    if let Some(inner) = value
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-    {
-        return inner.replace("\\\"", "\"").replace("\\\\", "\\");
-    }
-    if let Some(inner) = value
-        .strip_prefix('\'')
-        .and_then(|rest| rest.strip_suffix('\''))
-    {
-        return inner.replace("''", "'");
-    }
-    match value.find(" #") {
-        Some(comment) => value[..comment].trim_end().to_owned(),
-        None => value.to_owned(),
-    }
 }
 
 fn substitute(body: &str, args: &str) -> (String, bool) {

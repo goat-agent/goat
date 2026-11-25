@@ -243,6 +243,26 @@ impl Document {
     }
 }
 
+pub(crate) fn locate(raw: &str, lines: &[&str]) -> Result<usize, String> {
+    if let Ok(number) = raw.trim().parse::<usize>() {
+        return match number {
+            1.. if number <= lines.len() => Ok(number),
+            _ => Err(format!("line {number} is past the end of the file")),
+        };
+    }
+    let anchor = Anchor::parse(raw)?;
+    let text = lines
+        .get(anchor.line - 1)
+        .ok_or_else(|| format!("line {} is past the end of the file", anchor.line))?;
+    if hash(text) != anchor.hash {
+        return Err(format!(
+            "line {} changed since it was read; read it again",
+            anchor.line
+        ));
+    }
+    Ok(anchor.line)
+}
+
 pub(crate) fn tag_line(number: usize, line: &str) -> String {
     format!("{number}:{:03x}|{line}", hash(line))
 }
@@ -259,6 +279,19 @@ fn hash(line: &str) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_is_found_by_number_or_by_a_fresh_anchor() {
+        let lines = ["fn main() {", "    run();", "}"];
+        let anchor = tag_line(2, lines[1]);
+
+        assert_eq!(locate("3", &lines), Ok(3));
+        assert_eq!(locate(&anchor, &lines), Ok(2));
+        assert_eq!(
+            locate(&tag_line(2, "    stop();"), &lines),
+            Err("line 2 changed since it was read; read it again".to_owned())
+        );
+    }
 
     fn anchor(doc: &Document, line: usize) -> String {
         format!("{line}:{:03x}", hash(&doc.lines[line - 1]))

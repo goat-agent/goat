@@ -1,6 +1,8 @@
+mod frontmatter;
 mod id;
 
 pub mod account;
+pub mod agent;
 pub mod catalog;
 pub mod image;
 mod instructions;

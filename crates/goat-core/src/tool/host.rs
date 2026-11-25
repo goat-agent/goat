@@ -7,8 +7,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use super::lsp::{self, Servers, Target};
 use super::web::{self, Web};
-use super::{Call, Decision, Kind, Question, Step, bash, danger, files, hashline, spill};
+use super::{
+    Call, Decision, Kind, Question, Spawn, Step, Task, bash, danger, files, hashline, spill,
+};
 use crate::mcp::Clients;
 use crate::skill::{self, Skill};
 use crate::{image, instructions};
@@ -27,6 +30,8 @@ pub(crate) struct Host {
     nested: RefCell<Nested>,
     skills: RefCell<Skills>,
     mcp: RefCell<Option<Rc<Clients>>>,
+    spawner: RefCell<Option<Rc<dyn Spawn>>>,
+    lsp: RefCell<Option<Rc<Servers>>>,
 }
 
 #[derive(Debug, Default)]
@@ -83,6 +88,36 @@ enum Op {
         tool: String,
         args: serde_json::Value,
     },
+    Agent {
+        task: String,
+        #[serde(rename = "as")]
+        agent: Option<String>,
+        id: Option<String>,
+    },
+    Lsp {
+        action: Ask,
+        path: Option<String>,
+        line: Option<String>,
+        name: Option<String>,
+        new_name: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Ask {
+    Definition,
+    References,
+    Implementations,
+    Hover,
+    Symbols,
+    Rename,
+    Diagnostics,
+}
+
+#[derive(Debug, Serialize)]
+struct Renamed {
+    files: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,6 +151,8 @@ impl Host {
             nested: RefCell::new(Nested::default()),
             skills: RefCell::new(Skills::default()),
             mcp: RefCell::new(None),
+            spawner: RefCell::new(None),
+            lsp: RefCell::new(None),
         })
     }
 
@@ -169,6 +206,9 @@ impl Host {
                     None => to_value(files::read(&resolved, &path, offset, limit)?),
                 };
                 self.notice(&resolved);
+                if let Some(servers) = self.servers() {
+                    servers.saw(&resolved).await;
+                }
                 value
             }
             Op::Edit { path, edits } => {
@@ -176,6 +216,7 @@ impl Host {
                 self.guard(&resolved)?;
                 let (edited, diff) = files::edit(&resolved, &path, edits)?;
                 self.notice(&resolved);
+                self.touched(&resolved);
                 self.steps.send(Step::Changed(diff)).await.ok();
                 to_value(edited)
             }
@@ -184,6 +225,7 @@ impl Host {
                 self.guard(&resolved)?;
                 let (written, diff) = files::write(&resolved, &path, &content)?;
                 self.notice(&resolved);
+                self.touched(&resolved);
                 if let Some(diff) = diff {
                     self.steps.send(Step::Changed(diff)).await.ok();
                 }
@@ -219,7 +261,134 @@ impl Host {
             Op::Skill { name, args } => {
                 to_value(self.load_skill(&name, args.as_deref().unwrap_or_default())?)
             }
+            Op::Agent { task, agent, id } => {
+                let spawner = self
+                    .spawner
+                    .borrow()
+                    .clone()
+                    .ok_or("agents cannot start agents")?;
+                let task = Task {
+                    text: task,
+                    agent,
+                    id,
+                };
+                to_value(spawner.spawn(task, &self.steps).await?)
+            }
+            Op::Lsp {
+                action,
+                path,
+                line,
+                name,
+                new_name,
+            } => self.ask(action, path, line, name, new_name).await,
         }
+    }
+
+    async fn ask(
+        &self,
+        action: Ask,
+        path: Option<String>,
+        line: Option<String>,
+        name: Option<String>,
+        new_name: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        let servers = self
+            .servers()
+            .ok_or("language servers are not available here")?;
+        let resolved = match &path {
+            Some(path) => {
+                let resolved = self.resolve(path);
+                self.guard(&resolved)?;
+                Some(resolved)
+            }
+            None => None,
+        };
+        let spot = || -> Result<(PathBuf, String, String), String> {
+            let missing = |what: &str| format!("{} needs {what}", action.as_str());
+            Ok((
+                resolved.clone().ok_or_else(|| missing("a path"))?,
+                line.clone().ok_or_else(|| missing("a line"))?,
+                name.clone().ok_or_else(|| missing("a name"))?,
+            ))
+        };
+        let located = match action {
+            Ask::Diagnostics => return to_value(servers.diagnostics(resolved.as_deref()).await?),
+            Ask::Symbols => {
+                return match (&resolved, path) {
+                    (Some(resolved), _) if resolved.is_file() => {
+                        to_value(servers.outline(resolved).await?)
+                    }
+                    (_, Some(query)) => to_value(servers.search(&query).await?),
+                    (_, None) => Err("symbols needs a path or a query".to_owned()),
+                };
+            }
+            Ask::Rename => {
+                let (path, line, name) = spot()?;
+                let new_name = new_name.ok_or("rename needs a new name")?;
+                let target = Target {
+                    path: &path,
+                    line: &line,
+                    name: &name,
+                };
+                return to_value(self.rename(&servers, &target, &new_name).await?);
+            }
+            Ask::Definition => lsp::Action::Definition,
+            Ask::References => lsp::Action::References,
+            Ask::Implementations => lsp::Action::Implementations,
+            Ask::Hover => lsp::Action::Hover,
+        };
+        let (path, line, name) = spot()?;
+        let target = Target {
+            path: &path,
+            line: &line,
+            name: &name,
+        };
+        servers.locate(&target, located).await
+    }
+
+    async fn rename(
+        &self,
+        servers: &Servers,
+        target: &Target<'_>,
+        new_name: &str,
+    ) -> Result<Renamed, String> {
+        let changes = servers.rename(target, new_name).await?;
+        for (path, _) in &changes {
+            self.guard(path)?;
+        }
+        let mut renamed = Vec::with_capacity(changes.len());
+        for (path, content) in changes {
+            let shown = path
+                .strip_prefix(&self.workspace)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            let (_, diff) = files::write(&path, &shown, &content)?;
+            self.touched(&path);
+            if let Some(diff) = diff {
+                self.steps.send(Step::Changed(diff)).await.ok();
+            }
+            renamed.push(shown);
+        }
+        Ok(Renamed { files: renamed })
+    }
+
+    pub(crate) async fn check(&self) -> Option<String> {
+        self.servers()?.report().await
+    }
+
+    fn touched(&self, path: &Path) {
+        if let Some(servers) = self.servers() {
+            servers.changed(path);
+        }
+    }
+
+    fn servers(&self) -> Option<Rc<Servers>> {
+        self.lsp.borrow().clone()
+    }
+
+    pub(crate) fn set_lsp(&self, servers: Rc<Servers>) {
+        self.lsp.replace(Some(servers));
     }
 
     pub(crate) fn steps(&self) -> mpsc::Sender<Step> {
@@ -241,6 +410,9 @@ impl Host {
                 "blocked: {reason}. goat never runs this; the user can run it themselves"
             ));
         }
+        if let Some(servers) = self.servers() {
+            servers.shelling();
+        }
         let timeout = Duration::from_secs(timeout.unwrap_or(DEFAULT_TIMEOUT_SECS).max(1));
         bash::run(command, &self.workspace, timeout, &self.spill, &mut |_| {})
             .await
@@ -254,6 +426,9 @@ impl Host {
     ) -> Result<bash::Ran, String> {
         if let Some(reason) = self.danger.check(command, &self.workspace, &self.home) {
             return Err(format!("blocked: {reason}"));
+        }
+        if let Some(servers) = self.servers() {
+            servers.shelling();
         }
         bash::run(command, &self.workspace, NO_TIMEOUT, &self.spill, on_output)
             .await
@@ -277,6 +452,10 @@ impl Host {
             .borrow()
             .clone()
             .ok_or_else(|| "the web is not available here".to_owned())
+    }
+
+    pub(crate) fn set_spawner(&self, spawner: Option<Rc<dyn Spawn>>) {
+        self.spawner.replace(spawner);
     }
 
     pub(crate) fn set_mcp(&self, clients: Rc<Clients>) {
@@ -445,10 +624,46 @@ impl Op {
                     target: format!("{server}.{tool}").into(),
                 };
             }
+            Self::Lsp {
+                action, path, line, ..
+            } => {
+                let mut target = action.as_str().to_owned();
+                for part in [path, line].into_iter().flatten() {
+                    target.push(' ');
+                    target.push_str(part);
+                }
+                return Call {
+                    kind: Kind::Lsp,
+                    target: target.into(),
+                };
+            }
+            Self::Agent { task, agent, .. } => {
+                return Call {
+                    kind: Kind::Agent,
+                    target: match agent {
+                        Some(agent) => format!("{agent}: {task}").into(),
+                        None => task.as_str().into(),
+                    },
+                };
+            }
         };
         Call {
             kind,
             target: target.as_str().into(),
+        }
+    }
+}
+
+impl Ask {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Definition => "definition",
+            Self::References => "references",
+            Self::Implementations => "implementations",
+            Self::Hover => "hover",
+            Self::Symbols => "symbols",
+            Self::Rename => "rename",
+            Self::Diagnostics => "diagnostics",
         }
     }
 }
