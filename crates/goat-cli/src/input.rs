@@ -17,7 +17,7 @@ use unicode_width::UnicodeWidthStr;
 
 use goat_core::image::{Image, Picture};
 use goat_core::store::Store;
-use goat_core::tool::Decision;
+use goat_core::tool::{Decision, Scope};
 
 use crate::attach::{self, Tile};
 use crate::command::{self, Name, Typing};
@@ -1059,7 +1059,7 @@ fn width(columns: usize) -> usize {
     columns.max(PROMPT.width() + 2)
 }
 
-pub(crate) fn decision(event: &Event, can_always: bool) -> Option<Decision> {
+pub(crate) fn decision(event: &Event, scope: Scope) -> Option<Decision> {
     let Event::Key(key) = event else {
         return None;
     };
@@ -1071,7 +1071,8 @@ pub(crate) fn decision(event: &Event, can_always: bool) -> Option<Decision> {
     }
     Some(match key.code {
         KeyCode::Char('y' | 'Y') => Decision::Once,
-        KeyCode::Char('a' | 'A') if can_always => Decision::Always,
+        KeyCode::Char('r' | 'R') if scope == Scope::Run => Decision::Run,
+        KeyCode::Char('a' | 'A') if scope == Scope::Always => Decision::Always,
         _ => Decision::Refuse,
     })
 }
@@ -1158,34 +1159,23 @@ mod tests {
     use crate::target::{Current, Files, Offer};
 
     #[test]
-    fn only_y_allows_a_question() {
+    fn only_y_allows_a_question_and_r_and_a_widen_it_where_offered() {
         let press = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        let answer = |key, scope| decision(&press(KeyCode::Char(key)), scope);
 
+        assert_eq!(answer('y', Scope::Once), Some(Decision::Once));
+        assert_eq!(answer('Y', Scope::Run), Some(Decision::Once));
+        assert_eq!(answer('r', Scope::Run), Some(Decision::Run));
+        assert_eq!(answer('r', Scope::Once), Some(Decision::Refuse));
+        assert_eq!(answer('r', Scope::Always), Some(Decision::Refuse));
+        assert_eq!(answer('a', Scope::Always), Some(Decision::Always));
+        assert_eq!(answer('a', Scope::Run), Some(Decision::Refuse));
+        assert_eq!(answer('n', Scope::Run), Some(Decision::Refuse));
         assert_eq!(
-            decision(&press(KeyCode::Char('y')), false),
-            Some(Decision::Once)
-        );
-        assert_eq!(
-            decision(&press(KeyCode::Char('Y')), false),
-            Some(Decision::Once)
-        );
-        assert_eq!(
-            decision(&press(KeyCode::Char('a')), true),
-            Some(Decision::Always)
-        );
-        assert_eq!(
-            decision(&press(KeyCode::Char('a')), false),
+            decision(&press(KeyCode::Enter), Scope::Always),
             Some(Decision::Refuse)
         );
-        assert_eq!(
-            decision(&press(KeyCode::Char('n')), true),
-            Some(Decision::Refuse)
-        );
-        assert_eq!(
-            decision(&press(KeyCode::Enter), true),
-            Some(Decision::Refuse)
-        );
-        assert_eq!(decision(&Event::Resize(80, 24), true), None);
+        assert_eq!(decision(&Event::Resize(80, 24), Scope::Run), None);
     }
 
     fn line(text: &str, cursor: usize) -> Line {

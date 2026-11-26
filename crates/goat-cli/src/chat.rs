@@ -211,8 +211,8 @@ impl Chat {
                     event = keys.next() => {
                         let event = event?;
                         let mut terminal = shared.borrow_mut();
-                        if let Some(can_always) = terminal.asking() {
-                            if let Some(decision) = input::decision(&event, can_always) {
+                        if let Some(scope) = terminal.asking() {
+                            if let Some(decision) = input::decision(&event, scope) {
                                 terminal.decide(decision);
                             }
                             continue;

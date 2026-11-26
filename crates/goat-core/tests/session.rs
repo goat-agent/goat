@@ -15,6 +15,7 @@ use goat_core::plugin::Plugin;
 use goat_core::provider::Endpoints;
 use goat_core::session::{self, Environment, Event, Prompt, Session, Sink};
 use goat_core::store::Store;
+use goat_core::tool::Decision;
 
 const OPENAI_TOOL_CALL: &str = include_str!("fixtures/openai/tool_call.sse");
 const OPENAI_ANSWER: &str = include_str!("fixtures/openai/answer.sse");
@@ -35,16 +36,18 @@ struct Recorder {
     shell_ends: Vec<(Option<i32>, Option<String>)>,
     stops: Vec<&'static str>,
     order: Vec<String>,
-    allows: bool,
+    answer: Option<Decision>,
 }
 
 impl Sink for Recorder {
     fn emit(&mut self, event: Event<'_>) {
         self.order.push(name(&event));
         match event {
-            Event::Confirm(question) if self.allows => {
-                if let Some(answer) = question.take_answer() {
-                    answer.give(goat_core::tool::Decision::Once);
+            Event::Confirm(question) => {
+                if let Some(decision) = self.answer
+                    && let Some(answer) = question.take_answer()
+                {
+                    answer.give(decision);
                 }
             }
             Event::Text(text) => self.text.push_str(text),
@@ -1756,7 +1759,10 @@ async fn a_destructive_gmail_tool_runs_only_when_the_user_allows_it() {
     let (mut session, _) = gmail_session(dir.path(), &server.url, &google)
         .await
         .unwrap();
-    let mut refusing = Recorder::default();
+    let mut refusing = Recorder {
+        answer: Some(Decision::Refuse),
+        ..Recorder::default()
+    };
 
     session.turn("trash it", &mut refusing).await.unwrap();
     let refused_log = gmail_log(&google).await.unwrap();
@@ -1764,7 +1770,7 @@ async fn a_destructive_gmail_tool_runs_only_when_the_user_allows_it() {
         .turn(
             "trash it",
             &mut Recorder {
-                allows: true,
+                answer: Some(Decision::Once),
                 ..Recorder::default()
             },
         )
@@ -1780,12 +1786,105 @@ async fn a_destructive_gmail_tool_runs_only_when_the_user_allows_it() {
     );
     let requests = server.requests.lock().unwrap();
     assert!(
-        requests[1].contains("the user did not allow gmail.trash_thread"),
+        requests[1].contains("the user refused gmail.trash_thread"),
         "{}",
         requests[1]
     );
     assert!(!refused_log.contains("threads/t1/trash"), "{refused_log}");
     assert!(allowed_log.contains("threads/t1/trash"), "{allowed_log}");
+}
+
+#[tokio::test]
+async fn an_unanswered_question_reaches_the_model_as_unanswered_not_refused() {
+    let (_google, google) = gmail_server().await.unwrap();
+    let code = "let failed = ''; try { await mcp.gmail.trash_thread({ threadId: 't1' }) } \
+                catch (e) { failed = e.message } return failed";
+    let call = leak(OPENAI_TOOL_CALL.replace("(await bash('echo hi')).output", code));
+    let server = server::replay(vec![call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = gmail_session(dir.path(), &server.url, &google)
+        .await
+        .unwrap();
+
+    session
+        .turn("trash it", &mut Recorder::default())
+        .await
+        .unwrap();
+
+    let log = gmail_log(&google).await.unwrap();
+    let requests = server.requests.lock().unwrap();
+    assert!(
+        requests[1].contains("did not run: the question was not answered"),
+        "{}",
+        requests[1]
+    );
+    assert!(!requests[1].contains("refused"), "{}", requests[1]);
+    assert!(!log.contains("threads/t1/trash"), "{log}");
+}
+
+#[tokio::test]
+async fn allowing_a_tool_for_a_run_covers_its_other_calls_in_that_run_only() {
+    let (_google, google) = gmail_server().await.unwrap();
+    let call = run_call(
+        "await Promise.all(['t1', 't2', 't3'].map(id => mcp.gmail.trash_thread({ threadId: id })))",
+    );
+    let server = server::replay(vec![call, call, OPENAI_ANSWER]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = gmail_session(dir.path(), &server.url, &google)
+        .await
+        .unwrap();
+    let mut recorder = Recorder {
+        answer: Some(Decision::Run),
+        ..Recorder::default()
+    };
+
+    session.turn("trash them", &mut recorder).await.unwrap();
+
+    let log = gmail_log(&google).await.unwrap();
+    let asked = recorder
+        .order
+        .iter()
+        .filter(|event| event.starts_with("confirm gmail.trash_thread"))
+        .count();
+    assert_eq!(asked, 2);
+    for id in ["t1", "t2", "t3"] {
+        assert_eq!(
+            log.matches(&format!("threads/{id}/trash")).count(),
+            2,
+            "{log}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_agents_question_reaches_the_user() {
+    let (_google, google) = gmail_server().await.unwrap();
+    let server = server::replay(vec![
+        run_call("(await agent('trash t1')).text"),
+        run_call("await mcp.gmail.trash_thread({ threadId: 't1' })"),
+        answer("Trashed."),
+        OPENAI_ANSWER,
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, _) = gmail_session(dir.path(), &server.url, &google)
+        .await
+        .unwrap();
+    let mut recorder = Recorder {
+        answer: Some(Decision::Once),
+        ..Recorder::default()
+    };
+
+    session.turn("trash it", &mut recorder).await.unwrap();
+
+    let log = gmail_log(&google).await.unwrap();
+    assert!(
+        recorder
+            .order
+            .iter()
+            .any(|event| event.starts_with("confirm gmail.trash_thread"))
+    );
+    assert!(log.contains("threads/t1/trash"), "{log}");
 }
 
 #[tokio::test]
