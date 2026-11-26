@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use super::lsp::{self, Servers, Target};
 use super::web::{self, Web};
 use super::{
-    Call, Decision, Kind, Question, Spawn, Step, Task, bash, danger, files, hashline, spill,
+    Call, Decision, Kind, Question, Scope, Spawn, Step, Task, bash, danger, files, hashline, spill,
 };
 use crate::mcp::Clients;
 use crate::skill::{self, Skill};
@@ -25,7 +25,9 @@ pub(crate) struct Host {
     home: PathBuf,
     spill: PathBuf,
     danger: danger::Checker,
-    steps: mpsc::Sender<Step>,
+    steps: mpsc::UnboundedSender<Step>,
+    asking: tokio::sync::Semaphore,
+    allowed: RefCell<HashSet<String>>,
     web: RefCell<Option<Web>>,
     nested: RefCell<Nested>,
     skills: RefCell<Skills>,
@@ -139,7 +141,7 @@ impl Host {
         workspace: &Path,
         home: &Path,
         spill: &Path,
-        steps: mpsc::Sender<Step>,
+        steps: mpsc::UnboundedSender<Step>,
     ) -> Result<Self, tree_sitter::LanguageError> {
         Ok(Self {
             workspace: workspace.to_owned(),
@@ -147,6 +149,8 @@ impl Host {
             spill: spill.to_owned(),
             danger: danger::Checker::new()?,
             steps,
+            asking: tokio::sync::Semaphore::new(1),
+            allowed: RefCell::new(HashSet::new()),
             web: RefCell::new(None),
             nested: RefCell::new(Nested::default()),
             skills: RefCell::new(Skills::default()),
@@ -156,8 +160,9 @@ impl Host {
         })
     }
 
-    pub(crate) fn set_web(&self, web: Web) {
+    pub(crate) fn start_run(&self, web: Web) {
         self.web.replace(Some(web));
+        self.allowed.borrow_mut().clear();
     }
 
     pub(crate) fn workspace(&self) -> &Path {
@@ -171,13 +176,10 @@ impl Host {
     pub(crate) async fn call(&self, request: &str) -> String {
         let reply = match serde_json::from_str::<Op>(request) {
             Ok(op) => {
-                self.steps.send(Step::Started(op.to_call())).await.ok();
+                self.steps.send(Step::Started(op.to_call())).ok();
                 let reply = self.dispatch(op).await;
                 if let Err(problem) = &reply {
-                    self.steps
-                        .send(Step::Failed(problem.as_str().into()))
-                        .await
-                        .ok();
+                    self.steps.send(Step::Failed(problem.as_str().into())).ok();
                 }
                 reply
             }
@@ -202,7 +204,7 @@ impl Host {
                 let resolved = self.resolve(&path);
                 self.guard(&resolved)?;
                 let value = match files::image(&resolved, &path)? {
-                    Some(bytes) => to_value(self.show(bytes, &path).await?),
+                    Some(bytes) => to_value(self.show(bytes, &path)?),
                     None => to_value(files::read(&resolved, &path, offset, limit)?),
                 };
                 self.notice(&resolved);
@@ -217,7 +219,7 @@ impl Host {
                 let (edited, diff) = files::edit(&resolved, &path, edits)?;
                 self.notice(&resolved);
                 self.touched(&resolved);
-                self.steps.send(Step::Changed(diff)).await.ok();
+                self.steps.send(Step::Changed(diff)).ok();
                 to_value(edited)
             }
             Op::Write { path, content } => {
@@ -227,7 +229,7 @@ impl Host {
                 self.notice(&resolved);
                 self.touched(&resolved);
                 if let Some(diff) = diff {
-                    self.steps.send(Step::Changed(diff)).await.ok();
+                    self.steps.send(Step::Changed(diff)).ok();
                 }
                 to_value(written)
             }
@@ -247,11 +249,11 @@ impl Host {
             Op::McpCall { server, tool, args } => {
                 let clients = self.mcp()?;
                 if clients.is_destructive(&server, &tool).await {
-                    self.confirm(&format!("{server}.{tool}({args})")).await?;
+                    self.confirm(&format!("{server}.{tool}"), &args).await?;
                 }
                 let called = clients.call(&server, &tool, args).await?;
                 for bytes in called.images {
-                    self.show(bytes, &format!("{server}.{tool}")).await?;
+                    self.show(bytes, &format!("{server}.{tool}"))?;
                 }
                 match called.value {
                     serde_json::Value::String(text) => to_value(spill::fit(text, &self.spill)),
@@ -366,7 +368,7 @@ impl Host {
             let (_, diff) = files::write(&path, &shown, &content)?;
             self.touched(&path);
             if let Some(diff) = diff {
-                self.steps.send(Step::Changed(diff)).await.ok();
+                self.steps.send(Step::Changed(diff)).ok();
             }
             renamed.push(shown);
         }
@@ -391,16 +393,26 @@ impl Host {
         self.lsp.replace(Some(servers));
     }
 
-    pub(crate) fn steps(&self) -> mpsc::Sender<Step> {
+    pub(crate) fn steps(&self) -> mpsc::UnboundedSender<Step> {
         self.steps.clone()
     }
 
-    async fn confirm(&self, call: &str) -> Result<(), String> {
-        let (question, answer) = Question::new(call.to_owned(), false);
-        self.steps.send(Step::Confirm(question)).await.ok();
+    async fn confirm(&self, action: &str, args: &serde_json::Value) -> Result<(), String> {
+        let _turn = self.asking.acquire().await.map_err(|err| err.to_string())?;
+        if self.allowed.borrow().contains(action) {
+            return Ok(());
+        }
+        let call = format!("{action}({args})");
+        let (question, answer) = Question::new(call.clone(), Scope::Run);
+        self.steps.send(Step::Confirm(question)).ok();
         match answer.await {
             Ok(Decision::Once | Decision::Always) => Ok(()),
-            _ => Err(format!("the user did not allow {call}")),
+            Ok(Decision::Run) => {
+                self.allowed.borrow_mut().insert(action.to_owned());
+                Ok(())
+            }
+            Ok(Decision::Refuse) => Err(format!("the user refused {call}")),
+            Err(_) => Err(format!("{call} did not run: the question was not answered")),
         }
     }
 
@@ -435,7 +447,7 @@ impl Host {
             .map_err(|err| format!("could not run the command: {err}"))
     }
 
-    async fn show(&self, bytes: Vec<u8>, path: &str) -> Result<Shown, String> {
+    fn show(&self, bytes: Vec<u8>, path: &str) -> Result<Shown, String> {
         let picture =
             image::prepare(bytes).map_err(|err| format!("could not read {path}: {err}"))?;
         let shown = Shown {
@@ -443,7 +455,7 @@ impl Host {
             width: picture.width,
             height: picture.height,
         };
-        self.steps.send(Step::Shown(picture)).await.ok();
+        self.steps.send(Step::Shown(picture)).ok();
         Ok(shown)
     }
 
@@ -676,10 +688,70 @@ fn to_value(value: impl Serialize) -> Result<serde_json::Value, String> {
 mod tests {
     use super::*;
 
-    fn host(dir: &Path) -> (Host, mpsc::Receiver<Step>) {
-        let (tx, rx) = mpsc::channel(16);
+    fn host(dir: &Path) -> (Host, mpsc::UnboundedReceiver<Step>) {
+        let (tx, rx) = mpsc::unbounded_channel();
         let host = Host::new(dir, Path::new("/home/me"), &dir.join(".spill"), tx).unwrap();
         (host, rx)
+    }
+
+    #[tokio::test]
+    async fn questions_come_one_at_a_time_and_a_run_answer_covers_that_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, mut rx) = host(dir.path());
+        let args = serde_json::json!({ "threadId": "t1" });
+        let asking = async {
+            tokio::join!(
+                host.confirm("gmail.trash_thread", &args),
+                host.confirm("gmail.trash_thread", &args),
+                host.confirm("gmail.delete_label", &args),
+            )
+        };
+        let answering = async {
+            let Some(Step::Confirm(first)) = rx.recv().await else {
+                panic!("the first call asks");
+            };
+            let is_alone = rx.try_recv().is_err();
+            first.take_answer().unwrap().give(Decision::Run);
+            let Some(Step::Confirm(second)) = rx.recv().await else {
+                panic!("another tool asks again");
+            };
+            second.take_answer().unwrap().give(Decision::Refuse);
+            (first.text().to_owned(), is_alone, second.text().to_owned())
+        };
+
+        let (answers, (first, is_alone, second)) = tokio::join!(asking, answering);
+
+        assert_eq!(first, r#"gmail.trash_thread({"threadId":"t1"})"#);
+        assert!(is_alone);
+        assert_eq!(second, r#"gmail.delete_label({"threadId":"t1"})"#);
+        assert_eq!(
+            answers,
+            (
+                Ok(()),
+                Ok(()),
+                Err(r#"the user refused gmail.delete_label({"threadId":"t1"})"#.to_owned())
+            )
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_question_is_not_taken_for_a_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, mut rx) = host(dir.path());
+        let args = serde_json::json!({ "threadId": "t1" });
+
+        let (answer, ()) = tokio::join!(host.confirm("gmail.trash_thread", &args), async {
+            drop(rx.recv().await);
+        });
+
+        assert_eq!(
+            answer,
+            Err(
+                r#"gmail.trash_thread({"threadId":"t1"}) did not run: the question was not answered"#
+                    .to_owned()
+            )
+        );
     }
 
     #[tokio::test]
@@ -705,7 +777,7 @@ mod tests {
         let home = dir.path().join("home");
         std::fs::create_dir_all(home.join(".goat")).unwrap();
         std::fs::write(home.join(".goat/mcp.toml"), "[notes]\n").unwrap();
-        let (tx, _rx) = mpsc::channel(16);
+        let (tx, _rx) = mpsc::unbounded_channel();
         let host = Host::new(dir.path(), &home, &dir.path().join(".spill"), tx).unwrap();
 
         let read = host

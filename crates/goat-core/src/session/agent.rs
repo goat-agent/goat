@@ -29,7 +29,7 @@ struct Running<'a> {
     id: Id,
 }
 
-struct Relay<'a>(&'a mpsc::Sender<Step>);
+struct Relay<'a>(&'a mpsc::UnboundedSender<Step>);
 
 impl Session {
     pub(super) fn spawner(&self) -> Option<Rc<dyn Spawn>> {
@@ -75,7 +75,7 @@ impl Session {
 }
 
 impl Spawner {
-    async fn run(&self, task: Task, steps: &mpsc::Sender<Step>) -> Result<Report, String> {
+    async fn run(&self, task: Task, steps: &mpsc::UnboundedSender<Step>) -> Result<Report, String> {
         let _slot = self
             .shared
             .slots
@@ -218,7 +218,7 @@ impl Spawn for Spawner {
     fn spawn<'a>(
         &'a self,
         task: Task,
-        steps: &'a mpsc::Sender<Step>,
+        steps: &'a mpsc::UnboundedSender<Step>,
     ) -> Pin<Box<dyn Future<Output = Result<Report, String>> + 'a>> {
         Box::pin(self.run(task, steps))
     }
@@ -250,7 +250,7 @@ impl Sink for Relay<'_> {
             },
             _ => return,
         };
-        self.0.try_send(step).ok();
+        self.0.send(step).ok();
     }
 }
 

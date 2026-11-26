@@ -214,7 +214,7 @@ mod tests {
     use super::*;
 
     async fn script(dir: &Path) -> Script {
-        let (tx, _) = mpsc::channel(1);
+        let (tx, _) = mpsc::unbounded_channel();
         let host = Host::new(dir, dir, &dir.join(".spill"), tx).unwrap();
         Script::new(Rc::new(host)).await.unwrap()
     }

@@ -595,6 +595,9 @@ async fn ask(
         .create_elicitation(request)
         .await
         .map_err(|err| Fault::Denied(format!("the user could not be asked: {err}")))?;
+    if answer.action == ElicitationAction::Cancel {
+        return Err(Fault::Denied(format!("no one answered \"{message}\"")));
+    }
     let is_allowed = answer.action == ElicitationAction::Accept;
     let is_always = answer
         .content
@@ -897,6 +900,21 @@ mod tests {
         let err = rig.call("type", json!({ "text": "hi" })).await.unwrap_err();
 
         assert_eq!(err, "denied: the user did not allow controlling Notes.");
+        assert_eq!(rig.log(), Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_question_is_not_taken_for_a_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let rig = rig(dir.path()).await;
+        rig.answer(ElicitationAction::Cancel, false);
+
+        let err = rig.call("type", json!({ "text": "hi" })).await.unwrap_err();
+
+        assert_eq!(
+            err,
+            "denied: no one answered \"Allow goat to control Notes\"."
+        );
         assert_eq!(rig.log(), Vec::<String>::new());
     }
 

@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+use std::fmt::Write as _;
 use std::io::{self, BufWriter, Stdout, Write};
 use std::mem;
 use std::time::{Duration, Instant};
@@ -41,7 +43,13 @@ pub(crate) struct Terminal<W: Write = BufWriter<Stdout>> {
     code: Option<highlight::Block>,
     calls: usize,
     activity: Option<Activity>,
-    asking: Option<(tool::Answer, bool)>,
+    questions: VecDeque<Asked>,
+}
+
+struct Asked {
+    text: Box<str>,
+    scope: tool::Scope,
+    answer: tool::Answer,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -124,27 +132,76 @@ impl<W: Write> Terminal<W> {
             code: None,
             calls: 0,
             activity: None,
-            asking: None,
+            questions: VecDeque::new(),
         }
     }
 
-    pub(crate) fn asking(&self) -> Option<bool> {
-        self.asking.as_ref().map(|(_, can_always)| *can_always)
+    pub(crate) fn asking(&self) -> Option<tool::Scope> {
+        self.questions.front().map(|asked| asked.scope)
     }
 
     pub(crate) fn decide(&mut self, decision: tool::Decision) {
-        let Some((answer, _)) = self.asking.take() else {
+        let Some(asked) = self.questions.pop_front() else {
             return;
         };
-        answer.give(decision);
+        asked.answer.give(decision);
         let shown = match decision {
             tool::Decision::Once => "Allowed".green(),
+            tool::Decision::Run => "Allowed for this run".green(),
             tool::Decision::Always => "Always allowed".green(),
             tool::Decision::Refuse => "Refused".red(),
         };
         self.enter(Section::Run);
         self.put(&format!("{INDENT}{INDENT}{shown}\n"));
+        self.ask_next();
         self.flush();
+    }
+
+    fn ask(&mut self, question: &tool::Question) {
+        let Some(answer) = question.take_answer() else {
+            return;
+        };
+        self.questions.push_back(Asked {
+            text: question.text().into(),
+            scope: question.scope(),
+            answer,
+        });
+        if self.questions.len() == 1 {
+            self.show_question();
+        }
+    }
+
+    fn ask_next(&mut self) {
+        while self
+            .questions
+            .front()
+            .is_some_and(|asked| !asked.answer.is_awaited())
+        {
+            self.questions.pop_front();
+        }
+        self.show_question();
+    }
+
+    fn show_question(&mut self) {
+        let Some(asked) = self.questions.front() else {
+            return;
+        };
+        let keys = match asked.scope {
+            tool::Scope::Once => "y allows, any other key refuses",
+            tool::Scope::Run => {
+                "y allows once, r allows it for the rest of this run, any other key refuses"
+            }
+            tool::Scope::Always => "y allows once, a always allows, any other key refuses",
+        };
+        let mut lines = asked.text.lines();
+        let first = printable(lines.next().unwrap_or_default());
+        let mut shown = format!("{INDENT}{} {first}\n", "?".yellow());
+        for line in lines {
+            writeln!(shown, "{INDENT}  {}", printable(line)).ok();
+        }
+        writeln!(shown, "{INDENT}  {}", keys.dim()).ok();
+        self.enter(Section::Run);
+        self.put(&shown);
     }
 
     pub(crate) fn columns(&self) -> usize {
@@ -304,6 +361,7 @@ impl<W: Write> Terminal<W> {
     }
 
     pub(crate) fn finish_turn(&mut self, ending: Ending) {
+        self.questions.clear();
         self.close_section();
         self.erase();
         self.activity = None;
@@ -655,24 +713,7 @@ impl<W: Write> Sink for Terminal<W> {
                 self.note("The reply was cut off, so it starts over");
             }
             Event::RunFinished { .. } | Event::Usage(_) | Event::Retrying { .. } => {}
-            Event::Confirm(question) => {
-                self.enter(Section::Run);
-                let width = self.columns().saturating_sub(40).max(20);
-                let keys = if question.can_always() {
-                    "y allows once, a always allows, any other key refuses"
-                } else {
-                    "y allows, any other key refuses"
-                };
-                self.put(&format!(
-                    "{INDENT}{} {}? {}\n",
-                    "?".yellow(),
-                    fit(first_line(question.text()), width),
-                    keys.dim()
-                ));
-                self.asking = question
-                    .take_answer()
-                    .map(|answer| (answer, question.can_always()));
-            }
+            Event::Confirm(question) => self.ask(question),
             Event::Compacting => {
                 self.open(Section::Note);
                 self.put(&format!(
@@ -848,6 +889,55 @@ mod tests {
             kind,
             target: target.into(),
         }
+    }
+
+    #[test]
+    fn questions_wait_their_turn_and_are_shown_whole() {
+        let mut terminal = Terminal::with_writer(Vec::new(), || 40);
+        let trash = r#"gmail.trash_thread({"threadId":"1a216abc3c6fb212"})"#;
+        let (first, mut first_answer) = tool::Question::new(trash.into(), tool::Scope::Run);
+        let (second, mut second_answer) =
+            tool::Question::new("Allow goat to control Notes".into(), tool::Scope::Always);
+
+        terminal.emit(Event::Confirm(&first));
+        terminal.emit(Event::Confirm(&second));
+        let before = visible(&terminal.out);
+        terminal.decide(tool::Decision::Run);
+        let next = terminal.asking();
+        let after = visible(&terminal.out);
+        terminal.finish_turn(Ending::Complete);
+
+        assert!(before.contains(trash), "{before}");
+        assert!(
+            before.contains("r allows it for the rest of this run"),
+            "{before}"
+        );
+        assert!(!before.contains("control Notes"), "{before}");
+        assert_eq!(first_answer.try_recv(), Ok(tool::Decision::Run));
+        assert!(after.contains("Allowed for this run"), "{after}");
+        assert!(after.contains("Allow goat to control Notes"), "{after}");
+        assert_eq!(next, Some(tool::Scope::Always));
+        assert_eq!(terminal.asking(), None);
+        assert!(second_answer.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_question_no_one_waits_for_is_skipped() {
+        let mut terminal = Terminal::with_writer(Vec::new(), || 40);
+        let (first, _first_answer) = tool::Question::new("first".into(), tool::Scope::Once);
+        let (gone, gone_answer) = tool::Question::new("gone".into(), tool::Scope::Once);
+        let (last, _last_answer) = tool::Question::new("last".into(), tool::Scope::Once);
+
+        terminal.emit(Event::Confirm(&first));
+        terminal.emit(Event::Confirm(&gone));
+        terminal.emit(Event::Confirm(&last));
+        drop(gone_answer);
+        terminal.decide(tool::Decision::Refuse);
+        let shown = visible(&terminal.out);
+
+        assert!(shown.contains("Refused"), "{shown}");
+        assert!(!shown.contains("gone"), "{shown}");
+        assert!(shown.contains("last"), "{shown}");
     }
 
     #[test]

@@ -216,7 +216,7 @@ struct Live {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Asker {
-    steps: Option<tokio::sync::mpsc::Sender<Step>>,
+    steps: Option<tokio::sync::mpsc::UnboundedSender<Step>>,
 }
 
 #[derive(Deserialize)]
@@ -616,7 +616,7 @@ impl Clients {
     pub(crate) fn new(
         servers: Vec<Server>,
         context: Context,
-        steps: tokio::sync::mpsc::Sender<Step>,
+        steps: tokio::sync::mpsc::UnboundedSender<Step>,
     ) -> Self {
         Self {
             servers,
@@ -991,18 +991,26 @@ impl ClientHandler for Asker {
         else {
             return Ok(ElicitResult::new(ElicitationAction::Decline));
         };
-        let can_always = serde_json::to_value(&requested_schema)
-            .is_ok_and(|schema| schema["properties"]["always"]["type"] == "boolean");
-        let (question, answer) = Question::new(message, can_always);
-        if steps.send(Step::Confirm(question)).await.is_err() {
-            return Ok(ElicitResult::new(ElicitationAction::Decline));
+        let scope = if serde_json::to_value(&requested_schema)
+            .is_ok_and(|schema| schema["properties"]["always"]["type"] == "boolean")
+        {
+            tool::Scope::Always
+        } else {
+            tool::Scope::Once
+        };
+        let (question, answer) = Question::new(message, scope);
+        if steps.send(Step::Confirm(question)).is_err() {
+            return Ok(ElicitResult::new(ElicitationAction::Cancel));
         }
         Ok(match answer.await {
-            Ok(tool::Decision::Once) => ElicitResult::new(ElicitationAction::Accept)
-                .with_content(serde_json::json!({ "always": false })),
+            Ok(tool::Decision::Once | tool::Decision::Run) => {
+                ElicitResult::new(ElicitationAction::Accept)
+                    .with_content(serde_json::json!({ "always": false }))
+            }
             Ok(tool::Decision::Always) => ElicitResult::new(ElicitationAction::Accept)
                 .with_content(serde_json::json!({ "always": true })),
-            Ok(tool::Decision::Refuse) | Err(_) => ElicitResult::new(ElicitationAction::Decline),
+            Ok(tool::Decision::Refuse) => ElicitResult::new(ElicitationAction::Decline),
+            Err(_) => ElicitResult::new(ElicitationAction::Cancel),
         })
     }
 }

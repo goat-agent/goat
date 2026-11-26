@@ -34,7 +34,6 @@ use self::script::Script;
 
 const NAME: &str = "run";
 const IMAGES_PER_RUN: usize = 4;
-const STEP_BACKLOG: usize = 64;
 const NEW_SANDBOX: &str =
     "[this run started a new sandbox; values earlier runs kept on globalThis are gone]";
 
@@ -120,7 +119,7 @@ pub(crate) trait Spawn: std::fmt::Debug {
     fn spawn<'a>(
         &'a self,
         task: Task,
-        steps: &'a mpsc::Sender<Step>,
+        steps: &'a mpsc::UnboundedSender<Step>,
     ) -> Pin<Box<dyn Future<Output = Result<Report, String>> + 'a>>;
 }
 
@@ -140,8 +139,15 @@ pub(crate) struct Report {
 #[derive(Debug)]
 pub struct Question {
     text: Box<str>,
-    can_always: bool,
+    scope: Scope,
     answer: std::cell::RefCell<Option<Answer>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Once,
+    Run,
+    Always,
 }
 
 #[derive(Debug)]
@@ -150,19 +156,17 @@ pub struct Answer(tokio::sync::oneshot::Sender<Decision>);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Once,
+    Run,
     Always,
     Refuse,
 }
 
 impl Question {
-    pub(crate) fn new(
-        text: String,
-        can_always: bool,
-    ) -> (Self, tokio::sync::oneshot::Receiver<Decision>) {
+    pub fn new(text: String, scope: Scope) -> (Self, tokio::sync::oneshot::Receiver<Decision>) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let question = Self {
             text: text.into(),
-            can_always,
+            scope,
             answer: std::cell::RefCell::new(Some(Answer(tx))),
         };
         (question, rx)
@@ -172,8 +176,8 @@ impl Question {
         &self.text
     }
 
-    pub fn can_always(&self) -> bool {
-        self.can_always
+    pub fn scope(&self) -> Scope {
+        self.scope
     }
 
     pub fn take_answer(&self) -> Option<Answer> {
@@ -183,7 +187,7 @@ impl Question {
     pub(crate) fn forward(&self) -> Option<Self> {
         Some(Self {
             text: self.text.clone(),
-            can_always: self.can_always,
+            scope: self.scope,
             answer: std::cell::RefCell::new(Some(self.take_answer()?)),
         })
     }
@@ -201,6 +205,10 @@ impl Answer {
     pub fn give(self, decision: Decision) {
         self.0.send(decision).ok();
     }
+
+    pub fn is_awaited(&self) -> bool {
+        !self.0.is_closed()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -211,7 +219,7 @@ pub(crate) struct Run {
 
 pub(crate) struct Runner {
     host: Rc<Host>,
-    steps: mpsc::Receiver<Step>,
+    steps: mpsc::UnboundedReceiver<Step>,
     script: Option<Script>,
     had_sandbox: bool,
 }
@@ -271,7 +279,7 @@ impl Runner {
         spill: &Path,
         resumed: bool,
     ) -> Result<Self, Error> {
-        let (tx, steps) = mpsc::channel(STEP_BACKLOG);
+        let (tx, steps) = mpsc::unbounded_channel();
         Ok(Self {
             host: Rc::new(Host::new(workspace, home, spill, tx)?),
             steps,
@@ -284,7 +292,7 @@ impl Runner {
         self.host.workspace()
     }
 
-    pub(crate) fn asker(&self) -> mpsc::Sender<Step> {
+    pub(crate) fn asker(&self) -> mpsc::UnboundedSender<Step> {
         self.host.steps()
     }
 
@@ -343,7 +351,7 @@ impl Runner {
         on_step: &mut dyn FnMut(Step),
     ) -> Outcome {
         while self.steps.try_recv().is_ok() {}
-        self.host.set_web(web);
+        self.host.start_run(web);
         let (script, note) = match self.script.take() {
             Some(script) => (script, None),
             None => match Script::new(Rc::clone(&self.host)).await {
